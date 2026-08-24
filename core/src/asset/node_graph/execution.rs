@@ -1,5 +1,6 @@
+use crate::asset::node_graph::{ControlOut, INode, LogType, NodeRef, Simulation, ValueIn};
+use crate::asset::value::{AnyValue, ValueString};
 use anyhow::{anyhow, bail};
-use crate::asset::node_graph::{ControlOut, INode, LogType, NodeRef, Simulation, Value, ValueIn};
 
 pub struct NodeLog {
     value: ValueIn,
@@ -15,19 +16,19 @@ impl INode for NodeLog {
     fn get_values_in(&self) -> Vec<&ValueIn> {
         vec![&self.value]
     }
-    fn get_values_out(&self) -> Vec<Value> {
+    fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
     }
 
     fn execute(&mut self, context: &mut Simulation) -> anyhow::Result<Vec<NodeRef>> {
-        let Value::String(value) = self.value.get(context)? else {
+        let Ok(value) = self.value.get(context)?.downcast::<ValueString>() else {
             return Err(anyhow!("Log must be String"));
         };
-        context.logs.push((LogType::Info, value));
+        context.logs.push((LogType::Info, value.0));
         Ok(self.next.clone())
     }
 
-    fn get_value(&self, index: u32, context: &Simulation) -> anyhow::Result<Value> {
+    fn get_value(&self, _index: u32, _context: &Simulation) -> anyhow::Result<AnyValue> {
         bail!("No value")
     }
 }

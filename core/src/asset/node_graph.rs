@@ -1,17 +1,12 @@
-use downcast::{downcast, Any};
-use std::mem;
 use crate::asset::node_graph::control::NodeBreak;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
+use downcast::{Any, downcast};
+use std::mem;
+
+use super::value::Value;
 
 mod control;
 mod execution;
-
-#[derive(Clone)]
-enum Value {
-    Bool(bool),
-    Int(i32),
-    String(String),
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct NodeRef(u32);
@@ -29,11 +24,11 @@ type ControlOut = Vec<NodeRef>;
 #[derive(Clone)]
 struct ValueIn {
     has_default: bool,
-    default: Value,
+    default: Box<dyn Value>,
     link: Option<Link>,
 }
 impl ValueIn {
-    pub fn new(default: Value) -> Self {
+    pub fn new(default: Box<dyn Value>) -> Self {
         Self {
             has_default: false,
             default,
@@ -43,14 +38,15 @@ impl ValueIn {
     pub fn verify<>(&self, context: &Simulation) -> Result<()> {
         if let Some(link) = &self.link {
             if let Some(target) = context.get_node(link.0).get_values_out().get(link.1 as usize) {
-                if mem::discriminant(target) != mem::discriminant(&self.default) {
+                if target.get_server_type() != self.default.get_server_type() || target.get_client_type() != self.default.get_client_type() {
                     return Err(anyhow!("type error"));
                 }
+                // TODO
             }
         }
         Ok(())
     }
-    pub fn get(&self, context: &Simulation) -> Result<Value> {
+    pub fn get(&self, context: &Simulation) -> Result<Box<dyn Value>> {
         if let Some(link) = self.link {
             return context.get_value(link);
         }
@@ -98,25 +94,26 @@ impl Simulation {
                 fn get_values_in(&self) -> Vec<&ValueIn> {
                     vec![]
                 }
-                fn get_values_out(&self) -> Vec<Value> {
+                fn get_values_out(&self) -> Vec<Box<dyn Value>> {
                     vec![]
                 }
                 fn execute(&mut self, _context: &mut Simulation) -> Result<Vec<NodeRef>> {
                     Err(anyhow!("circular dependency"))
                 }
-                fn get_value(&self, _index: u32, _context: &Simulation) -> Result<Value> {
+                fn get_value(&self, _index: u32, _context: &Simulation) -> Result<Box<dyn Value>> {
                     Err(anyhow!("circular dependency"))
                 }
             }
             let mut node = mem::replace(i, Box::new(Using));
-            for x in node.execute(self)?.iter().rev() {
+            let result = node.execute(self);
+            self.nodes[usize::from(now)] = node;
+            for x in result?.iter().rev() {
                 stack.push(*x);
             }
-            self.nodes[usize::from(now)] = node;
         }
         Ok(())
     }
-    pub fn get_value(&self, input: Link) -> Result<Value> {
+    pub fn get_value(&self, input: Link) -> Result<Box<dyn Value>> {
         let Link(node, index) = input;
         self.nodes[usize::from(node)].get_value(index, self)
     }
@@ -161,10 +158,10 @@ trait INode: Any {
     fn get_controls_out(&self) -> Vec<ControlOut>;
 
     fn get_values_in(&self) -> Vec<&ValueIn>;
-    fn get_values_out(&self) -> Vec<Value>;
+    fn get_values_out(&self) -> Vec<Box<dyn Value>>;
 
     fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>>;
-    fn get_value(&self, index: u32, context: &Simulation) -> Result<Value>;
+    fn get_value(&self, index: u32, context: &Simulation) -> Result<Box<dyn Value>>;
 
     fn verify(&self, context: &Simulation) -> Result<()> {
         Ok(())

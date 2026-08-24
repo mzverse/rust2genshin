@@ -1,5 +1,6 @@
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, Value, ValueIn};
-use anyhow::{bail, Result};
+use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::value::{AnyValue, DefaultValue, ValueBool, ValueInt};
+use anyhow::{Result, bail};
 
 pub struct NodeIf {
     condition: ValueIn,
@@ -9,7 +10,7 @@ pub struct NodeIf {
 impl Default for NodeIf {
     fn default() -> Self {
         Self {
-            condition: ValueIn::new(Value::Bool(false)),
+            condition: ValueIn::new(ValueBool::def()),
             branch_true: vec![],
             branch_false: vec![],
         }
@@ -25,22 +26,22 @@ impl INode for NodeIf {
     fn get_values_in(&self) -> Vec<&ValueIn> {
         vec![&self.condition]
     }
-    fn get_values_out(&self) -> Vec<Value> {
+    fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
     }
 
     fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>> {
-        let Value::Bool(value) = self.condition.get(context)? else {
+        let Ok(value) = self.condition.get(context)?.downcast::<ValueBool>() else {
             bail!("Condition must be bool");
         };
-        if value {
+        if value.0 {
             Ok(self.branch_true.clone())
         } else {
             Ok(self.branch_false.clone())
         }
     }
 
-    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<Value> {
+    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<AnyValue> {
         bail!("No value")
     }
 }
@@ -64,19 +65,21 @@ impl INode for NodeForClosed {
     fn get_values_in(&self) -> Vec<&ValueIn> {
         vec![&self.begin, &self.end]
     }
-    fn get_values_out(&self) -> Vec<Value> {
-        vec![Value::Int(0)] // current
+    fn get_values_out(&self) -> Vec<AnyValue> {
+        vec![ValueInt::def()] // current
     }
 
     fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>> {
         if self.state.is_none() {
-            self.state = Some(match self.begin.get(context)? {
-                Value::Int(it) => it,
-                _ => bail!("begin must be int"),
+            self.state = Some(if let Ok(it) = self.begin.get(context)?.downcast::<ValueInt>() {
+                it.0
+            } else {
+                bail!("begin must be int")
             });
-            self.state_end = match self.end.get(context)? {
-                Value::Int(it) => it,
-                _ => bail!("end must be int"),
+            self.state_end = if let Ok(it) = self.end.get(context)?.downcast::<ValueInt>() {
+                it.0
+            } else {
+                bail!("end must be int")
             };
             self.break_tag = false;
         }
@@ -95,9 +98,9 @@ impl INode for NodeForClosed {
         }
     }
 
-    fn get_value(&self, index: u32, _context: &Simulation) -> Result<Value> {
+    fn get_value(&self, index: u32, _context: &Simulation) -> Result<AnyValue> {
         match index {
-            0 => Ok(Value::Int(self.state.map(|it| it - 1).unwrap_or(0))),
+            0 => Ok(ValueInt(self.state.map(|it| it - 1).unwrap_or(0)).into()),
             _ => bail!("No value"),
         }
     }
@@ -116,7 +119,7 @@ impl INode for NodeBreak {
     fn get_values_in(&self) -> Vec<&ValueIn> {
         vec![]
     }
-    fn get_values_out(&self) -> Vec<Value> {
+    fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
     }
 
@@ -132,7 +135,7 @@ impl INode for NodeBreak {
         Ok(vec![])
     }
 
-    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<Value> {
+    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<AnyValue> {
         bail!("No value")
     }
 

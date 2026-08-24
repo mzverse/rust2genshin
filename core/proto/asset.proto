@@ -10,9 +10,9 @@ option java_multiple_files = true;
 // ========================================================================
 
 // .gia file payload root
-message AssetBundle {
-  repeated AssetData        asset            = 1; // 主入口资源
-  repeated AssetData        dependency       = 2; // 包含所有生成的存根、结构体、信号等 (复合节点图、结构体定义等)
+message AssetBundleData {
+  repeated AssetData        assets           = 1; // 主入口资源
+  repeated AssetData        dependencies     = 2; // 包含所有生成的存根、结构体、信号等 (复合节点图、结构体定义等)
   string                    export_info      = 3; // 导出元数据 ({UID}-{TIME}-{FILE_ID}-\{EXPORT_FILE_NAME}.gia)
   Mode                      mode             = 4; // 关卡模式(经典/超限)
   string                    engine_version   = 5; // 引擎版本 (6.3.0)
@@ -392,7 +392,7 @@ message TypedValue {
     Flt              val_float  = 104; // 浮点
     Str              val_string = 105; // 字符串
     Enum             val_enum   = 106; // 枚举索引
-    Vec           val_vector = 107; // 向量
+    Vec3f           val_vector = 107; // 向量
     StructStorage    val_struct = 108; // 结构体数据
     ListStorage      val_list   = 109; // 数组数据
     PolymorphicValue val_poly   = 110; // 多态数值数据
@@ -413,7 +413,7 @@ message Str { string value = 1; }
 
 message Enum { int64 value = 1; }
 
-message Vec {
+message Vec3f {
   message Value {
     float x = 1;
     float y = 2;
@@ -742,7 +742,7 @@ message NodeInstance {
   optional Identifier kernel_ref = 3;
 
   // 引脚与参数
-  repeated PinData pin = 4;
+  repeated PinData pins = 4;
 
   float x_pos = 5;
   float y_pos = 6;
@@ -798,7 +798,7 @@ message PinSignature {
 
 // 信号签名 (通用)
 message SignalSignature {
-  string          signal_name    = 1;
+  string     signal_name    = 1;
   Identifier server_node_id = 2;
   Identifier client_node_id = 3;
 }
