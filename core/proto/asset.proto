@@ -1,0 +1,879 @@
+syntax = "proto3";
+// @version: 2.0.9b
+
+package rust2genshin;
+
+option java_multiple_files = true;
+
+// ========================================================================
+// 1. 顶层资产容器 (Top-Level Containers)
+// ========================================================================
+
+// .gia file payload root
+message AssetBundle {
+  repeated AssetData        asset            = 1; // 主入口资源
+  repeated AssetData        dependency       = 2; // 包含所有生成的存根、结构体、信号等 (复合节点图、结构体定义等)
+  string                    export_info      = 3; // 导出元数据 ({UID}-{TIME}-{FILE_ID}-\{EXPORT_FILE_NAME}.gia)
+  Mode                      mode             = 4; // 关卡模式(经典/超限)
+  string                    engine_version   = 5; // 引擎版本 (6.3.0)
+
+  enum Mode {
+    OVERLIMIT = 0; // 超限模式
+    CLASSIC   = 1; // 经典模式
+  }
+}
+
+// 资源的物理容器
+message AssetData {
+  // 业务类型枚举 (决定了这是个什么"东西")
+  enum Type {
+    UNKNOWN_TYPE              = 0; // 未知类型
+    OBJECT                    = 1; // 物件元件、掉落物元件、元件组
+    CREATION                  = 2; // 造物元件
+    OBJECT_ENTITY             = 3; // 物件实体、掉落物实体、实体组
+    CREATION_ENTITY           = 4; // 造物实体
+    TERRAIN_ENTITY            = 5; // 地形实体
+    PRESET_POINT              = 6; // 预设点
+    UNIT_STATUS               = 7; // 单位状态
+    SKILL                     = 8; // 技能
+    ENTITY_NODE_GRAPH         = 9; // 实体节点图
+    BOOLEAN_FILTER_GRAPH      = 10; // 布尔过滤器节点图
+    SKILL_NODE_GRAPH          = 11; // 技能节点图
+    COMPOSITE_NODE_DECL       = 12; // 复合节点声明 (含监听信号、修改/拆分/拼装结构体)
+    CAMERA                    = 13; // 镜头
+    SIGNAL_NODE_DECL          = 14; // 信号节点声明 (发送信号、向服务器节点图发送信号)
+    UI_CONTROL                = 15; // 界面控件
+    SKILL_RESOURCE            = 16; // 技能资源
+    CLASS                     = 17; // 职业
+    PLAYER_TEMPLATE           = 18; // 玩家模板
+    CHARACTER_TEMPLATE        = 19; // 角色模板
+    INTERFACE_LAYOUT          = 20; // 界面布局
+    UI_CONTROL_GROUP          = 21; // 界面控件组（交互控件）
+    STATUS_NODE_GRAPH         = 22; // 状态节点图
+    CLASS_NODE_GRAPH          = 23; // 职业节点图
+    GLOBAL_TIMER              = 24; // 全局计时器
+    PROJECTILE                = 25; // 投射物
+    ITEM                      = 26; // 道具
+    DECORATION                = 28; // 装饰
+    STRUCTURE                 = 29; // 结构体定义（高级数据结构）
+    SHOP_TEMPLATE             = 30; // 商店模板
+    CURRENCY                  = 35; // 货币
+    LEVEL_STRUCTURE           = 37; // 关卡结构体定义
+    PATH                      = 38; // 关卡路径
+    SHIELD                    = 39; // 护盾
+    ENTITY_DEPLOYMENT_GROUP   = 43; // 实体布设组
+    UNIT_TAG                  = 44; // 单位标签
+    SCAN_TAG                  = 45; // 扫描标签
+    ITEM_NODE_GRAPH           = 46; // 道具节点图
+    INTEGER_FILTER_GRAPH      = 47; // 整数过滤器节点图
+    LIGHT_SOURCE              = 48; // 光源
+    ENVIRONMENT_CONFIGURATION = 49; // 环境配置
+    // reserved 27, 31 to 34, 36, 40 to 42;
+  };
+
+  Identifier          id         = 1; // 自身 ID
+  repeated Identifier reference  = 2; // 显式引用表
+  string              name       = 3; // 内部调试名
+  Type                type       = 5; // 业务分类
+
+  // 实际数据载荷
+  oneof payload {
+    // PrefabDefinition      prefab       = 11;
+    // EntityDefinition      entity       = 12;
+
+    NodeGraphContainer           graph_data     = 13; // Which is Node Graph
+    NodeInterfaceContainer       interface_data = 14; // Which is Interface Definition
+
+    // Configuration         config       = 15;
+    // Terrain               terrain      = 16;
+    // Camera                camera       = 17;
+    // PresetPoint           point        = 18;
+    // UiControlGroup        ui           = 19;
+    // GlobalTimer           timer        = 20;
+
+    StructureDefinitionContainer struct_data    = 22; // Which is Structure Definition
+
+    // LevelPath             path         = 23;
+    // UnitTag               unit_tag     = 26;
+    // EntityDeploymentGroup deployment   = 27;
+  }
+}
+
+// ========================================================================
+// 2. 核心标识符系统 (Identifier System)
+// ========================================================================
+
+// 通用资源标识符 (原 ResourceLocator, NodeProperty 等)
+// 这是整个系统中"资源的身份证"
+message Identifier {
+
+  // Origin (来源域)：
+  //   - 含义：定义了资源的“所有权”和“存储位置”。
+  //   - USER_DEFINED: 存在于玩家/开发者动态生成的数据库中。
+  //   - SYSTEM_DEFINED: 存在于游戏安装包的静态只读数据中。
+  enum Source {
+    UNKNOWN_SOURCE = 0;
+    USER_DEFINED   = 10000; // 用户资产
+    SYSTEM_DEFINED = 10001; // 系统内置
+  }
+
+  // Category (服务域/子系统)：
+  //   - 含义：定义了哪个“引擎模块”负责处理此资源。
+  //   - 例如：SERVER_BASIC 归后端逻辑引擎管，CLIENT_FILTER 归前端表现引擎管。它决定了数据加载后的分发路径。
+  enum Category {
+    UNKNOWN_CATEGORY = 0;
+
+    // 资产类型
+    DEFAULT           = 1; // 该类别下的资源使用kind来判定具体结构，否则不会存在kind(X)
+    SERVER_NODE_GRAPH = 5; // 服务器节点图
+    NODE_DECL         = 23; // 节点接口声明
+    GLOBAL_TIMER      = 24; // 全局计时器
+    CAMERA            = 25; // 镜头
+
+    // Server Side Node Types
+    SERVER_BASIC  = 20000; // 后端: 基础
+    SERVER_STATUS = 20003; // 后端: 状态
+    SERVER_CLASS  = 20004; // 后端: 职业
+    SERVER_ITEM   = 20005; // 后端: 道具
+
+    // Client Side Node Types
+    CLIENT_FILTER         = 20001; // 过滤器类型(默认 Bool)
+    CLIENT_SKILL          = 20002; // 技能节点图流程(客户端)
+    CLIENT_INT_FILTER     = 20006; // 整数过滤器类型
+    CLIENT_CREATION_STATE = 20007; // 造物状态
+  }
+
+  // AssetKind/Kind (原型域/数据结构)：
+  //   - 含义：定义了数据的物理结构。
+  //   - 它告诉解析器：这个资源是一个 COMPOSITE_GRAPH 结构，还是一个 STRUCTURE 结构。
+  enum AssetKind {
+    // 资产类型
+    BASIC                                     = 0; // 服务器节点图, 等一些列未定义的(默认值)
+    PREFAB                                    = 1; // 预制体（元件）、玩家模板或角色模板、投射物
+    ENTITY                                    = 2; // 实体或造物
+    SERVER_CONFIGURATION_OR_CLIENT_NODE_GRAPH = 3; // 服务器配置信息 或 客户端节点图
+    TERRAIN                                   = 5; // 地形
+    UI                                        = 8; // 界面布局或交互控件
+    PRESET_POINT                              = 9; // 预设点
+    DECORATION                                = 14; // 装饰物
+    STRUCTURE                                 = 15; // 结构体
+    ENTITY_DEPLOYMENT_GROUP                   = 18; // 实体布设组
+    PATH                                      = 19; // 路径
+    UNIT_TAG                                  = 23; // 单位标签
+
+    // 节点图子类型
+    CUSTOM_GRAPH    = 21001; // 普通节点图 NodeGraph
+    COMPOSITE_GRAPH = 21002; // 复合图 CompositeGraph
+
+    // 节点子类型
+    SYS_CALL_STUB  = 22000; // 系统调用存根 (Kernel 2000/2001 等)
+    GENERATED_STUB = 22001; // 自动生成存根 (Struct/Signal 定义生成的节点)
+  }
+
+  Source    source         = 1; // 开发者 vs 系统
+  Category  category       = 2; // 后端逻辑 vs 前端表现
+  AssetKind kind           = 3; // 物理数据结构分类
+
+  // ====== Optional ======
+
+  // [Field 4] 资产库 GUID (Asset Database GUID)
+  // 作用域：资源管理层 / 文件系统
+  // 含义：指向一个具体的、可序列化的用户资产文件。
+  // 场景：
+  //   - 出现在 AssetBundle 的依赖列表中 (dependencies)。
+  //   - 出现在 Entity/Prefab 引用中 (因为它们对应具体的资源文件)。
+  //   - 系统内置节点(SYSTEM_DEFINED)通常没有此字段。
+  int64 guid = 4;
+
+  // [Field 5] 运行时 ID (Runtime Definition ID)
+  // 作用域：逻辑执行层 / 内存
+  // 含义：指向一个逻辑定义、OpCode 或内存中的对象句柄。
+  // 场景：
+  //   - 出现在 NodeInstance 的 shell_ref/kernel_ref 中。
+  //   - 出现在 Graph 内部的 identity 定义中。
+  //   - 对于用户资产，此值通常等于 asset_guid。
+  //   - 对于系统内置节点，这是唯一的标识符 (如 1, 2000)。
+  int64 runtime_id = 5;
+
+  // 简单判定法：如果这个东西在游戏场景里能被“生出来”（Spawn），它用 guid；如果这个东西只是一段逻辑或一个定义，它用 id。
+}
+
+// ========================================================================
+// 3. 类型与数值系统 (Type & Value System)
+// ========================================================================
+
+// ### 为什么会有两套类型编号？
+// 这是一个非常典型的 “技术债” (Technical Debt) 与 “架构隔离” (Architectural Isolation) 共同作用的结果。
+// 服务器端 (ServerTypeId)：看编号的混乱程度（Int=3, IntList=8），可以推断服务器端代码是早期编写且不断迭代的。
+//   - 一开始可能只支持原子类型。
+//   - 后来需求增加了 EntityList，于是追加在 13。
+//   - 后来又增加了 Struct 和 Dictionary，追加在 25, 27。
+//   - 为了保证旧数据的兼容性（Protocol Buffers 的核心原则），旧的 ID 不能变，导致了 ID 分布的零散。
+// 客户端 (ClientTypeId)：看编号的规律程度（Int=3, IntList=4），这很可能是后期重构或独立开发的产物。
+//   - 客户端开发者在定义类型时，已经明确知道需要支持哪些类型，因此采用了更优雅的 Type, TypeList 配对方式。
+
+// 服务器端逻辑类型 ID
+// 用于: 数据存储、后端逻辑运算、结构体定义、黑板变量
+// 特征: 包含复杂的引用类型(Ref)和容器类型(Map/Struct)
+enum ServerTypeId {
+  SERVER_UNKNOWN = 0;
+
+  // --- 基础原子类型 ---
+  S_ENTITY  = 1; // 运行时实体对象 (指针/句柄)
+  S_GUID    = 2; // 全局唯一ID (通常用于查找静态配置或持久化对象)
+  S_INT     = 3; // 32位整数
+  S_BOOLEAN = 4; // 布尔值
+  S_FLOAT   = 5; // 浮点数
+  S_STRING  = 6; // 字符串
+  S_VECTOR  = 12; // 三维向量 (x,y,z)
+
+  // --- 基础列表类型 ---
+  // 注意: 服务器端的 List ID 比较分散，可能是历史迭代导致的
+  S_GUID_LIST    = 7;
+  S_INT_LIST     = 8;
+  S_BOOLEAN_LIST = 9;
+  S_FLOAT_LIST   = 10;
+  S_STRING_LIST  = 11;
+  S_ENTITY_LIST  = 13;
+  S_VECTOR_LIST  = 15;
+
+  // --- 游戏业务类型 ---
+  S_ENUM_ITEM    = 14; // 通用枚举项
+  S_FACTION      = 17; // 阵营/势力
+  S_ENUM_LIST    = 18; // 枚举列表
+  S_CONFIG       = 20; // 配置表引用
+  S_PREFAB       = 21; // 预制体引用 (资源路径或Hash)
+  S_CONFIG_LIST  = 22;
+  S_PREFAB_LIST  = 23;
+  S_FACTION_LIST = 24;
+
+  // --- 复杂结构与高级特性 ---
+  S_STRUCT      = 25; // 用户定义结构体
+  S_STRUCT_LIST = 26; // 结构体列表
+  S_DICT        = 27; // 字典/哈希表
+
+  // --- 运行时引用 (仅服务器) ---
+  // 用于节点图执行时的栈内存引用或快照回滚
+  S_LOCAL_VAR_REF    = 16; // 引用当前图内的局部变量
+  S_VAR_SNAPSHOT_REF = 28; // 变量快照引用 (用于实体删除时访问原始数据)
+
+  // 预留区：用于UI中枚举连线时的匹配
+  // Starting From: 10001
+  // reserved 10000 to 10099;   // server enum types
+  // reserved 210000 to 210099; // client enum types
+}
+
+// ### 客户端表现类型 ID
+// 用于: UI 渲染、简单的本地预测、发包参数
+// 特征: 列表类型ID紧跟在基础类型之后，结构更紧凑，但不支持 Map/Struct
+enum ClientTypeId {
+  CLIENT_UNKNOWN = 0;
+
+  // --- 实体与列表 (配对出现) ---
+  C_ENTITY      = 1;
+  C_ENTITY_LIST = 2; // Client端 ID 排布更有规律: List = Base + 1
+
+  // --- 基础数值 ---
+  C_INT      = 3;
+  C_INT_LIST = 4;
+
+  C_BOOLEAN      = 5;
+  C_BOOLEAN_LIST = 6;
+
+  C_FLOAT      = 7;
+  C_FLOAT_LIST = 8;
+
+  C_STRING      = 9;
+  C_STRING_LIST = 10;
+
+  C_VECTOR      = 11;
+  C_VECTOR_LIST = 12;
+
+ // --- 业务类型 ---
+  C_ENUM_ITEM = 13;
+  C_ENUM_LIST = 17;
+
+  C_GUID      = 14;
+  C_GUID_LIST = 15;
+
+  C_FACTION = 16;
+
+  C_CONFIG      = 18;
+  C_PREFAB      = 19;
+  C_CONFIG_LIST = 20;
+
+  // 预留区：用于UI中枚举连线时的匹配
+  // Starting From: 10001
+  // reserved 10000 to 10099;   // server enum types
+  // reserved 210000 to 210099; // client enum types
+}
+
+// 类型的详细定义（元数据）
+message TypeDefinition {
+  // 区分系统来源
+  enum Backend {
+    UNKNOWN = 0;
+    SERVER  = 1;
+    CLIENT  = 2;
+  }
+  message StructReference { int64 schema_id = 1; }
+  message MapKeyValueBinding {
+    ServerTypeId   key_type        = 1;
+    ServerTypeId   value_type      = 2;
+    optional int64 value_struct_id = 3;
+  }
+
+  message ServerType {
+    enum Implementation {
+      PRIMITIVE = 0;
+      STRUCT    = 1;
+      PAIR      = 2;
+    }
+    ServerTypeId   type_tag = 1;
+    Implementation impl     = 2;
+    oneof schema {
+      StructReference    struct_ref  = 100;
+      MapKeyValueBinding map_binding = 101;
+    }
+  }
+
+  message ClientType {
+    ClientTypeId type_tag = 2;
+  }
+
+  Backend backend = 1;
+  oneof type_detail {
+    ServerType server_side = 100;
+    ClientType client_side = 101;
+  }
+}
+
+// 统一定义的数值对象，对应原 TypedValue
+message TypedValue {
+// 定义 UI 输入框的展示样式
+  enum WidgetType {
+    UNKNOWN       = 0;
+    ID_INPUT      = 1; // ID 基础，如 Prefab/GUID
+    NUMBER_INPUT  = 2; // 整数
+    DROPDOWN      = 3; // 带有选项的选择器
+    DECIMAL_INPUT = 4; // 浮点数
+    TEXT_INPUT    = 5; // 字符串
+    ENUM_PICKER   = 6; // 枚举, 如 bool, enum
+    VECTOR_GROUP  = 7; // 三维向量组
+
+    TYPE_SELECTOR = 10000; // 多态类型选择器
+    STRUCT_BLOCK  = 10001; // 结构体块
+    LIST_GROUP    = 10002; // 数组/列表
+    MAP_GROUP     = 10003; // 字典/键值对
+    MAP_PAIR_ITEM = 10007; // 键值对子项
+  }
+
+  WidgetType              widget = 1; // 样式类
+  bool                    is_set = 2; // 0=空值, 1=用户已修改
+  optional TypeDefinition type   = 4; // 类型元数据
+
+  // 结构体实例追踪（用于在图中生成唯一的索引名）
+  message InstanceTracker {
+    message Identity {
+      // 不论是不是同一类型的结构体, 计数器从 1 开始记录(仅对单张图生效)
+      // 在同一张图中, 如果有多个结构体值, 会依次记录, 并显示为 (结构体名_index)
+      int32 local_index = 1;
+    }
+    int32    version_tag = 1; // always_one
+    Identity identity    = 100;
+  }
+
+  optional InstanceTracker tracker = 5; // 仅结构体有效
+
+  // 实际数据存储区域
+  oneof storage {
+    Id               val_id     = 101; // 实体/GUID 等 ID 类型
+    Int              val_int    = 102; // 整数
+    Flt              val_float  = 104; // 浮点
+    Str              val_string = 105; // 字符串
+    Enum             val_enum   = 106; // 枚举索引
+    Vec           val_vector = 107; // 向量
+    StructStorage    val_struct = 108; // 结构体数据
+    ListStorage      val_list   = 109; // 数组数据
+    PolymorphicValue val_poly   = 110; // 多态数值数据
+    MapPairStorage   val_pair   = 111; // 单个键值对
+    MapStorage       val_map    = 112; // 完整字典数据
+  }
+}
+
+// 辅助存储结构
+
+message Id { int64 value = 1; }
+
+message Int { int32 value = 1; }
+
+message Flt { float value = 1; }
+
+message Str { string value = 1; }
+
+message Enum { int64 value = 1; }
+
+message Vec {
+  message Value {
+    float x = 1;
+    float y = 2;
+    float z = 3;
+  }
+  Value value = 1;
+}
+
+message StructStorage { repeated TypedValue field = 1; }
+
+message ListStorage { repeated TypedValue element = 1; }
+
+message MapStorage {
+  repeated TypedValue pairs = 1;
+}
+
+message MapPairStorage {
+  TypedValue key   = 1;
+  TypedValue value = 2;
+}
+
+// 多态数值：用于可变引脚
+message PolymorphicValue {
+  int32      chosen_type_index = 1; // 选中的类型索引
+  TypedValue actual_value      = 2; // 实际的值对象
+
+  // 描述具体的结构体ID或泛型参数，指导实例化
+  optional DynamicTypeMetadata extra_meta = 5; // 是多态类型系统中的类型配置（Type Configuration）。
+}
+
+// 是为了保证在数据尚未生成时，系统依然拥有完整的类型知识。
+// 评价是没啥用, 不如没有
+message DynamicTypeMetadata {
+  message Config {
+    message Inner {
+      TypedValue.WidgetType          container_style = 1;
+      optional TypedValue.WidgetType item_style      = 2;
+      oneof schema_binding {
+        TypeDefinition.StructReference    target_struct_id    = 100;
+        TypeDefinition.StructReference    list_item_struct_id = 101;
+        TypeDefinition.MapKeyValueBinding map_config          = 102;
+      }
+    }
+    Inner inner = 1;
+  }
+  int32  version = 4;
+  Config config  = 100;
+}
+
+// ========================================================================
+// 4. 物理资源包装器 (Graph & Interface Container)
+// ========================================================================
+
+// ### 包装结构分析：为何需要 Wrapper？
+// 代码中出现了 NodeGraphWrapper 和 CompositeDefWrapper 且内部嵌套了 InnerWrapper。这种设计在大型引擎（如 Unity 或自定义引擎）中非常常见，原因有三：
+//   - 类型擦除与异构容器：在 oneof 中，如果直接放入原始消息，未来如果想给所有类型的资源添加“通用元数据”（如加密标志、压缩算法、版本号），就必须修改每个具体消息。
+//   - 版本平滑迁移 (Forward Compatibility)：InnerWrapper 提供了一个缓冲区。如果 NodeGraph 的结构发生断代式更新，引擎可以先解析 Wrapper 层的版本号，再决定调用哪个版本的解析器。
+//   - 内存布局优化：在某些序列化框架中，这种嵌套允许引擎在不完全反序列化内部逻辑的情况下，先读取资源的“外壳”信息（如 ID 和名称）。
+
+message NodeGraphContainer {
+  message InnerWrapper { NodeGraphData graph = 1; }
+  InnerWrapper inner = 1;
+}
+
+message NodeInterfaceContainer {
+  message InnerWrapper { NodeInterface interface = 1; }
+  InnerWrapper inner = 1;
+}
+
+message StructureDefinitionContainer {
+  StructureDefinitionData def = 1;
+}
+
+// ========================================================================
+// 5. 节点图与接口定义 (Graph & Interface)
+// ========================================================================
+
+// 节点图 (逻辑容器)
+message NodeGraphData {
+  // 资源的唯一身份标识
+  Identifier id = 1;
+  // 图的显示名称
+  string display_name = 2;
+
+// --- 执行层 ---
+  // 逻辑节点实例列表
+  repeated NodeInstance node = 3;
+
+  // --- 接口层 ---
+  // 接口映射表：定义外部引脚如何穿透到内部节点
+  // 仅在作为“复合节点(Composite)”被调用时生效
+  repeated InterfaceMapping port_mapping = 4;
+
+  // --- 注释与展示 ---
+  repeated Annotation comment = 5;
+
+  // --- 数据层 ---
+  // 局部变量池/黑板变量：存储图内部共享的数据
+  repeated GraphVariable blackboard = 6;
+
+  // --- 子系统特定参数 ---
+
+  // 入口索引：对应“入口节点”或“外部触发槽位”的索引
+  // TODO: 是否 repeated ?
+  optional int32 entry_slot_index = 100;
+
+  // 轮询/判定频率 (仅用于过滤器)：定义该图逻辑被重新计算的时间间隔 (无效)
+  optional float evaluation_interval = 101;
+}
+
+// 复合节点接口定义 (对外签名)
+message NodeInterface {
+  // 复合节点的身份标识
+  message Signature {
+    Identifier shell_ref  = 1;
+    Identifier kernel_ref = 2; // 这种生成的节点通常 shell == kernel
+
+    // 关键：对于用户子图，指向内部逻辑图；对于系统生成节点，此字段为空
+    Identifier graph_ref      = 4;
+    optional int32  signal_version = 5;
+  }
+
+  // 实现模板定义
+  message Implementation {
+    enum Category {
+      UNKNOWN         = 0;
+      COMPOSITE       = 1000; // 用户子图
+      SEND_SIGNAL     = 1001; // 发送信号
+      LISTEN_SIGNAL   = 1002; // 监听信号
+      STRUCT_ASSEMBLY = 1003; // 拼装结构体
+      STRUCT_SPLIT    = 1004; // 拆分结构体
+      STRUCT_MODIFY   = 1005; // 修改结构体
+    }
+    Category category = 1;
+
+    message Id { int64 id = 1; }
+
+    oneof template {
+      // 对应 Send/Listen 的信号信息
+      SignalSignature send_signal   = 101;
+      SignalSignature listen_signal = 102;
+      // 对应 Assembly/Split 的结构体 ID
+      Id assemble_struct = 104;
+      Id split_struct    = 105;
+      Id modify_struct   = 106;
+    }
+  }
+
+  Signature id = 4;
+
+  repeated PinInterface inflows   = 100;
+  repeated PinInterface outflows  = 101;
+  repeated PinInterface inputs    = 102;
+  repeated PinInterface outputs   = 103;
+  repeated PinInterface meta_pins = 106; // 原 signals，存放 Type 5 引脚
+
+  Implementation impl = 107;
+
+// 这里的 Which 逻辑建议保留原本命名，因为它们是模板系统的索引
+  enum TemplateRoot {
+    UNKNOWN        = 0;
+    SUB_TEMPLATE   = 1;
+    LISTEN_SIGNAL  = 2;
+    STRUCT         = 5;
+    USER_COMPOSITE = 6;
+  }
+  enum TemplateSub  {
+    NONE          = 0;
+    MODIFY_STRUCT = 3;
+    STRUCT_SUB    = 4;
+    SIGNAL_SUB    = 8;
+  }
+
+  string       name          = 200;
+  string       description   = 201;
+  TemplateRoot template_root = 203; // 原 which
+  TemplateSub  template_sub  = 204; // 原 subWhich
+}
+
+// 复合节点参数/数据引脚接口定义 (对外签名)
+message PinInterface {
+  string       name            = 1;
+  int32        visibility_mask = 2; // 原 xxxx_always_1 (位掩码)
+  PinSignature sig             = 3; // 包含 Kind (IN_PARAM/OUT_PARAM) 和 Index
+
+  // 引脚类型定义
+  message TypeInfo {
+    // optional for flow pin
+    optional TypedValue.WidgetType ui_class        = 1; // UI表现形式 (IntBase, VecBase等)
+    optional ServerTypeId          var_type_shell  = 3; // ServerTypeId 枚举, 对于 Enum, 为 [100id](EnumCategoryId)
+    optional ServerTypeId          var_type_kernel = 4; // ServerTypeId 枚举, 对于 Enum, 为 14(EnumType)
+
+    // 参数框提示文本
+    message Placeholder {
+      int32  always_1 = 1;
+      string text     = 2;
+    }
+    optional Placeholder placeholder = 5;
+
+    // 元数据引脚特有的显示状态 (如显示为信号名称输入框)
+    message DisplayState {
+      enum State { NONE = 0; SIGNAL_NAME = 4; }
+      State state = 1;
+    }
+    optional DisplayState display_state = 7;
+
+    oneof detail {
+      EnumId   enum_id        = 101;
+      ListType list_item_type = 102;
+      StructId struct_id      = 104;
+      MapType  map_type       = 105;
+    }
+
+    message EnumId { int64 val = 1; }
+    message ListType {
+      TypeInfo item_type = 1;
+    }
+    message StructId { int64 val = 2; }
+    message MapType {
+      ServerTypeId key   = 3;
+      ServerTypeId value = 4;
+      // if value is StructList
+      optional int64 struct_id = 5;
+    }
+  }
+
+  TypeInfo type = 4;
+  // 如果是系统生成的结构体/信号节点，标记其元数据类型
+  optional PinSignature meta_sig_type      = 5;
+  int32                 persistent_pin_uid = 8;
+}
+
+// TODO: 结构体定义 (Stub)
+message StructureDefinitionData {
+  Field genericField  = 1;
+  Field concreteField = 2; // same as 1
+  int32 structVersion = 3; // Version Updated as structure is modified and as
+                           // other structures modified
+  int32 itemCount = 4; // item count
+
+  int32 unknown1 = 5; // always 1
+
+  message Field {
+    int64           id   = 1;
+    int64           xxx  = 2; // 2 for level stru def
+    repeated VarDef var = 3;
+
+    string structName = 501;
+    int32  classBase  = 502; // always 1
+    int32  index      = 503; // same as StructureDef
+  }
+  message VarDef {
+
+    message TypeDef {
+      message SubType {
+        ServerTypeId type    = 1;
+        int64        xxxx_id = 2; // What are they?
+        ServerTypeId key     = 502;
+        ServerTypeId value   = 503;
+        int64        valueId = 504;
+      }
+      ServerTypeId type    = 1;
+      SubType      subType = 2;
+
+      oneof val {
+        Int    intVal  = 13;
+        Enum   booleanVal = 14;
+        Str strVal  = 16;
+        // TODO: What A mess here! I can't bear anymore!!!!!
+        // He who trust himself could take a try.
+        // ESPECIALLY MAP/STRUCT BASE
+      }
+    }
+    message TypeDef3 {
+      message SubType {
+        ServerTypeId type = 1;
+        message Any {}
+        Any          xxxx_id = 2; // Why diff from TypeDef3
+        ServerTypeId key     = 502;
+        ServerTypeId value   = 503;
+        int64        valueId = 504;
+      }
+      ServerTypeId type    = 1;
+      SubType      subType = 2;
+
+      oneof val {
+        Int    intVal  = 13;
+        Enum   booleanVal = 14;
+        Str strVal  = 16;
+        // TODO: What A mess here! I can't bear anymore!!!!!
+        // He who trust himself could take a try.
+        // ESPECIALLY MAP/STRUCT BASE
+      }
+    }
+    TypeDef  typedef1 = 1;
+    TypeDef3 typedef3 = 3;
+    string   name     = 5;
+
+    string       varName  = 501;
+    ServerTypeId varType  = 502;
+    int32        varIndex = 503; // variable index
+  }
+}
+
+// ========================================================================
+// 6. 节点实例与组件 (Node Instance & Components)
+// ========================================================================
+
+// 节点图中单个节点实例
+message NodeInstance {
+  // 节点在图中的唯一索引 (运行时句柄)
+  int32 index = 1;
+
+  // 核心定义与实现分离
+
+  // 外壳定义(UI): shell_ref: 决定节点长什么样
+  Identifier shell_ref = 2;
+
+  // 内核实现(Logic): kernel_ref : 决定节点怎么跑
+  // - 对于固定节点: 始终有值。
+  // - 对于可变节点:
+  //    - 若为 null: 表示"未决议" (Unresolved)。节点处于未配置类型的无效状态。
+  //    - 若有值: 表示已根据用户选择的类型，映射到了具体的内核函数 ID。
+  // - 对于 Client Skill 入口 (Start): 通常为 Kernel 2001。(Listen)
+  // - 对于 Client Skill 执行节点 (Execution): 通常为 Kernel 2000。(POST)
+  optional Identifier kernel_ref = 3;
+
+  // 引脚与参数
+  repeated PinData pin = 4;
+
+  float x_pos = 5;
+  float y_pos = 6;
+
+  // 附加在节点上的用户备注
+  optional Annotation attached_comment = 7;
+
+  // 特殊上下文标记 (Legacy / Context Provider)
+
+  // 仅出现在入口节点 (NodeGraphStarts, Kernel 2001)
+  // 标识该图被触发时的上下文类型 (如 Signal)。
+  // 实际是一个无索引的 PinSignature
+  optional PinSignature context_declaration = 8;
+
+  // 仅用于 Signal 相关节点，用于检测定义版本冲突
+  optional int32 signal_version = 9;
+
+  message DependencyDeclaration {
+    // TODO
+    Identifier identity = 1;
+    // int32           type1    = 2;
+  }
+  // 结构体依赖声明
+  repeated DependencyDeclaration using_structs = 10;
+}
+
+// 引脚签名 (Meta Tag)
+message PinSignature {
+  enum Kind {
+    UNKNOWN   = 0;
+    IN_FLOW   = 1;
+    OUT_FLOW  = 2;
+    IN_PARAM  = 3;
+    OUT_PARAM = 4;
+
+    // 特殊用途
+    META_RPC_OPCODE = 5; // 原 SignalClient. 携带 RPC ID
+    META_TOPIC_NAME = 6; // 原 Signal (Entry Context). 携带信号名称/Context声明
+
+    // 结构体操作
+    STRUCT_REF        = 13;
+    STRUCT_KEY_MOD    = 14;
+    STRUCT_KEY_SET    = 15;
+    STRUCT_KEY_SELECT = 16;
+  }
+  Kind  kind  = 1;
+  int32 index = 2; // 第几个该类型的引脚
+
+  // 当 kind 为 META_RPC_OPCODE (5) 时存储 RPC ID
+  message SignalId { int64 id = 1; }
+  optional SignalId source_ref = 100;
+}
+
+// 信号签名 (通用)
+message SignalSignature {
+  string          signal_name    = 1;
+  Identifier server_node_id = 2;
+  Identifier client_node_id = 3;
+}
+
+// 引脚实例 (运行时状态)
+message PinData {
+  // 双重索引系统
+  PinSignature shell_sig  = 1; // i1: 对应 Shell 定义的 UI 槽位
+  PinSignature kernel_sig = 2; // i2: 对应 Kernel 实现的 参数 槽位
+
+  // 值与类型
+  TypedValue value = 3;
+  optional int32      type  = 4; // Be careful! ServerTypeId in Server and ClientVarType in Client
+
+  // 连接关系
+  repeated NodeConnection connection = 5;
+
+  // 动态绑定信息
+
+  // 元数据绑定
+  // 用于 SendSignal 等节点，存储 RPC ID 或 Topic Name 的绑定关系
+  // 原 signalPin
+  optional PinSignature binding_meta = 6;
+
+  // 持久化引脚 ID
+  // 仅用于动态类型 (Struct/Signal/Composite)
+  // 当 Shell 定义发生变更(插队/重排)时，通过此 ID 找回连线关系
+  optional int32 persistent_pin_uid = 7; // 原 compositePinUid
+}
+
+// 连接
+message NodeConnection {
+  int32        target_node_index = 1;
+  PinSignature target_pin_shell  = 2;
+  PinSignature target_pin_kernel = 3;
+}
+
+// 接口映射：穿墙管线
+message InterfaceMapping {
+  // 复合节点外壳上的引脚定义 (对外)
+  PinSignature external_port = 1;
+
+  // 映射到的内部目标节点索引 (对内)
+  int32 internal_target_node_handle = 2;
+
+  // 映射到的具体内部引脚 (逻辑/物理)
+  PinSignature internal_port_shell  = 3;
+  PinSignature internal_port_kernel = 4;
+}
+
+// 节点图变量(黑板变量)
+message GraphVariable {
+  string var_name = 2;
+
+  // 变量的数据类型定义
+  ServerTypeId base_type = 3;
+
+  // 变量的初始值/当前值
+  TypedValue storage_value = 4;
+
+  // 是否暴露为外部可配置参数
+  bool is_public = 5;
+
+  // 如果是结构体变量，指向其定义的 ID
+  optional int64 schema_ref_id = 6;
+
+  // 容器类型的子类型定义 (残留字段, 仅对 Map 有效)
+  ServerTypeId container_key_type   = 7;
+  ServerTypeId container_value_type = 8;
+}
+
+// 注释/文字说明
+message Annotation {
+  string text = 1;
+  // 如果坐标为空，说明该注释是“吸附”在某个节点实例上的（通过 NodeInstance.attached_comment 关联）
+  optional float x_pos = 2;
+  optional float y_pos = 3;
+}

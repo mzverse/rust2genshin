@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "core",
+    "demo", "lib",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["lyt", "mz"]
+
+[workspace.dependencies]
+enum_dispatch = "0"
+downcast = "0"
+anyhow = "1"
+
+[workspace.lints.rust]

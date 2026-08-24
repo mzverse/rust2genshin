@@ -1,0 +1,24 @@
+[package]
+name = "rust2genshin"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+#homepage.workspace = true
+#license.workspace = true
+#repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+enum_dispatch = { workspace = true }
+downcast = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+syn = { version = "3", features = ["parsing", "full"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+toml = "1"
+prost = "0"
+
+[build-dependencies]
+prost-build = "0"
