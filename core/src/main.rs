@@ -7,8 +7,8 @@
 
 #![feature(rustc_private)]
 
-mod asset;
-mod parser;
+pub mod asset;
+pub mod parser;
 
 extern crate rustc_driver;
 extern crate rustc_interface;
@@ -21,6 +21,10 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use crate::asset::generated::ServerTypeId;
+use crate::asset::raw_node_graph::{StructField, StructureDefinition};
+use crate::asset::value::{ValueFloat, ValueGuid, ValueInt, ValueString, ValueVector};
+use crate::asset::{Asset, AssetBundle, GameMode};
 use clap::Parser;
 use rustc_driver::{Callbacks, Compilation};
 use rustc_interface::interface::Compiler;
@@ -39,6 +43,8 @@ struct Args {
     /// 打印更详细的信息(函数参数、结构体字段、枚举变体等)
     #[arg(short, long)]
     verbose: bool,
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 // ---------- rustc 回调 ----------
@@ -382,6 +388,60 @@ fn build_rustc_args(info: &ProjectInfo, deps: &DepInfo, sysroot: Option<&Path>) 
     args
 }
 
+/// 生成一个简单的示例 .gia(AssetBundle 封装示例)。
+/// 输出路径取 `--output`,缺省为 `./target/<项目名>.gia`(<项目名> 取输入的
+/// 包的 name,如 `rust2genshin-demo`)。
+/// 与 rustc 分析相互独立:失败只警告,不影响主流程。
+fn write_example_gia(info: &ProjectInfo, output: Option<&Path>) -> std::io::Result<()> {
+    let path = match output {
+        Some(p) => p.to_path_buf(),
+        None => PathBuf::from("target").join(format!("{}.gia", info.package_name)),
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let bundle = AssetBundle::new(
+        GameMode::Overlimit,
+        vec![Asset::StructureDefinition(StructureDefinition {
+            name: "Player".to_string(),
+            version: 1,
+            fields: vec![
+                StructField {
+                    name: "hp".to_string(),
+                    var_type: ServerTypeId::SInt,
+                    default: Some(ValueInt(100).into()),
+                },
+                StructField {
+                    name: "name".to_string(),
+                    var_type: ServerTypeId::SString,
+                    default: Some(ValueString("alice".to_string()).into()),
+                },
+                StructField {
+                    name: "pos".to_string(),
+                    var_type: ServerTypeId::SVector,
+                    default: Some(ValueVector(114.0, 514.0, 191.0).into()),
+                },
+                StructField {
+                    name: "uid".to_string(),
+                    var_type: ServerTypeId::SGuid,
+                    default: Some(ValueGuid(46456416).into()),
+                },
+                StructField {
+                    name: "ratio".to_string(),
+                    var_type: ServerTypeId::SFloat,
+                    default: Some(ValueFloat(5.145).into()),
+                },
+            ],
+        })],
+        vec![0],
+    );
+    bundle.save(&path)?;
+    eprintln!("wrote example asset bundle to {}", path.display());
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
 
@@ -392,6 +452,11 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+
+    // 生成示例 .gia(不依赖 rustc 分析结果)
+    if let Err(e) = write_example_gia(&info, args.output.as_deref()) {
+        eprintln!("warning: cannot write example .gia: {e}");
+    }
 
     // 定位并配置 sysroot(PATH 注入 dll 目录、SYSROOT 环境变量、--sysroot 参数)
     let sysroot = locate_sysroot();

@@ -1,4 +1,5 @@
 use crate::asset::node_graph::{ControlOut, INode, LogType, NodeRef, Simulation, ValueIn};
+use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{AnyValue, ValueString};
 use anyhow::{anyhow, bail};
 
@@ -7,7 +8,7 @@ pub struct NodeLog {
     next: ControlOut,
 }
 impl INode for NodeLog {
-    fn get_controls_in(&self) -> u32 {
+    fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
@@ -28,7 +29,11 @@ impl INode for NodeLog {
         Ok(self.next.clone())
     }
 
-    fn get_value(&self, _index: u32, _context: &Simulation) -> anyhow::Result<AnyValue> {
+    fn get_value(&self, _index: i32, _context: &Simulation) -> anyhow::Result<AnyValue> {
         bail!("No value")
+    }
+
+    fn get_type(&self) -> NodeType {
+        NodeType::simple(1)
     }
 }

@@ -679,9 +679,12 @@ message StructureDefinitionData {
       SubType      subType = 2;
 
       oneof val {
+        Id   guidVal  = 12; // GUID 初始值(对齐真实导出:12 { 1: int64 })
         Int    intVal  = 13;
         Enum   booleanVal = 14;
+        Flt  floatVal = 15; // Float 初始值(对齐真实导出:15 { 1: float })
         Str strVal  = 16;
+        Vec3f  vectorVal = 22; // 3D 向量初始值(对齐真实导出:Vector{vec{x,y,z}})
         // TODO: What A mess here! I can't bear anymore!!!!!
         // He who trust himself could take a try.
         // ESPECIALLY MAP/STRUCT BASE
@@ -700,9 +703,12 @@ message StructureDefinitionData {
       SubType      subType = 2;
 
       oneof val {
+        Id   guidVal  = 12; // GUID 初始值(对齐真实导出:12 { 1: int64 })
         Int    intVal  = 13;
         Enum   booleanVal = 14;
+        Flt  floatVal = 15; // Float 初始值(对齐真实导出:15 { 1: float })
         Str strVal  = 16;
+        Vec3f  vectorVal = 22; // 3D 向量初始值(对齐真实导出:Vector{vec{x,y,z}})
         // TODO: What A mess here! I can't bear anymore!!!!!
         // He who trust himself could take a try.
         // ESPECIALLY MAP/STRUCT BASE

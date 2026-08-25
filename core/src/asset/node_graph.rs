@@ -1,15 +1,17 @@
+use super::raw_node_graph::{NodeGraphClass, NodeType, RawLink, RawNode, RawNodeGraph, RawPin};
+use super::value::{AnyValue, Value};
+use crate::asset::generated::pin_signature;
 use crate::asset::node_graph::control::NodeBreak;
 use anyhow::{Context, Result, anyhow, bail};
 use downcast::{Any, downcast};
+use std::collections::HashMap;
 use std::mem;
 
-use super::value::Value;
-
-mod control;
-mod execution;
+pub mod control;
+pub mod execution;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct NodeRef(u32);
+pub struct NodeRef(i32);
 
 impl From<NodeRef> for usize {
     fn from(value: NodeRef) -> usize {
@@ -18,35 +20,38 @@ impl From<NodeRef> for usize {
 }
 
 #[derive(Clone, Copy)]
-pub struct Link(NodeRef, u32);
+pub struct Link(NodeRef, i32);
 
 type ControlOut = Vec<NodeRef>;
 #[derive(Clone)]
-struct ValueIn {
+pub struct ValueIn {
     has_default: bool,
-    default: Box<dyn Value>,
+    default: AnyValue,
     link: Option<Link>,
 }
 impl ValueIn {
-    pub fn new(default: Box<dyn Value>) -> Self {
+    pub fn new(default: AnyValue) -> Self {
         Self {
             has_default: false,
             default,
             link: None,
         }
     }
-    pub fn verify<>(&self, context: &Simulation) -> Result<()> {
-        if let Some(link) = &self.link {
-            if let Some(target) = context.get_node(link.0).get_values_out().get(link.1 as usize) {
-                if target.get_server_type() != self.default.get_server_type() || target.get_client_type() != self.default.get_client_type() {
-                    return Err(anyhow!("type error"));
-                }
-                // TODO
-            }
+    pub fn verify(&self, context: &Simulation) -> Result<()> {
+        if let Some(link) = &self.link
+            && let Some(target) = context
+                .get_node(link.0)
+                .get_values_out()
+                .get(link.1 as usize)
+            && (target.get_server_type() != self.default.get_server_type()
+                || target.get_client_type() != self.default.get_client_type())
+        {
+            return Err(anyhow!("type error"));
         }
+        // TODO
         Ok(())
     }
-    pub fn get(&self, context: &Simulation) -> Result<Box<dyn Value>> {
+    pub fn get(&self, context: &Simulation) -> Result<AnyValue> {
         if let Some(link) = self.link {
             return context.get_value(link);
         }
@@ -59,12 +64,12 @@ impl ValueIn {
 }
 
 #[repr(u32)]
-enum LogType {
+pub enum LogType {
     Event,
     Info,
     Error,
 }
-struct Simulation {
+pub struct Simulation {
     nodes: Vec<Box<dyn INode>>,
     current: Option<NodeRef>,
     logs: Vec<(LogType, String)>,
@@ -85,7 +90,7 @@ impl Simulation {
             };
             struct Using;
             impl INode for Using {
-                fn get_controls_in(&self) -> u32 {
+                fn get_controls_in(&self) -> i32 {
                     0
                 }
                 fn get_controls_out(&self) -> Vec<ControlOut> {
@@ -100,8 +105,11 @@ impl Simulation {
                 fn execute(&mut self, _context: &mut Simulation) -> Result<Vec<NodeRef>> {
                     Err(anyhow!("circular dependency"))
                 }
-                fn get_value(&self, _index: u32, _context: &Simulation) -> Result<Box<dyn Value>> {
+                fn get_value(&self, _index: i32, _context: &Simulation) -> Result<Box<dyn Value>> {
                     Err(anyhow!("circular dependency"))
+                }
+                fn get_type(&self) -> NodeType {
+                    panic!("circular dependency")
                 }
             }
             let mut node = mem::replace(i, Box::new(Using));
@@ -129,14 +137,27 @@ impl Simulation {
                 if flag {
                     if state[now] {
                         return Err(anyhow!("Circular control flow: {:?}", now));
-                    } else if vis[now] || self.get_node(NodeRef(now as u32)).is::<NodeBreak>() {
+                    } else if vis[now] || self.get_node(NodeRef(now as i32)).is::<NodeBreak>() {
                         continue;
                     }
                     vis[now] = true;
                     state[now] = true;
                     stack.push((now, false));
-                    for x in self.get_node(NodeRef(now as u32)).get_controls_out().iter().flat_map(|x| x.iter()) {
+                    for x in self
+                        .get_node(NodeRef(now as i32))
+                        .get_controls_out()
+                        .iter()
+                        .flat_map(|x| x.iter())
+                    {
                         stack.push((usize::from(*x), true));
+                    }
+                    for x in self
+                        .get_node(NodeRef(now as i32))
+                        .get_values_in()
+                        .iter()
+                        .flat_map(|x| x.link)
+                    {
+                        stack.push((usize::from(x.0), true));
                     }
                 } else {
                     state[now] = false;
@@ -153,19 +174,126 @@ impl Simulation {
     }
 }
 
-trait INode: Any {
-    fn get_controls_in(&self) -> u32;
+pub trait INode: Any {
+    fn get_controls_in(&self) -> i32;
     fn get_controls_out(&self) -> Vec<ControlOut>;
 
     fn get_values_in(&self) -> Vec<&ValueIn>;
     fn get_values_out(&self) -> Vec<Box<dyn Value>>;
 
     fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>>;
-    fn get_value(&self, index: u32, context: &Simulation) -> Result<Box<dyn Value>>;
+    fn get_value(&self, index: i32, context: &Simulation) -> Result<AnyValue>;
 
     #[allow(unused_variables)]
     fn verify(&self, context: &Simulation) -> Result<()> {
         Ok(())
     }
+
+    fn get_type(&self) -> NodeType;
 }
 downcast!(dyn INode);
+
+pub struct NodeGraph {
+    class: NodeGraphClass,
+    name: String,
+    nodes: Vec<Box<dyn INode>>,
+}
+impl NodeGraph {
+    pub fn encode(&self) -> RawNodeGraph {
+        let mut pins: Vec<
+            HashMap<(pin_signature::Kind, i32), (Option<(AnyValue, bool)>, Vec<Link>)>,
+        > = vec![HashMap::new(); self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate() {
+            for (j, p) in n.get_values_out().iter().enumerate() {
+                pins[i].insert(
+                    (pin_signature::Kind::OutParam, j as i32),
+                    (Some((p.clone(), false)), Vec::new()),
+                );
+            }
+            for (j, p) in n.get_values_in().iter().enumerate() {
+                pins[i].insert(
+                    (pin_signature::Kind::InParam, j as i32),
+                    (
+                        Some((p.default.clone(), p.has_default)),
+                        if let Some(l) = p.link {
+                            vec![l]
+                        } else {
+                            vec![]
+                        },
+                    ),
+                );
+                if let Some(link) = p.link {
+                    pins[link.0.0 as usize]
+                        .get_mut(&(pin_signature::Kind::OutParam, link.1))
+                        .unwrap()
+                        .1
+                        .push(Link(NodeRef(i as i32), j as i32));
+                }
+            }
+            for j in 0..n.get_controls_in() {
+                pins[i].insert((pin_signature::Kind::InFlow, j), (None, Vec::new()));
+            }
+            for (j, p) in n.get_controls_out().iter().enumerate() {
+                let k = if n.is::<NodeBreak>() { 1 } else { 0 };
+                pins[i].insert(
+                    (pin_signature::Kind::OutFlow, j as i32),
+                    (
+                        None,
+                        p.iter().map(|NodeRef(t)| Link(NodeRef(*t), k)).collect(),
+                    ),
+                );
+                for NodeRef(t) in p {
+                    pins[*t as usize]
+                        .get_mut(&(pin_signature::Kind::InFlow, k))
+                        .unwrap()
+                        .1
+                        .push(Link(NodeRef(i as i32), j as i32));
+                }
+            }
+        }
+        RawNodeGraph {
+            class: self.class,
+            name: self.name.clone(),
+            nodes: pins
+                .into_iter()
+                .enumerate()
+                .map(|(i, pins)| {
+                    RawNode {
+                        ty: self.nodes[i].get_type(),
+                        pos: (0.0, 0.0), // TODO
+                        pins: pins
+                            .into_iter()
+                            .map(|((kind, index), (value, links))| RawPin {
+                                ty: kind,
+                                index,
+                                value,
+                                links: links
+                                    .iter()
+                                    .map(|Link(node, i)| RawLink {
+                                        node: node.0,
+                                        ty: match kind {
+                                            pin_signature::Kind::InFlow => {
+                                                pin_signature::Kind::OutFlow
+                                            }
+                                            pin_signature::Kind::OutFlow => {
+                                                pin_signature::Kind::InFlow
+                                            }
+                                            pin_signature::Kind::InParam => {
+                                                pin_signature::Kind::OutParam
+                                            }
+                                            pin_signature::Kind::OutParam => {
+                                                pin_signature::Kind::InParam
+                                            }
+                                            it => panic!("Unsupported kind {:?}", it), // TODO
+                                        },
+                                        index: *i,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
+        }
+    }
+}

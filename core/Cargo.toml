@@ -3,17 +3,9 @@ name = "rust2genshin"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-#homepage.workspace = true
-#license.workspace = true
-#repository.workspace = true
 
 [lints]
 workspace = true
-
-[profile.release]
-panic = "abort"
-[profile.dev]
-panic = "abort"
 
 [dependencies]
 enum_dispatch = { workspace = true }

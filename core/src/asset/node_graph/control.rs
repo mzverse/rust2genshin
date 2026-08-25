@@ -1,6 +1,7 @@
 use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt};
 use anyhow::{Result, bail};
+use crate::asset::raw_node_graph::NodeType;
 
 pub struct NodeIf {
     condition: ValueIn,
@@ -17,7 +18,7 @@ impl Default for NodeIf {
     }
 }
 impl INode for NodeIf {
-    fn get_controls_in(&self) -> u32 {
+    fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
@@ -41,8 +42,12 @@ impl INode for NodeIf {
         }
     }
 
-    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<AnyValue> {
+    fn get_value(&self, _index: i32, _context: &Simulation) -> Result<AnyValue> {
         bail!("No value")
+    }
+
+    fn get_type(&self) -> NodeType {
+        NodeType::simple(2)
     }
 }
 
@@ -56,7 +61,7 @@ pub struct NodeForClosed {
     break_tag: bool,
 }
 impl INode for NodeForClosed {
-    fn get_controls_in(&self) -> u32 {
+    fn get_controls_in(&self) -> i32 {
         2
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
@@ -98,11 +103,15 @@ impl INode for NodeForClosed {
         }
     }
 
-    fn get_value(&self, index: u32, _context: &Simulation) -> Result<AnyValue> {
+    fn get_value(&self, index: i32, _context: &Simulation) -> Result<AnyValue> {
         match index {
             0 => Ok(ValueInt(self.state.map(|it| it - 1).unwrap_or(0)).into()),
             _ => bail!("No value"),
         }
+    }
+
+    fn get_type(&self) -> NodeType {
+        NodeType::simple(5)
     }
 }
 
@@ -110,7 +119,7 @@ pub struct NodeBreak {
     cycle: ControlOut,
 }
 impl INode for NodeBreak {
-    fn get_controls_in(&self) -> u32 {
+    fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
@@ -135,7 +144,7 @@ impl INode for NodeBreak {
         Ok(vec![])
     }
 
-    fn get_value(&self, _index: u32, _context: &Simulation) -> Result<AnyValue> {
+    fn get_value(&self, _index: i32, _context: &Simulation) -> Result<AnyValue> {
         bail!("No value")
     }
 
@@ -147,5 +156,9 @@ impl INode for NodeBreak {
             }
         }
         Ok(())
+    }
+
+    fn get_type(&self) -> NodeType {
+        NodeType::simple(6)
     }
 }
