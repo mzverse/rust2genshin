@@ -1,9 +1,5 @@
 #![no_std]
 
-use proc_macro::TokenStream;
+extern crate alloc;
 
-#[proc_macro_attribute]
-pub fn entry(_args: TokenStream, input: TokenStream) -> TokenStream {
-    todo!();
-    input
-}
+pub use alloc::boxed::Box;

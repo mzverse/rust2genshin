@@ -1,13 +1,10 @@
 [package]
-name = "rust2genshin-lib"
+name = "build-demo"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
-[lib]
-
 [dependencies]
-rust2genshin-lib-internal = { path = "../lib-internal" }
 
 [lints]
 workspace = true

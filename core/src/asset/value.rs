@@ -14,9 +14,10 @@ impl<T: Value> From<T> for AnyValue {
         Box::new(value)
     }
 }
-pub trait Value: Any {
+pub trait CloneValue {
     fn clone(&self) -> AnyValue;
-
+}
+pub trait Value: Any + CloneValue {
     fn encode(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
             widget: self.get_widget_type() as i32,
@@ -51,17 +52,27 @@ pub trait Value: Any {
 }
 impl Clone for AnyValue {
     fn clone(&self) -> Self {
-        Value::clone(self.as_ref())
+        CloneValue::clone(self.as_ref())
     }
 }
 downcast!(dyn Value);
 
-pub trait DefaultValue: Default + Value {
+pub trait ValueDefault: Value + Default {
     fn def() -> Box<Self> {
         Self::default().into()
     }
 }
-impl<T: Default + Value> DefaultValue for T {
+impl<T: Default + Value> ValueDefault for T {
+}
+
+trait ValueClone: Value + Clone {
+}
+impl<T: Value + Clone> ValueClone for T {
+}
+impl<T: ValueClone> CloneValue for T {
+    fn clone(&self) -> AnyValue {
+        Clone::clone(self).into()
+    }
 }
 
 #[derive(Clone)]
@@ -72,9 +83,6 @@ impl Default for ValueBool {
     }
 }
 impl Value for ValueBool {
-    fn clone(&self) -> AnyValue {
-        Box::new(Clone::clone(self))
-    }
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SBoolean
     }
@@ -91,9 +99,6 @@ impl Default for ValueInt {
     }
 }
 impl Value for ValueInt {
-    fn clone(&self) -> AnyValue {
-        Box::new(Clone::clone(self))
-    }
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SInt
     }
@@ -110,9 +115,6 @@ impl Default for ValueString {
     }
 }
 impl Value for ValueString {
-    fn clone(&self) -> AnyValue {
-        Box::new(Clone::clone(self))
-    }
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SString
     }

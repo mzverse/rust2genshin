@@ -1,7 +1,9 @@
 [workspace]
-members = [
+members = ["build-demo",
     "core",
-    "demo", "lib",
+    "demo",
+    "lib",
+    "lib-internal",
 ]
 resolver = "2"
 
@@ -16,3 +18,4 @@ downcast = "0"
 anyhow = "1"
 
 [workspace.lints.rust]
+unused = "allow"

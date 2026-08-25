@@ -25,7 +25,6 @@ use clap::Parser;
 use rustc_driver::{Callbacks, Compilation};
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
-use toml::{Table, Value};
 
 // ---------- CLI ----------
 
@@ -38,7 +37,7 @@ struct Args {
     #[arg(long)]
     no_cargo: bool,
     /// 打印更详细的信息(函数参数、结构体字段、枚举变体等)
-    #[arg(long)]
+    #[arg(short, long)]
     verbose: bool,
 }
 
@@ -66,7 +65,9 @@ struct ProjectInfo {
     source_path: PathBuf,
 }
 
-/// 从项目路径(或单个 .rs 文件)解析出入口信息
+/// 解析出入口信息:
+/// - 单个 .rs 文件:直接从文件名推 crate 名(没有 Cargo.toml,cargo 无从下手);
+/// - 项目目录:全部交给 `cargo metadata`(包名、edition、入口文件一次拿全)。
 fn load_project_info(path: &Path) -> Result<ProjectInfo, Box<dyn Error>> {
     if path.is_file() {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lib.rs");
@@ -85,52 +86,72 @@ fn load_project_info(path: &Path) -> Result<ProjectInfo, Box<dyn Error>> {
         return Err(format!("path does not exist: {}", path.display()).into());
     }
 
-    // 默认值:目录名作包名、2021 edition、src/lib.rs 作入口
-    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("crate");
-    let mut package_name = dir_name.to_string();
-    let mut crate_name = dir_name.replace('-', "_");
-    let mut edition = "2021".to_string();
-    let mut lib_path = "src/lib.rs".to_string();
+    load_from_cargo_metadata(path).map_err(|e| e.into())
+}
 
-    let cargo_path = path.join("Cargo.toml");
-    if cargo_path.is_file() {
-        let config: Table = toml::from_str(&std::fs::read_to_string(&cargo_path)?)?;
-        if let Some(pkg) = config.get("package").and_then(Value::as_table) {
-            if let Some(Value::String(name)) = pkg.get("name") {
-                package_name = name.clone();
-                crate_name = name.replace('-', "_");
-            }
-            if let Some(Value::String(ed)) = pkg.get("edition") {
-                edition = ed.clone();
-            }
-        }
-        if let Some(lib) = config.get("lib").and_then(Value::as_table) {
-            if let Some(Value::String(p)) = lib.get("path") {
-                lib_path = p.clone();
-            }
-            if let Some(Value::String(name)) = lib.get("name") {
-                crate_name = name.replace('-', "_");
-            }
-        }
-        if !matches!(edition.as_str(), "2015" | "2018" | "2021" | "2024") {
-            edition = "2021".to_string();
-        }
+/// 用 `cargo metadata` 一次性拿包名、edition、入口文件。目标项目嵌套在别的
+/// workspace 里且没有 `[workspace]` 表时 cargo 会拒绝执行,错误信息原样透传。
+fn load_from_cargo_metadata(project: &Path) -> Result<ProjectInfo, String> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(project)
+        .output()
+        .map_err(|e| format!("cannot run `cargo metadata`: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`cargo metadata` failed:\n{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
-
-    let src = path.join(&lib_path);
-    if src.is_file() {
-        return Ok(ProjectInfo { package_name, crate_name, edition, crate_type: "lib".into(), source_path: src });
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("cannot parse `cargo metadata` output: {e}"))?;
+    let manifest = project.join("Cargo.toml");
+    let manifest = manifest
+        .canonicalize()
+        .map_err(|_| format!("cannot find Cargo.toml under {}", project.display()))?;
+    // workspace 成员可能有多个包,按 manifest 路径匹配目标项目
+    let pkg = v["packages"]
+        .as_array()
+        .and_then(|pkgs| {
+            pkgs.iter().find(|p| {
+                p["manifest_path"]
+                    .as_str()
+                    .map(Path::new)
+                    .and_then(|p| p.canonicalize().ok())
+                    == Some(manifest.clone())
+            })
+        })
+        .ok_or_else(|| {
+            format!("no package with manifest {} found in `cargo metadata` output", manifest.display())
+        })?;
+    let name = pkg["name"].as_str().ok_or("package has no `name`")?.to_string();
+    let edition = pkg["edition"].as_str().unwrap_or("2021").to_string();
+    let targets = pkg["targets"].as_array().ok_or("package has no targets")?;
+    let is_kind = |t: &serde_json::Value, k: &str| {
+        t["kind"].as_array().is_some_and(|kinds| kinds.iter().any(|x| x.as_str() == Some(k)))
+    };
+    let (target, crate_type) = match targets.iter().find(|t| is_kind(t, "lib")) {
+        Some(t) => (t, "lib"),
+        None => (targets.iter().find(|t| is_kind(t, "bin")).ok_or("no lib or bin target")?, "bin"),
+    };
+    let source_path = PathBuf::from(target["src_path"].as_str().ok_or("target has no src_path")?);
+    if !source_path.is_file() {
+        return Err(format!("entry file does not exist: {}", source_path.display()));
     }
-    let main = path.join("src/main.rs");
-    if main.is_file() {
-        return Ok(ProjectInfo { package_name, crate_name, edition, crate_type: "bin".into(), source_path: main });
-    }
-    Err(format!(
-        "cannot find a Rust lib entry (expected `{}`) or `src/main.rs` under {}",
-        src.display(),
-        path.display()
-    )
-    .into())
+    // metadata 给的是绝对路径;rustc 会把 cwd 下的绝对路径相对化显示成
+    // `.\...`,而相对路径会按绝对路径显示——转回相对形式,保持 span 显示
+    // 与直接传路径参数时一致
+    let source_path = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| source_path.strip_prefix(&cwd).ok().map(|r| r.to_path_buf()))
+        .unwrap_or(source_path);
+    Ok(ProjectInfo {
+        package_name: name.clone(),
+        crate_name: name.replace('-', "_"),
+        edition,
+        crate_type: crate_type.to_string(),
+        source_path,
+    })
 }
 
 // ---------- 依赖收集(cargo check) ----------

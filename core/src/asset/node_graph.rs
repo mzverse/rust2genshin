@@ -163,6 +163,7 @@ trait INode: Any {
     fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>>;
     fn get_value(&self, index: u32, context: &Simulation) -> Result<Box<dyn Value>>;
 
+    #[allow(unused_variables)]
     fn verify(&self, context: &Simulation) -> Result<()> {
         Ok(())
     }

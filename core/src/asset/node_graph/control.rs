@@ -1,5 +1,5 @@
 use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
-use crate::asset::value::{AnyValue, DefaultValue, ValueBool, ValueInt};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt};
 use anyhow::{Result, bail};
 
 pub struct NodeIf {
