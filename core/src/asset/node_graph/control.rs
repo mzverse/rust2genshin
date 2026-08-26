@@ -1,5 +1,5 @@
 use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt, ValueIntList};
 use anyhow::{Result, bail};
 use crate::asset::raw_node_graph::NodeType;
 
@@ -160,5 +160,79 @@ impl INode for NodeBreak {
 
     fn get_type(&self) -> NodeType {
         NodeType::simple(6)
+    }
+}
+
+/// 多分支选择(Control.General.Switch,ID 3)
+///
+/// `key` 匹配 `cases` 列表中的某一项,跳转到对应的 `case_branches` 分支;
+/// 无匹配时走 `default_branch`。分支数量随 cases 动态变化,不做穷举。
+pub struct NodeSwitch {
+    /// 匹配键(Int 或 Str)
+    key: ValueIn,
+    /// 候选值列表(与 case_branches 一一对应)
+    cases: ValueIn,
+    /// 默认分支(无匹配时)
+    default_branch: ControlOut,
+    /// 各 case 分支(数量与 cases 动态对应)
+    case_branches: Vec<ControlOut>,
+}
+impl Default for NodeSwitch {
+    fn default() -> Self {
+        Self {
+            key: ValueIn::new(ValueInt::def()),
+            cases: ValueIn::new(ValueIntList::def()),
+            default_branch: vec![],
+            case_branches: vec![],
+        }
+    }
+}
+impl NodeSwitch {
+    /// 设置默认分支(无匹配时)
+    pub fn set_default(&mut self, branch: ControlOut) {
+        self.default_branch = branch;
+    }
+    /// 添加一个 case 分支(与 cases 列表中的一项对应)
+    pub fn add_case(&mut self, branch: ControlOut) {
+        self.case_branches.push(branch);
+    }
+}
+impl INode for NodeSwitch {
+    fn get_controls_in(&self) -> i32 {
+        1
+    }
+    fn get_controls_out(&self) -> Vec<ControlOut> {
+        let mut v = vec![self.default_branch.clone()];
+        v.extend(self.case_branches.iter().cloned());
+        v
+    }
+    fn get_values_in(&self) -> Vec<&ValueIn> {
+        vec![&self.key, &self.cases]
+    }
+    fn get_values_out(&self) -> Vec<AnyValue> {
+        vec![]
+    }
+
+    fn execute(&mut self, context: &mut Simulation) -> Result<Vec<NodeRef>> {
+        let Ok(key) = self.key.get(context)?.downcast::<ValueInt>() else {
+            bail!("Switch key must be Int")
+        };
+        let cases = self.cases.get(context)?;
+        if let Ok(list) = cases.downcast::<ValueIntList>() {
+            if let Some(i) = list.0.iter().position(|&x| x == key.0) {
+                if let Some(branch) = self.case_branches.get(i) {
+                    return Ok(branch.clone());
+                }
+            }
+        }
+        Ok(self.default_branch.clone())
+    }
+
+    fn get_value(&self, _index: i32, _context: &Simulation) -> Result<AnyValue> {
+        bail!("No value")
+    }
+
+    fn get_type(&self) -> NodeType {
+        NodeType::simple(3)
     }
 }

@@ -112,6 +112,7 @@ fn kind_name(kind: &hir::ItemKind<'_>) -> &'static str {
         hir::ItemKind::Trait { .. } => "trait",
         hir::ItemKind::TraitAlias(..) => "trait_alias",
         hir::ItemKind::Impl(..) => "impl",
+        hir::ItemKind::TestBinderConstraints { .. } => "test_binder_constraints", // 新 nightly 新增
     }
 }
 

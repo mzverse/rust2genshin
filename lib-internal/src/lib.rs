@@ -3,7 +3,6 @@
 use proc_macro::TokenStream;
 
 #[proc_macro_attribute]
-pub fn entry(_args: TokenStream, input: TokenStream) -> TokenStream {
-    todo!();
+pub fn event_listener(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }

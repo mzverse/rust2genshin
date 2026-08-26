@@ -7,8 +7,13 @@ use downcast::{Any, downcast};
 use std::collections::HashMap;
 use std::mem;
 
+pub mod arithmetic;
+pub mod client;
 pub mod control;
 pub mod execution;
+pub mod hidden;
+pub mod query;
+pub mod trigger;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeRef(i32);
@@ -295,5 +300,59 @@ impl NodeGraph {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asset::node_graph::arithmetic::{NodeAdd, NodeVectorAdd};
+    use crate::asset::node_graph::control::NodeSwitch;
+    use crate::asset::raw_node_graph::NodeGraphClass;
+
+    /// 生成节点的引脚签名与 GIA 文档一致(样本:Switch / Vector_Add / Add)
+    #[test]
+    fn generated_nodes_pin_signatures() {
+        // Control.General.Switch (ID 3):1 flow in,key+cases 值入;分支动态
+        let mut sw = NodeSwitch::default();
+        assert_eq!(sw.get_controls_in(), 1);
+        assert_eq!(sw.get_controls_out().len(), 1); // 只有 default
+        assert_eq!(sw.get_values_in().len(), 2);
+        sw.add_case(vec![]);
+        sw.add_case(vec![]);
+        assert_eq!(sw.get_controls_out().len(), 3); // default + 2 case
+
+        // Arithmetic.Math.Vector_Add (ID 10):纯值节点,a+b Vec → Vec
+        let va = NodeVectorAdd::default();
+        assert_eq!(va.get_controls_in(), 0);
+        assert_eq!(va.get_controls_out().len(), 0);
+        assert_eq!(va.get_values_in().len(), 2);
+        assert_eq!(va.get_values_out().len(), 1);
+        assert!(matches!(
+            va.get_values_out()[0].get_server_type(),
+            crate::asset::generated::ServerTypeId::SVector
+        ));
+
+        // Arithmetic.Math.Add (ID 200):泛型变体,兜底 Int
+        let add = NodeAdd::default();
+        assert_eq!(add.get_values_in().len(), 2);
+        assert_eq!(add.get_values_out().len(), 1);
+    }
+
+    /// 生成节点能进入 NodeGraph 并编码为 RawNodeGraph
+    #[test]
+    fn generated_nodes_encode() {
+        let mut sw = NodeSwitch::default();
+        sw.add_case(vec![NodeRef(0)]);
+        let mut g = NodeGraph {
+            class: NodeGraphClass::Entity,
+            name: "gen".to_string(),
+            nodes: vec![Box::new(sw), Box::new(NodeVectorAdd::default())],
+        };
+        let raw = g.encode();
+        assert_eq!(raw.nodes.len(), 2);
+        // Switch:1 InFlow + 2 InParam + 1 Default + 1 Case = 5 pins;Vector_Add:2 InParam + 1 OutParam
+        assert_eq!(raw.nodes[0].pins.len(), 5);
+        assert_eq!(raw.nodes[1].pins.len(), 3);
     }
 }
