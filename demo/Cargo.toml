@@ -2,6 +2,7 @@
 name = "rust2genshin-demo"
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 #homepage.workspace = true
 #license.workspace = true
 #repository.workspace = true
@@ -11,4 +12,4 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-rust2genshin-lib = { path = "../lib" }
+rust2genshin-lib = { workspace = true }

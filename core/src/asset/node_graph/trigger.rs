@@ -3,7 +3,7 @@
 //! 事件触发器:无 flow 输入,1 个 flow 输出(事件发生时触发),值输出为事件参数。
 //! 人工设计,`trigger_node!` 宏消除样板;execute/get_value 仅模拟(todo!())。
 
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum,
@@ -14,10 +14,10 @@ use anyhow::Result;
 
 macro_rules! trigger_node {
     ($name:ident, $id:expr, $nm:literal, [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 0 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))

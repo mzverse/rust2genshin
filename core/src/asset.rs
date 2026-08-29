@@ -2,89 +2,80 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/rust2genshin.rs"));
 }
 
-pub mod composite;
 pub mod raw_node_graph;
 pub mod node_graph;
 pub mod value;
 
-use enum_dispatch::enum_dispatch;
 use generated::*;
 use prost::Message;
-use composite::CompositeNode;
-use raw_node_graph::{RawNodeGraph, StructureDefinition};
 use std::fs::File;
 use std::io::Write;
+use std::ops::Sub;
 use std::path::Path;
+use slab::Slab;
 
-#[enum_dispatch]
-pub enum Asset {
-    RawNodeGraph,
-    StructureDefinition,
-    CompositeNode,
+pub trait Asset: 'static {
+    fn encode(&self, id: i64) -> Vec<AssetData>;
 }
-
-#[enum_dispatch(Asset)]
-pub trait IAsset {
-    fn encode(&self, id: i64) -> AssetData;
+impl<T: Asset> From<T> for Box<dyn Asset> {
+    fn from(value: T) -> Self {
+        Box::new(value)
+    }
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
 pub enum FileType {
-    Project = 1,
-    Level = 2,
+    Project = 1, // .gip
+    Level = 2, // 
     AssetBundle = 3, // .gia
     Runtime = 4, //
 }
-pub enum GameMode {
-    Overlimit,
-    Classic,
-}
+pub use asset_bundle_data::Mode as GameMode;
 pub struct AssetBundle {
-    mode: GameMode,
-    assets: Vec<Asset>,
-    display: Vec<usize>,
+    pub(crate) mode: GameMode,
+    pub(crate) assets: Slab<Box<dyn Asset>>,
+    pub(crate) display: Vec<i64>,
 }
 
-const ENGINE_VERSION: &str = "6.3.0";
+const ENGINE_VERSION: &str = "7.0.0";
 
 impl AssetBundle {
-    pub fn new(mode: GameMode, assets: Vec<Asset>, display: Vec<usize>) -> Self {
-        Self { mode, assets, display }
+    pub const ID_BEGIN: i64 = 0x40000000;
+
+    pub fn new(mode: GameMode) -> Self {
+        let assets = Slab::new();
+        Self {
+            mode,
+            assets,
+            display: Vec::new(),
+        }
+    }
+
+    pub fn insert(&mut self, asset: Box<dyn Asset>) -> i64 {
+        Self::ID_BEGIN + self.assets.insert(asset) as i64
+    }
+
+    pub fn remove(&mut self, id: i64) -> Box<dyn Asset> {
+        self.assets.remove(id.sub(Self::ID_BEGIN) as usize)
     }
 
     pub fn encode(&self) -> AssetBundleData {
-        // asset_guid 分配(对齐真实导出 export.gia 的 ID 空间):
-        //   主入口资源(display 下标)→ 结构体 ID 空间 0x40400001 起
-        //   依赖资源 → 节点声明 ID 空间 0x60000001 起
-        // 注:真实 ID 分配器在游戏侧是全局自增的;此处为占位策略,可后续替换。
-        const PRIMARY_GUID_BASE: i64 = 0x4040_0001;
-        const DEP_GUID_BASE: i64 = 0x6000_0001;
-        let mut assets = Vec::new();
+        let mut primary = Vec::new();
         let mut dependencies = Vec::new();
-        for (i, asset) in self.assets.iter().enumerate() {
-            let is_primary = self.display.contains(&i);
-            let guid = if is_primary {
-                PRIMARY_GUID_BASE + i as i64
+        for (i, asset) in &self.assets {
+            let data = asset.encode(Self::ID_BEGIN + i as i64);
+            if self.display.contains(&(Self::ID_BEGIN + i as i64)) {
+                primary.extend(data);
             } else {
-                DEP_GUID_BASE + i as i64
-            };
-            let data = asset.encode(guid);
-            if is_primary {
-                assets.push(data);
-            } else {
-                dependencies.push(data);
+                dependencies.extend(data);
             }
         }
         AssetBundleData {
-            assets,
+            assets: primary,
             dependencies,
-            // export_tag 格式参考真实导出:{UID}-{TIME}-{FILE_ID}-\{EXPORT_FILE_NAME}.gia
-            export_info: "0-0-0-\\rust2genshin.gia".to_string(), // TODO: 传真实文件名
-            mode: match self.mode {
-                GameMode::Overlimit => asset_bundle_data::Mode::Overlimit,
-                GameMode::Classic => asset_bundle_data::Mode::Classic,
-            } as i32,
+            export_info: "by mz".to_string(),
+            mode: self.mode as i32,
             engine_version: ENGINE_VERSION.to_string(),
         }
     }

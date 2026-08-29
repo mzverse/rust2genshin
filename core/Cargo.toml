@@ -3,17 +3,24 @@ name = "rust2genshin"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rust2genshin"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
 
 [lints]
 workspace = true
 
 [dependencies]
-enum_dispatch = { workspace = true }
 downcast = { workspace = true }
 anyhow = { workspace = true }
-clap = { version = "4", features = ["derive"] }
 prost = "0"
-serde_json = "1"
+syn = "3"
+proc-macro2 = "1"
+id-pool = "0"
+slab = "0"
 
 [build-dependencies]
 prost-build = "0"

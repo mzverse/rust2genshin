@@ -1,12 +1,12 @@
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt, ValueIntList};
 use anyhow::{Result, bail};
 use crate::asset::raw_node_graph::NodeType;
 
 pub struct NodeIf {
-    condition: ValueIn,
-    branch_true: ControlOut,
-    branch_false: ControlOut,
+    pub condition: ValueIn,
+    pub branch_true: ControlOut,
+    pub branch_false: ControlOut,
 }
 impl Default for NodeIf {
     fn default() -> Self {
@@ -17,15 +17,15 @@ impl Default for NodeIf {
         }
     }
 }
-impl INode for NodeIf {
+impl Node for NodeIf {
     fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.branch_true.clone(), self.branch_false.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.condition]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.condition.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -49,6 +49,10 @@ impl INode for NodeIf {
     fn get_type(&self) -> NodeType {
         NodeType::simple(2)
     }
+
+    fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
+        vec![&mut self.branch_true, &mut self.branch_false]
+    }
 }
 
 pub struct NodeForClosed {
@@ -60,15 +64,15 @@ pub struct NodeForClosed {
     state_end: i32,
     break_tag: bool,
 }
-impl INode for NodeForClosed {
+impl Node for NodeForClosed {
     fn get_controls_in(&self) -> i32 {
         2
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.body.clone(), self.next.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.begin, &self.end]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.begin.clone(), self.end.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()] // current
@@ -118,14 +122,14 @@ impl INode for NodeForClosed {
 pub struct NodeBreak {
     cycle: ControlOut,
 }
-impl INode for NodeBreak {
+impl Node for NodeBreak {
     fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.cycle.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -197,7 +201,7 @@ impl NodeSwitch {
         self.case_branches.push(branch);
     }
 }
-impl INode for NodeSwitch {
+impl Node for NodeSwitch {
     fn get_controls_in(&self) -> i32 {
         1
     }
@@ -206,8 +210,8 @@ impl INode for NodeSwitch {
         v.extend(self.case_branches.iter().cloned());
         v
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.key, &self.cases]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.key.clone(), self.cases.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]

@@ -4,7 +4,7 @@
 //! 命名统一 `NodeClient` + 尾段,避免与 Server 节点冲突。
 //! execute/get_value 仅模拟(todo!())。
 
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList,
@@ -15,10 +15,10 @@ use anyhow::Result;
 
 macro_rules! value_node {
     ($name:ident, $id:expr, $nm:literal, [$($vin:ident),*], [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 0 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![$( &self.$vin ),*] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![$( self.$vin.clone() ),*] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))
@@ -33,10 +33,10 @@ macro_rules! value_node {
 
 macro_rules! flow_node {
     ($name:ident, $id:expr, $nm:literal, [$($vin:ident),*], [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 1 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![$( &self.$vin ),*] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![$( self.$vin.clone() ),*] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))
@@ -1786,14 +1786,14 @@ impl Default for NodeClientGraphStart {
         Self { next: vec![] }
     }
 }
-impl INode for NodeClientGraphStart {
+impl Node for NodeClientGraphStart {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.next.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -1823,15 +1823,15 @@ impl Default for NodeClientGraphEnd {
         }
     }
 }
-impl INode for NodeClientGraphEnd {
+impl Node for NodeClientGraphEnd {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.filter]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.filter.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -1868,15 +1868,15 @@ impl Default for NodeClientTestSendSignal {
         }
     }
 }
-impl INode for NodeClientTestSendSignal {
+impl Node for NodeClientTestSendSignal {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.event, &self.entity, &self.entities, &self.count, &self.ints, &self.flag]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.event.clone(), self.entity.clone(), self.entities.clone(), self.count.clone(), self.ints.clone(), self.flag.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -1925,15 +1925,15 @@ impl NodeClientAssembleList {
         self.items.push(item);
     }
 }
-impl INode for NodeClientAssembleList {
+impl Node for NodeClientAssembleList {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        self.items.iter().collect()
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        self.items.clone()
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -1964,15 +1964,15 @@ impl Default for NodeClientForEachEntity {
         }
     }
 }
-impl INode for NodeClientForEachEntity {
+impl Node for NodeClientForEachEntity {
     fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.body.clone(), self.done.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entities]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entities.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -2003,15 +2003,15 @@ impl Default for NodeClientBranch {
         }
     }
 }
-impl INode for NodeClientBranch {
+impl Node for NodeClientBranch {
     fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.branch_true.clone(), self.branch_false.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.condition]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.condition.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -2044,15 +2044,15 @@ impl Default for NodeClientForLoop {
         }
     }
 }
-impl INode for NodeClientForLoop {
+impl Node for NodeClientForLoop {
     fn get_controls_in(&self) -> i32 {
         2
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.body.clone(), self.done.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.begin, &self.end]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.begin.clone(), self.end.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2088,10 +2088,10 @@ impl Default for NodeClientGraphEndInt {
         Self { value: ValueIn::new(ValueInt::def()) }
     }
 }
-impl INode for NodeClientGraphEndInt {
+impl Node for NodeClientGraphEndInt {
     fn get_controls_in(&self) -> i32 { 0 }
     fn get_controls_out(&self) -> Vec<ControlOut> { vec![] }
-    fn get_values_in(&self) -> Vec<&ValueIn> { vec![&self.value] }
+    fn get_values_in(&self) -> Vec<ValueIn> { vec![self.value.clone()] }
     fn get_values_out(&self) -> Vec<AnyValue> { vec![] }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 200122 Graph_End_Int execute")

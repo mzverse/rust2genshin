@@ -1,7 +1,14 @@
-use crate::asset::IAsset;
+//! 节点图模型:节点标识、引脚、黑板变量、结构体定义。
+//!
+//! 分层设计:NodeGraph(深度封装,INode 节点,连线单向)→ RawNodeGraph(proto 的
+//! 简单封装,包含全部信息)→ proto。`RawNodeGraph::encode` 把图编码为资产。
+
+use std::collections::HashMap;
+use crate::asset::Asset;
 use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
+use crate::asset::generated::type_definition::server_type::Schema;
 use crate::asset::value::{
     AnyValue, Side, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueVector,
 };
@@ -11,15 +18,25 @@ pub enum NodeGraphClass {
     Entity,
 }
 
+/// 节点图(proto `NodeGraphData` 的简单封装,信息完整)。
+/// 由 `NodeGraph`(深度封装)encode 生成;`IAsset::encode` 再编码为资产。
 pub struct RawNodeGraph {
     pub(super) class: NodeGraphClass,
     pub(super) name: String,
-    pub(super) nodes: Vec<RawNode>,
+    pub(super) nodes: HashMap<i32, RawNode>,
+    /// 节点图变量(黑板变量)
+    pub(super) blackboard: Vec<GraphVariable>,
+    /// 资产级引用(对齐参考:主图 reference → 用到的复合节点资产)
+    pub(super) references: Vec<Identifier>,
+    /// 内部图:外部(复合接口)引脚 → 内部节点的穿透映射
+    pub(super) port_mapping: Vec<crate::asset::generated::InterfaceMapping>,
+    /// 图标识 kind:普通图 = CUSTOM_GRAPH(21001);复合内部图 = COMPOSITE_GRAPH(21002)
+    pub(super) graph_kind: identifier::AssetKind,
 }
 
-impl IAsset for RawNodeGraph {
-    fn encode(&self, id: i64) -> AssetData {
-        AssetData {
+impl Asset for RawNodeGraph {
+    fn encode(&self, id: i64) -> Vec<AssetData> {
+        vec![AssetData {
             id: Some(Identifier {
                 source: 0,
                 category: identifier::Category::ServerNodeGraph as i32,
@@ -27,7 +44,7 @@ impl IAsset for RawNodeGraph {
                 guid: id,
                 runtime_id: 0,
             }),
-            reference: vec![],
+            reference: self.references.clone(),
             name: self.name.clone(),
             r#type: match self.class {
                 NodeGraphClass::Entity => asset_data::Type::EntityNodeGraph,
@@ -38,28 +55,29 @@ impl IAsset for RawNodeGraph {
                         id: Some(Identifier {
                             source: identifier::Source::UserDefined as i32,
                             category: identifier::Category::ServerBasic as i32,
-                            kind: identifier::AssetKind::CustomGraph as i32,
-                            guid: id,
-                            runtime_id: 0,
+                            kind: self.graph_kind as i32,
+                            guid: 0,
+                            runtime_id: id,
                         }),
                         display_name: self.name.clone(),
-                        node: self.nodes.iter().enumerate().map(|(i, n)| n.encode(i as i32, Side::Server /* TODO */)).collect(),
-                        port_mapping: vec![],
+                        // 节点 index 从 1 开始(参考 export.gia:node[0].index=1)
+                        node: self.nodes.iter().map(|(i, n)| n.encode((i + 1) as i32, Side::Server /* TODO */)).collect(),
+                        port_mapping: self.port_mapping.clone(),
                         comment: vec![],
-                        blackboard: vec![],
+                        blackboard: self.blackboard.iter().map(|v| v.encode(Side::Server)).collect(),
                         entry_slot_index: None,
                         evaluation_interval: None,
                     }),
                 }),
             })),
-        }
+        }]
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct NodeType {
-    shell: Identifier,
-    kernel: Identifier,
+    pub(super) shell: Identifier,
+    pub(super) kernel: Identifier,
 }
 impl NodeType {
     pub fn id_simple(value: i64) -> Identifier {
@@ -77,7 +95,27 @@ impl NodeType {
             kernel: Self::id_simple(id),
         }
     }
+
+    /// 泛型节点特化:shell 固定、kernel 随类型变化
+    /// (如 Add:Int 特化 kernel=200、Flt 特化 kernel=201,shell 恒为 200)
+    pub fn variant(shell: i64, kernel: i64) -> Self {
+        Self {
+            shell: Self::id_simple(shell),
+            kernel: Self::id_simple(kernel),
+        }
+    }
+
+    /// 是否引用复合节点(GeneratedStub)
+    pub fn is_composite(&self) -> bool {
+        self.shell.kind == identifier::AssetKind::GeneratedStub as i32
+    }
+
+    /// 节点运行时 id(复合节点 = 复合资产 id;系统节点 = 系统内置 id)
+    pub fn runtime_id(&self) -> i64 {
+        self.shell.runtime_id
+    }
 }
+/// 图中的节点实例(proto `NodeInstance` 的简单封装)
 pub struct RawNode {
     pub(super) ty: NodeType,
     pub(super) pos: (f32, f32),
@@ -100,18 +138,27 @@ impl RawNode {
     }
 }
 
+#[derive(Clone)]
 pub struct RawPin {
-    pub(super) ty: pin_signature::Kind,
-    pub(super) index: i32,
-    pub(super) value: Option<(AnyValue, bool)>,
-    pub(super) links: Vec<RawLink>,
+    pub(crate) ty: pin_signature::Kind,
+    pub(crate) index: i32,
+    pub(crate) value: Option<(AnyValue, bool)>,
+    pub(crate) links: Vec<RawLink>,
+    /// 持久化引脚 ID(复合节点引脚的锚点;参考导出主图复合节点 OUT_FLOW uid=2)
+    pub(crate) uid: Option<i32>,
 }
+#[derive(Clone)]
 pub struct RawLink {
-    pub(super) node: i32,
-    pub(super) ty: pin_signature::Kind,
-    pub(super) index: i32,
+    pub(crate) node: i32,
+    pub(crate) ty: pin_signature::Kind,
+    pub(crate) index: i32,
 }
 impl RawPin {
+    /// 空引脚(无默认值/无连线/无 uid/无类型),字段可随后直接赋值
+    pub fn new(ty: pin_signature::Kind, index: i32) -> Self {
+        Self { ty, index, value: None, links: vec![], uid: None }
+    }
+
     pub fn encode(&self, side: Side) -> PinData {
         fn signature(ty: pin_signature::Kind, index: i32) -> PinSignature {
             PinSignature {
@@ -125,6 +172,7 @@ impl RawPin {
             shell_sig: Some(sig),
             kernel_sig: Some(sig),
             value: self.value.as_ref().map(|(v, t)| v.encode(*t, side)),
+            // 优先显式类型,否则从挂载值推导
             r#type: self.value.as_ref().map(|(v, _)| v.get_type_id(side)),
             connection: self.links.iter().map(|it| {
                 let sig = signature(it.ty, it.index);
@@ -135,8 +183,65 @@ impl RawPin {
                 }
             }).collect(),
             binding_meta: None,
-            persistent_pin_uid: None,
+            persistent_pin_uid: self.uid,
         }
+    }
+}
+
+// ========================================================================
+// 节点图变量(黑板变量)
+//
+// 对标 GIA 工具集的 `GraphVariable`(make_graph_variable):
+//   NodeGraphData.blackboard[] = GraphVariable
+//     { var_name, base_type, storage_value: TypedValue, is_public,
+//       schema_ref_id?, container_key_type, container_value_type }
+// 全局变量被 Execution/Query/Trigger 的 Set/Get/OnChange GraphVariable
+// 节点引用(见 game_nodes.ts 的 CustomVariable 域)。
+// ========================================================================
+
+/// 节点图变量(黑板变量)
+#[derive(Clone)]
+pub struct GraphVariable {
+    pub name: String,
+    /// 变量值(类型由 AnyValue 自身携带,不另存 type id)
+    pub value: AnyValue,
+    /// 是否已设置(is_set:0=空值, 1=已设置)
+    pub is_set: bool,
+    /// 是否暴露为外部可配置参数
+    pub is_public: bool,
+}
+
+impl GraphVariable {
+    pub fn new(name: impl Into<String>, value: AnyValue) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            is_set: true,
+            is_public: false,
+        }
+    }
+
+    fn encode(&self, side: Side) -> crate::asset::generated::GraphVariable {
+        let mut result = crate::asset::generated::GraphVariable {
+            var_name: self.name.clone(),
+            base_type: self.value.get_server_type() as i32,
+            storage_value: Some(self.value.encode(self.is_set, side)),
+            is_public: self.is_public,
+            schema_ref_id: None,
+            container_key_type: 0,
+            container_value_type: 0,
+        };
+        if let Some(schema) = self.value.encode_schema() {
+            match schema {
+                Schema::StructRef(s) => result.schema_ref_id = Some(s.schema_id),
+                Schema::MapBinding(m) => {
+                    result.container_key_type = m.key_type;
+                    result.container_value_type = m.value_type;
+                    result.schema_ref_id = m.value_struct_id; // FIXME: 待验证
+                }
+            }
+        }
+        result
     }
 }
 
@@ -152,10 +257,10 @@ impl RawPin {
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
 pub struct StructField {
     pub name: String,
-    /// 字段类型(服务端类型 ID;复杂类型如 S_STRUCT 由 var_type 表达)
-    pub var_type: ServerTypeId,
-    /// 默认值(ValueBool / ValueInt / ValueString / ValueGuid / ValueFloat / ValueVector;暂无默认值为 None)
-    pub default: Option<AnyValue>,
+    /// 字段值(类型由 AnyValue 自身携带,不另存 type id)
+    pub value: AnyValue,
+    /// 是否有默认值(is_set=false 时 typedef3.val 为空)
+    pub is_set: bool,
 }
 
 impl StructField {
@@ -188,10 +293,11 @@ impl StructField {
     ///   typedef1 = { type, subType {} }(空 subType,无 val)
     ///   typedef3 = { type, subType { type, xxxx_id {} }, val }
     fn encode_var_def(&self, index: i32) -> structure_definition_data::VarDef {
-        let val = self.default.as_deref().and_then(Self::encode_val);
+        let ty = self.value.get_server_type();
+        let val = if self.is_set { Self::encode_val(self.value.as_ref()) } else { None };
         structure_definition_data::VarDef {
             typedef1: Some(sd_var_def::TypeDef {
-                r#type: self.var_type as i32,
+                r#type: ty as i32,
                 sub_type: Some(sd_var_def::type_def::SubType {
                     r#type: 0,
                     xxxx_id: 0,
@@ -202,9 +308,9 @@ impl StructField {
                 val: None,
             }),
             typedef3: Some(sd_var_def::TypeDef3 {
-                r#type: self.var_type as i32,
+                r#type: ty as i32,
                 sub_type: Some(sd_var_def::type_def3::SubType {
-                    r#type: self.var_type as i32,
+                    r#type: ty as i32,
                     xxxx_id: Some(sd_var_def::type_def3::sub_type::Any {}),
                     key: 0,
                     value: 0,
@@ -225,7 +331,7 @@ impl StructField {
             }),
             name: self.name.clone(),
             var_name: self.name.clone(),
-            var_type: self.var_type as i32,
+            var_type: ty as i32,
             var_index: index,
         }
     }
@@ -254,11 +360,11 @@ impl StructureDefinition {
     }
 }
 
-impl IAsset for StructureDefinition {
-    fn encode(&self, id: i64) -> AssetData {
+impl Asset for StructureDefinition {
+    fn encode(&self, id: i64) -> Vec<AssetData> {
         // Field.index 对齐 structVersion(真实导出中二者相等)
         let field = self.encode_field(id, self.version);
-        AssetData {
+        vec![AssetData {
             // 对齐真实导出:source_domain 省略(0)、runtime_id 省略(0)
             id: Some(Identifier {
                 source: 0,
@@ -280,13 +386,76 @@ impl IAsset for StructureDefinition {
                     unknown1: 0,
                 }),
             })),
-        }
+        }]
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::asset::value::ValueStruct;
     use super::*;
+
+    /// 节点图变量编码:对齐参考实现 make_graph_variable
+    #[test]
+    fn graph_variable_encodes() {
+        let v = GraphVariable::new("hp", ValueInt(100).into());
+        let proto = v.encode(Side::Server);
+        assert_eq!(proto.var_name, "hp");
+        // base_type 从值自身推导
+        assert_eq!(proto.base_type, ServerTypeId::SInt as i32);
+        assert!(!proto.is_public);
+        // 容器子类型:非 Map 变量默认 0(由值的 schema 推导,仅 Map 填充)
+        assert_eq!(proto.container_key_type, 0);
+        assert_eq!(proto.container_value_type, 0);
+        assert!(proto.schema_ref_id.is_none());
+        // storage_value:初始值 100(is_set=true,带类型定义与存储)
+        let sv = proto.storage_value.unwrap();
+        assert!(sv.is_set);
+        assert!(sv.r#type.is_some());
+        assert!(sv.storage.is_some());
+    }
+
+    /// 结构体变量带 schema_ref_id;is_set=false 时 storage_value 不带存储
+    #[test]
+    fn graph_variable_struct_schema_ref() {
+        let mut v = GraphVariable::new("player", ValueInt(0).into());
+        v.value = ValueStruct::new(0x4040_0001, vec![]).into();
+        let proto = v.encode(Side::Server);
+        assert_eq!(proto.schema_ref_id, Some(0x4040_0001));
+
+        let mut unset = GraphVariable::new("x", ValueInt(0).into());
+        unset.is_set = false;
+        let sv = unset.encode(Side::Server).storage_value.unwrap();
+        assert!(!sv.is_set);
+        assert!(sv.storage.is_none());
+    }
+
+    /// 节点图编码携带 blackboard
+    #[test]
+    fn node_graph_blackboard_encodes() {
+        let g = RawNodeGraph {
+            class: NodeGraphClass::Entity,
+            name: "g".to_string(),
+            nodes: HashMap::new(),
+            blackboard: vec![
+                GraphVariable::new("hp", ValueInt(100).into()),
+                GraphVariable::new("name", ValueString("alice".to_string()).into()),
+            ],
+            references: vec![],
+            port_mapping: vec![],
+            graph_kind: crate::asset::generated::identifier::AssetKind::CustomGraph,
+        };
+        let data = g.encode(7).pop().unwrap();
+        let Payload::GraphData(container) = data.payload.unwrap() else {
+            panic!("payload is not graph data");
+        };
+        let graph = container.inner.unwrap().graph.unwrap();
+        assert_eq!(graph.blackboard.len(), 2);
+        assert_eq!(graph.blackboard[0].var_name, "hp");
+        assert_eq!(graph.blackboard[0].base_type, ServerTypeId::SInt as i32);
+        assert_eq!(graph.blackboard[1].var_name, "name");
+        assert_eq!(graph.blackboard[1].base_type, ServerTypeId::SString as i32);
+    }
 
     #[test]
     fn structure_definition_encodes() {
@@ -296,32 +465,32 @@ mod tests {
             fields: vec![
                 StructField {
                     name: "hp".to_string(),
-                    var_type: ServerTypeId::SInt,
-                    default: Some(ValueInt(100).into()),
+                    value: ValueInt(100).into(),
+                    is_set: true,
                 },
                 StructField {
                     name: "name".to_string(),
-                    var_type: ServerTypeId::SString,
-                    default: Some(ValueString("alice".to_string()).into()),
+                    value: ValueString("alice".to_string()).into(),
+                    is_set: true,
                 },
                 StructField {
                     name: "pos".to_string(),
-                    var_type: ServerTypeId::SVector,
-                    default: Some(ValueVector(114.0, 514.0, 191.0).into()),
+                    value: ValueVector(114.0, 514.0, 191.0).into(),
+                    is_set: true,
                 },
                 StructField {
                     name: "uid".to_string(),
-                    var_type: ServerTypeId::SGuid,
-                    default: Some(ValueGuid(46456416).into()),
+                    value: ValueGuid(46456416).into(),
+                    is_set: true,
                 },
                 StructField {
                     name: "ratio".to_string(),
-                    var_type: ServerTypeId::SFloat,
-                    default: Some(ValueFloat(5.145).into()),
+                    value: ValueFloat(5.145).into(),
+                    is_set: true,
                 },
             ],
         };
-        let data = def.encode(100);
+        let data = def.encode(100).pop().unwrap();
         assert_eq!(data.r#type, asset_data::Type::Structure as i32);
         assert_eq!(data.id.as_ref().unwrap().kind, identifier::AssetKind::Structure as i32);
         let Payload::StructData(container) = data.payload.unwrap() else {

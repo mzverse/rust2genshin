@@ -6,7 +6,8 @@
 //! `flow_node!` 模板:1 个 flow 输入 + 值输入 + 1 个 flow 输出(next)。
 //! 用法:flow_node!(NodeXxx, ID, [值输入引用...], [值输出默认值...]);
 
-use crate::asset::node_graph::{ControlOut, INode, LogType, NodeRef, Simulation, ValueIn};
+use crate::asset::generated::ServerTypeId;
+use crate::asset::node_graph::{ControlOut, Node, LogType, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueConfigList, ValueDefault, ValueDict, ValueEntity, ValueEntityList,
@@ -14,13 +15,14 @@ use crate::asset::value::{
     ValueLocalVarRef, ValuePrefab, ValueString, ValueStringList, ValueVector,
 };
 use anyhow::{Result, anyhow, bail};
+use crate::asset::node_graph::query::NodeLocal;
 
 macro_rules! flow_node {
     ($name:ident, $id:expr, $nm:literal, [$($vin:ident),*], [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 1 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![$( &self.$vin ),*] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![$( self.$vin.clone() ),*] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))
@@ -29,6 +31,9 @@ macro_rules! flow_node {
                 todo!(concat!("ID ", $nm, " get_value"))
             }
             fn get_type(&self) -> NodeType { NodeType::simple($id) }
+            fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
+                vec![&mut self.next]
+            }
         }
     };
 }
@@ -37,15 +42,15 @@ pub struct NodeLog {
     value: ValueIn,
     next: ControlOut,
 }
-impl INode for NodeLog {
+impl Node for NodeLog {
     fn get_controls_in(&self) -> i32 {
         1
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.next.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -72,11 +77,14 @@ impl INode for NodeLog {
 // 变量 / 状态写入
 // ========================================================================
 
-/// 写局部变量(ID 19)
+/// 写局部变量(ID 19,泛型 Variant):variable(Loc) + value(R<T>) 输入。
+/// 变体顺序(TSI 与 kernel 均按参考 data.json,与 Get_Local 同序):
+/// Bol/Int/Str/Ety/Gid/Flt/Vec/L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/
+/// Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
 pub struct NodeSetLocal {
-    local: ValueIn,
-    value: ValueIn,
-    next: ControlOut,
+    pub local: ValueIn,
+    pub value: ValueIn,
+    pub next: ControlOut,
 }
 impl Default for NodeSetLocal {
     fn default() -> Self {
@@ -87,7 +95,54 @@ impl Default for NodeSetLocal {
         }
     }
 }
-flow_node!(NodeSetLocal, 19, "19 Set_Local", [local, value], []);
+impl NodeSetLocal {
+    fn kernel(ty: &AnyValue) -> i64 {
+        match ty.get_server_type() {
+            ServerTypeId::SBoolean => 19,
+            ServerTypeId::SInt => 21,
+            ServerTypeId::SString => 2674,
+            ServerTypeId::SEntity => 2675,
+            ServerTypeId::SGuid => 2676,
+            ServerTypeId::SFloat => 2677,
+            ServerTypeId::SVector => 2678,
+            ServerTypeId::SIntList => 2679,
+            ServerTypeId::SStringList => 2680,
+            ServerTypeId::SEntityList => 2681,
+            ServerTypeId::SGuidList => 2682,
+            ServerTypeId::SFloatList => 2683,
+            ServerTypeId::SVectorList => 2684,
+            ServerTypeId::SBooleanList => 2685,
+            ServerTypeId::SConfig => 2686,
+            ServerTypeId::SPrefab => 2687,
+            ServerTypeId::SConfigList => 2688,
+            ServerTypeId::SPrefabList => 2689,
+            ServerTypeId::SFaction => 2690,
+            ServerTypeId::SFactionList => 2691,
+            other => panic!("Unsupported type: {other:?}"),
+        }
+    }
+}
+impl Node for NodeSetLocal {
+    fn get_controls_in(&self) -> i32 { 1 }
+    fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.local.clone(),
+            self.value.clone().into_selected(NodeLocal::select).unwrap(),
+        ]
+    }
+    fn get_values_out(&self) -> Vec<AnyValue> { vec![] }
+    fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
+        todo!(concat!( "ID ", "19 Set_Local", " execute" ))
+    }
+    fn get_value(&self, _i: i32, _c: &Simulation) -> Result<AnyValue> {
+        todo!(concat!( "ID ", "19 Set_Local", " get_value" ))
+    }
+    fn get_type(&self) -> NodeType { NodeType::variant(19, Self::kernel(&self.value.value)) }
+    fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
+        vec![&mut self.next]
+    }
+}
 
 /// 写自定义变量(ID 22):entity + 变量名 + 值(+ 是否全局)
 pub struct NodeSetVariable {
@@ -3265,15 +3320,15 @@ impl Default for NodeForEach {
         }
     }
 }
-impl INode for NodeForEach {
+impl Node for NodeForEach {
     fn get_controls_in(&self) -> i32 {
         2
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![self.body.clone(), self.done.clone()]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]

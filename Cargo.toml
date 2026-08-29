@@ -12,17 +12,13 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 authors = ["lyt", "mz"]
+rust-version = "1.100.0"
 
 [workspace.dependencies]
+rust2genshin-lib = { path = "lib" }
 enum_dispatch = "0"
 downcast = "0"
 anyhow = "1"
-
-# 注意:不能在这里设 panic = "abort"。core 链接 rustc_driver(panic=unwind
-# 编译),abort 策略会报 "the linked panic runtime `panic_unwind` is not
-# compiled with this crate's panic strategy `abort`";且虚拟 workspace 中
-# 成员 crate 的 profile 会被 cargo 忽略("profiles for the non root package
-# will be ignored"),无法为 core 单独覆盖。如需对某个 crate 用 abort,只能
-# 通过 `cargo rustc -p <pkg> -- -C panic=abort` 之类按次构建。
+slotmap = "1"
 
 [workspace.lints.rust]

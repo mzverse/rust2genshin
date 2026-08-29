@@ -3,11 +3,15 @@ name = "rust2genshin-lib"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+rust-version.workspace = true
 
 [lib]
 
 [dependencies]
 rust2genshin-lib-internal = { path = "../lib-internal" }
+
+[features]
+server = []
 
 [lints]
 workspace = true

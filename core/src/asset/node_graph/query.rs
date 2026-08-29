@@ -3,15 +3,15 @@
 //! 人工设计,替换自动生成版本:引脚语义命名、动态结构用 Vec、类型准确。
 //! execute/get_value 仅模拟(todo!())。
 
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::generated::ServerTypeId;
+use crate::asset::node_graph::{ControlOut, Node, Link, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueConfigList, ValueDefault, ValueDict, ValueEntity,
     ValueEntityList, ValueEnum, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList,
     ValueLocalVarRef, ValuePrefab, ValueString, ValueVarSnapshotRef, ValueVector,
 };
-use anyhow::Result;
-
+use anyhow::{bail, Result};
 // ========================================================================
 // 随机 / 数学常量
 // ========================================================================
@@ -21,15 +21,15 @@ pub struct NodeRandomFloat {
     min: ValueIn,
     max: ValueIn,
 }
-impl INode for NodeRandomFloat {
+impl Node for NodeRandomFloat {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.min, &self.max]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.min.clone(), self.max.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -57,15 +57,15 @@ impl Default for NodeRandomFloat {
 pub struct NodeWeightedRandom {
     weights: ValueIn,
 }
-impl INode for NodeWeightedRandom {
+impl Node for NodeWeightedRandom {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.weights]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.weights.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -91,15 +91,15 @@ pub struct NodeRandomInt {
     min: ValueIn,
     max: ValueIn,
 }
-impl INode for NodeRandomInt {
+impl Node for NodeRandomInt {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.min, &self.max]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.min.clone(), self.max.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -127,14 +127,14 @@ impl Default for NodeRandomInt {
 pub struct NodePi {
     _unused: (),
 }
-impl INode for NodePi {
+impl Node for NodePi {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -160,14 +160,14 @@ impl Default for NodePi {
 pub struct NodeVectorZero {
     _unused: (),
 }
-impl INode for NodeVectorZero {
+impl Node for NodeVectorZero {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -193,14 +193,14 @@ impl Default for NodeVectorZero {
 pub struct NodeVectorUp {
     _unused: (),
 }
-impl INode for NodeVectorUp {
+impl Node for NodeVectorUp {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -226,14 +226,14 @@ impl Default for NodeVectorUp {
 pub struct NodeVectorDown {
     _unused: (),
 }
-impl INode for NodeVectorDown {
+impl Node for NodeVectorDown {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -259,14 +259,14 @@ impl Default for NodeVectorDown {
 pub struct NodeVectorLeft {
     _unused: (),
 }
-impl INode for NodeVectorLeft {
+impl Node for NodeVectorLeft {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -292,14 +292,14 @@ impl Default for NodeVectorLeft {
 pub struct NodeVectorRight {
     _unused: (),
 }
-impl INode for NodeVectorRight {
+impl Node for NodeVectorRight {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -325,14 +325,14 @@ impl Default for NodeVectorRight {
 pub struct NodeVectorForward {
     _unused: (),
 }
-impl INode for NodeVectorForward {
+impl Node for NodeVectorForward {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -358,14 +358,14 @@ impl Default for NodeVectorForward {
 pub struct NodeVectorBackward {
     _unused: (),
 }
-impl INode for NodeVectorBackward {
+impl Node for NodeVectorBackward {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -391,14 +391,14 @@ impl Default for NodeVectorBackward {
 pub struct NodeGetTimestamp {
     _unused: (),
 }
-impl INode for NodeGetTimestamp {
+impl Node for NodeGetTimestamp {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -424,14 +424,14 @@ impl Default for NodeGetTimestamp {
 pub struct NodeGetTimezone {
     _unused: (),
 }
-impl INode for NodeGetTimezone {
+impl Node for NodeGetTimezone {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -461,14 +461,14 @@ impl Default for NodeGetTimezone {
 pub struct NodeGetSelf {
     _unused: (),
 }
-impl INode for NodeGetSelf {
+impl Node for NodeGetSelf {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -494,15 +494,15 @@ impl Default for NodeGetSelf {
 pub struct NodeGetByGuid {
     guid: ValueIn,
 }
-impl INode for NodeGetByGuid {
+impl Node for NodeGetByGuid {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.guid]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.guid.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -527,15 +527,15 @@ impl Default for NodeGetByGuid {
 pub struct NodeGetGuid {
     entity: ValueIn,
 }
-impl INode for NodeGetGuid {
+impl Node for NodeGetGuid {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueGuid::def()]
@@ -560,15 +560,15 @@ impl Default for NodeGetGuid {
 pub struct NodeGetTransform {
     entity: ValueIn,
 }
-impl INode for NodeGetTransform {
+impl Node for NodeGetTransform {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def(), ValueVector::def()]
@@ -593,15 +593,15 @@ impl Default for NodeGetTransform {
 pub struct NodeGetEntityType {
     entity: ValueIn,
 }
-impl INode for NodeGetEntityType {
+impl Node for NodeGetEntityType {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEnum::def()]
@@ -626,14 +626,14 @@ impl Default for NodeGetEntityType {
 pub struct NodeGetAllEntities {
     _unused: (),
 }
-impl INode for NodeGetAllEntities {
+impl Node for NodeGetAllEntities {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -659,15 +659,15 @@ impl Default for NodeGetAllEntities {
 pub struct NodeGetEntityByType {
     entity_type: ValueIn,
 }
-impl INode for NodeGetEntityByType {
+impl Node for NodeGetEntityByType {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity_type]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity_type.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -692,15 +692,15 @@ impl Default for NodeGetEntityByType {
 pub struct NodeGetWithPrefab {
     prefab: ValueIn,
 }
-impl INode for NodeGetWithPrefab {
+impl Node for NodeGetWithPrefab {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.prefab]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.prefab.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -726,15 +726,15 @@ pub struct NodeGetByType {
     entities: ValueIn,
     entity_type: ValueIn,
 }
-impl INode for NodeGetByType {
+impl Node for NodeGetByType {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entities, &self.entity_type]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entities.clone(), self.entity_type.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -763,15 +763,15 @@ pub struct NodeGetByPrefab {
     entities: ValueIn,
     prefab: ValueIn,
 }
-impl INode for NodeGetByPrefab {
+impl Node for NodeGetByPrefab {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entities, &self.prefab]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entities.clone(), self.prefab.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -800,15 +800,15 @@ pub struct NodeGetByFaction {
     entities: ValueIn,
     faction: ValueIn,
 }
-impl INode for NodeGetByFaction {
+impl Node for NodeGetByFaction {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entities, &self.faction]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entities.clone(), self.faction.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -838,15 +838,15 @@ pub struct NodeGetByRange {
     center: ValueIn,
     radius: ValueIn,
 }
-impl INode for NodeGetByRange {
+impl Node for NodeGetByRange {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entities, &self.center, &self.radius]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entities.clone(), self.center.clone(), self.radius.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -875,15 +875,15 @@ impl Default for NodeGetByRange {
 pub struct NodeIsActive {
     entity: ValueIn,
 }
-impl INode for NodeIsActive {
+impl Node for NodeIsActive {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -908,15 +908,15 @@ impl Default for NodeIsActive {
 pub struct NodeGetForward {
     entity: ValueIn,
 }
-impl INode for NodeGetForward {
+impl Node for NodeGetForward {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -941,15 +941,15 @@ impl Default for NodeGetForward {
 pub struct NodeGetRight {
     entity: ValueIn,
 }
-impl INode for NodeGetRight {
+impl Node for NodeGetRight {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -974,15 +974,15 @@ impl Default for NodeGetRight {
 pub struct NodeGetUp {
     entity: ValueIn,
 }
-impl INode for NodeGetUp {
+impl Node for NodeGetUp {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -1007,15 +1007,15 @@ impl Default for NodeGetUp {
 pub struct NodeGetObjAttr {
     entity: ValueIn,
 }
-impl INode for NodeGetObjAttr {
+impl Node for NodeGetObjAttr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -1043,15 +1043,15 @@ impl Default for NodeGetObjAttr {
 pub struct NodeGetAdvAttr {
     entity: ValueIn,
 }
-impl INode for NodeGetAdvAttr {
+impl Node for NodeGetAdvAttr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -1079,15 +1079,15 @@ impl Default for NodeGetAdvAttr {
 pub struct NodeGetElemAttr {
     entity: ValueIn,
 }
-impl INode for NodeGetElemAttr {
+impl Node for NodeGetElemAttr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -1116,15 +1116,15 @@ impl Default for NodeGetElemAttr {
 pub struct NodeGetOwner {
     entity: ValueIn,
 }
-impl INode for NodeGetOwner {
+impl Node for NodeGetOwner {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -1149,15 +1149,15 @@ impl Default for NodeGetOwner {
 pub struct NodeGetOwnedEntities {
     entity: ValueIn,
 }
-impl INode for NodeGetOwnedEntities {
+impl Node for NodeGetOwnedEntities {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -1182,15 +1182,15 @@ impl Default for NodeGetOwnedEntities {
 pub struct NodeGetMoveSpeed {
     entity: ValueIn,
 }
-impl INode for NodeGetMoveSpeed {
+impl Node for NodeGetMoveSpeed {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def(), ValueVector::def()]
@@ -1219,14 +1219,14 @@ impl Default for NodeGetMoveSpeed {
 pub struct NodeGetAllPlayers {
     _unused: (),
 }
-impl INode for NodeGetAllPlayers {
+impl Node for NodeGetAllPlayers {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -1252,15 +1252,15 @@ impl Default for NodeGetAllPlayers {
 pub struct NodeGetPlayerCharacters {
     player: ValueIn,
 }
-impl INode for NodeGetPlayerCharacters {
+impl Node for NodeGetPlayerCharacters {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.player]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.player.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -1285,15 +1285,15 @@ impl Default for NodeGetPlayerCharacters {
 pub struct NodeGetOwnerPlayer {
     entity: ValueIn,
 }
-impl INode for NodeGetOwnerPlayer {
+impl Node for NodeGetOwnerPlayer {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -1318,15 +1318,15 @@ impl Default for NodeGetOwnerPlayer {
 pub struct NodeGetRevives {
     entity: ValueIn,
 }
-impl INode for NodeGetRevives {
+impl Node for NodeGetRevives {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1351,15 +1351,15 @@ impl Default for NodeGetRevives {
 pub struct NodeGetReviveTime {
     entity: ValueIn,
 }
-impl INode for NodeGetReviveTime {
+impl Node for NodeGetReviveTime {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1384,15 +1384,15 @@ impl Default for NodeGetReviveTime {
 pub struct NodeIsAllDown {
     entity: ValueIn,
 }
-impl INode for NodeIsAllDown {
+impl Node for NodeIsAllDown {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1417,15 +1417,15 @@ impl Default for NodeIsAllDown {
 pub struct NodeGetGuidById {
     id: ValueIn,
 }
-impl INode for NodeGetGuidById {
+impl Node for NodeGetGuidById {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.id]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.id.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueGuid::def()]
@@ -1450,15 +1450,15 @@ impl Default for NodeGetGuidById {
 pub struct NodeGetIdByGuid {
     guid: ValueIn,
 }
-impl INode for NodeGetIdByGuid {
+impl Node for NodeGetIdByGuid {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.guid]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.guid.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1483,15 +1483,15 @@ impl Default for NodeGetIdByGuid {
 pub struct NodeGetNickname {
     entity: ValueIn,
 }
-impl INode for NodeGetNickname {
+impl Node for NodeGetNickname {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueString::def()]
@@ -1516,15 +1516,15 @@ impl Default for NodeGetNickname {
 pub struct NodeGetInputType {
     entity: ValueIn,
 }
-impl INode for NodeGetInputType {
+impl Node for NodeGetInputType {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEnum::def()]
@@ -1550,21 +1550,90 @@ impl Default for NodeGetInputType {
 // ========================================================================
 
 /// 获取局部变量(ID 18)
-pub struct NodeGetLocal {
-    name: ValueIn,
+/// 获取局部变量(Query.General.Get_Local,ID 18,泛型 Variant):
+/// initial_value(idx0,R<T>) 输入;local_variable(idx0,Loc) 与 value(idx1,R<T>) 输出。
+/// 变体顺序(TSI 与 kernel 均按参考 data.json):Bol/Int/Str/Ety/Gid/Flt/Vec/
+/// L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
+pub struct NodeLocal {
+    pub initial: ValueIn,
 }
-impl INode for NodeGetLocal {
+impl NodeLocal {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { initial: ValueIn::new(ty.clone()) }
+    }
+    /// 设置 initial_value 的值来源(常量默认值或前节点连接)
+    pub fn set_initial(&mut self, value: AnyValue, link: Option<Link>) {
+        self.initial.value = value;
+        self.initial.has_default = link.is_none();
+        self.initial.link = link;
+    }
+    pub fn select(value: AnyValue) -> Result<i32> {
+        Ok(match value.get_server_type() {
+            ServerTypeId::SBoolean => 0,
+            ServerTypeId::SInt => 1,
+            ServerTypeId::SString => 2,
+            ServerTypeId::SEntity => 3,
+            ServerTypeId::SGuid => 4,
+            ServerTypeId::SFloat => 5,
+            ServerTypeId::SVector => 6,
+            ServerTypeId::SIntList => 7,
+            ServerTypeId::SStringList => 8,
+            ServerTypeId::SEntityList => 9,
+            ServerTypeId::SGuidList => 10,
+            ServerTypeId::SFloatList => 11,
+            ServerTypeId::SVectorList => 12,
+            ServerTypeId::SBooleanList => 13,
+            ServerTypeId::SConfig => 14,
+            ServerTypeId::SPrefab => 15,
+            ServerTypeId::SConfigList => 16,
+            ServerTypeId::SPrefabList => 17,
+            ServerTypeId::SFaction => 18,
+            ServerTypeId::SFactionList => 19,
+            other => bail!("Unsupported type: {other:?}"),
+        })
+    }
+    /// 变体 → kernel(参考 data.json:Variant KernelID)
+    fn kernel(ty: &AnyValue) -> i64 {
+        match ty.get_server_type() {
+            ServerTypeId::SBoolean => 18,
+            ServerTypeId::SInt => 20,
+            ServerTypeId::SString => 2656,
+            ServerTypeId::SEntity => 2657,
+            ServerTypeId::SGuid => 2658,
+            ServerTypeId::SFloat => 2659,
+            ServerTypeId::SVector => 2660,
+            ServerTypeId::SIntList => 2661,
+            ServerTypeId::SStringList => 2662,
+            ServerTypeId::SEntityList => 2663,
+            ServerTypeId::SGuidList => 2664,
+            ServerTypeId::SFloatList => 2665,
+            ServerTypeId::SVectorList => 2666,
+            ServerTypeId::SBooleanList => 2667,
+            ServerTypeId::SConfig => 2668,
+            ServerTypeId::SPrefab => 2669,
+            ServerTypeId::SConfigList => 2670,
+            ServerTypeId::SPrefabList => 2671,
+            ServerTypeId::SFaction => 2672,
+            ServerTypeId::SFactionList => 2673,
+            other => panic!("Unsupported type: {other:?}"),
+        }
+    }
+}
+impl Node for NodeLocal {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.name]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.initial.clone().into_selected(Self::select).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueLocalVarRef::def(), ValueInt::def()]
+        vec![
+            ValueLocalVarRef::def(),
+            self.initial.value.clone().into_selected(false, Self::select).unwrap().into(),
+        ]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 18 Get_Local")
@@ -1573,12 +1642,7 @@ impl INode for NodeGetLocal {
         todo!("ID 18 Get_Local")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(18)
-    }
-}
-impl Default for NodeGetLocal {
-    fn default() -> Self {
-        Self { name: ValueIn::new(ValueInt::def()) }
+        NodeType::variant(18, Self::kernel(&self.initial.value))
     }
 }
 
@@ -1587,15 +1651,15 @@ pub struct NodeGetVariable {
     entity: ValueIn,
     name: ValueIn,
 }
-impl INode for NodeGetVariable {
+impl Node for NodeGetVariable {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.name]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.name.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1623,15 +1687,15 @@ impl Default for NodeGetVariable {
 pub struct NodeGetGraphVariable {
     name: ValueIn,
 }
-impl INode for NodeGetGraphVariable {
+impl Node for NodeGetGraphVariable {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.name]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.name.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1657,15 +1721,15 @@ pub struct NodeGetSnapshot {
     snapshot: ValueIn,
     name: ValueIn,
 }
-impl INode for NodeGetSnapshot {
+impl Node for NodeGetSnapshot {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.snapshot, &self.name]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.snapshot.clone(), self.name.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1694,15 +1758,15 @@ pub struct NodeGetStatus {
     entity: ValueIn,
     status: ValueIn,
 }
-impl INode for NodeGetStatus {
+impl Node for NodeGetStatus {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.status]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.status.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1731,15 +1795,15 @@ pub struct NodeHasStatus {
     entity: ValueIn,
     status: ValueIn,
 }
-impl INode for NodeHasStatus {
+impl Node for NodeHasStatus {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.status]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.status.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1769,15 +1833,15 @@ pub struct NodeGetStatusStacks {
     status: ValueIn,
     slot: ValueIn,
 }
-impl INode for NodeGetStatusStacks {
+impl Node for NodeGetStatusStacks {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.status, &self.slot]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.status.clone(), self.slot.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1808,15 +1872,15 @@ pub struct NodeGetStatusApplier {
     status: ValueIn,
     slot: ValueIn,
 }
-impl INode for NodeGetStatusApplier {
+impl Node for NodeGetStatusApplier {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.status, &self.slot]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.status.clone(), self.slot.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -1846,15 +1910,15 @@ pub struct NodeGetStatusSlots {
     entity: ValueIn,
     status: ValueIn,
 }
-impl INode for NodeGetStatusSlots {
+impl Node for NodeGetStatusSlots {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.status]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.status.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -1887,15 +1951,15 @@ pub struct NodeContains {
     list: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeContains {
+impl Node for NodeContains {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1924,15 +1988,15 @@ pub struct NodeFindIndex {
     list: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeFindIndex {
+impl Node for NodeFindIndex {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -1961,15 +2025,15 @@ pub struct NodeGetAtIndex {
     list: ValueIn,
     index: ValueIn,
 }
-impl INode for NodeGetAtIndex {
+impl Node for NodeGetAtIndex {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list, &self.index]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone(), self.index.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1997,15 +2061,15 @@ impl Default for NodeGetAtIndex {
 pub struct NodeGetListLength {
     list: ValueIn,
 }
-impl INode for NodeGetListLength {
+impl Node for NodeGetListLength {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2030,15 +2094,15 @@ impl Default for NodeGetListLength {
 pub struct NodeGetMax {
     list: ValueIn,
 }
-impl INode for NodeGetMax {
+impl Node for NodeGetMax {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2063,15 +2127,15 @@ impl Default for NodeGetMax {
 pub struct NodeGetMin {
     list: ValueIn,
 }
-impl INode for NodeGetMin {
+impl Node for NodeGetMin {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.list]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.list.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2100,14 +2164,14 @@ impl Default for NodeGetMin {
 pub struct NodeGetActiveGroups {
     _unused: (),
 }
-impl INode for NodeGetActiveGroups {
+impl Node for NodeGetActiveGroups {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -2133,14 +2197,14 @@ impl Default for NodeGetActiveGroups {
 pub struct NodeGetElapsedTime {
     _unused: (),
 }
-impl INode for NodeGetElapsedTime {
+impl Node for NodeGetElapsedTime {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -2166,14 +2230,14 @@ impl Default for NodeGetElapsedTime {
 pub struct NodeGetEnvTime {
     _unused: (),
 }
-impl INode for NodeGetEnvTime {
+impl Node for NodeGetEnvTime {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -2199,14 +2263,14 @@ impl Default for NodeGetEnvTime {
 pub struct NodeGetGameInfo {
     _unused: (),
 }
-impl INode for NodeGetGameInfo {
+impl Node for NodeGetGameInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -2233,15 +2297,15 @@ pub struct NodeGetTimerTime {
     entity: ValueIn,
     name: ValueIn,
 }
-impl INode for NodeGetTimerTime {
+impl Node for NodeGetTimerTime {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.name]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.name.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -2269,15 +2333,15 @@ impl Default for NodeGetTimerTime {
 pub struct NodeGetCurrentLayout {
     entity: ValueIn,
 }
-impl INode for NodeGetCurrentLayout {
+impl Node for NodeGetCurrentLayout {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2306,15 +2370,15 @@ impl Default for NodeGetCurrentLayout {
 pub struct NodeGetFaction {
     entity: ValueIn,
 }
-impl INode for NodeGetFaction {
+impl Node for NodeGetFaction {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFaction::def()]
@@ -2340,15 +2404,15 @@ pub struct NodeIsHostile {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeIsHostile {
+impl Node for NodeIsHostile {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -2376,15 +2440,15 @@ impl Default for NodeIsHostile {
 pub struct NodeGetTags {
     entity: ValueIn,
 }
-impl INode for NodeGetTags {
+impl Node for NodeGetTags {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -2409,15 +2473,15 @@ impl Default for NodeGetTags {
 pub struct NodeGetByTag {
     tag: ValueIn,
 }
-impl INode for NodeGetByTag {
+impl Node for NodeGetByTag {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.tag]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.tag.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -2442,15 +2506,15 @@ impl Default for NodeGetByTag {
 pub struct NodeGetCreationTarget {
     entity: ValueIn,
 }
-impl INode for NodeGetCreationTarget {
+impl Node for NodeGetCreationTarget {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -2475,15 +2539,15 @@ impl Default for NodeGetCreationTarget {
 pub struct NodeGetCreationAttr {
     entity: ValueIn,
 }
-impl INode for NodeGetCreationAttr {
+impl Node for NodeGetCreationAttr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -2511,15 +2575,15 @@ impl Default for NodeGetCreationAttr {
 pub struct NodeGetCreationAggroList {
     entity: ValueIn,
 }
-impl INode for NodeGetCreationAggroList {
+impl Node for NodeGetCreationAggroList {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -2544,15 +2608,15 @@ impl Default for NodeGetCreationAggroList {
 pub struct NodeGetFollowTarget {
     entity: ValueIn,
 }
-impl INode for NodeGetFollowTarget {
+impl Node for NodeGetFollowTarget {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def(), ValueGuid::def()]
@@ -2577,15 +2641,15 @@ impl Default for NodeGetFollowTarget {
 pub struct NodeGetPresetPointTransform {
     index: ValueIn,
 }
-impl INode for NodeGetPresetPointTransform {
+impl Node for NodeGetPresetPointTransform {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.index]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.index.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def(), ValueVector::def()]
@@ -2610,15 +2674,15 @@ impl Default for NodeGetPresetPointTransform {
 pub struct NodeGetPresetPointByTag {
     tag: ValueIn,
 }
-impl INode for NodeGetPresetPointByTag {
+impl Node for NodeGetPresetPointByTag {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.tag]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.tag.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -2643,15 +2707,15 @@ impl Default for NodeGetPresetPointByTag {
 pub struct NodeGetPatrolTemplate {
     entity: ValueIn,
 }
-impl INode for NodeGetPatrolTemplate {
+impl Node for NodeGetPatrolTemplate {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def(), ValueInt::def(), ValueInt::def()]
@@ -2677,15 +2741,15 @@ pub struct NodeGetWaypoint {
     path: ValueIn,
     index: ValueIn,
 }
-impl INode for NodeGetWaypoint {
+impl Node for NodeGetWaypoint {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.path, &self.index]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.path.clone(), self.index.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def(), ValueVector::def()]
@@ -2717,15 +2781,15 @@ impl Default for NodeGetWaypoint {
 pub struct NodeGetClass {
     entity: ValueIn,
 }
-impl INode for NodeGetClass {
+impl Node for NodeGetClass {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfig::def()]
@@ -2751,15 +2815,15 @@ pub struct NodeGetLevel {
     entity: ValueIn,
     class: ValueIn,
 }
-impl INode for NodeGetLevel {
+impl Node for NodeGetLevel {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.class]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.class.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2788,15 +2852,15 @@ pub struct NodeGetSkillInfo {
     entity: ValueIn,
     slot: ValueIn,
 }
-impl INode for NodeGetSkillInfo {
+impl Node for NodeGetSkillInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.slot]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.slot.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfig::def()]
@@ -2825,15 +2889,15 @@ pub struct NodeGetAggroValue {
     entity: ValueIn,
     target: ValueIn,
 }
-impl INode for NodeGetAggroValue {
+impl Node for NodeGetAggroValue {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.target]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.target.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2861,15 +2925,15 @@ impl Default for NodeGetAggroValue {
 pub struct NodeGetAggroMultiplier {
     entity: ValueIn,
 }
-impl INode for NodeGetAggroMultiplier {
+impl Node for NodeGetAggroMultiplier {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -2894,14 +2958,14 @@ impl Default for NodeGetAggroMultiplier {
 pub struct NodeGetGlobalMultiplier {
     _unused: (),
 }
-impl INode for NodeGetGlobalMultiplier {
+impl Node for NodeGetGlobalMultiplier {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         vec![]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
@@ -2927,15 +2991,15 @@ impl Default for NodeGetGlobalMultiplier {
 pub struct NodeGetAggroTarget {
     entity: ValueIn,
 }
-impl INode for NodeGetAggroTarget {
+impl Node for NodeGetAggroTarget {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntity::def()]
@@ -2960,15 +3024,15 @@ impl Default for NodeGetAggroTarget {
 pub struct NodeGetAggroOwners {
     entity: ValueIn,
 }
-impl INode for NodeGetAggroOwners {
+impl Node for NodeGetAggroOwners {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -2993,15 +3057,15 @@ impl Default for NodeGetAggroOwners {
 pub struct NodeGetTargetingOwners {
     entity: ValueIn,
 }
-impl INode for NodeGetTargetingOwners {
+impl Node for NodeGetTargetingOwners {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -3026,15 +3090,15 @@ impl Default for NodeGetTargetingOwners {
 pub struct NodeGetAggroList {
     entity: ValueIn,
 }
-impl INode for NodeGetAggroList {
+impl Node for NodeGetAggroList {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -3059,15 +3123,15 @@ impl Default for NodeGetAggroList {
 pub struct NodeIsInCombat {
     entity: ValueIn,
 }
-impl INode for NodeIsInCombat {
+impl Node for NodeIsInCombat {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -3097,15 +3161,15 @@ pub struct NodeGetMarkerInfo {
     entity: ValueIn,
     index: ValueIn,
 }
-impl INode for NodeGetMarkerInfo {
+impl Node for NodeGetMarkerInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.index]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.index.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def(), ValueEntityList::def(), ValueEntityList::def()]
@@ -3133,15 +3197,15 @@ impl Default for NodeGetMarkerInfo {
 pub struct NodeGetMarkerStatus {
     entity: ValueIn,
 }
-impl INode for NodeGetMarkerStatus {
+impl Node for NodeGetMarkerStatus {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def(), ValueIntList::def(), ValueIntList::def()]
@@ -3167,15 +3231,15 @@ pub struct NodeIsCompleted {
     entity: ValueIn,
     achievement: ValueIn,
 }
-impl INode for NodeIsCompleted {
+impl Node for NodeIsCompleted {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.achievement]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.achievement.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -3203,15 +3267,15 @@ impl Default for NodeIsCompleted {
 pub struct NodeGetPlayerRank {
     entity: ValueIn,
 }
-impl INode for NodeGetPlayerRank {
+impl Node for NodeGetPlayerRank {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3236,15 +3300,15 @@ impl Default for NodeGetPlayerRank {
 pub struct NodeGetPlayerResult {
     entity: ValueIn,
 }
-impl INode for NodeGetPlayerResult {
+impl Node for NodeGetPlayerResult {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEnum::def()]
@@ -3269,15 +3333,15 @@ impl Default for NodeGetPlayerResult {
 pub struct NodeGetFactionRank {
     faction: ValueIn,
 }
-impl INode for NodeGetFactionRank {
+impl Node for NodeGetFactionRank {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.faction]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.faction.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3302,15 +3366,15 @@ impl Default for NodeGetFactionRank {
 pub struct NodeGetFactionResult {
     faction: ValueIn,
 }
-impl INode for NodeGetFactionResult {
+impl Node for NodeGetFactionResult {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.faction]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.faction.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEnum::def()]
@@ -3335,15 +3399,15 @@ impl Default for NodeGetFactionResult {
 pub struct NodeGetRankInfo {
     entity: ValueIn,
 }
-impl INode for NodeGetRankInfo {
+impl Node for NodeGetRankInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def(), ValueInt::def(), ValueInt::def(), ValueInt::def()]
@@ -3369,15 +3433,15 @@ pub struct NodeGetScoreChange {
     entity: ValueIn,
     result: ValueIn,
 }
-impl INode for NodeGetScoreChange {
+impl Node for NodeGetScoreChange {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.result]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.result.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3405,15 +3469,15 @@ impl Default for NodeGetScoreChange {
 pub struct NodeGetEscapeStatus {
     entity: ValueIn,
 }
-impl INode for NodeGetEscapeStatus {
+impl Node for NodeGetEscapeStatus {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -3439,15 +3503,15 @@ pub struct NodeGetOverlappingEntities {
     entity: ValueIn,
     radius: ValueIn,
 }
-impl INode for NodeGetOverlappingEntities {
+impl Node for NodeGetOverlappingEntities {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.radius]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.radius.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueEntityList::def()]
@@ -3479,15 +3543,15 @@ impl Default for NodeGetOverlappingEntities {
 pub struct NodeGetAffixes {
     equipment: ValueIn,
 }
-impl INode for NodeGetAffixes {
+impl Node for NodeGetAffixes {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.equipment]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.equipment.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -3513,15 +3577,15 @@ pub struct NodeGetAffixConfig {
     equipment: ValueIn,
     affix: ValueIn,
 }
-impl INode for NodeGetAffixConfig {
+impl Node for NodeGetAffixConfig {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.equipment, &self.affix]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.equipment.clone(), self.affix.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfig::def()]
@@ -3550,15 +3614,15 @@ pub struct NodeGetAffixValue {
     equipment: ValueIn,
     affix: ValueIn,
 }
-impl INode for NodeGetAffixValue {
+impl Node for NodeGetAffixValue {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.equipment, &self.affix]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.equipment.clone(), self.affix.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -3586,15 +3650,15 @@ impl Default for NodeGetAffixValue {
 pub struct NodeGetEquipTags {
     equipment: ValueIn,
 }
-impl INode for NodeGetEquipTags {
+impl Node for NodeGetEquipTags {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.equipment]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.equipment.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfigList::def()]
@@ -3619,15 +3683,15 @@ impl Default for NodeGetEquipTags {
 pub struct NodeGetConfigId {
     equipment: ValueIn,
 }
-impl INode for NodeGetConfigId {
+impl Node for NodeGetConfigId {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.equipment]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.equipment.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfig::def()]
@@ -3652,15 +3716,15 @@ impl Default for NodeGetConfigId {
 pub struct NodeGetCapacity {
     entity: ValueIn,
 }
-impl INode for NodeGetCapacity {
+impl Node for NodeGetCapacity {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3686,15 +3750,15 @@ pub struct NodeGetItemAmount {
     entity: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeGetItemAmount {
+impl Node for NodeGetItemAmount {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3723,15 +3787,15 @@ pub struct NodeGetCurrencyAmount {
     entity: ValueIn,
     currency: ValueIn,
 }
-impl INode for NodeGetCurrencyAmount {
+impl Node for NodeGetCurrencyAmount {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.currency]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.currency.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3759,15 +3823,15 @@ impl Default for NodeGetCurrencyAmount {
 pub struct NodeGetBasicItems {
     entity: ValueIn,
 }
-impl INode for NodeGetBasicItems {
+impl Node for NodeGetBasicItems {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueDict::new(ValueConfig::default(), ValueInt::default()).into()]
@@ -3792,15 +3856,15 @@ impl Default for NodeGetBasicItems {
 pub struct NodeGetCurrencyAll {
     entity: ValueIn,
 }
-impl INode for NodeGetCurrencyAll {
+impl Node for NodeGetCurrencyAll {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueDict::new(ValueConfig::default(), ValueInt::default()).into()]
@@ -3825,15 +3889,15 @@ impl Default for NodeGetCurrencyAll {
 pub struct NodeGetEquipmentAll {
     entity: ValueIn,
 }
-impl INode for NodeGetEquipmentAll {
+impl Node for NodeGetEquipmentAll {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -3859,15 +3923,15 @@ pub struct NodeGetLootItemAmount {
     entity: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeGetLootItemAmount {
+impl Node for NodeGetLootItemAmount {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3896,15 +3960,15 @@ pub struct NodeGetLootCurrencyAmount {
     entity: ValueIn,
     currency: ValueIn,
 }
-impl INode for NodeGetLootCurrencyAmount {
+impl Node for NodeGetLootCurrencyAmount {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.currency]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.currency.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -3932,15 +3996,15 @@ impl Default for NodeGetLootCurrencyAmount {
 pub struct NodeGetLootItems {
     entity: ValueIn,
 }
-impl INode for NodeGetLootItems {
+impl Node for NodeGetLootItems {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueDict::new(ValueConfig::default(), ValueInt::default()).into()]
@@ -3965,15 +4029,15 @@ impl Default for NodeGetLootItems {
 pub struct NodeGetLootCurrency {
     entity: ValueIn,
 }
-impl INode for NodeGetLootCurrency {
+impl Node for NodeGetLootCurrency {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueDict::new(ValueConfig::default(), ValueInt::default()).into()]
@@ -3998,15 +4062,15 @@ impl Default for NodeGetLootCurrency {
 pub struct NodeGetLootEquipment {
     entity: ValueIn,
 }
-impl INode for NodeGetLootEquipment {
+impl Node for NodeGetLootEquipment {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -4032,15 +4096,15 @@ pub struct NodeGetCustomSales {
     entity: ValueIn,
     shop: ValueIn,
 }
-impl INode for NodeGetCustomSales {
+impl Node for NodeGetCustomSales {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -4069,15 +4133,15 @@ pub struct NodeGetInvSales {
     entity: ValueIn,
     shop: ValueIn,
 }
-impl INode for NodeGetInvSales {
+impl Node for NodeGetInvSales {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfigList::def()]
@@ -4106,15 +4170,15 @@ pub struct NodeGetCartItems {
     entity: ValueIn,
     shop: ValueIn,
 }
-impl INode for NodeGetCartItems {
+impl Node for NodeGetCartItems {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfigList::def()]
@@ -4144,15 +4208,15 @@ pub struct NodeGetCustomItemInfo {
     shop: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeGetCustomItemInfo {
+impl Node for NodeGetCustomItemInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -4191,15 +4255,15 @@ pub struct NodeGetInvItemInfo {
     shop: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeGetInvItemInfo {
+impl Node for NodeGetInvItemInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -4234,15 +4298,15 @@ pub struct NodeGetPurchaseInfo {
     shop: ValueIn,
     item: ValueIn,
 }
-impl INode for NodeGetPurchaseInfo {
+impl Node for NodeGetPurchaseInfo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.shop, &self.item]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.shop.clone(), self.item.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -4274,15 +4338,15 @@ impl Default for NodeGetPurchaseInfo {
 pub struct NodeGetActiveTag {
     entity: ValueIn,
 }
-impl INode for NodeGetActiveTag {
+impl Node for NodeGetActiveTag {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueConfig::def()]
@@ -4307,15 +4371,15 @@ impl Default for NodeGetActiveTag {
 pub struct NodeGetCharacterAttr {
     entity: ValueIn,
 }
-impl INode for NodeGetCharacterAttr {
+impl Node for NodeGetCharacterAttr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -4345,15 +4409,15 @@ pub struct NodeGetBoxQuantity {
     entity: ValueIn,
     box_id: ValueIn,
 }
-impl INode for NodeGetBoxQuantity {
+impl Node for NodeGetBoxQuantity {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.box_id]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.box_id.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -4382,15 +4446,15 @@ pub struct NodeGetBoxConsumption {
     entity: ValueIn,
     box_id: ValueIn,
 }
-impl INode for NodeGetBoxConsumption {
+impl Node for NodeGetBoxConsumption {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.entity, &self.box_id]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.entity.clone(), self.box_id.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -4423,15 +4487,15 @@ pub struct NodeDictGetValue {
     dict: ValueIn,
     key: ValueIn,
 }
-impl INode for NodeDictGetValue {
+impl Node for NodeDictGetValue {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict, &self.key]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone(), self.key.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -4460,15 +4524,15 @@ pub struct NodeDictHasKey {
     dict: ValueIn,
     key: ValueIn,
 }
-impl INode for NodeDictHasKey {
+impl Node for NodeDictHasKey {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict, &self.key]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone(), self.key.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -4497,15 +4561,15 @@ pub struct NodeDictHasValue {
     dict: ValueIn,
     value: ValueIn,
 }
-impl INode for NodeDictHasValue {
+impl Node for NodeDictHasValue {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict, &self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone(), self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -4533,15 +4597,15 @@ impl Default for NodeDictHasValue {
 pub struct NodeDictGetKeys {
     dict: ValueIn,
 }
-impl INode for NodeDictGetKeys {
+impl Node for NodeDictGetKeys {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -4566,15 +4630,15 @@ impl Default for NodeDictGetKeys {
 pub struct NodeDictGetValues {
     dict: ValueIn,
 }
-impl INode for NodeDictGetValues {
+impl Node for NodeDictGetValues {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueIntList::def()]
@@ -4599,15 +4663,15 @@ impl Default for NodeDictGetValues {
 pub struct NodeDictGetLength {
     dict: ValueIn,
 }
-impl INode for NodeDictGetLength {
+impl Node for NodeDictGetLength {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.dict]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.dict.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]

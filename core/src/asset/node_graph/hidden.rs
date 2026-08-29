@@ -2,7 +2,7 @@
 //!
 //! 人工设计:相机/震屏/名牌/GM 等隐藏功能节点。execute/get_value 仅模拟(todo!())。
 
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList, ValueFloat,
@@ -12,10 +12,10 @@ use anyhow::Result;
 
 macro_rules! flow_node {
     ($name:ident, $id:expr, $nm:literal, [$($vin:ident),*], [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 1 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![$( &self.$vin ),*] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![$( self.$vin.clone() ),*] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))
@@ -30,10 +30,10 @@ macro_rules! flow_node {
 
 macro_rules! trigger_node {
     ($name:ident, $id:expr, $nm:literal, [$($vout:expr),*]) => {
-        impl INode for $name {
+        impl Node for $name {
             fn get_controls_in(&self) -> i32 { 0 }
             fn get_controls_out(&self) -> Vec<ControlOut> { vec![self.next.clone()] }
-            fn get_values_in(&self) -> Vec<&ValueIn> { vec![] }
+            fn get_values_in(&self) -> Vec<ValueIn> { vec![] }
             fn get_values_out(&self) -> Vec<AnyValue> { vec![$($vout),*] }
             fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
                 todo!(concat!("ID ", $nm, " execute"))
@@ -232,15 +232,15 @@ pub struct NodeGetNativeValue {
     name: ValueIn,
     is_global: ValueIn,
 }
-impl INode for NodeGetNativeValue {
+impl Node for NodeGetNativeValue {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.target, &self.name, &self.is_global]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.target.clone(), self.name.clone(), self.is_global.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]

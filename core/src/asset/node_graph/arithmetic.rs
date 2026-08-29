@@ -5,13 +5,18 @@
 //! - 动态数量结构用 `Vec`(Assemble_List / Assemble_Dictionary 的参数不穷举字段)
 //! - 泛型 `R<T>` 数值按 Float 语义;execute/get_value 仅模拟(todo!())
 
-use crate::asset::node_graph::{ControlOut, INode, NodeRef, Simulation, ValueIn};
+use std::any::{Any, TypeId};
+use std::borrow::Cow;
+use crate::asset::generated::ServerTypeId;
+use crate::asset::node_graph::{ControlOut, Node, Link, NodeRef, Simulation, ValueIn};
 use crate::asset::raw_node_graph::NodeType;
 use crate::asset::value::{
-    AnyValue, ValueBool, ValueDefault, ValueDict, ValueEnum, ValueFloat, ValueInt, ValueIntList,
-    ValueStruct, ValueVector,
+    AnyValue, ValueBool, ValueBoolList, ValueConfig, ValueConfigList, ValueDefault, ValueDict,
+    ValueEntity, ValueEntityList, ValueEnum, ValueFloat, ValueFloatList, ValueGuid, ValueGuidList,
+    ValueInt, ValueIntList, ValuePrefab, ValuePrefabList, ValueSelected, ValueString,
+    ValueStringList, ValueStruct, ValueVector, ValueVectorList, unwrap_selected,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 // ========================================================================
 // 向量运算
@@ -21,15 +26,15 @@ use anyhow::Result;
 pub struct NodeSplitVector {
     vector: ValueIn,
 }
-impl INode for NodeSplitVector {
+impl Node for NodeSplitVector {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.vector]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.vector.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()]
@@ -55,15 +60,15 @@ pub struct NodeVectorAdd {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeVectorAdd {
+impl Node for NodeVectorAdd {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -92,15 +97,15 @@ pub struct NodeVectorSubtract {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeVectorSubtract {
+impl Node for NodeVectorSubtract {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -129,15 +134,15 @@ pub struct NodeVectorScale {
     vector: ValueIn,
     scale: ValueIn,
 }
-impl INode for NodeVectorScale {
+impl Node for NodeVectorScale {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.vector, &self.scale]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.vector.clone(), self.scale.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -166,15 +171,15 @@ pub struct NodeVectorAngle {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeVectorAngle {
+impl Node for NodeVectorAngle {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -202,15 +207,15 @@ impl Default for NodeVectorAngle {
 pub struct NodeVectorNormalize {
     vector: ValueIn,
 }
-impl INode for NodeVectorNormalize {
+impl Node for NodeVectorNormalize {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.vector]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.vector.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -235,15 +240,15 @@ impl Default for NodeVectorNormalize {
 pub struct NodeVectorLength {
     vector: ValueIn,
 }
-impl INode for NodeVectorLength {
+impl Node for NodeVectorLength {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.vector]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.vector.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -269,15 +274,15 @@ pub struct NodeDistance {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeDistance {
+impl Node for NodeDistance {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -306,15 +311,15 @@ pub struct NodeVectorRotate {
     vector: ValueIn,
     rotation: ValueIn,
 }
-impl INode for NodeVectorRotate {
+impl Node for NodeVectorRotate {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.vector, &self.rotation]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.vector.clone(), self.rotation.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -343,15 +348,15 @@ pub struct NodeVectorDot {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeVectorDot {
+impl Node for NodeVectorDot {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -380,15 +385,15 @@ pub struct NodeVectorCross {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeVectorCross {
+impl Node for NodeVectorCross {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -417,15 +422,15 @@ pub struct NodeVectorToRotation {
     forward: ValueIn,
     up: ValueIn,
 }
-impl INode for NodeVectorToRotation {
+impl Node for NodeVectorToRotation {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.forward, &self.up]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.forward.clone(), self.up.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -455,15 +460,15 @@ pub struct NodeCreateVector {
     y: ValueIn,
     z: ValueIn,
 }
-impl INode for NodeCreateVector {
+impl Node for NodeCreateVector {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.x, &self.y, &self.z]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.x.clone(), self.y.clone(), self.z.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueVector::def()]
@@ -492,23 +497,45 @@ impl Default for NodeCreateVector {
 // 数值二元运算(泛型 R<T>,按 Float 语义)
 // ========================================================================
 
-/// 加法(ID 200)
+/// 加法(ID 200,泛型变体):shell 固定 200,kernel 随类型(Int→200、Flt→201)。
+/// `ty` 是结果类型(AnyValue),`get_values_out` 返回该类型的值。
 pub struct NodeAdd {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeAdd {
+impl NodeAdd {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    /// 设置第 index 个输入(0=a、1=b)的值来源:连接或默认值
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeAdd {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone().into_selected(Self::select).unwrap(), self.b.clone().into_selected(Self::select).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 200 Add")
@@ -517,35 +544,62 @@ impl INode for NodeAdd {
         todo!("ID 200 Add")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(200)
+        NodeType::variant(200, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            200
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            201
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeAdd {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())? != Self::select(self.b.value.clone())? {
+            bail!("The types of the two addends must be the same");
         }
+        Ok(())
     }
 }
 
-/// 减法(ID 202)
+/// 减法(ID 202,泛型变体):shell 固定 202,kernel 随类型(Int→202、Flt→203)。
 pub struct NodeSubtract {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeSubtract {
+impl NodeSubtract {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeSubtract {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 202 Subtract")
@@ -554,35 +608,64 @@ impl INode for NodeSubtract {
         todo!("ID 202 Subtract")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(202)
+        NodeType::variant(202, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            202
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            203
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeSubtract {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 乘法(ID 204)
+/// 乘法(ID 204,泛型变体):shell 固定 204,kernel 随类型(Int→204、Flt→205)。
 pub struct NodeMultiply {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeMultiply {
+impl NodeMultiply {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeMultiply {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 204 Multiply")
@@ -591,35 +674,64 @@ impl INode for NodeMultiply {
         todo!("ID 204 Multiply")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(204)
+        NodeType::variant(204, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            204
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            205
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeMultiply {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 除法(ID 206)
+/// 除法(ID 206,泛型变体):shell 固定 206,kernel 随类型(Int→206、Flt→207)。
 pub struct NodeDivide {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeDivide {
+impl NodeDivide {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeDivide {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 206 Divide")
@@ -628,35 +740,64 @@ impl INode for NodeDivide {
         todo!("ID 206 Divide")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(206)
+        NodeType::variant(206, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            206
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            207
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeDivide {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 幂运算(ID 209)
+/// 幂运算(ID 209,泛型变体):shell 固定 209,kernel 随类型(Int→209、Flt→210)。
 pub struct NodePower {
     base: ValueIn,
     exponent: ValueIn,
 }
-impl INode for NodePower {
+impl NodePower {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { base: ValueIn::new(ty.clone()), exponent: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.base } else { &mut self.exponent };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodePower {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.base, &self.exponent]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.base.clone().into_selected(Self::select).unwrap(),
+            self.exponent.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.base.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 209 Power")
@@ -665,35 +806,64 @@ impl INode for NodePower {
         todo!("ID 209 Power")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(209)
+        NodeType::variant(209, if unwrap_selected(&self.base.value).is::<ValueInt>() {
+            209
+        } else if unwrap_selected(&self.base.value).is::<ValueFloat>() {
+            210
+        } else {
+            panic!("Unsupported type: {:?}", self.base.value);
+        })
     }
-}
-impl Default for NodePower {
-    fn default() -> Self {
-        Self {
-            base: ValueIn::new(ValueFloat::def()),
-            exponent: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.base.value.clone())?
+            != Self::select(self.exponent.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 取大值(ID 211)
+/// 取大值(ID 211,泛型变体):shell 固定 211,kernel 随类型(Int→211、Flt→212)。
 pub struct NodeMax {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeMax {
+impl NodeMax {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeMax {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 211 Max")
@@ -702,35 +872,64 @@ impl INode for NodeMax {
         todo!("ID 211 Max")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(211)
+        NodeType::variant(211, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            211
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            212
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeMax {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 取小值(ID 213)
+/// 取小值(ID 213,泛型变体):shell 固定 213,kernel 随类型(Int→213、Flt→214)。
 pub struct NodeMin {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeMin {
+impl NodeMin {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeMin {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.a.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 213 Min")
@@ -739,32 +938,38 @@ impl INode for NodeMin {
         todo!("ID 213 Min")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(213)
+        NodeType::variant(213, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            213
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            214
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeMin {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
 /// 取余(ID 208):整数取模
 pub struct NodeModulo {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeModulo {
+impl Node for NodeModulo {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -792,22 +997,41 @@ impl Default for NodeModulo {
 // 一元运算与夹取
 // ========================================================================
 
-/// 绝对值(ID 216)
+/// 绝对值(ID 216,泛型变体):shell 固定 216,kernel 随类型(Int→216、Flt→217)。
 pub struct NodeAbs {
     value: ValueIn,
 }
-impl INode for NodeAbs {
+impl NodeAbs {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { value: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, value: AnyValue, link: Option<Link>) {
+        self.value.value = value;
+        self.value.has_default = link.is_none();
+        self.value.link = link;
+    }
+}
+impl Node for NodeAbs {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone().into_selected(Self::select).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.value.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 216 Abs")
@@ -816,31 +1040,51 @@ impl INode for NodeAbs {
         todo!("ID 216 Abs")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(216)
-    }
-}
-impl Default for NodeAbs {
-    fn default() -> Self {
-        Self { value: ValueIn::new(ValueFloat::def()) }
+        NodeType::variant(216, if unwrap_selected(&self.value.value).is::<ValueInt>() {
+            216
+        } else if unwrap_selected(&self.value.value).is::<ValueFloat>() {
+            217
+        } else {
+            panic!("Unsupported type: {:?}", self.value.value);
+        })
     }
 }
 
-/// 取符号(ID 218):-1 / 0 / 1
+/// 取符号(ID 218,泛型变体):-1 / 0 / 1;shell 固定 218,kernel 随类型(Int→218、Flt→219)。
 pub struct NodeSign {
     value: ValueIn,
 }
-impl INode for NodeSign {
+impl NodeSign {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { value: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, value: AnyValue, link: Option<Link>) {
+        self.value.value = value;
+        self.value.has_default = link.is_none();
+        self.value.link = link;
+    }
+}
+impl Node for NodeSign {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone().into_selected(Self::select).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.value.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 218 Sign")
@@ -849,33 +1093,67 @@ impl INode for NodeSign {
         todo!("ID 218 Sign")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(218)
-    }
-}
-impl Default for NodeSign {
-    fn default() -> Self {
-        Self { value: ValueIn::new(ValueFloat::def()) }
+        NodeType::variant(218, if unwrap_selected(&self.value.value).is::<ValueInt>() {
+            218
+        } else if unwrap_selected(&self.value.value).is::<ValueFloat>() {
+            219
+        } else {
+            panic!("Unsupported type: {:?}", self.value.value);
+        })
     }
 }
 
-/// 夹取(ID 222):value 限制在 [min, max]
+/// 夹取(ID 222,泛型变体):value 限制在 [min, max];
+/// shell 固定 222,kernel 随类型(Int→222、Flt→223)。
 pub struct NodeClamp {
     value: ValueIn,
     min: ValueIn,
     max: ValueIn,
 }
-impl INode for NodeClamp {
+impl NodeClamp {
+    pub fn new(ty: AnyValue) -> Self {
+        Self {
+            value: ValueIn::new(ty.clone()),
+            min: ValueIn::new(ty.clone()),
+            max: ValueIn::new(ty),
+        }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = match index {
+            0 => &mut self.value,
+            1 => &mut self.min,
+            _ => &mut self.max,
+        };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeClamp {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.min, &self.max]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.value.clone().into_selected(Self::select).unwrap(),
+            self.min.clone().into_selected(Self::select).unwrap(),
+            self.max.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueFloat::def()]
+        vec![self.value.value.clone().into_selected(false, Self::select).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 222 Clamp")
@@ -884,16 +1162,22 @@ impl INode for NodeClamp {
         todo!("ID 222 Clamp")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(222)
+        NodeType::variant(222, if unwrap_selected(&self.value.value).is::<ValueInt>() {
+            222
+        } else if unwrap_selected(&self.value.value).is::<ValueFloat>() {
+            223
+        } else {
+            panic!("Unsupported type: {:?}", self.value.value);
+        })
     }
-}
-impl Default for NodeClamp {
-    fn default() -> Self {
-        Self {
-            value: ValueIn::new(ValueFloat::def()),
-            min: ValueIn::new(ValueFloat::def()),
-            max: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        let i = Self::select(self.value.value.clone())?;
+        if Self::select(self.min.value.clone())? != i
+            || Self::select(self.max.value.clone())? != i
+        {
+            bail!("The types of the three operands must be the same");
         }
+        Ok(())
     }
 }
 
@@ -902,15 +1186,15 @@ pub struct NodeRound {
     value: ValueIn,
     mode: ValueIn,
 }
-impl INode for NodeRound {
+impl Node for NodeRound {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.mode]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.mode.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -938,15 +1222,15 @@ impl Default for NodeRound {
 pub struct NodeSqrt {
     value: ValueIn,
 }
-impl INode for NodeSqrt {
+impl Node for NodeSqrt {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -972,15 +1256,15 @@ pub struct NodeLogarithm {
     base: ValueIn,
     value: ValueIn,
 }
-impl INode for NodeLogarithm {
+impl Node for NodeLogarithm {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.base, &self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.base.clone(), self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1012,15 +1296,15 @@ impl Default for NodeLogarithm {
 pub struct NodeSin {
     angle: ValueIn,
 }
-impl INode for NodeSin {
+impl Node for NodeSin {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.angle]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.angle.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1045,15 +1329,15 @@ impl Default for NodeSin {
 pub struct NodeCos {
     angle: ValueIn,
 }
-impl INode for NodeCos {
+impl Node for NodeCos {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.angle]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.angle.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1078,15 +1362,15 @@ impl Default for NodeCos {
 pub struct NodeTan {
     angle: ValueIn,
 }
-impl INode for NodeTan {
+impl Node for NodeTan {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.angle]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.angle.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1111,15 +1395,15 @@ impl Default for NodeTan {
 pub struct NodeAsin {
     value: ValueIn,
 }
-impl INode for NodeAsin {
+impl Node for NodeAsin {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1144,15 +1428,15 @@ impl Default for NodeAsin {
 pub struct NodeAcos {
     value: ValueIn,
 }
-impl INode for NodeAcos {
+impl Node for NodeAcos {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1177,15 +1461,15 @@ impl Default for NodeAcos {
 pub struct NodeAtan {
     value: ValueIn,
 }
-impl INode for NodeAtan {
+impl Node for NodeAtan {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1210,15 +1494,15 @@ impl Default for NodeAtan {
 pub struct NodeRadToDeg {
     radians: ValueIn,
 }
-impl INode for NodeRadToDeg {
+impl Node for NodeRadToDeg {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.radians]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.radians.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1243,15 +1527,15 @@ impl Default for NodeRadToDeg {
 pub struct NodeDegToRad {
     degrees: ValueIn,
 }
-impl INode for NodeDegToRad {
+impl Node for NodeDegToRad {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.degrees]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.degrees.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueFloat::def()]
@@ -1281,15 +1565,15 @@ pub struct NodeAnd {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeAnd {
+impl Node for NodeAnd {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1318,15 +1602,15 @@ pub struct NodeOr {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeOr {
+impl Node for NodeOr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1352,18 +1636,18 @@ impl Default for NodeOr {
 
 /// 异或(ID 228)
 pub struct NodeXor {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeXor {
+impl Node for NodeXor {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1391,15 +1675,15 @@ impl Default for NodeXor {
 pub struct NodeNot {
     value: ValueIn,
 }
-impl INode for NodeNot {
+impl Node for NodeNot {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1424,20 +1708,59 @@ impl Default for NodeNot {
 // 比较
 // ========================================================================
 
-/// 相等(ID 14,泛型)
+/// 相等(ID 14,泛型变体):shell 固定 14,kernel 随类型(Str→14、Gid→15、
+/// Ety→16、Vec→17、Int→370、Flt→371、Cfg→581、Pfb→582、Bol→786);输出 Bol。
 pub struct NodeEqual {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeEqual {
+impl NodeEqual {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        // selected index 按变体顺序(Str,Gid,Ety,Vec,Fct,Int,Flt,Cfg,Pfb,Bol),与 kernel 无关
+        Ok(if value.is::<ValueString>() {
+            0
+        } else if value.is::<ValueGuid>() {
+            1
+        } else if value.is::<ValueEntity>() {
+            2
+        } else if value.is::<ValueVector>() {
+            3
+        } else if value.is::<ValueInt>() {
+            5
+        } else if value.is::<ValueFloat>() {
+            6
+        } else if value.is::<ValueConfig>() {
+            7
+        } else if value.is::<ValuePrefab>() {
+            8
+        } else if value.is::<ValueBool>() {
+            9
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeEqual {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1449,15 +1772,36 @@ impl INode for NodeEqual {
         todo!("ID 14 Equal")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(14)
+        let k = if unwrap_selected(&self.a.value).is::<ValueString>() {
+            14
+        } else if unwrap_selected(&self.a.value).is::<ValueGuid>() {
+            15
+        } else if unwrap_selected(&self.a.value).is::<ValueEntity>() {
+            16
+        } else if unwrap_selected(&self.a.value).is::<ValueVector>() {
+            17
+        } else if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            370
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            371
+        } else if unwrap_selected(&self.a.value).is::<ValueConfig>() {
+            581
+        } else if unwrap_selected(&self.a.value).is::<ValuePrefab>() {
+            582
+        } else if unwrap_selected(&self.a.value).is::<ValueBool>() {
+            786
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        };
+        NodeType::variant(14, k)
     }
-}
-impl Default for NodeEqual {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
@@ -1466,15 +1810,15 @@ pub struct NodeEnumEqual {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeEnumEqual {
+impl Node for NodeEnumEqual {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1498,20 +1842,43 @@ impl Default for NodeEnumEqual {
     }
 }
 
-/// 小于(ID 230)
+/// 小于(ID 230,泛型变体):shell 固定 230,kernel 随类型(Int→230、Flt→235);输出 Bol。
 pub struct NodeLessThan {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeLessThan {
+impl NodeLessThan {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeLessThan {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1523,32 +1890,61 @@ impl INode for NodeLessThan {
         todo!("ID 230 Less_Than")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(230)
+        NodeType::variant(230, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            230
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            235
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeLessThan {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 小于等于(ID 231)
+/// 小于等于(ID 231,泛型变体):shell 固定 231,kernel 随类型(Int→231、Flt→236);输出 Bol。
 pub struct NodeLessEqual {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeLessEqual {
+impl NodeLessEqual {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeLessEqual {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1560,32 +1956,61 @@ impl INode for NodeLessEqual {
         todo!("ID 231 Less_Equal")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(231)
+        NodeType::variant(231, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            231
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            236
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeLessEqual {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 大于(ID 232)
+/// 大于(ID 232,泛型变体):shell 固定 232,kernel 随类型(Int→232、Flt→237);输出 Bol。
 pub struct NodeGreaterThan {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeGreaterThan {
+impl NodeGreaterThan {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeGreaterThan {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1597,32 +2022,61 @@ impl INode for NodeGreaterThan {
         todo!("ID 232 Greater_Than")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(232)
+        NodeType::variant(232, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            232
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            237
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeGreaterThan {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
-/// 大于等于(ID 233)
+/// 大于等于(ID 233,泛型变体):shell 固定 233,kernel 随类型(Int→233、Flt→238);输出 Bol。
 pub struct NodeGreaterEqual {
     a: ValueIn,
     b: ValueIn,
 }
-impl INode for NodeGreaterEqual {
+impl NodeGreaterEqual {
+    pub fn new(ty: AnyValue) -> Self {
+        Self { a: ValueIn::new(ty.clone()), b: ValueIn::new(ty) }
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        let vi = if index == 0 { &mut self.a } else { &mut self.b };
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
+}
+impl Node for NodeGreaterEqual {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![
+            self.a.clone().into_selected(Self::select).unwrap(),
+            self.b.clone().into_selected(Self::select).unwrap(),
+        ]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueBool::def()]
@@ -1634,15 +2088,21 @@ impl INode for NodeGreaterEqual {
         todo!("ID 233 Greater_Equal")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(233)
+        NodeType::variant(233, if unwrap_selected(&self.a.value).is::<ValueInt>() {
+            233
+        } else if unwrap_selected(&self.a.value).is::<ValueFloat>() {
+            238
+        } else {
+            panic!("Unsupported type: {:?}", self.a.value);
+        })
     }
-}
-impl Default for NodeGreaterEqual {
-    fn default() -> Self {
-        Self {
-            a: ValueIn::new(ValueFloat::def()),
-            b: ValueIn::new(ValueFloat::def()),
+    fn verify(&self, _context: &Simulation) -> Result<()> {
+        if Self::select(self.a.value.clone())?
+            != Self::select(self.b.value.clone())?
+        {
+            bail!("The types of the two operands must be the same");
         }
+        Ok(())
     }
 }
 
@@ -1655,15 +2115,15 @@ pub struct NodeLeftShift {
     value: ValueIn,
     bits: ValueIn,
 }
-impl INode for NodeLeftShift {
+impl Node for NodeLeftShift {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.bits]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.bits.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1692,15 +2152,15 @@ pub struct NodeRightShift {
     value: ValueIn,
     bits: ValueIn,
 }
-impl INode for NodeRightShift {
+impl Node for NodeRightShift {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.bits]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.bits.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1726,18 +2186,18 @@ impl Default for NodeRightShift {
 
 /// 按位与(ID 780)
 pub struct NodeBitwiseAnd {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeBitwiseAnd {
+impl Node for NodeBitwiseAnd {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1763,18 +2223,18 @@ impl Default for NodeBitwiseAnd {
 
 /// 按位或(ID 781)
 pub struct NodeBitwiseOr {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeBitwiseOr {
+impl Node for NodeBitwiseOr {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1800,18 +2260,18 @@ impl Default for NodeBitwiseOr {
 
 /// 按位异或(ID 782)
 pub struct NodeBitwiseXor {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
-impl INode for NodeBitwiseXor {
+impl Node for NodeBitwiseXor {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.a, &self.b]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.a.clone(), self.b.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1839,15 +2299,15 @@ impl Default for NodeBitwiseXor {
 pub struct NodeBitwiseNot {
     value: ValueIn,
 }
-impl INode for NodeBitwiseNot {
+impl Node for NodeBitwiseNot {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1874,15 +2334,15 @@ pub struct NodeWriteBit {
     bit: ValueIn,
     bit_value: ValueIn,
 }
-impl INode for NodeWriteBit {
+impl Node for NodeWriteBit {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.bit, &self.bit_value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.bit.clone(), self.bit_value.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1912,15 +2372,15 @@ pub struct NodeReadBit {
     value: ValueIn,
     bit: ValueIn,
 }
-impl INode for NodeReadBit {
+impl Node for NodeReadBit {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value, &self.bit]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone(), self.bit.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -1952,15 +2412,15 @@ impl Default for NodeReadBit {
 pub struct NodeTimestampToTime {
     timestamp: ValueIn,
 }
-impl INode for NodeTimestampToTime {
+impl Node for NodeTimestampToTime {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.timestamp]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.timestamp.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![
@@ -1997,15 +2457,15 @@ pub struct NodeTimeToTimestamp {
     minute: ValueIn,
     second: ValueIn,
 }
-impl INode for NodeTimeToTimestamp {
+impl Node for NodeTimeToTimestamp {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.year, &self.month, &self.day, &self.hour, &self.minute, &self.second]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.year.clone(), self.month.clone(), self.day.clone(), self.hour.clone(), self.minute.clone(), self.second.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2037,15 +2497,15 @@ impl Default for NodeTimeToTimestamp {
 pub struct NodeTimestampToWeekday {
     timestamp: ValueIn,
 }
-impl INode for NodeTimestampToWeekday {
+impl Node for NodeTimestampToWeekday {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.timestamp]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.timestamp.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueInt::def()]
@@ -2071,33 +2531,80 @@ impl Default for NodeTimestampToWeekday {
 // ========================================================================
 
 /// 组装列表(ID 169):把若干元素拼成列表,元素数量动态
+/// 组装列表(ID 169,泛型变体):shell 固定 169,kernel 随元素类型(Int→169、
+/// Str→170、Ety→171、Gid→172、Flt→173、Vec→174、Bol→175、Cfg→568、Pfb→569);
+/// 输出 L<R<T>>(按元素类型返回列表占位)。元素输入动态添加。
 pub struct NodeAssembleList {
     /// 元素输入(动态添加)
     items: Vec<ValueIn>,
-}
-impl Default for NodeAssembleList {
-    fn default() -> Self {
-        Self { items: vec![] }
-    }
+    ty: AnyValue,
 }
 impl NodeAssembleList {
-    /// 添加一个元素输入(泛型元素,按 Int 语义)
+    pub fn new(ty: AnyValue) -> Self {
+        Self { items: vec![], ty }
+    }
+    /// 元素类型的 selected index(Int→0、Str→1、Ety→2、Gid→3、Flt→4、Vec→5、Bol→6、Cfg→7、Pfb→8)
+    fn index_of(ty: &AnyValue) -> Result<i32> {
+        Ok(match ty.get_server_type() {
+            ServerTypeId::SInt => 0,
+            ServerTypeId::SString => 1,
+            ServerTypeId::SEntity => 2,
+            ServerTypeId::SGuid => 3,
+            ServerTypeId::SFloat => 4,
+            ServerTypeId::SVector => 5,
+            ServerTypeId::SBoolean => 6,
+            ServerTypeId::SConfig => 7,
+            ServerTypeId::SPrefab => 8,
+            other => bail!("Unsupported type: {other:?}"),
+        })
+    }
+    fn select(value: AnyValue) -> Result<i32> {
+        Self::index_of(&value)
+    }
+    /// 添加一个元素输入
     pub fn add_item(&mut self, item: ValueIn) {
         self.items.push(item);
     }
+    /// 设置第 index 个元素输入的值来源
+    pub fn set_item(&mut self, index: usize, value: AnyValue, link: Option<Link>) {
+        while self.items.len() <= index {
+            self.items.push(ValueIn::new(self.ty.clone()));
+        }
+        let vi = &mut self.items[index];
+        vi.value = value;
+        vi.has_default = link.is_none();
+        vi.link = link;
+    }
 }
-impl INode for NodeAssembleList {
+impl Node for NodeAssembleList {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        self.items.iter().collect()
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        self.items
+            .iter()
+            .map(|i| i.clone().into_selected(Self::select).unwrap())
+            .collect()
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueIntList::def()]
+        // 输出 L<R<T>>:selected index 按元素类型,值按元素类型给列表占位
+        let index = Self::index_of(&self.ty).unwrap();
+        let list: AnyValue = match self.ty.get_server_type() {
+            ServerTypeId::SInt => ValueIntList::default().into(),
+            ServerTypeId::SString => ValueStringList::default().into(),
+            ServerTypeId::SEntity => ValueEntityList::default().into(),
+            ServerTypeId::SGuid => ValueGuidList::default().into(),
+            ServerTypeId::SFloat => ValueFloatList::default().into(),
+            ServerTypeId::SVector => ValueVectorList::default().into(),
+            ServerTypeId::SBoolean => ValueBoolList::default().into(),
+            ServerTypeId::SConfig => ValueConfigList::default().into(),
+            ServerTypeId::SPrefab => ValuePrefabList::default().into(),
+            other => panic!("Arithmetic.General.Assemble_List does not support type {other:?}"),
+        };
+        vec![ValueSelected { index, value: list, has_default: false }.into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 169 Assemble_List")
@@ -2106,26 +2613,83 @@ impl INode for NodeAssembleList {
         todo!("ID 169 Assemble_List")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(169)
+        let k = match self.ty.get_server_type() {
+            ServerTypeId::SInt => 169,
+            ServerTypeId::SString => 170,
+            ServerTypeId::SEntity => 171,
+            ServerTypeId::SGuid => 172,
+            ServerTypeId::SFloat => 173,
+            ServerTypeId::SVector => 174,
+            ServerTypeId::SBoolean => 175,
+            ServerTypeId::SConfig => 568,
+            ServerTypeId::SPrefab => 569,
+            other => panic!("Arithmetic.General.Assemble_List does not support type {other:?}"),
+        };
+        NodeType::variant(169, k)
     }
 }
 
-/// 类型转换(ID 180):K 类型值转为 V 类型值
+/// 类型转换(ID 180,泛型变体):K 类型值转为 V 类型值;
+/// shell 固定 180,kernel 随 (K,V) 组合(11 种,见特判);输出 R<V>。
 pub struct NodeConvertType {
     value: ValueIn,
+    from_ty: AnyValue,
+    to_ty: AnyValue,
 }
-impl INode for NodeConvertType {
+impl NodeConvertType {
+    pub fn new(from_ty: AnyValue, to_ty: AnyValue) -> Self {
+        Self { value: ValueIn::new(from_ty.clone()), from_ty, to_ty }
+    }
+    /// 输入 R<K> 的 selected index(Int→0、Ety→1、Gid→2、Bol→3、Flt→4、Vec→5)
+    fn select_in(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() {
+            0
+        } else if value.is::<ValueEntity>() {
+            1
+        } else if value.is::<ValueGuid>() {
+            2
+        } else if value.is::<ValueBool>() {
+            3
+        } else if value.is::<ValueFloat>() {
+            4
+        } else if value.is::<ValueVector>() {
+            5
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    /// 输出 R<V> 的 selected index(Bol→0、Flt→1、Str→2、Int→3)
+    fn select_out(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueBool>() {
+            0
+        } else if value.is::<ValueFloat>() {
+            1
+        } else if value.is::<ValueString>() {
+            2
+        } else if value.is::<ValueInt>() {
+            3
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
+    pub fn set_input(&mut self, value: AnyValue, link: Option<Link>) {
+        self.value.value = value;
+        self.value.has_default = link.is_none();
+        self.value.link = link;
+    }
+}
+impl Node for NodeConvertType {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.value]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.value.clone().into_selected(Self::select_in).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
-        vec![ValueInt::def()]
+        vec![self.to_ty.clone().into_selected(false, Self::select_out).unwrap().into()]
     }
     fn execute(&mut self, _c: &mut Simulation) -> Result<Vec<NodeRef>> {
         todo!("ID 180 Convert_Type")
@@ -2134,12 +2698,21 @@ impl INode for NodeConvertType {
         todo!("ID 180 Convert_Type")
     }
     fn get_type(&self) -> NodeType {
-        NodeType::simple(180)
-    }
-}
-impl Default for NodeConvertType {
-    fn default() -> Self {
-        Self { value: ValueIn::new(ValueInt::def()) }
+        // kernel 由 (K,V) 组合决定(11 种)
+        let k = match (self.from_ty.get_server_type(), self.to_ty.get_server_type()) {
+            (ServerTypeId::SInt, ServerTypeId::SBoolean) => 180,
+            (ServerTypeId::SInt, ServerTypeId::SFloat) => 181,
+            (ServerTypeId::SInt, ServerTypeId::SString) => 182,
+            (ServerTypeId::SEntity, ServerTypeId::SString) => 183,
+            (ServerTypeId::SGuid, ServerTypeId::SString) => 184,
+            (ServerTypeId::SBoolean, ServerTypeId::SInt) => 185,
+            (ServerTypeId::SBoolean, ServerTypeId::SString) => 186,
+            (ServerTypeId::SFloat, ServerTypeId::SInt) => 187,
+            (ServerTypeId::SFloat, ServerTypeId::SString) => 188,
+            (ServerTypeId::SVector, ServerTypeId::SString) => 189,
+            (from, to) => panic!("Arithmetic.General.Convert_Type does not support {from:?} -> {to:?}"),
+        };
+        NodeType::variant(180, k)
     }
 }
 
@@ -2148,15 +2721,15 @@ pub struct NodeCreateDictionary {
     keys: ValueIn,
     values: ValueIn,
 }
-impl INode for NodeCreateDictionary {
+impl Node for NodeCreateDictionary {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.keys, &self.values]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.keys.clone(), self.values.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueDict::new(ValueInt::default(), ValueInt::default()).into()]
@@ -2196,18 +2769,18 @@ impl NodeAssembleDictionary {
         self.pairs.push((key, value));
     }
 }
-impl INode for NodeAssembleDictionary {
+impl Node for NodeAssembleDictionary {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
+    fn get_values_in(&self) -> Vec<ValueIn> {
         let mut v = Vec::with_capacity(self.pairs.len() * 2);
         for (k, val) in &self.pairs {
-            v.push(k);
-            v.push(val);
+            v.push(k.clone());
+            v.push(val.clone());
         }
         v
     }
@@ -2245,15 +2818,15 @@ impl NodeAssembleStruct {
         self.fields.push(field);
     }
 }
-impl INode for NodeAssembleStruct {
+impl Node for NodeAssembleStruct {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        self.fields.iter().collect()
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        self.fields.clone()
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![ValueStruct::new(0, vec![]).into()]
@@ -2274,15 +2847,15 @@ pub struct NodeSplitStruct {
     /// 结构体输入
     structure: ValueIn,
 }
-impl INode for NodeSplitStruct {
+impl Node for NodeSplitStruct {
     fn get_controls_in(&self) -> i32 {
         0
     }
     fn get_controls_out(&self) -> Vec<ControlOut> {
         vec![]
     }
-    fn get_values_in(&self) -> Vec<&ValueIn> {
-        vec![&self.structure]
+    fn get_values_in(&self) -> Vec<ValueIn> {
+        vec![self.structure.clone()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
