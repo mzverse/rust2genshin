@@ -16,7 +16,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Setup
+    - name: Setup Nightly
       run: rustup +nightly component add rustc-dev rust-src llvm-tools-preview
+    - name: Setup Protoc
+      run: apt install protobuf-compiler
     - name: Build
       run: cargo +nightly run -p build-demo
