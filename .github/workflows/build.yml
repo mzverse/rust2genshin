@@ -17,6 +17,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Setup
-      run: rustup +nightly component add rustc-dev rust-src rustc-src
+      run: rustup +nightly component add rustc-dev rust-src llvm-tools-preview
     - name: Build
       run: cargo +nightly run -p build-demo
