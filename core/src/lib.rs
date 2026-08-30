@@ -4,6 +4,7 @@ pub mod asset;
 pub mod backend;
 pub mod parser;
 pub mod compile;
+mod compile_fn;
 
 #[allow(unused_extern_crates)]
 extern crate rustc_abi;

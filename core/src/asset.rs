@@ -64,11 +64,12 @@ impl AssetBundle {
         let mut primary = Vec::new();
         let mut dependencies = Vec::new();
         for (i, asset) in &self.assets {
-            let data = asset.encode(Self::ID_BEGIN + i as i64);
-            if self.display.contains(&(Self::ID_BEGIN + i as i64)) {
-                primary.extend(data);
-            } else {
-                dependencies.extend(data);
+            for data in asset.encode(Self::ID_BEGIN + i as i64) {
+                if self.display.contains(&data.id.unwrap().guid) {
+                    primary.push(data);
+                } else {
+                    dependencies.push(data);
+                }
             }
         }
         AssetBundleData {

@@ -433,6 +433,7 @@ impl Asset for NodeGraphMain {
 /// 节点与 NodeGraphMain 一样是 INode(NodeStub),字段对齐。
 pub struct NodeGraphComposite {
     pub(crate) basic: NodeGraphBasic,
+    pub(crate) description: String,
     /// 复合接口引脚 → 内部节点引脚的穿透映射
     pub(crate) pins: HashMap<pin_signature::Kind, Vec<(String, Vec<Link>)>>,
 }
@@ -482,6 +483,7 @@ impl NodeGraphComposite {
         pins.insert(pin_signature::Kind::OutParam, vec![]);
         Self {
             basic: NodeGraphBasic::new(class, name),
+            description: String::new(),
             pins,
         }
     }
@@ -569,7 +571,7 @@ impl NodeGraphComposite {
                             template: None,
                         }),
                         name: self.basic.name.clone(),
-                        description: "graph description todo".to_string(),
+                        description: self.description.clone(),
                         template_root: node_interface::TemplateRoot::UserComposite as i32,
                         template_sub: node_interface::TemplateSub::None as i32,
                     }),

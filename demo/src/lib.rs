@@ -30,11 +30,22 @@ use rust2genshin_lib::*;
 //     helper_add(1, 2)
 // }
 
-// pub extern "Rust" fn my_fn(a: i32, b: i32, c: i32) -> i32 {
-//     (0 - b + (b * b - 4 * a * c)) * 2
+// pub extern "Rust" fn my_fn(a: i32, b: i32, C: i32) -> i32 {
+//     (0 - b + (b * b - 4 * a * C)) * 2
 // }
 
-pub extern "Rust" fn test(a: i32, b: i32) -> i32 {
+pub fn con() -> i32 {
+    114
+}
+
+const C: fn() -> i32 = con;
+
+#[unsafe(no_mangle)]
+pub fn test(a: i32, b: i32) -> i32 {
+    C() + bi(a, b) + b
+}
+
+pub fn bi(a: i32, b: i32) -> i32 {
     a + b * b
 }
 
