@@ -39,8 +39,8 @@ macro_rules! flow_node {
 }
 
 pub struct NodeLog {
-    value: ValueIn,
-    next: ControlOut,
+    pub value: ValueIn,
+    pub next: ControlOut,
 }
 impl Node for NodeLog {
     fn get_controls_in(&self) -> i32 {
@@ -70,6 +70,10 @@ impl Node for NodeLog {
 
     fn get_type(&self) -> NodeType {
         NodeType::simple(1)
+    }
+
+    fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
+        vec![&mut self.next]
     }
 }
 

@@ -5,7 +5,7 @@ use crate::asset::node_graph::{
     Link, NodeGraph, NodeGraphComposite, NodeGraphMain, NodeRef, ValueIn,
 };
 use crate::asset::raw_node_graph::NodeGraphClass;
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueString};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -14,17 +14,19 @@ use rustc_hir::{ImplItem, intravisit};
 use rustc_index::IndexVec;
 use rustc_middle::hir::nested_filter;
 use rustc_middle::mir;
-use rustc_middle::mir::{
-    BasicBlock, Local,
-};
+use rustc_middle::mir::{BasicBlock, Body, Local};
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{Instance, IntTy, Ty, TyCtxt, TyKind};
-use rustc_span::def_id::{DefId, LOCAL_CRATE, LocalDefId};
+use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind};
+use rustc_span::def_id::{LOCAL_CRATE, LocalDefId};
 use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+
+mod func;
+mod native;
+mod optimize;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
 
@@ -33,6 +35,24 @@ pub fn resolved_out_dir() -> PathBuf {
         return PathBuf::from(td);
     }
     PathBuf::from("target")
+}
+
+pub fn get_expn_macro_attr(tcx: TyCtxt, span: Span) -> Option<syn::Attribute> {
+    let ex = span.ctxt().outer_expn().expn_data();
+    if matches!(ex.kind, ExpnKind::Macro(MacroKind::Attr, _)) {
+        let tokens = syn::parse_str::<TokenStream>(
+            &tcx.sess
+                .source_map()
+                .span_to_snippet(ex.call_site.data().span())
+                .unwrap()
+        ).unwrap();
+        use syn::parse::Parser;
+        let result = syn::Attribute::parse_outer.parse2(tokens).unwrap();
+        assert_eq!(result.len(), 1);
+        Some(result.into_iter().next().unwrap())
+    } else {
+        None
+    }
 }
 
 pub fn compile(tcx: TyCtxt<'_>) -> Result<()> {
@@ -99,9 +119,10 @@ impl Block {
     }
 }
 
-pub(crate) trait WithTyCtxt<'tcx> {
+pub(crate) trait WithTcx<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx>;
 
+    #[allow(dead_code)]
     fn err<T>(&self, msg: impl Into<rustc_errors::DiagMessage>) -> Result<T> {
         Err(self.get_tcx().dcx().err(msg.into()))
     }
@@ -111,29 +132,60 @@ pub(crate) trait WithTyCtxt<'tcx> {
     }
 }
 
-pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTyCtxt<'tcx>, span: Span, ty: Ty) -> Result<AnyValue> {
+pub(crate) struct CompilingFn<'tcx, 'a> {
+    pub tcx: TyCtxt<'tcx>,
+    pub compiler: &'a mut Compiler<'tcx>,
+    pub graph: &'a mut NodeGraphComposite,
+    pub body: &'a Body<'tcx>,
+    pub locals: &'a IndexVec<Local, NodeRef>,
+}
+impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
+    fn get_tcx(&self) -> TyCtxt<'tcx> {
+        self.tcx
+    }
+}
+
+pub(crate) fn is_unit(ty: Ty) -> bool {
+    if ty.is_never() {
+        return true;
+    }
+    if let TyKind::Tuple(cs) = ty.kind() {
+        cs.len() == 0
+    } else {
+        false
+    }
+}
+
+pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> Result<AnyValue> {
     Ok(match ty.kind() {
         TyKind::Bool => ValueBool::def(),
         TyKind::Char => return tcx.span_err(span, "Char is unsupported"),
         TyKind::Int(ty) => match ty {
-            IntTy::I8 | IntTy::I16 | IntTy::I64 | IntTy::I128 => {
-                return tcx.span_err(span, format!("{} is unsupported", ty.name()));
-            }
+            IntTy::I8 | IntTy::I16 | IntTy::I64 | IntTy::I128 =>
+                return tcx.span_err(span, format!("Unsupported int: {}", ty.name())),
             IntTy::Isize | IntTy::I32 => ValueInt::def(),
         },
         TyKind::Uint(_) => todo!(),
-        TyKind::Float(_) => todo!(),
-        TyKind::Adt(_, _) => todo!(),
-        TyKind::Foreign(_) => todo!(),
+        TyKind::Float(ty) => match ty {
+            FloatTy::F16 |
+            FloatTy::F64 |
+            FloatTy::F128 =>
+                return tcx.span_err(span, format!("Unsupported float: {}", ty.name())),
+            FloatTy::F32 => ValueFloat::def(),
+        },
         TyKind::Str => ValueString::def(),
+        TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
+            todo!()
+        },
+        TyKind::Adt(d, a) => return tcx.span_err(span, format!("{d:?}: {a:?}")),
+        TyKind::Foreign(_) => todo!(),
         TyKind::Array(_, _) => todo!(),
         TyKind::Pat(_, _) => todo!(),
         TyKind::Slice(_) => todo!(),
         TyKind::RawPtr(_, _) => todo!(),
-        TyKind::Ref(_, _, _) => todo!(),
         TyKind::FnDef(_, _) => todo!(),
         TyKind::FnPtr(_, _) => todo!(),
-        TyKind::Tuple(_) => todo!(),
+        TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
         TyKind::Closure(_, _) => todo!(),
         TyKind::Alias(_, _) => todo!(),
         TyKind::Dynamic(_, _)
@@ -155,10 +207,10 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTyCtxt<'tcx>, span: Span, ty: Ty) 
 pub(crate) struct Compiler<'tcx> {
     tcx: TyCtxt<'tcx>,
     assets: AssetBundle,
-    compiling: HashSet<DefId>,
-    compiled: HashMap<DefId, i64>,
+    compiling: HashSet<Instance<'tcx>>,
+    compiled: HashMap<Instance<'tcx>, i64>,
 }
-impl<'tcx> WithTyCtxt<'tcx> for Compiler<'tcx> {
+impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
@@ -179,27 +231,6 @@ impl<'tcx> Compiler<'tcx> {
             self.tcx.crate_name(LOCAL_CRATE).to_string()
         ));
         self.assets.save(&path).expect("encode error");
-    }
-
-    fn get_expn_macro_attr(&self, span: Span) -> Option<syn::Attribute> {
-        let ex = span.ctxt().outer_expn().expn_data();
-        if matches!(ex.kind, ExpnKind::Macro(MacroKind::Attr, _)) {
-            let tokens = syn::parse_str::<TokenStream>(
-                &self
-                    .tcx
-                    .sess
-                    .source_map()
-                    .span_to_snippet(ex.call_site.data().span())
-                    .unwrap(),
-            )
-            .unwrap();
-            use syn::parse::Parser;
-            let result = syn::Attribute::parse_outer.parse2(tokens).unwrap();
-            assert_eq!(result.len(), 1);
-            Some(result.into_iter().next().unwrap())
-        } else {
-            None
-        }
     }
 
     fn run(&mut self) -> Result<()> {
@@ -231,13 +262,13 @@ impl<'tcx> Compiler<'tcx> {
         };
         self.tcx.hir_walk_toplevel_module(&mut c);
         for x in c.out {
-            self.touch_fn(x.to_def_id())?;
-            if let Some(it) = self.get_expn_macro_attr(x.default_span(self.tcx)) {
+            self.touch_fn(Instance::mono(self.tcx, x.to_def_id()))?;
+            if let Some(_it) = get_expn_macro_attr(self.tcx, x.default_span(self.tcx)) {
 
                 // TODO: manage entrypoint (event_handler)
             }
         }
-        let mut main = NodeGraphMain::new(
+        let main = NodeGraphMain::new(
             NodeGraphClass::Entity,
             self.tcx.crate_name(LOCAL_CRATE).to_string(),
         );
@@ -264,26 +295,31 @@ impl<'tcx> Compiler<'tcx> {
         Ok(())
     }
 
-    pub(crate) fn touch_fn(&mut self, id: DefId) -> Result<i64> {
-        if let Some(asset_id) = self.compiled.get(&id) {
+    pub(crate) fn touch_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
+        if let Some(asset_id) = self.compiled.get(&func) {
             return Ok(*asset_id);
         }
-        if !self.compiling.insert(id) {
-            return self.span_err(id.default_span(self.tcx), "Recursive call");
+        if !self.compiling.insert(func) {
+            return self.span_err(func.default_span(self.tcx), "Recursive call");
         }
-        let asset_id = self.compile_fn(id)?;
-        self.compiling.remove(&id);
-        self.compiled.insert(id, asset_id);
+        let asset_id = self.compile_fn(func)?;
+        self.compiling.remove(&func);
+        self.compiled.insert(func, asset_id);
         Ok(asset_id)
     }
 
-    fn compile_fn(&mut self, id: DefId) -> Result<i64> {
+    fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
+        self.tcx.dcx().note(format!("Compiling fn: {}", self.tcx.def_path_str(func.def_id())));
         // let name = self.tcx.def_path_str(id);
-        let mut graph = NodeGraphComposite::new(NodeGraphClass::Entity, self.tcx.symbol_name(Instance::mono(self.tcx, id)).to_string());
-        let body = self.tcx.optimized_mir(id);
+        let mut graph = NodeGraphComposite::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string());
+        let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, NodeRef>::new(); // TODO: adapt for struct, struct list and map
         for x in &body.local_decls {
+            if is_unit(x.ty) {
+                locals.push(NodeRef::from(-1));
+                continue;
+            }
             let mut local = NodeLocal::new(compile_ty(self, x.source_info.span, x.ty)?);
             local.initial.has_default = true;
             locals.push(graph.insert(local.into()));
@@ -291,7 +327,7 @@ impl<'tcx> Compiler<'tcx> {
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
         let mut returns = Vec::new();
         for (k, result) in {
-            let mut compiling = crate::compile_fn::CompilingFn {
+            let mut compiling = CompilingFn {
                 tcx: self.tcx,
                 compiler: self,
                 graph: &mut graph,
@@ -309,45 +345,43 @@ impl<'tcx> Compiler<'tcx> {
                 returns.push(end);
             }
         }
-        graph
-            .pins
+        graph.pins
             .get_mut(&crate::asset::generated::pin_signature::Kind::InFlow)
             .unwrap()
             .push((
                 "".into(),
                 vec![Link::new(blocks.get(mir::START_BLOCK).unwrap().begin, 0)],
             ));
-        graph
-            .pins
+        graph.pins
             .get_mut(&crate::asset::generated::pin_signature::Kind::OutFlow)
             .unwrap()
             .push(("".into(), returns));
-        graph
-            .pins
+        graph.pins
             .get_mut(&crate::asset::generated::pin_signature::Kind::InParam)
             .unwrap()
-            .extend(self.tcx.fn_arg_idents(id).iter().enumerate().map(|(i, n)| {
+            .extend(self.tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, n)| {
                 (
                     n.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i).to_string()),
                     vec![Link::new(*locals.get(Local::arg(i)).unwrap(), 0)],
                 )
             }));
-        graph
-            .pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::OutParam)
-            .unwrap()
-            .push((
-                "return".into(),
-                vec![Link::new(*locals.get(mir::RETURN_PLACE).unwrap(), 1)],
-            ));
+        if !is_unit(body.return_ty()) {
+            graph.pins
+                .get_mut(&crate::asset::generated::pin_signature::Kind::OutParam)
+                .unwrap()
+                .push((
+                    "return".into(),
+                    vec![Link::new(*locals.get(mir::RETURN_PLACE).unwrap(), 1)],
+                ));
+        }
         let asset_id = self.assets.insert(graph.into());
-        if self.tcx.codegen_fn_attrs(id).contains_extern_indicator() {
-            self.tcx.dcx().note(format!("Export fn: {}", self.tcx.def_path_str(id)));
+        if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
             self.assets.display.push(asset_id + NodeGraphComposite::DECL_OFFSET);
         }
         Ok(asset_id)
     }
 
+    #[allow(dead_code)]
     fn touch_struct(&mut self) {
         todo!()
     }

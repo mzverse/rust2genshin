@@ -124,9 +124,7 @@ impl Default for NodeRandomInt {
 }
 
 /// 圆周率(ID 191)
-pub struct NodePi {
-    _unused: (),
-}
+pub struct NodePi;
 impl Node for NodePi {
     fn get_controls_in(&self) -> i32 {
         0
@@ -152,7 +150,7 @@ impl Node for NodePi {
 }
 impl Default for NodePi {
     fn default() -> Self {
-        Self { _unused: () }
+        Self
     }
 }
 

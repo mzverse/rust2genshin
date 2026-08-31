@@ -1,0 +1,74 @@
+use rust2genshin_lib_internal::{native, native_calc};
+
+pub use core::f32::consts::PI;
+
+pub trait Divide: Sized {
+    fn divide(self, rhs: Self) -> Self;
+}
+impl Divide for i32 {
+    #[native("divide")]
+    fn divide(self, rhs: Self) -> Self;
+}
+
+pub unsafe trait I32 {
+    fn ushr(self, rhs: Self) -> Self;
+    fn shr(self, rhs: Self) -> Self;
+}
+
+pub unsafe trait F32 {
+    fn sqrt(self) -> Self;
+
+    fn log(self, base: Self) -> Self;
+
+    fn sin(self) -> Self;
+    fn cos(self) -> Self;
+    fn tan(self) -> Self;
+
+    fn asin(self) -> Self;
+    fn acos(self) -> Self;
+    fn atan(self) -> Self;
+}
+
+
+unsafe impl I32 for i32 {
+    fn ushr(self, rhs: Self) -> Self {
+        (self as u32 >> rhs) as i32
+    }
+
+    fn shr(self, rhs: Self) -> Self {
+        if rhs == 0 {
+            return self;
+        }
+        let result = self.ushr(rhs);
+        if self < 0 {
+            result | !(1i32 << (32 - rhs)).wrapping_sub(1)
+        } else {
+            result
+        }
+    }
+}
+unsafe impl F32 for f32 {
+    #[native_calc(221)]
+    fn sqrt(self) -> Self;
+
+    #[native_calc(215)]
+    fn log(self, base: Self) -> Self;
+
+    #[native_calc(291)]
+    fn sin(self) -> Self;
+
+    #[native_calc(292)]
+    fn cos(self) -> Self;
+
+    #[native_calc(293)]
+    fn tan(self) -> Self;
+
+    #[native_calc(294)]
+    fn asin(self) -> Self;
+
+    #[native_calc(295)]
+    fn acos(self) -> Self;
+
+    #[native_calc(296)]
+    fn atan(self) -> Self;
+}

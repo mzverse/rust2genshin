@@ -1562,8 +1562,8 @@ impl Default for NodeDegToRad {
 
 /// 与(ID 226)
 pub struct NodeAnd {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl Node for NodeAnd {
     fn get_controls_in(&self) -> i32 {
@@ -1599,8 +1599,8 @@ impl Default for NodeAnd {
 
 /// 或(ID 227)
 pub struct NodeOr {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl Node for NodeOr {
     fn get_controls_in(&self) -> i32 {
@@ -1711,8 +1711,8 @@ impl Default for NodeNot {
 /// 相等(ID 14,泛型变体):shell 固定 14,kernel 随类型(Str→14、Gid→15、
 /// Ety→16、Vec→17、Int→370、Flt→371、Cfg→581、Pfb→582、Bol→786);输出 Bol。
 pub struct NodeEqual {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl NodeEqual {
     pub fn new(ty: AnyValue) -> Self {
@@ -2112,8 +2112,8 @@ impl Node for NodeGreaterEqual {
 
 /// 左移(ID 778)
 pub struct NodeLeftShift {
-    value: ValueIn,
-    bits: ValueIn,
+    pub(crate) value: ValueIn,
+    pub(crate) bits: ValueIn,
 }
 impl Node for NodeLeftShift {
     fn get_controls_in(&self) -> i32 {
@@ -2149,8 +2149,8 @@ impl Default for NodeLeftShift {
 
 /// 右移(ID 779)
 pub struct NodeRightShift {
-    value: ValueIn,
-    bits: ValueIn,
+    pub(crate) value: ValueIn,
+    pub(crate) bits: ValueIn,
 }
 impl Node for NodeRightShift {
     fn get_controls_in(&self) -> i32 {

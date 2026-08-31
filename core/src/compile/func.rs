@@ -1,27 +1,18 @@
-use crate::asset::node_graph::arithmetic::{NodeAdd, NodeBitwiseAnd, NodeBitwiseOr, NodeBitwiseXor, NodeDivide, NodeModulo, NodeMultiply, NodeSubtract};
+use crate::asset::node_graph::arithmetic::{NodeAdd, NodeAnd, NodeBitwiseAnd, NodeBitwiseOr, NodeBitwiseXor, NodeDivide, NodeEqual, NodeLeftShift, NodeModulo, NodeMultiply, NodeOr, NodeRightShift, NodeSubtract, NodeXor};
 use crate::asset::node_graph::execution::NodeSetLocal;
-use crate::asset::node_graph::{ControlOut, Link, Node, NodeComposite, NodeGraph, NodeGraphComposite, NodeRef, ValueIn};
+use crate::asset::node_graph::{ControlOut, Link, Node, NodeComposite, NodeGraph, NodeRef, ValueIn};
 use crate::asset::value::{ValueBool, ValueFloat, ValueInt, ValueString};
-use crate::compile::*;
+
 use rustc_abi::Size;
 use rustc_index::IndexVec;
-use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
-use rustc_middle::mir::{BasicBlock, BinOp, Body, Const, ConstValue, Local, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind};
-use rustc_middle::ty::{FloatTy, IntTy, TyCtxt, TyKind};
+use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
+use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstValue, HasLocalDecls, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind};
+use rustc_middle::ty::{FloatTy, IntTy, TyKind};
 use rustc_span::{Span, Spanned};
 
-pub(crate) struct CompilingFn<'tcx, 'a> {
-    pub tcx: TyCtxt<'tcx>,
-    pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut NodeGraphComposite,
-    pub body: &'a Body<'tcx>,
-    pub locals: &'a IndexVec<Local, NodeRef>,
-}
-impl<'tcx> WithTyCtxt<'tcx> for CompilingFn<'tcx, '_> {
-    fn get_tcx(&self) -> TyCtxt<'tcx> {
-        self.tcx
-    }
-}
+use super::*;
+
+
 impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     pub fn compile_basic_block(
         &mut self,
@@ -83,16 +74,19 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         NodeSubtract { a, b }.into(),
                     BinOp::Mul | BinOp::MulUnchecked | BinOp::MulWithOverflow =>
                         NodeMultiply { a, b }.into(),
-                    BinOp::Div => NodeDivide { a, b }.into(),
-                    BinOp::Rem => NodeModulo { a, b }.into(), // FIXME
-                    BinOp::BitXor => NodeBitwiseXor { a, b }.into(),
-                    BinOp::BitAnd => NodeBitwiseAnd { a, b }.into(),
-                    BinOp::BitOr => NodeBitwiseOr { a, b }.into(),
-                    BinOp::Shl
-                    | BinOp::ShlUnchecked
-                    | BinOp::Shr
-                    | BinOp::ShrUnchecked
-                    | BinOp::Eq
+                    BinOp::Div => {
+                        if a.value.is::<ValueInt>() {
+                            self.tcx.dcx().span_warn(span, "Div is slow and big, see `divide`");
+                        }
+                        NodeDivide { a, b }.into()
+                    },
+                    BinOp::Rem => NodeModulo { a, b }.into(),
+                    BinOp::BitXor => if ty.is_bool() { NodeXor { a,b }.into() } else { NodeBitwiseXor { a, b }.into() },
+                    BinOp::BitAnd => if ty.is_bool() { NodeAnd { a,b }.into() } else { NodeBitwiseAnd { a, b }.into() },
+                    BinOp::BitOr => if ty.is_bool() { NodeOr { a,b }.into() } else { NodeBitwiseOr { a, b }.into() },
+                    BinOp::Eq => NodeEqual { a, b }.into(),
+                    BinOp::Shl | BinOp::ShlUnchecked => NodeLeftShift { value: a, bits: b }.into(),
+                    BinOp::Shr | BinOp::ShrUnchecked => todo!(),
                     | BinOp::Lt
                     | BinOp::Le
                     | BinOp::Ne
@@ -137,7 +131,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
             Operand::Constant(co) => {
                 let ty = co.ty();
-                let v = co.const_.eval(self.tcx, self.body.typing_env(self.tcx), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const: {:?}", co.const_)))?;
+                let v = co.const_.eval(self.tcx, self.body.typing_env(self.tcx), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
                 ValueIn {
                     has_default: true,
                     link: None,
@@ -159,14 +153,24 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         },
                         TyKind::Adt(_, _) => todo!(),
                         TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
+                        TyKind::Ref(_, e, _) => {
+                            if e.is_str() {
+                                let ConstValue::Slice { alloc_id, meta: len } = v else { panic!("{v:?}") };
+                                ValueString(match str::from_utf8(self.tcx.global_alloc(alloc_id).unwrap_memory().0.get_bytes_unchecked(AllocRange { start: Size::ZERO, size: Size::from_bytes(len) })) {
+                                    Ok(s) => s.to_string(),
+                                    Err(e) => return self.span_err(co.span, e.to_string()),
+                                }).into()
+                            } else {
+                                return self.span_err(co.span, format!("Unsupported const ref: {:?}", ty));
+                            }
+                        },
+                        TyKind::Slice(_) |
                         TyKind::Foreign(_) |
                         TyKind::Char |
                         TyKind::Uint(_) |
                         TyKind::Array(_, _) |
                         TyKind::Pat(_, _) |
-                        TyKind::Slice(_) |
                         TyKind::RawPtr(_, _) |
-                        TyKind::Ref(_, _, _) |
                         TyKind::FnDef(_, _) |
                         TyKind::FnPtr(_, _) |
                         TyKind::UnsafeBinder(_) |
@@ -182,11 +186,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         TyKind::Bound(_, _) |
                         TyKind::Placeholder(_) |
                         TyKind::Infer(_) |
-                        TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?}", co.const_)),
+                        TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?} = {:?}", ty, v)),
                     },
                 }
             }
-            Operand::RuntimeChecks(_) => todo!(),
+            Operand::RuntimeChecks(_) => ValueIn::linked(ValueBool(false).into(), None),
         })
     }
 
@@ -203,20 +207,36 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let result = Block::nop(self.graph);
                 self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
                 Ok((result.begin, None))
-            }
+            },
+            TerminatorKind::Assert { target, .. } => {
+                self.tcx.dcx().span_note(terminator.source_info.span, "Ignored assert");
+                let result = Block::nop(self.graph); // same as goto
+                self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
+                Ok((result.begin, None))
+            },
             TerminatorKind::Call { func, target, args, destination, .. } => {
-                let result = self.compile_call(func, args, *destination)?;
+                let result = self.compile_call(terminator.source_info.span, func, args, *destination)?;
                 if let Some(target) = target {
                     self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
-                } else {
-                    return self.span_err(terminator.source_info.span, "Panic is unsupported");
                 }
                 Ok((result.begin, None))
             }
-            TerminatorKind::TailCall { func, args, .. } => match self.compile_call(func, args, Place::return_place())? {
+            TerminatorKind::TailCall { func, args, .. } => match self.compile_call(terminator.source_info.span, func, args, Place::return_place())? {
                 Block { begin, end } => Ok((begin, Some(end))),
             },
-            TerminatorKind::SwitchInt { .. } => todo!(),
+            TerminatorKind::SwitchInt { discr, targets, .. } => {
+                let value = self.compile_operand(discr)?;
+                if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
+                    let node = NodeIf {
+                        condition: value,
+                        branch_true: vec![blocks[targets.target_for_value(1u128)].begin],
+                        branch_false: vec![blocks[targets.target_for_value(0u128)].begin],
+                    };
+                    Ok((self.graph.insert(node.into()), None))
+                } else {
+                    todo!()
+                }
+            },
             TerminatorKind::Drop { .. } => todo!(),
             other => self.span_err(
                 terminator.source_info.span,
@@ -225,7 +245,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
     }
 
-    fn compile_call(&mut self, func: &Operand<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place) -> Result<Block> {
+    fn compile_call(&mut self, span: Span, func: &Operand<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
         let func = match func {
             Operand::Copy(_) | Operand::Move(_) | Operand::RuntimeChecks(_) =>
                 return self.span_err(func.span(&self.body.local_decls), format!("Unsupported call: {:?}", func)),
@@ -238,16 +258,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                                 Scalar::Int(_) => panic!("int"),
                                 Scalar::Ptr(p, _) => {
                                     let (p, o) = p.into_raw_parts();
-                                    if o !=Size::ZERO {
+                                    if o != Size::ZERO {
                                         return self.span_err(func.span, format!("Unsupported call const Indirect offset: {:?}", sc));
                                     }
                                     match self.tcx.global_alloc(p.alloc_id()) {
-                                        GlobalAlloc::Function { instance } => instance.def_id(),
+                                        GlobalAlloc::Function { instance } => instance,
                                         other => return self.span_err(func.span, format!("Unsupported call const Indirect: {:?}", other)),
                                     }
                                 },
                             },
-                            it => panic!("{:?}", it),
+                            other => panic!("{:?}", other),
                         },
                     Const::Val(val, ty) => {
                         match val {
@@ -255,7 +275,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             ConstValue::Slice { .. } => return self.span_err(func.span, format!("Unsupported call const val: {:?}", val)),
                             ConstValue::ZeroSized => {
                                 match ty.kind() {
-                                    TyKind::FnDef(func, _) => *func,
+                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, self.body.typing_env(self.tcx), *def_id, b.skip_binder())?.unwrap(),
                                     _ => return self.span_err(func.span, format!("Unsupported call const ty: {:?}", ty)),
                                 }
                             }
@@ -265,7 +285,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                                     return self.span_err(func.span, format!("Unsupported call const Indirect offset: {:?}", offset));
                                 }
                                 match self.tcx.global_alloc(alloc_id) {
-                                    GlobalAlloc::Function { instance } => instance.def_id(),
+                                    GlobalAlloc::Function { instance } => instance,
                                     other => return self.span_err(func.span, format!("Unsupported call const Indirect: {:?}", other)),
                                 }
                             }
@@ -274,22 +294,36 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             }
         };
-        let ret = compile_ty(self, self.tcx.def_span(func), self.tcx.optimized_mir(func).return_ty())?;
-        let node = NodeComposite {
-            id: self.compiler.touch_fn(func)?,
-            controls_in: 1,
-            controls_out: vec![ControlOut::new()],
-            values_in: args.iter().map(|x| &x.node).map(|x| self.compile_operand(x)).collect::<Result<Vec<_>>>()?,
-            values_out: vec![ret.clone()], // FIXME: ()
+        let ret_ty = destination.ty(self.body.local_decls(), self.tcx).ty;
+        let ret = if is_unit(ret_ty) { None } else { Some(compile_ty(self, self.tcx.def_span(func.def_id()), ret_ty)?) };
+        let values_in = args.iter().map(|x| &x.node).map(|x| self.compile_operand(x)).collect::<Result<Vec<_>>>()?;
+        let values_out = ret.iter().map(Clone::clone).collect::<Vec<_>>();
+        let node = if let Some(native) = self.compile_native_call(span, func, values_in.clone(), values_out.clone()) {
+            native?
+        } else {
+            NodeComposite {
+                id: self.compiler.touch_fn(func)?,
+                controls_in: 1,
+                controls_out: vec![ControlOut::new()],
+                values_in,
+                values_out,
+            }.into()
         };
-        let node_call = self.graph.insert(node.into());
-        let mut block = Block::singleton(node_call, 0);
-        let block1 = self.compile_assign(destination, ValueIn {
-            value: ret,
-            has_default: false,
-            link: Link::new(node_call, 0).into(),
-        });
-        block.extend(self.graph, block1);
+        let controls_in = node.get_controls_in();
+        let node_call = self.graph.insert(node);
+        let mut block = match controls_in {
+            0 => Block::nop(self.graph),
+            1 => Block::singleton(node_call, 0),
+            _ => return self.span_err(span, format!("Unsupported call controls: {:?}", controls_in)),
+        };
+        if let Some(ret) = ret {
+            let block1 = self.compile_assign(destination, ValueIn {
+                value: ret,
+                has_default: false,
+                link: Link::new(node_call, 0).into(),
+            });
+            block.extend(self.graph, block1);
+        }
         Ok(block)
     }
 }

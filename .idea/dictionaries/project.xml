@@ -2,6 +2,9 @@
   <dictionary name="project">
     <words>
       <w>Genshin</w>
+      <w>expn</w>
+      <w>isqrt</w>
+      <w>ushr</w>
     </words>
   </dictionary>
 </component>

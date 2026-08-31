@@ -21,6 +21,16 @@ pub mod trigger;
 #[repr(transparent)]
 pub struct NodeRef(i32);
 
+impl From<NodeRef> for i32 {
+    fn from(value: NodeRef) -> i32 {
+        value.0
+    }
+}
+impl From<i32> for NodeRef {
+    fn from(value: i32) -> NodeRef {
+        NodeRef(value)
+    }
+}
 impl From<NodeRef> for usize {
     fn from(value: NodeRef) -> usize {
         value.0 as usize

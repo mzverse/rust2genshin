@@ -4,7 +4,7 @@
 
 可参见github workflow
 
-1. 确保安装了[rustup](https://rustup.rs/)和cargo
+1. 确保安装了[rustup](https://rustup.rs/)、cargo和[protoc](https://github.com/protocolbuffers/protobuf/releases)
 2. 安装Rust nightly和组件
     ```shell
    rustup +nightly component add rustc-dev rust-src llvm-tools-preview
@@ -86,18 +86,33 @@ for(int i = 0; i < list.size(); i++) {
 for(int i = begin; i <= end; i++)
 ```
 
+## 运算
+
+- ‘模运算’节点实际上是**取余**而不是取模
+- 
+
 # 兼容性
 
 - 运算溢出
 
     为性能起见，`i32`的四则运算默认自动溢出，即原生的运算节点
 
+- 整数除法
+    
+    `i32`的除法默认会生成一堆检查，请改用`divide`方法，对应**除法节点**
+
+    注意`i32::MIN.divide(-1)`等于`0`
+
 # Todo List
 
-- native nodes
-- events
-- 支持循环
+- native calc
+- switch
+- cast
 - `struct`
+- events
+- tuple
+- loops
+- `Box`
 - `async fn`
 - closure
 - unsigned int
