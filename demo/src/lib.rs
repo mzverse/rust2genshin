@@ -28,11 +28,6 @@ pub fn hello_world() {
     log("World");
 }
 
-#[unsafe(no_mangle)]
-pub fn test(a: i32, b: i32) -> i32 {
-    a >> b
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
