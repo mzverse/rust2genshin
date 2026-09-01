@@ -105,8 +105,6 @@ for(int i = begin; i <= end; i++)
 
 # Todo List
 
-- native calc
-- switch
 - cast
 - `struct`
 - events

@@ -17,6 +17,8 @@ pub mod hidden;
 pub mod query;
 pub mod trigger;
 
+pub use pin_signature::Kind as PinType;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub struct NodeRef(i32);
@@ -288,23 +290,23 @@ impl NodeGraphBasic {
         for (_, n) in &self.nodes {
             references.extend(n.get_references());
         }
-        let mut pins: HashMap<usize, HashMap<(pin_signature::Kind, i32), (Option<(AnyValue, bool)>, Vec<Link>)>> = HashMap::new();
+        let mut pins: HashMap<usize, HashMap<(PinType, i32), (Option<(AnyValue, bool)>, Vec<Link>)>> = HashMap::new();
         for (i, n) in self.nodes.iter() {
             pins.insert(i, HashMap::new());
             for (j, p) in n.get_values_out().iter().enumerate() {
                 pins.get_mut(&i).unwrap().insert(
-                    (pin_signature::Kind::OutParam, j as i32),
+                    (PinType::OutValue, j as i32),
                     (Some((p.clone(), p.is::<ValueSelected>())), Vec::new()),
                 );
             }
             for j in 0..n.get_controls_in() {
-                pins.get_mut(&i).unwrap().insert((pin_signature::Kind::InFlow, j), (None, Vec::new()));
+                pins.get_mut(&i).unwrap().insert((PinType::InControl, j), (None, Vec::new()));
             }
         }
         for (i, n) in self.nodes.iter() {
             for (j, p) in n.get_values_in().iter().enumerate() {
                 pins.get_mut(&i).unwrap().insert(
-                    (pin_signature::Kind::InParam, j as i32),
+                    (PinType::InValue, j as i32),
                     (
                         Some((p.value.clone(), p.has_default)),
                         if let Some(l) = p.link {
@@ -316,7 +318,7 @@ impl NodeGraphBasic {
                 );
                 if let Some(link) = p.link {
                     pins.get_mut(&(link.0.0 as usize)).unwrap()
-                        .get_mut(&(pin_signature::Kind::OutParam, link.1))
+                        .get_mut(&(PinType::OutValue, link.1))
                         .unwrap()
                         .1
                         .push(Link(NodeRef(i as i32), j as i32));
@@ -325,7 +327,7 @@ impl NodeGraphBasic {
             for (j, p) in n.get_controls_out().iter().enumerate() {
                 let k = if n.is::<NodeBreak>() { 1 } else { 0 };
                 pins.get_mut(&i).unwrap().insert(
-                    (pin_signature::Kind::OutFlow, j as i32),
+                    (PinType::OutControl, j as i32),
                     (
                         None,
                         p.iter().map(|NodeRef(t)| Link(NodeRef(*t), k)).collect(),
@@ -333,7 +335,7 @@ impl NodeGraphBasic {
                 );
                 for NodeRef(t) in p {
                     pins.get_mut(&(*t as usize)).unwrap()
-                        .get_mut(&(pin_signature::Kind::InFlow, k))
+                        .get_mut(&(PinType::InControl, k))
                         .unwrap()
                         .1
                         .push(Link(NodeRef(i as i32), j as i32));
@@ -362,17 +364,17 @@ impl NodeGraphBasic {
                                         // NodeRef 为节点下标(0 起),连接目标用图内 index(1 起)
                                         node: node.0 + 1,
                                         ty: match kind {
-                                            pin_signature::Kind::InFlow => {
-                                                pin_signature::Kind::OutFlow
+                                            PinType::InControl => {
+                                                PinType::OutControl
                                             }
-                                            pin_signature::Kind::OutFlow => {
-                                                pin_signature::Kind::InFlow
+                                            PinType::OutControl => {
+                                                PinType::InControl
                                             }
-                                            pin_signature::Kind::InParam => {
-                                                pin_signature::Kind::OutParam
+                                            PinType::InValue => {
+                                                PinType::OutValue
                                             }
-                                            pin_signature::Kind::OutParam => {
-                                                pin_signature::Kind::InParam
+                                            PinType::OutValue => {
+                                                PinType::InValue
                                             }
                                             it => panic!("Unsupported kind {:?}", it), // TODO
                                         },
@@ -445,7 +447,7 @@ pub struct NodeGraphComposite {
     pub(crate) basic: NodeGraphBasic,
     pub(crate) description: String,
     /// 复合接口引脚 → 内部节点引脚的穿透映射
-    pub(crate) pins: HashMap<pin_signature::Kind, Vec<(String, Vec<Link>)>>,
+    pub(crate) pins: HashMap<PinType, Vec<(String, Vec<Link>)>>,
 }
 impl NodeGraph for NodeGraphComposite {
     fn get_basic_mut(&mut self) -> &mut NodeGraphBasic {
@@ -456,7 +458,7 @@ impl Asset for NodeGraphComposite {
     fn encode(&self, id: i64) -> Vec<AssetData> {
         let mut result = self.basic.encode();
         result.graph_kind = identifier::AssetKind::CompositeGraph;
-        fn mapping(kind: pin_signature::Kind, id: i32, link: Link) -> InterfaceMapping {
+        fn mapping(kind: PinType, id: i32, link: Link) -> InterfaceMapping {
             let sig = |idx: i32| PinSignature {
                 kind: kind as i32,
                 index: idx,
@@ -487,21 +489,21 @@ impl NodeGraphComposite {
 
     pub fn new(class: NodeGraphClass, name: impl Into<String>) -> Self {
         let mut pins = HashMap::new();
-        pins.insert(pin_signature::Kind::InFlow, vec![]);
-        pins.insert(pin_signature::Kind::OutFlow, vec![]);
-        pins.insert(pin_signature::Kind::InParam, vec![]);
-        pins.insert(pin_signature::Kind::OutParam, vec![]);
+        pins.insert(PinType::InControl, vec![]);
+        pins.insert(PinType::OutControl, vec![]);
+        pins.insert(PinType::InValue, vec![]);
+        pins.insert(PinType::OutValue, vec![]);
         Self {
             basic: NodeGraphBasic::new(class, name),
             description: String::new(),
             pins,
         }
     }
-    fn get_pin_type(&self, kind: pin_signature::Kind, link: Link) -> Option<AnyValue> {
+    fn get_pin_type(&self, kind: PinType, link: Link) -> Option<AnyValue> {
         let node = &self.basic.nodes[link.0.0 as usize];
         match kind {
-            pin_signature::Kind::InParam => Some(node.get_values_in()[link.1 as usize].value.clone()),
-            pin_signature::Kind::OutParam => Some(node.get_values_out()[link.1 as usize].clone()),
+            PinType::InValue => Some(node.get_values_in()[link.1 as usize].value.clone()),
+            PinType::OutValue => Some(node.get_values_out()[link.1 as usize].clone()),
             _ => None,
         }
     }
@@ -515,7 +517,7 @@ impl NodeGraphComposite {
             runtime_id: id + Self::DECL_OFFSET,
         };
         let mut persistent_uid = 0;
-        let mut encode_pin = |kind: pin_signature::Kind, index: i32, name: String, link: Link| {
+        let mut encode_pin = |kind: PinType, index: i32, name: String, link: Link| {
             // 穿透锚点:接口内全局自增(参考导出 flow 引脚为 1、2…)
             let tar = self.get_pin_type(kind, link);
             (PinInterface {
@@ -571,10 +573,10 @@ impl NodeGraphComposite {
                             }),
                             signal_version: None,
                         }),
-                        inflows: self.pins[&pin_signature::Kind::InFlow].iter().enumerate().map(|(i, (name, link))| encode_pin(pin_signature::Kind::InFlow, i as i32, name.clone(), link[0])).collect(),
-                        outflows: self.pins[&pin_signature::Kind::OutFlow].iter().enumerate().map(|(i, (name, link))| encode_pin(pin_signature::Kind::OutFlow, i as i32, name.clone(), link[0])).collect(),
-                        inputs: self.pins[&pin_signature::Kind::InParam].iter().enumerate().map(|(i, (name, link))| encode_pin(pin_signature::Kind::InParam, i as i32, name.clone(), link[0])).collect(),
-                        outputs: self.pins[&pin_signature::Kind::OutParam].iter().enumerate().map(|(i, (name, link))| encode_pin(pin_signature::Kind::OutParam, i as i32, name.clone(), link[0])).collect(),
+                        inflows: self.pins[&PinType::InControl].iter().enumerate().map(|(i, (name, link))| encode_pin(PinType::InControl, i as i32, name.clone(), link[0])).collect(),
+                        outflows: self.pins[&PinType::OutControl].iter().enumerate().map(|(i, (name, link))| encode_pin(PinType::OutControl, i as i32, name.clone(), link[0])).collect(),
+                        inputs: self.pins[&PinType::InValue].iter().enumerate().map(|(i, (name, link))| encode_pin(PinType::InValue, i as i32, name.clone(), link[0])).collect(),
+                        outputs: self.pins[&PinType::OutValue].iter().enumerate().map(|(i, (name, link))| encode_pin(PinType::OutValue, i as i32, name.clone(), link[0])).collect(),
                         meta_pins: vec![], // TODO
                         r#impl: Some(node_interface::Implementation {
                             category: node_interface::implementation::Category::Composite as i32,
@@ -694,7 +696,7 @@ mod tests {
         g.basic.insert(Box::new(NodeVectorAdd::default()));
         let raw = g.basic.encode();
         assert_eq!(raw.nodes.len(), 2);
-        // Switch:1 InFlow + 2 InParam + 1 Default + 1 Case = 5 pins;Vector_Add:2 InParam + 1 OutParam
+        // Switch:1 InControl + 2 InValue + 1 Default + 1 Case = 5 pins;Vector_Add:2 InValue + 1 OutValue
         assert_eq!(raw.nodes[&0].pins.len(), 5);
         assert_eq!(raw.nodes[&1].pins.len(), 3);
     }

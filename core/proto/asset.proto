@@ -779,10 +779,10 @@ message NodeInstance {
 message PinSignature {
   enum Kind {
     UNKNOWN   = 0;
-    IN_FLOW   = 1;
-    OUT_FLOW  = 2;
-    IN_PARAM  = 3;
-    OUT_PARAM = 4;
+    IN_CONTROL   = 1;
+    OUT_CONTROL  = 2;
+    IN_VALUE  = 3;
+    OUT_VALUE = 4;
 
     // 特殊用途
     META_RPC_OPCODE = 5; // 原 SignalClient. 携带 RPC ID

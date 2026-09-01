@@ -26,7 +26,7 @@ fn main() {
     let dylib = env!("CARGO_MANIFEST_DIR").to_string() + &format!("/../target/debug/{DLL_PREFIX}rust2genshin{DLL_SUFFIX}");
     let flag = format!("-Zcodegen-backend={dylib}");
     cargo!("+nightly", "test", "-p", "rust2genshin-demo");
-    cargo!("+nightly", "rustc", "--release", "-p", "rust2genshin-demo", "--", "-Coverflow-checks=off", &flag);
+    cargo!("+nightly", "rustc", "--release", "-p", "rust2genshin-demo", "--", "-Coverflow-checks=off", "-Zalways-encode-mir=yes", "-Zdump-mir=shr", &flag);
 }
 
 /// 用 cargo 跑一个命令,继承 stdio,失败则退出非零。

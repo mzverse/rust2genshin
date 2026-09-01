@@ -1,6 +1,7 @@
 use rust2genshin_lib_internal::{native, native_calc};
 
 pub use core::f32::consts::PI;
+use crate::log;
 
 pub trait Divide: Sized {
     fn divide(self, rhs: Self) -> Self;
@@ -31,10 +32,10 @@ pub unsafe trait F32 {
 
 
 unsafe impl I32 for i32 {
-    fn ushr(self, rhs: Self) -> Self {
-        (self as u32 >> rhs) as i32
-    }
+    #[native_calc(779)]
+    fn ushr(self, rhs: Self) -> Self;
 
+    #[inline(always)]
     fn shr(self, rhs: Self) -> Self {
         if rhs == 0 {
             return self;

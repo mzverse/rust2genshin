@@ -1673,7 +1673,7 @@ impl Default for NodeXor {
 
 /// 非(ID 229)
 pub struct NodeNot {
-    value: ValueIn,
+    pub value: ValueIn,
 }
 impl Node for NodeNot {
     fn get_controls_in(&self) -> i32 {
@@ -1844,8 +1844,8 @@ impl Default for NodeEnumEqual {
 
 /// 小于(ID 230,泛型变体):shell 固定 230,kernel 随类型(Int→230、Flt→235);输出 Bol。
 pub struct NodeLessThan {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl NodeLessThan {
     pub fn new(ty: AnyValue) -> Self {
@@ -1910,8 +1910,8 @@ impl Node for NodeLessThan {
 
 /// 小于等于(ID 231,泛型变体):shell 固定 231,kernel 随类型(Int→231、Flt→236);输出 Bol。
 pub struct NodeLessEqual {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl NodeLessEqual {
     pub fn new(ty: AnyValue) -> Self {
@@ -1976,8 +1976,8 @@ impl Node for NodeLessEqual {
 
 /// 大于(ID 232,泛型变体):shell 固定 232,kernel 随类型(Int→232、Flt→237);输出 Bol。
 pub struct NodeGreaterThan {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl NodeGreaterThan {
     pub fn new(ty: AnyValue) -> Self {
@@ -2042,8 +2042,8 @@ impl Node for NodeGreaterThan {
 
 /// 大于等于(ID 233,泛型变体):shell 固定 233,kernel 随类型(Int→233、Flt→238);输出 Bol。
 pub struct NodeGreaterEqual {
-    a: ValueIn,
-    b: ValueIn,
+    pub a: ValueIn,
+    pub b: ValueIn,
 }
 impl NodeGreaterEqual {
     pub fn new(ty: AnyValue) -> Self {
@@ -2112,8 +2112,8 @@ impl Node for NodeGreaterEqual {
 
 /// 左移(ID 778)
 pub struct NodeLeftShift {
-    pub(crate) value: ValueIn,
-    pub(crate) bits: ValueIn,
+    pub value: ValueIn,
+    pub bits: ValueIn,
 }
 impl Node for NodeLeftShift {
     fn get_controls_in(&self) -> i32 {
@@ -2149,8 +2149,8 @@ impl Default for NodeLeftShift {
 
 /// 右移(ID 779)
 pub struct NodeRightShift {
-    pub(crate) value: ValueIn,
-    pub(crate) bits: ValueIn,
+    pub value: ValueIn,
+    pub bits: ValueIn,
 }
 impl Node for NodeRightShift {
     fn get_controls_in(&self) -> i32 {
@@ -2297,7 +2297,7 @@ impl Default for NodeBitwiseXor {
 
 /// 按位非(ID 783)
 pub struct NodeBitwiseNot {
-    value: ValueIn,
+    pub value: ValueIn,
 }
 impl Node for NodeBitwiseNot {
     fn get_controls_in(&self) -> i32 {

@@ -1,5 +1,5 @@
 use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueInt, ValueIntList};
+use crate::asset::value::{unwrap_selected, AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueIntList, ValueString, ValueStringList};
 use anyhow::{Result, bail};
 use crate::asset::raw_node_graph::NodeType;
 
@@ -173,13 +173,13 @@ impl Node for NodeBreak {
 /// 无匹配时走 `default_branch`。分支数量随 cases 动态变化,不做穷举。
 pub struct NodeSwitch {
     /// 匹配键(Int 或 Str)
-    key: ValueIn,
+    pub key: ValueIn,
     /// 候选值列表(与 case_branches 一一对应)
-    cases: ValueIn,
+    pub cases: ValueIn,
     /// 默认分支(无匹配时)
-    default_branch: ControlOut,
+    pub default_branch: ControlOut,
     /// 各 case 分支(数量与 cases 动态对应)
-    case_branches: Vec<ControlOut>,
+    pub case_branches: Vec<ControlOut>,
 }
 impl Default for NodeSwitch {
     fn default() -> Self {
@@ -200,6 +200,15 @@ impl NodeSwitch {
     pub fn add_case(&mut self, branch: ControlOut) {
         self.case_branches.push(branch);
     }
+    fn select(value: AnyValue) -> Result<i32> {
+        Ok(if value.is::<ValueInt>() || value.is::<ValueIntList>() {
+            0
+        } else if value.is::<ValueString>() || value.is::<ValueStringList>() {
+            1
+        } else {
+            bail!("Unsupported type: {value:?}");
+        })
+    }
 }
 impl Node for NodeSwitch {
     fn get_controls_in(&self) -> i32 {
@@ -211,7 +220,7 @@ impl Node for NodeSwitch {
         v
     }
     fn get_values_in(&self) -> Vec<ValueIn> {
-        vec![self.key.clone(), self.cases.clone()]
+        vec![self.key.clone().into_selected(Self::select).unwrap(), self.cases.clone().into_selected(Self::select).unwrap()]
     }
     fn get_values_out(&self) -> Vec<AnyValue> {
         vec![]
@@ -237,6 +246,18 @@ impl Node for NodeSwitch {
     }
 
     fn get_type(&self) -> NodeType {
-        NodeType::simple(3)
+        NodeType::variant(3, if unwrap_selected(&self.key.value).is::<ValueInt>() {
+            3
+        } else if unwrap_selected(&self.key.value).is::<ValueString>() {
+            4
+        } else {
+            panic!("Unsupported type: {:?}", self.key.value);
+        })
+    }
+
+    fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
+        let mut v = vec![&mut self.default_branch];
+        v.extend(self.case_branches.iter_mut());
+        v
     }
 }

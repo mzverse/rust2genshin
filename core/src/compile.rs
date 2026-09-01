@@ -17,7 +17,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::{BasicBlock, Body, Local};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind};
-use rustc_span::def_id::{LOCAL_CRATE, LocalDefId};
+use rustc_span::def_id::{CrateNum, LocalDefId, LOCAL_CRATE};
 use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
@@ -83,7 +83,7 @@ pub fn compile(tcx: TyCtxt<'_>) -> Result<()> {
             out_dir.display()
         )));
     }
-    let mut compiler = Compiler::new(tcx);
+    let mut compiler = Compiler::new(tcx)?;
     compiler.run()?;
     compiler.save(&out_dir);
     Ok(())
@@ -204,8 +204,10 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> 
     })
 }
 
+const LIB_NAME: &str = "rust2genshin_lib";
 pub(crate) struct Compiler<'tcx> {
     tcx: TyCtxt<'tcx>,
+    lib: CrateNum,
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, i64>,
@@ -216,13 +218,24 @@ impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     }
 }
 impl<'tcx> Compiler<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>) -> Self {
-        Self {
-            tcx,
+
+    fn new(tcx: TyCtxt<'tcx>) -> Result<Self> {
+        let mut lib = None;
+        for x in tcx.crates(()) {
+            if tcx.crate_name(*x).as_str() == LIB_NAME {
+                lib = Some(x);
+                break;
+            }
+        };
+        let Some(&lib) = lib else {
+            return Err(tcx.dcx().err(format!("Must depend {LIB_NAME}")));
+        };
+        Ok(Self {
+            tcx, lib,
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
             compiling: HashSet::new(),
             compiled: HashMap::new(),
-        }
+        })
     }
     fn save(&self, out_dir: &PathBuf) {
         // eprintln!("{:?}", self.tcx.output_filenames(()).with_extension("gia")); // TODO
@@ -309,7 +322,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
-        self.tcx.dcx().note(format!("Compiling fn: {}", self.tcx.def_path_str(func.def_id())));
+        self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {}", self.tcx.def_path_str(func.def_id())));
         // let name = self.tcx.def_path_str(id);
         let mut graph = NodeGraphComposite::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string());
         let body = self.tcx.instance_mir(func.def);
@@ -346,18 +359,18 @@ impl<'tcx> Compiler<'tcx> {
             }
         }
         graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::InFlow)
+            .get_mut(&crate::asset::generated::pin_signature::Kind::InControl)
             .unwrap()
             .push((
                 "".into(),
                 vec![Link::new(blocks.get(mir::START_BLOCK).unwrap().begin, 0)],
             ));
         graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::OutFlow)
+            .get_mut(&crate::asset::generated::pin_signature::Kind::OutControl)
             .unwrap()
             .push(("".into(), returns));
         graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::InParam)
+            .get_mut(&crate::asset::generated::pin_signature::Kind::InValue)
             .unwrap()
             .extend(self.tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, n)| {
                 (
@@ -367,7 +380,7 @@ impl<'tcx> Compiler<'tcx> {
             }));
         if !is_unit(body.return_ty()) {
             graph.pins
-                .get_mut(&crate::asset::generated::pin_signature::Kind::OutParam)
+                .get_mut(&crate::asset::generated::pin_signature::Kind::OutValue)
                 .unwrap()
                 .push((
                     "return".into(),

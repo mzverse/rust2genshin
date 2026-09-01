@@ -523,8 +523,8 @@ impl Value for ValueIntList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CIntList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValList(list_storage(
+    fn encode_storage(&self, _side: Side) -> Storage {
+        Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueInt(*x);
                 let side = Side::Server;

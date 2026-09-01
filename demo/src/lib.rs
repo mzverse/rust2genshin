@@ -2,8 +2,8 @@
 
 extern crate rust2genshin_lib;
 
-use math::*;
 use rust2genshin_lib::*;
+use rust2genshin_lib::math::*;
 
 use core::f32::consts::PI;
 
@@ -26,6 +26,16 @@ pub fn div(a: i32, b: i32) -> i32 {
 pub fn hello_world() {
     log("Hello");
     log("World");
+}
+
+// #[unsafe(no_mangle)]
+// pub fn test(a: i32, b: i32) -> i32 {
+//     a >> b
+// }
+
+#[unsafe(export_name = "awawa")]
+pub fn test1(a: i32, b: i32) -> i32 {
+    a.shr(b)
 }
 
 #[cfg(test)]
