@@ -7,11 +7,11 @@
 ```rust
 #[unsafe(no_mangle)]
 pub fn solve(a: f32, b: f32, c: f32) -> f32 {
-    (- b + delta(a, b, c).sqrt()) / (2 * a)
+    (- b + delta(a, b, c).sqrt()) / (2. * a)
 }
 
 fn delta(a: f32, b: f32, c: f32) -> f32 {
-    b * b - 4 * a * c
+    b * b - 4. * a * c
 }
 ```
 

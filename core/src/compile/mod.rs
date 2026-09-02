@@ -19,7 +19,7 @@ use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use rustc_span::sym::panic;
 
 mod func;
@@ -32,7 +32,7 @@ pub fn resolved_out_dir() -> PathBuf {
     if let Ok(td) = env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(td);
     }
-    PathBuf::from("../../../target")
+    PathBuf::from("target")
 }
 
 pub fn get_expn_macro_attr(tcx: TyCtxt, span: Span) -> Option<syn::Attribute> {
@@ -234,11 +234,11 @@ impl<'tcx> Compiler<'tcx> {
             compiled: HashMap::new(),
         })
     }
-    fn save(&self, out_dir: &PathBuf) {
+    fn save(&self, out_dir: &Path) {
         // eprintln!("{:?}", self.tcx.output_filenames(()).with_extension("gia")); // TODO
         let path = out_dir.join(format!(
             "{}.gia",
-            self.tcx.crate_name(LOCAL_CRATE).to_string()
+            self.tcx.crate_name(LOCAL_CRATE)
         ));
         self.assets.save(&path).expect("encode error");
     }

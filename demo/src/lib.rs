@@ -38,8 +38,13 @@ pub fn test1(a: i32, b: i32) -> i32 {
     a.shr(b)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
+#[unsafe(no_mangle)]
+pub fn solve(a: f32, b: f32, c: f32) -> f32 {
+    (- b + delta(a, b, c).sqrt()) / (2. * a)
+}
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub fn delta(a: f32, b: f32, c: f32) -> f32 {
+    b * b - 4. * a * c
 }

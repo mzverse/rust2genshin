@@ -52,27 +52,24 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(block.unwrap_or_else(|| Block::nop(self.graph)))
     }
 
-    #[must_use]
     fn compile_assign(&mut self, place: Place, value: ValueIn) -> Result<Block> {
         if !place.projection.is_empty() {
             todo!()
         }
         let decl = self.body.local_decls.get(place.local).unwrap();
-        let mut node = self.graph.insert(Node::new(node_set_local(compile_ty(self, decl.source_info.span, decl.ty)?)));
+        let node = self.graph.insert(Node::new(node_set_local(compile_ty(self, decl.source_info.span, decl.ty)?)));
         self.graph.connect_value(Connection(*self.locals.get(place.local).unwrap(), 0), Connection(node, 0));
-        Ok(Block::singleton(node.into(), 0))
+        self.graph.set_value_in(Connection(node, 1), value);
+        Ok(Block::singleton(node, 0))
     }
 
     fn find_lib_fn(&self, name: &str) -> Result<Instance<'tcx>> {
         for (s, _) in self.tcx.exported_non_generic_symbols(self.compiler.lib) {
-            match *s {
-                ExportedSymbol::NonGeneric(id)  => {
-                    self.tcx.dcx().note(self.tcx.def_path_str(id));
-                    if self.tcx.def_path_str(id) == name {
-                        return Ok(Instance::mono(self.tcx, id));
-                    }
+            if let ExportedSymbol::NonGeneric(id) = *s {
+                self.tcx.dcx().note(self.tcx.def_path_str(id));
+                if self.tcx.def_path_str(id) == name {
+                    return Ok(Instance::mono(self.tcx, id));
                 }
-                _ => (),
             }
         }
         self.err(format!("Lib fn not found: {name}"))
@@ -121,7 +118,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             }
             Rvalue::UnaryOp(op, v) => {
                 let ty = v.ty(&self.body.local_decls, self.tcx);
-                let kind = compile_ty(self, v.span(&self.body.local_decls), ty)?;
+                let _kind = compile_ty(self, v.span(&self.body.local_decls), ty)?;
                 let node = self.graph.insert(Node::new(match op {
                     UnOp::Not => if ty.is_bool() {
                         NODE_NOT.clone()
@@ -131,7 +128,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     UnOp::Neg => return self.compile_assign_rvalue(place, &Rvalue::BinaryOp(BinOp::Sub, (Operand::Constant(ConstOperand {
                             span: DUMMY_SP,
                             user_ty: None,
-                            const_: Const::Val(ConstValue::Scalar(Scalar::from_i32(0)), self.tcx.types.i32),
+                            const_: Const::Val(ConstValue::Scalar(Scalar::from_i32(0)), if ty.is_floating_point() { self.tcx.types.f32 } else { self.tcx.types.i32 }),
                         }.into()), v.clone()).into()), span),
                     UnOp::PtrMetadata => todo!(),
                 }));
