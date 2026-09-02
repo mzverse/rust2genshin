@@ -1,10 +1,7 @@
 use crate::asset::AssetBundle;
-use crate::asset::node_graph::control::NodeIf;
-use crate::asset::node_graph::query::NodeLocal;
-use crate::asset::node_graph::{
-    Link, NodeGraph, NodeGraphComposite, NodeGraphMain, NodeRef, ValueIn,
-};
-use crate::asset::raw_node_graph::NodeGraphClass;
+use crate::asset::node_graph::control::NODE_IF;
+use crate::asset::node_graph::query::node_local;
+use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueString};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
@@ -13,16 +10,17 @@ use rustc_hir::intravisit::Visitor;
 use rustc_hir::{ImplItem, intravisit};
 use rustc_index::IndexVec;
 use rustc_middle::hir::nested_filter;
-use rustc_middle::mir;
 use rustc_middle::mir::{BasicBlock, Body, Local};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind};
-use rustc_span::def_id::{CrateNum, LocalDefId, LOCAL_CRATE};
+use rustc_middle::{mir, ty};
+use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
 use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+use rustc_span::sym::panic;
 
 mod func;
 mod native;
@@ -34,7 +32,7 @@ pub fn resolved_out_dir() -> PathBuf {
     if let Ok(td) = env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(td);
     }
-    PathBuf::from("target")
+    PathBuf::from("../../../target")
 }
 
 pub fn get_expn_macro_attr(tcx: TyCtxt, span: Span) -> Option<syn::Attribute> {
@@ -91,26 +89,22 @@ pub fn compile(tcx: TyCtxt<'_>) -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub(crate) begin: NodeRef,
-    pub(crate) end: Link,
+    pub(crate) begin: Connection,
+    pub(crate) end: Connection,
 }
 impl Block {
-    pub fn singleton(node: NodeRef, out: i32) -> Self {
+    pub fn singleton(node: NodeRef, out: usize) -> Self {
         Self {
-            begin: node,
-            end: Link::new(node, out),
+            begin: Connection(node, 0),
+            end: Connection(node, out),
         }
     }
-    pub fn nop(graph: &mut NodeGraphComposite) -> Self {
-        let mut node = NodeIf::default();
-        node.condition = ValueIn {
-            value: ValueBool(true).into(),
-            has_default: true,
-            link: None,
-        };
-        Self::singleton(graph.insert(node.into()), 0)
+    pub fn nop(graph: &mut NodeGraph<impl NodeGraphExtra>) -> Self {
+        let node = graph.insert(Node::new(NODE_IF.clone()));
+        graph.set_default(Connection(node, 0), ValueBool(true).into());
+        Self::singleton(node, 0)
     }
-    pub fn extend(&mut self, graph: &mut NodeGraphComposite, other: Block) {
+    pub fn extend(&mut self, graph: &mut NodeGraph<impl NodeGraphExtra>, other: Block) {
         graph.connect_control(self.end, other.begin);
         *self = Self {
             begin: self.begin,
@@ -135,7 +129,7 @@ pub(crate) trait WithTcx<'tcx> {
 pub(crate) struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
     pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut NodeGraphComposite,
+    pub graph: &'a mut NodeGraph<NodeGraphComposite>,
     pub body: &'a Body<'tcx>,
     pub locals: &'a IndexVec<Local, NodeRef>,
 }
@@ -177,7 +171,9 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> 
         TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
             todo!()
         },
-        TyKind::Adt(d, a) => return tcx.span_err(span, format!("{d:?}: {a:?}")),
+        TyKind::Adt(d, a) => {
+            return tcx.span_err(span, format!("Adt: {d:?} = {a:?}"))
+        },
         TyKind::Foreign(_) => todo!(),
         TyKind::Array(_, _) => todo!(),
         TyKind::Pat(_, _) => todo!(),
@@ -199,7 +195,8 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> 
         | TyKind::Infer(_)
         | TyKind::Error(_)
         | TyKind::UnsafeBinder(_) => {
-            return tcx.span_err(span, format!("{:?} is unsupported", ty));
+            tcx.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind()));
+            panic!();
         }
     })
 }
@@ -281,10 +278,7 @@ impl<'tcx> Compiler<'tcx> {
                 // TODO: manage entrypoint (event_handler)
             }
         }
-        let main = NodeGraphMain::new(
-            NodeGraphClass::Entity,
-            self.tcx.crate_name(LOCAL_CRATE).to_string(),
-        );
+        let main = NodeGraph::<Vec<NodeGraphStatic>>::new(NodeGraphClass::Entity, self.tcx.crate_name(LOCAL_CRATE).to_string(), Default::default());
         // for (i, _) in &self.assets.assets {
         //     main.insert(
         //         NodeComposite {
@@ -298,7 +292,7 @@ impl<'tcx> Compiler<'tcx> {
         //     );
         // }
         // TODO
-        if !main.basic.nodes.is_empty() {
+        if !main.is_empty() {
             let main_id = self.assets.insert(main.into());
             self.assets.display.push(main_id);
         }
@@ -321,24 +315,28 @@ impl<'tcx> Compiler<'tcx> {
         Ok(asset_id)
     }
 
+    fn monomorphize(&self, body: &Body<'tcx>, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
+        func.instantiate_mir_and_normalize_erasing_regions(self.tcx, body.typing_env(self.tcx), ty::EarlyBinder::bind(self.tcx, ty))
+    }
+
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
-        self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {}", self.tcx.def_path_str(func.def_id())));
+        self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         // let name = self.tcx.def_path_str(id);
-        let mut graph = NodeGraphComposite::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string());
+        let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
-        graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
+        graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, NodeRef>::new(); // TODO: adapt for struct, struct list and map
         for x in &body.local_decls {
             if is_unit(x.ty) {
-                locals.push(NodeRef::from(-1));
+                locals.push(NodeRef::from(usize::MAX));
                 continue;
             }
-            let mut local = NodeLocal::new(compile_ty(self, x.source_info.span, x.ty)?);
-            local.initial.has_default = true;
-            locals.push(graph.insert(local.into()));
+            let kind = compile_ty(self, x.source_info.span, self.monomorphize(body, func, x.ty))?;
+            let local = graph.insert(Node::new(node_local(kind.clone())));
+            graph.set_default(Connection(local, 0), kind);
+            locals.push(local);
         }
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
-        let mut returns = Vec::new();
         for (k, result) in {
             let mut compiling = CompilingFn {
                 tcx: self.tcx,
@@ -352,40 +350,20 @@ impl<'tcx> Compiler<'tcx> {
             }
             body.basic_blocks.iter_enumerated().map(|(k, v)| (k, compiling.compile_terminator(&blocks, v.terminator.as_ref().unwrap()))).collect::<Vec<_>>()
         } {
-            let (begin, end) = result?;
-            graph.connect_control(blocks.get(k).unwrap().end, begin);
-            if let Some(end) = end {
-                returns.push(end);
-            }
+            graph.connect_control(blocks.get(k).unwrap().end, result?);
         }
-        graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::InControl)
-            .unwrap()
-            .push((
-                "".into(),
-                vec![Link::new(blocks.get(mir::START_BLOCK).unwrap().begin, 0)],
-            ));
-        graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::OutControl)
-            .unwrap()
-            .push(("".into(), returns));
-        graph.pins
-            .get_mut(&crate::asset::generated::pin_signature::Kind::InValue)
-            .unwrap()
-            .extend(self.tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, n)| {
-                (
-                    n.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i).to_string()),
-                    vec![Link::new(*locals.get(Local::arg(i)).unwrap(), 0)],
-                )
-            }));
+        graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
+        graph.export_control_in(blocks.get(mir::START_BLOCK).unwrap().begin, 0);
+        graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
+        for (i, param) in self.tcx.fn_arg_idents(func.def_id()).iter().enumerate() {
+            graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(param.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i).to_string()));
+            let node = *locals.get(Local::arg(i)).unwrap();
+            graph.export_value_in(Connection(node, 0), i);
+        }
         if !is_unit(body.return_ty()) {
-            graph.pins
-                .get_mut(&crate::asset::generated::pin_signature::Kind::OutValue)
-                .unwrap()
-                .push((
-                    "return".into(),
-                    vec![Link::new(*locals.get(mir::RETURN_PLACE).unwrap(), 1)],
-                ));
+            graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
+            let node = *locals.get(mir::RETURN_PLACE).unwrap();
+            graph.export_value_out(Connection(node, 1), 0);
         }
         let asset_id = self.assets.insert(graph.into());
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {

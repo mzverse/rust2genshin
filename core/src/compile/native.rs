@@ -1,9 +1,8 @@
 use super::Result;
-use crate::asset::node_graph::arithmetic::NodeDivide;
-use crate::asset::node_graph::execution::NodeLog;
-use crate::asset::node_graph::{ControlOut, Node, NodeRef, Simulation, ValueIn};
-use crate::asset::raw_node_graph::NodeType;
-use crate::asset::value::AnyValue;
+use crate::asset::node_graph::NodeKind;
+use crate::asset::node_graph::arithmetic::node_divide;
+use crate::asset::node_graph::execution::NODE_LOG;
+use crate::asset::value::{AnyValue, ValueDefault, ValueInt};
 use crate::compile::{CompilingFn, WithTcx, get_expn_macro_attr};
 use rustc_attr_ir::LangItem;
 use rustc_middle::query::QueryKey;
@@ -11,48 +10,11 @@ use rustc_middle::ty::{Instance, InstanceKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
 
-struct NodeNativeExec {
-    id: i64,
-    controls_in: i32,
-    controls_out: Vec<ControlOut>,
-    values_in: Vec<ValueIn>,
-    values_out: Vec<AnyValue>,
-}
-impl Node for NodeNativeExec {
-    fn get_controls_in(&self) -> i32 {
-        self.controls_in
-    }
-    fn get_controls_out(&self) -> Vec<ControlOut> {
-        self.controls_out.clone()
-    }
-    fn get_values_in(&self) -> Vec<ValueIn> {
-        self.values_in.clone()
-    }
-    fn get_values_out(&self) -> Vec<AnyValue> {
-        self.values_out.clone()
-    }
-
-    fn execute(&mut self, context: &mut Simulation) -> anyhow::Result<Vec<NodeRef>> {
-        panic!("Unknown logic")
-    }
-    fn get_value(&self, index: i32, context: &Simulation) -> anyhow::Result<AnyValue> {
-        panic!("Unknown logic")
-    }
-
-    fn get_type(&self) -> NodeType {
-        NodeType::simple(self.id)
-    }
-
-    fn get_controls_out_mut(&mut self) -> Vec<&mut ControlOut> {
-        self.controls_out.iter_mut().collect()
-    }
-}
-
 impl<'tcx> CompilingFn<'tcx, '_> {
-    pub fn compile_native_call(&self, span: Span, func: Instance, values_in: Vec<ValueIn>, values_out: Vec<AnyValue>) -> Option<Result<Box<dyn Node>>> {
+    pub fn compile_native_call(&self, span: Span, func: Instance, params: Vec<AnyValue>, ret: Vec<AnyValue>) -> Option<Result<NodeKind>> {
         if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
             self.tcx.dcx().span_warn(span, "Ignored panic");
-            return Some(Ok(NodeLog { value: values_in.into_iter().next().unwrap(), next: ControlOut::new() }.into()));
+            return Ok(NODE_LOG.clone()).into();
         }
         if let InstanceKind::Intrinsic(def_id) = func.def {
             return match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
@@ -70,10 +32,9 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                             Ok(id) => id.value(),
                             Err(e) => return Some(self.span_err(expn, e.to_string())),
                         };
-                        let mut values_in = values_in.into_iter();
                         match id.as_str() {
-                            "divide" => Ok(NodeDivide { a: values_in.next().unwrap(), b: values_in.next().unwrap() }.into()).into(),
-                            _ => return Some(self.span_err(expn, format!("Unknown intrinsic {}", id))),
+                            "divide" => Ok(node_divide(ValueInt::def())).into(),
+                            _ => self.span_err(expn, format!("Unknown intrinsic {}", id)).into(),
                         }
                     },
                     ident if ident == "native_calc" || ident == "native_exec" => {
@@ -82,16 +43,16 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                             Ok(id) => id,
                             Err(e) => return Some(self.span_err(expn, e.to_string())),
                         };
-                        Some(Ok(NodeNativeExec {
-                            id: match id.base10_parse::<i64>() {
+                        Ok(NodeKind::new(
+                            match id.base10_parse::<i64>() {
                                 Ok(x) => x,
                                 Err(e) => return Some(self.span_err(expn, e.to_string())),
                             },
-                            controls_in: control as i32,
-                            controls_out: vec![ControlOut::new(); control as usize],
-                            values_in,
-                            values_out,
-                        }.into()))
+                            control as usize,
+                            control as usize,
+                            params,
+                            ret,
+                        ).into()).into()
                     },
                     _ => None
                 }

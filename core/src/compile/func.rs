@@ -1,17 +1,19 @@
-use crate::asset::node_graph::arithmetic::{NodeAdd, NodeAnd, NodeBitwiseAnd, NodeBitwiseNot, NodeBitwiseOr, NodeBitwiseXor, NodeDivide, NodeEqual, NodeGreaterEqual, NodeGreaterThan, NodeLeftShift, NodeLessEqual, NodeLessThan, NodeModulo, NodeMultiply, NodeNot, NodeOr, NodeSubtract, NodeXor};
-use crate::asset::node_graph::execution::NodeSetLocal;
-use crate::asset::node_graph::{ControlOut, Link, Node, NodeComposite, NodeGraph, NodeRef, ValueIn};
 use crate::asset::value::{ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
 
+use super::*;
+use crate::asset::node_graph::ValueIn;
+use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
+use crate::asset::node_graph::composite::node_composite;
+use crate::asset::node_graph::control::node_switch;
+use crate::asset::node_graph::execution::node_set_local;
 use rustc_abi::Size;
 use rustc_index::IndexVec;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, HasLocalDecls, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp};
+use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind};
-use rustc_span::{dummy_spanned, Span, Spanned, DUMMY_SP};
-use crate::asset::node_graph::control::NodeSwitch;
-use super::*;
+use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
+use tap::Pipe;
 
 
 impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
@@ -50,14 +52,15 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(block.unwrap_or_else(|| Block::nop(self.graph)))
     }
 
-    fn compile_assign(&mut self, place: Place, value: ValueIn) -> Block {
+    #[must_use]
+    fn compile_assign(&mut self, place: Place, value: ValueIn) -> Result<Block> {
         if !place.projection.is_empty() {
             todo!()
         }
-        let mut node = NodeSetLocal::default();
-        node.local.link = Some(Link::new(*self.locals.get(place.local).unwrap(), 0));
-        node.value = value;
-        Block::singleton(self.graph.insert(node.into()), 0)
+        let decl = self.body.local_decls.get(place.local).unwrap();
+        let mut node = self.graph.insert(Node::new(node_set_local(compile_ty(self, decl.source_info.span, decl.ty)?)));
+        self.graph.connect_value(Connection(*self.locals.get(place.local).unwrap(), 0), Connection(node, 0));
+        Ok(Block::singleton(node.into(), 0))
     }
 
     fn find_lib_fn(&self, name: &str) -> Result<Instance<'tcx>> {
@@ -80,49 +83,50 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         let value_in = match value {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
-                let a = self.compile_operand(&v.0, span)?;
-                let b = self.compile_operand(&v.1, span)?;
-                let node: Box<dyn Node> = match op {
+                let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
+                let kind0 = compile_ty(self, v.0.span(&self.body.local_decls), ty0)?;
+                let node = self.graph.insert(Node::new(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
-                        NodeAdd { a, b }.into(),
+                        node_add(kind0),
                     BinOp::Sub | BinOp::SubUnchecked | BinOp::SubWithOverflow =>
-                        NodeSubtract { a, b }.into(),
+                        node_subtract(kind0),
                     BinOp::Mul | BinOp::MulUnchecked | BinOp::MulWithOverflow =>
-                        NodeMultiply { a, b }.into(),
+                        node_multiply(kind0),
                     BinOp::Div => {
-                        if a.value.is::<ValueInt>() {
+                        if kind0.is::<ValueInt>() {
                             self.tcx.dcx().span_warn(span, "Div is slow and big, see `divide`");
                         }
-                        NodeDivide { a, b }.into()
+                        node_divide(kind0)
                     },
-                    BinOp::Rem => NodeModulo { a, b }.into(),
-                    BinOp::BitXor => if ty.is_bool() { NodeXor { a,b }.into() } else { NodeBitwiseXor { a, b }.into() },
-                    BinOp::BitAnd => if ty.is_bool() { NodeAnd { a,b }.into() } else { NodeBitwiseAnd { a, b }.into() },
-                    BinOp::BitOr => if ty.is_bool() { NodeOr { a,b }.into() } else { NodeBitwiseOr { a, b }.into() },
-                    BinOp::Eq => NodeEqual { a, b }.into(),
-                    BinOp::Shl | BinOp::ShlUnchecked => NodeLeftShift { value: a, bits: b }.into(),
+                    BinOp::Rem => NODE_MODULO.clone(),
+                    BinOp::BitXor => if ty.is_bool() { NODE_XOR.clone() } else { NODE_BITWISE_XOR.clone() },
+                    BinOp::BitAnd => if ty.is_bool() { NODE_AND.clone() } else { NODE_BITWISE_AND.clone() },
+                    BinOp::BitOr => if ty.is_bool() { NODE_OR.clone() } else { NODE_BITWISE_OR.clone() },
+                    BinOp::Eq => node_equal(kind0),
+                    BinOp::Shl | BinOp::ShlUnchecked => NODE_LEFT_SHIFT.clone(),
                     BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, self.find_lib_fn("<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
-                    BinOp::Lt => NodeLessThan { a, b }.into(),
-                    BinOp::Le => NodeLessEqual { a, b }.into(),
+                    BinOp::Lt => node_less_than(kind0),
+                    BinOp::Le => node_less_equal(kind0),
                     BinOp::Ne => todo!(),
-                    BinOp::Ge => NodeGreaterEqual { a, b }.into(),
-                    BinOp::Gt => NodeGreaterThan { a, b }.into(),
+                    BinOp::Ge => node_greater_equal(kind0),
+                    BinOp::Gt => node_greater_than(kind0),
                     | BinOp::Cmp
                     | BinOp::Offset => todo!("{:?}", op),
-                };
-                ValueIn {
-                    value: compile_ty(self, span, ty)?,
-                    has_default: false,
-                    link: Link::new(self.graph.insert(node), 0).into(),
-                }
+                }));
+                let a = self.compile_operand(&v.0, span)?;
+                let b = self.compile_operand(&v.1, span)?;
+                self.graph.set_value_in(Connection(node, 0), a);
+                self.graph.set_value_in(Connection(node, 1), b);
+                ValueIn::link(Connection(node, 0).into())
             }
             Rvalue::UnaryOp(op, v) => {
-                let value = self.compile_operand(v, span)?;
-                let node: Box<dyn Node> = match op {
-                    UnOp::Not => if value.value.is::<ValueBool>() {
-                        NodeNot { value }.into()
+                let ty = v.ty(&self.body.local_decls, self.tcx);
+                let kind = compile_ty(self, v.span(&self.body.local_decls), ty)?;
+                let node = self.graph.insert(Node::new(match op {
+                    UnOp::Not => if ty.is_bool() {
+                        NODE_NOT.clone()
                     } else {
-                        NodeBitwiseNot { value }.into()
+                        NODE_BITWISE_NOT.clone()
                     },
                     UnOp::Neg => return self.compile_assign_rvalue(place, &Rvalue::BinaryOp(BinOp::Sub, (Operand::Constant(ConstOperand {
                             span: DUMMY_SP,
@@ -130,12 +134,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             const_: Const::Val(ConstValue::Scalar(Scalar::from_i32(0)), self.tcx.types.i32),
                         }.into()), v.clone()).into()), span),
                     UnOp::PtrMetadata => todo!(),
-                };
-                ValueIn {
-                    value: compile_ty(self, span, ty)?,
-                    has_default: false,
-                    link: Link::new(self.graph.insert(node), 0).into(),
-                }
+                }));
+                let value = self.compile_operand(v, span)?;
+                self.graph.set_value_in(Connection(node, 0), value);
+                ValueIn::link(Connection(node, 0).into())
             },
             Rvalue::Repeat(_, _)
             | Rvalue::Ref(_, _, _)
@@ -148,7 +150,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             | Rvalue::WrapUnsafeBinder(_, _)
             | Rvalue::Reborrow(_, _, _) => todo!("{:?}", value),
         };
-        Ok(self.compile_assign(place, value_in))
+        self.compile_assign(place, value_in)
     }
 
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
@@ -156,22 +158,15 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Operand::Copy(p) | // TODO
             Operand::Move(p) => {
                 if !p.projection.is_empty() {
-                    todo!()
+                    todo!("struct is still unsupported")
                 }
-                ValueIn {
-                    value: compile_ty(self, span, self.body.local_decls.get(p.local).unwrap().ty)?,
-                    has_default: false,
-                    link: Link::new(*self.locals.get(p.local).unwrap(), 1).into(),
-                }
+                ValueIn::link(Connection(*self.locals.get(p.local).unwrap(), 1).into())
             }
 
             Operand::Constant(co) => {
                 let ty = co.ty();
                 let v = co.const_.eval(self.tcx, self.body.typing_env(self.tcx), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
-                ValueIn {
-                    has_default: true,
-                    link: None,
-                    value: match &ty.kind() {
+                ValueIn::value(match &ty.kind() {
                         TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
                         TyKind::Int(t) => match t {
                             IntTy::I32 |
@@ -223,10 +218,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         TyKind::Placeholder(_) |
                         TyKind::Infer(_) |
                         TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?} = {:?}", ty, v)),
-                    },
-                }
+                    })
             }
-            Operand::RuntimeChecks(_) => ValueIn::linked(ValueBool(false).into(), None),
+            Operand::RuntimeChecks(_) => ValueIn::value(ValueBool(false).into()),
         })
     }
 
@@ -234,62 +228,62 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         &mut self,
         blocks: &IndexVec<BasicBlock, Block>,
         terminator: &Terminator<'tcx>,
-    ) -> Result<(NodeRef, Option<Link>)> {
-        match &terminator.kind {
-            TerminatorKind::Return => match Block::nop(self.graph) {
-                Block { begin, end } => Ok((begin, Some(end))),
-            },
+    ) -> Result<Connection> {
+        Ok(match &terminator.kind {
+            TerminatorKind::Return => Block::nop(self.graph).pipe(|block| {
+                self.graph.export_control_out(block.end, 0);
+                block.begin
+            }),
             TerminatorKind::Goto { target } => {
                 let result = Block::nop(self.graph);
                 self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
-                Ok((result.begin, None))
+                result.begin
             },
             TerminatorKind::Assert { target, .. } => {
                 self.tcx.dcx().span_note(terminator.source_info.span, "Ignored assert");
                 let result = Block::nop(self.graph); // same as goto
                 self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
-                Ok((result.begin, None))
+                result.begin
             },
             TerminatorKind::Call { func, target, args, destination, .. } => {
                 let result = self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, *destination)?;
                 if let Some(target) = target {
                     self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
                 }
-                Ok((result.begin, None))
+                result.begin
             }
-            TerminatorKind::TailCall { func, args, .. } => match self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Place::return_place())? {
-                Block { begin, end } => Ok((begin, Some(end))),
-            },
+            TerminatorKind::TailCall { func, args, .. } => self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Place::return_place())?.pipe(|block| {
+                self.graph.export_control_out(block.end, 0);
+                block.begin
+            }),
             TerminatorKind::SwitchInt { discr, targets, .. } => {
-                let value = self.compile_operand(discr, terminator.source_info.span)?;
-                Ok((self.graph.insert(if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
-                    NodeIf {
-                        condition: value,
-                        branch_true: vec![blocks[targets.target_for_value(1u128)].begin],
-                        branch_false: vec![blocks[targets.target_for_value(0u128)].begin],
-                    }.into()
+                let node = if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
+                    let node = self.graph.insert(Node::new(NODE_IF.clone()));
+                    self.graph.connect_control(Connection(node, 0), blocks[targets.target_for_value(1u128)].begin);
+                    self.graph.connect_control(Connection(node, 1), blocks[targets.target_for_value(0u128)].begin);
+                    node
                 } else {
                     if targets.all_targets().len() > 100 { // limited by Genshin Impact
                         return self.span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
                     }
-                    NodeSwitch {
-                        key: value,
-                        cases: ValueIn {
-                            value: ValueIntList(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32()).collect()).into(),
-                            has_default: true,
-                            link: None,
-                        },
-                        default_branch: vec![blocks[targets.otherwise()].begin],
-                        case_branches: targets.all_targets()[0..targets.all_values().len()].iter().map(|x| vec![blocks[*x].begin]).collect(),
-                    }.into()
-                }), None))
+                    let node = self.graph.insert(Node::new(node_switch(ValueInt::def(), targets.all_values().len())));
+                    self.graph.set_default(Connection(node, 1), ValueIntList(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32()).collect()).into());
+                    self.graph.connect_control(Connection(node, 0), blocks[targets.otherwise()].begin);
+                    for i in 0..targets.all_values().len() {
+                        self.graph.connect_control(Connection(node, 1 + i), blocks[targets.all_targets()[i]].begin);
+                    }
+                    node
+                };
+                let value = self.compile_operand(discr, terminator.source_info.span)?;
+                self.graph.set_value_in(Connection(node, 0), value);
+                Connection(node, 0)
             },
             TerminatorKind::Drop { .. } => todo!(),
-            other => self.span_err(
+            other => return self.span_err(
                 terminator.source_info.span,
                 format!("Unsupported terminator: {}", other.name()),
             ),
-        }
+        })
     }
 
     fn find_fn(&self, operand: &Operand<'tcx>) -> Result<Instance<'tcx>> {
@@ -322,7 +316,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             ConstValue::Slice { .. } => return self.span_err(func.span, format!("Unsupported call const val: {:?}", val)),
                             ConstValue::ZeroSized => {
                                 match ty.kind() {
-                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, self.body.typing_env(self.tcx), *def_id, b.skip_binder())?.unwrap(),
+                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, self.body.typing_env(self.tcx), *def_id, self.tcx.normalize_erasing_late_bound_regions(self.body.typing_env(self.tcx), *b))?.unwrap(),
                                     _ => return self.span_err(func.span, format!("Unsupported call const ty: {:?}", ty)),
                                 }
                             }
@@ -344,35 +338,26 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
-        let ret_ty = destination.ty(self.body.local_decls(), self.tcx).ty;
-        let ret = if is_unit(ret_ty) { None } else { Some(compile_ty(self, self.tcx.def_span(func.def_id()), ret_ty)?) };
-        let values_in = args.iter().map(|Spanned { node, span }| self.compile_operand(node, *span)).collect::<Result<Vec<_>>>()?;
-        let values_out = ret.iter().map(Clone::clone).collect::<Vec<_>>();
-        let node = if let Some(native) = self.compile_native_call(span, func, values_in.clone(), values_out.clone()) {
+        let sig = self.tcx.normalize_erasing_late_bound_regions(self.body.typing_env(self.tcx), self.tcx.normalize_erasing_regions(self.body.typing_env(self.tcx), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
+        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| compile_ty(self, span, *x)).collect::<Result<_>>()?;
+        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| compile_ty(self, span, *x)).collect::<Result<_>>()?;
+        let node = self.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
             native?
         } else {
-            NodeComposite {
-                id: self.compiler.touch_fn(func)?,
-                controls_in: 1,
-                controls_out: vec![ControlOut::new()],
-                values_in,
-                values_out,
-            }.into()
-        };
-        let controls_in = node.get_controls_in();
-        let node_call = self.graph.insert(node);
-        let mut block = match controls_in {
+            node_composite(self.compiler.touch_fn(func)?, 1, 1, params, ret)
+        }));
+        for (i, Spanned { node: a, span }) in args.iter().enumerate() {
+            let value = self.compile_operand(a, *span)?;
+            self.graph.set_value_in(Connection(node, i), value);
+        }
+        let mut block = match self.graph.get_node(node).kind.controls_in_num {
             0 => Block::nop(self.graph),
-            1 => Block::singleton(node_call, 0),
-            _ => return self.span_err(span, format!("Unsupported call controls: {:?}", controls_in)),
+            1 => Block::singleton(node, 0),
+            other => return self.span_err(span, format!("Unsupported call controls: {other}")),
         };
-        if let Some(ret) = ret {
-            let block1 = self.compile_assign(destination, ValueIn {
-                value: ret,
-                has_default: false,
-                link: Link::new(node_call, 0).into(),
-            });
-            block.extend(self.graph, block1);
+        if !is_unit(sig.output()) {
+            let value = self.compile_assign(destination, ValueIn::link(Connection(node, 0).into()))?;
+            block.extend(self.graph, value);
         }
         Ok(block)
     }

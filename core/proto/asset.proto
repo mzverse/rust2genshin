@@ -72,7 +72,7 @@ message AssetData {
   };
 
   Identifier          id         = 1; // 自身 ID
-  repeated Identifier reference  = 2; // 显式引用表
+  repeated Identifier references  = 2; // 显式引用表
   string              name       = 3; // 内部调试名
   Type                type       = 5; // 业务分类
 

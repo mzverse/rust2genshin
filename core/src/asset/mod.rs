@@ -2,20 +2,25 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/rust2genshin.rs"));
 }
 
-pub mod raw_node_graph;
 pub mod node_graph;
 pub mod value;
 
 use generated::*;
 use prost::Message;
+use slab::Slab;
 use std::fs::File;
 use std::io::Write;
 use std::ops::Sub;
 use std::path::Path;
-use slab::Slab;
+
+#[derive(Clone, Copy)]
+pub enum Side {
+    Server,
+    Client,
+}
 
 pub trait Asset: 'static {
-    fn encode(&self, id: i64) -> Vec<AssetData>;
+    fn encode(&self, side: Side, id: i64) -> Vec<AssetData>;
 }
 impl<T: Asset> From<T> for Box<dyn Asset> {
     fn from(value: T) -> Self {
@@ -32,6 +37,7 @@ pub enum FileType {
     Runtime = 4, //
 }
 pub use asset_bundle_data::Mode as GameMode;
+
 pub struct AssetBundle {
     pub(crate) mode: GameMode,
     pub(crate) assets: Slab<Box<dyn Asset>>,
@@ -64,7 +70,7 @@ impl AssetBundle {
         let mut primary = Vec::new();
         let mut dependencies = Vec::new();
         for (i, asset) in &self.assets {
-            for data in asset.encode(Self::ID_BEGIN + i as i64) {
+            for data in asset.encode(Side::Server, Self::ID_BEGIN + i as i64) {
                 if self.display.contains(&data.id.unwrap().guid) {
                     primary.push(data);
                 } else {

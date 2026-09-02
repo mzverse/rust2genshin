@@ -12,4 +12,8 @@ pub use rust2genshin_lib_internal::event_listener;
 use rust2genshin_lib_internal::*;
 
 #[native_exec(1)]
-pub fn log(s: impl ToString);
+pub fn log(s: &str);
+
+// pub fn log(s: impl ToString) {
+//     log0(s.to_string())
+// }

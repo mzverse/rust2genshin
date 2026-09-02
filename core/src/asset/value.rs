@@ -1,14 +1,9 @@
-use std::fmt::Debug;
-use crate::asset::generated::{pin_interface, type_definition, typed_value, vec3f, ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, PolymorphicValue, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f};
+use crate::asset::Side;
+use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, type_definition, typed_value, vec3f};
 use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
-use crate::asset::generated::typed_value::{Storage, WidgetType};
-
-#[derive(Clone, Copy)]
-pub enum Side {
-    Server,
-    Client,
-}
+use std::any::TypeId;
+use std::fmt::Debug;
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -16,19 +11,10 @@ impl<T: Value> From<T> for AnyValue {
         Box::new(value)
     }
 }
-impl dyn Value {
-    pub(crate) fn into_selected(self: Box<Self>, is_set: bool, f: impl FnOnce(AnyValue) -> Result<i32>) -> Result<ValueSelected> {
-        Ok(ValueSelected {
-            index: f(self.clone())?,
-            value: self,
-            has_default: is_set,
-        })
-    }
-}
 pub trait CloneValue {
     fn clone(&self) -> AnyValue;
 }
-pub trait Value: Any + CloneValue + Debug {
+pub trait Value: Any + CloneValue + Debug + Send + Sync {
     fn encode(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
             widget: self.get_widget_type() as i32,
@@ -108,6 +94,10 @@ pub trait Value: Any + CloneValue + Debug {
     fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
         None
     }
+
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        value.type_id() == TypeId::of::<Self>()
+    }
 }
 
 /// 用元素编码结果构造列表存储(ListStorage)
@@ -142,45 +132,6 @@ impl<T: Value + Clone> ValueClone for T {
 impl<T: ValueClone> CloneValue for T {
     fn clone(&self) -> AnyValue {
         Clone::clone(self).into()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ValueSelected {
-    pub index: i32,
-    pub value: AnyValue,
-    pub has_default: bool,
-}
-
-/// 多态值(ValueSelected)解包取实际值;普通值原样返回。
-/// 泛型节点的 make_selected / get_type 判型前先解包。
-pub fn unwrap_selected(value: &AnyValue) -> AnyValue {
-    if value.is::<ValueSelected>() {
-        value.downcast_ref::<ValueSelected>().unwrap().value.clone()
-    } else {
-        value.clone()
-    }
-}
-
-impl Value for ValueSelected {
-    fn get_widget_type(&self) -> WidgetType {
-        WidgetType::TypeSelector
-    }
-
-    fn get_server_type(&self) -> ServerTypeId {
-        self.value.get_server_type()
-    }
-
-    fn get_client_type(&self) -> ClientTypeId {
-        self.value.get_client_type()
-    }
-
-    fn encode_storage(&self, side: Side) -> Storage {
-        Storage::ValPoly(PolymorphicValue {
-            chosen_type_index: self.index,
-            actual_value: Some(self.value.encode(self.has_default, side).into()),
-            extra_meta: None,
-        }.into())
     }
 }
 
@@ -523,8 +474,8 @@ impl Value for ValueIntList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CIntList
     }
-    fn encode_storage(&self, _side: Side) -> Storage {
-        Storage::ValList(list_storage(
+    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+        typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueInt(*x);
                 let side = Side::Server;
@@ -830,6 +781,10 @@ impl Value for ValueDict {
             },
         }))
     }
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        matches!(value.downcast_ref::<ValueDict>(), Ok(value)
+            if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
+    }
 }
 
 // ---------- 结构体值(SStruct=25,仅服务器) ----------
@@ -866,6 +821,10 @@ impl Value for ValueStruct {
     }
     fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
         Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.struct_id }),)
+    }
+
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.struct_id == self.struct_id)
     }
 }
 

@@ -1,5 +1,20 @@
 # Usage
 
+## Demo
+
+简单的求根公式：
+
+```rust
+#[unsafe(no_mangle)]
+pub fn solve(a: f32, b: f32, c: f32) -> f32 {
+    (- b + delta(a, b, c).sqrt()) / (2 * a)
+}
+
+fn delta(a: f32, b: f32, c: f32) -> f32 {
+    b * b - 4 * a * c
+}
+```
+
 ## Build
 
 可参见github workflow
@@ -31,7 +46,7 @@ TODO
 
 ### 导出函数
 
-将函数导出为复合节点图，声明为`#[unsafe(no_mangle)]`：
+将函数导出为复合节点图，声明为`#[unsafe(no_mangle)]`或`#[unsafe(export_name = "导出的名称")]`：
 ```rust
 #[unsafe(no_mangle)]
 pub fn my_composite() {
@@ -41,6 +56,38 @@ pub fn my_composite() {
 
 > [!IMPORTANT]
 > 主图始终导出（如果存在），未导出或未被导出资产引用的资产无法被导入
+
+# 兼容性
+
+- 运算溢出
+
+    为性能起见，`i32`的四则运算默认自动溢出，即原生的运算节点
+
+- 整数除法
+    
+    `i32`的除法默认会生成一堆检查，请改用`divide`方法，对应**除法节点**
+
+    注意`i32::MIN.divide(-1)`等于`0`
+
+# Todo List
+
+- cast
+- `struct`
+- events
+- tuple
+- loops
+- `Box`
+- `async fn`
+- closure
+- unsigned int
+- `i64`
+- client node graph
+
+# 不被支持的特性
+
+- `i8`, `i16`：请使用`i32`
+- 递归调用：请改写为循环，或改用`async fn`然后`await`
+- trait object（`dyn`）：虚表开销过大，可能不予支持
 
 # 关于节点图
 
@@ -90,34 +137,3 @@ for(int i = begin; i <= end; i++)
 
 - ‘模运算’节点实际上是**取余**而不是取模
 - 
-
-# 兼容性
-
-- 运算溢出
-
-    为性能起见，`i32`的四则运算默认自动溢出，即原生的运算节点
-
-- 整数除法
-    
-    `i32`的除法默认会生成一堆检查，请改用`divide`方法，对应**除法节点**
-
-    注意`i32::MIN.divide(-1)`等于`0`
-
-# Todo List
-
-- cast
-- `struct`
-- events
-- tuple
-- loops
-- `Box`
-- `async fn`
-- closure
-- unsigned int
-- `i64`
-
-# 不被支持的特性
-
-- `i8`, `i16`：请使用`i32`
-- 递归调用：请改写为循环，或改用`async fn`然后`await`
-- trait object（`dyn`）：虚表开销过大，可能不予支持
