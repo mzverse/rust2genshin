@@ -10,8 +10,8 @@ use rustc_abi::Size;
 use rustc_index::IndexVec;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp};
-use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind};
+use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
 
@@ -57,22 +57,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             todo!()
         }
         let decl = self.body.local_decls.get(place.local).unwrap();
-        let node = self.graph.insert(Node::new(node_set_local(compile_ty(self, decl.source_info.span, decl.ty)?)));
+        let node = self.graph.insert(Node::new(node_set_local(compile_ty(self.compiler, decl.source_info.span, decl.ty)?)));
         self.graph.connect_value(Connection(*self.locals.get(place.local).unwrap(), 0), Connection(node, 0));
         self.graph.set_value_in(Connection(node, 1), value);
         Ok(Block::singleton(node, 0))
-    }
-
-    fn find_lib_fn(&self, name: &str) -> Result<Instance<'tcx>> {
-        for (s, _) in self.tcx.exported_non_generic_symbols(self.compiler.lib) {
-            if let ExportedSymbol::NonGeneric(id) = *s {
-                self.tcx.dcx().note(self.tcx.def_path_str(id));
-                if self.tcx.def_path_str(id) == name {
-                    return Ok(Instance::mono(self.tcx, id));
-                }
-            }
-        }
-        self.err(format!("Lib fn not found: {name}"))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -81,7 +69,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
-                let kind0 = compile_ty(self, v.0.span(&self.body.local_decls), ty0)?;
+                let kind0 = compile_ty(self.compiler, v.0.span(&self.body.local_decls), ty0)?;
                 let node = self.graph.insert(Node::new(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
                         node_add(kind0),
@@ -101,7 +89,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     BinOp::BitOr => if ty.is_bool() { NODE_OR.clone() } else { NODE_BITWISE_OR.clone() },
                     BinOp::Eq => node_equal(kind0),
                     BinOp::Shl | BinOp::ShlUnchecked => NODE_LEFT_SHIFT.clone(),
-                    BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, self.find_lib_fn("<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
+                    BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, find_lib_fn(self.compiler, "<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
                     BinOp::Lt => node_less_than(kind0),
                     BinOp::Le => node_less_equal(kind0),
                     BinOp::Ne => todo!(),
@@ -118,7 +106,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             }
             Rvalue::UnaryOp(op, v) => {
                 let ty = v.ty(&self.body.local_decls, self.tcx);
-                let _kind = compile_ty(self, v.span(&self.body.local_decls), ty)?;
+                let _kind = compile_ty(self.compiler, v.span(&self.body.local_decls), ty)?;
                 let node = self.graph.insert(Node::new(match op {
                     UnOp::Not => if ty.is_bool() {
                         NODE_NOT.clone()
@@ -136,6 +124,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.graph.set_value_in(Connection(node, 0), value);
                 ValueIn::link(Connection(node, 0).into())
             },
+            Rvalue::Reborrow(t, _, p) => return if t.is_str() {
+                self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(*p), WithRetag::No), span)
+            } else {
+                self.span_err(span, "Reborrow from raw ptr is unsupported")
+            },
             Rvalue::Repeat(_, _)
             | Rvalue::Ref(_, _, _)
             | Rvalue::ThreadLocalRef(_)
@@ -145,7 +138,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             | Rvalue::Aggregate(_, _)
             | Rvalue::CopyForDeref(_)
             | Rvalue::WrapUnsafeBinder(_, _)
-            | Rvalue::Reborrow(_, _, _) => todo!("{:?}", value),
+                => todo!("{:?}", value),
         };
         self.compile_assign(place, value_in)
     }
@@ -162,7 +155,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
             Operand::Constant(co) => {
                 let ty = co.ty();
-                let v = co.const_.eval(self.tcx, self.body.typing_env(self.tcx), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
+                let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
                 ValueIn::value(match &ty.kind() {
                         TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
                         TyKind::Int(t) => match t {
@@ -291,7 +284,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 match func.const_ {
                     Const::Ty(_, _) |
                     Const::Unevaluated(_, _) =>
-                        match func.const_.eval(self.tcx, self.body.typing_env(self.tcx), func.span).map_err(|_| self.get_tcx().dcx().span_err(func.span, format!("Unsupported call const: {:?}", func.const_)))? {
+                        match func.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), func.span).map_err(|_| self.get_tcx().dcx().span_err(func.span, format!("Unsupported call const: {:?}", func.const_)))? {
                             ConstValue::Scalar(sc) => match sc {
                                 Scalar::Int(_) => panic!("int"),
                                 Scalar::Ptr(p, _) => {
@@ -313,7 +306,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             ConstValue::Slice { .. } => return self.span_err(func.span, format!("Unsupported call const val: {:?}", val)),
                             ConstValue::ZeroSized => {
                                 match ty.kind() {
-                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, self.body.typing_env(self.tcx), *def_id, self.tcx.normalize_erasing_late_bound_regions(self.body.typing_env(self.tcx), *b))?.unwrap(),
+                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, TypingEnv::fully_monomorphized(), *def_id, self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), *b))?.unwrap(),
                                     _ => return self.span_err(func.span, format!("Unsupported call const ty: {:?}", ty)),
                                 }
                             }
@@ -335,9 +328,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
-        let sig = self.tcx.normalize_erasing_late_bound_regions(self.body.typing_env(self.tcx), self.tcx.normalize_erasing_regions(self.body.typing_env(self.tcx), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
-        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| compile_ty(self, span, *x)).collect::<Result<_>>()?;
-        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| compile_ty(self, span, *x)).collect::<Result<_>>()?;
+        let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
+        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| compile_ty(self.compiler, span, *x)).collect::<Result<_>>()?;
+        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| compile_ty(self.compiler, span, *x)).collect::<Result<_>>()?;
         let node = self.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
             native?
         } else {

@@ -10,9 +10,10 @@ use rustc_hir::intravisit::Visitor;
 use rustc_hir::{ImplItem, intravisit};
 use rustc_index::IndexVec;
 use rustc_middle::hir::nested_filter;
+use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir::{BasicBlock, Body, Local};
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_middle::{mir, ty};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
 use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
@@ -20,11 +21,11 @@ use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use rustc_span::sym::panic;
 
-mod func;
-mod native;
-mod optimize;
+pub mod func;
+pub mod native;
+pub mod optimize;
+pub mod compile2;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
 
@@ -144,19 +145,33 @@ pub(crate) fn is_unit(ty: Ty) -> bool {
         return true;
     }
     if let TyKind::Tuple(cs) = ty.kind() {
-        cs.len() == 0
+        cs.is_empty()
     } else {
         false
     }
 }
 
-pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> Result<AnyValue> {
+
+fn find_lib_fn<'tcx>(compiler: &Compiler<'tcx>, name: &str) -> Result<Instance<'tcx>> {
+    for (s, _) in compiler.tcx.exported_non_generic_symbols(compiler.lib) {
+        if let ExportedSymbol::NonGeneric(id) = *s {
+            compiler.tcx.dcx().note(compiler.tcx.def_path_str(id));
+            if compiler.tcx.def_path_str(id) == name {
+                return Ok(Instance::mono(compiler.tcx, id));
+            }
+        } else {
+            panic!();
+        }
+    }
+    compiler.err(format!("Lib fn not found: {name}"))
+}
+pub(crate) fn compile_ty<'tcx>(compiler: &Compiler<'tcx>, span: Span, ty: Ty) -> Result<AnyValue> {
     Ok(match ty.kind() {
         TyKind::Bool => ValueBool::def(),
-        TyKind::Char => return tcx.span_err(span, "Char is unsupported"),
+        TyKind::Char => return compiler.span_err(span, "Char is unsupported"),
         TyKind::Int(ty) => match ty {
             IntTy::I8 | IntTy::I16 | IntTy::I64 | IntTy::I128 =>
-                return tcx.span_err(span, format!("Unsupported int: {}", ty.name())),
+                return compiler.span_err(span, format!("Unsupported int: {}", ty.name())),
             IntTy::Isize | IntTy::I32 => ValueInt::def(),
         },
         TyKind::Uint(_) => todo!(),
@@ -164,21 +179,22 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> 
             FloatTy::F16 |
             FloatTy::F64 |
             FloatTy::F128 =>
-                return tcx.span_err(span, format!("Unsupported float: {}", ty.name())),
+                return compiler.span_err(span, format!("Unsupported float: {}", ty.name())),
             FloatTy::F32 => ValueFloat::def(),
+        },
+        TyKind::RawPtr(e, _) => if e.is_str() { ValueString::def() } else {
+            return compiler.span_err(span, format!("RawPtr is unsupported: {e:?}"));
         },
         TyKind::Str => ValueString::def(),
         TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-            todo!()
+            todo!("{e:?}")
         },
-        TyKind::Adt(d, a) => {
-            return tcx.span_err(span, format!("Adt: {d:?} = {a:?}"))
-        },
+        TyKind::Adt(d, a) =>
+            return compiler.span_err(span, format!("Adt: {d:?} = {a:?}")),
         TyKind::Foreign(_) => todo!(),
         TyKind::Array(_, _) => todo!(),
         TyKind::Pat(_, _) => todo!(),
         TyKind::Slice(_) => todo!(),
-        TyKind::RawPtr(_, _) => todo!(),
         TyKind::FnDef(_, _) => todo!(),
         TyKind::FnPtr(_, _) => todo!(),
         TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
@@ -195,7 +211,7 @@ pub(crate) fn compile_ty<'tcx>(tcx: &impl WithTcx<'tcx>, span: Span, ty: Ty) -> 
         | TyKind::Infer(_)
         | TyKind::Error(_)
         | TyKind::UnsafeBinder(_) => {
-            tcx.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind()));
+            compiler.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind())).expect("TODO: panic message");
             panic!();
         }
     })
@@ -315,8 +331,8 @@ impl<'tcx> Compiler<'tcx> {
         Ok(asset_id)
     }
 
-    fn monomorphize(&self, body: &Body<'tcx>, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        func.instantiate_mir_and_normalize_erasing_regions(self.tcx, body.typing_env(self.tcx), ty::EarlyBinder::bind(self.tcx, ty))
+    fn monomorphize(&self, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
+        func.instantiate_mir_and_normalize_erasing_regions(self.tcx, TypingEnv::fully_monomorphized(), ty::EarlyBinder::bind(self.tcx, ty))
     }
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
@@ -331,7 +347,7 @@ impl<'tcx> Compiler<'tcx> {
                 locals.push(NodeRef::from(usize::MAX));
                 continue;
             }
-            let kind = compile_ty(self, x.source_info.span, self.monomorphize(body, func, x.ty))?;
+            let kind = compile_ty(self, x.source_info.span, self.monomorphize(func, x.ty))?;
             let local = graph.insert(Node::new(node_local(kind.clone())));
             graph.set_default(Connection(local, 0), kind);
             locals.push(local);

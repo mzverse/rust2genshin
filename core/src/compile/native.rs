@@ -52,7 +52,7 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                             control as usize,
                             params,
                             ret,
-                        ).into()).into()
+                        )).into()
                     },
                     _ => None
                 }

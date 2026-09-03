@@ -2,7 +2,6 @@
 //!
 //! 人工设计,替换自动生成版本:引脚语义命名、动态结构用 Vec、类型准确。
 
-use std::sync::LazyLock;
 use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
@@ -10,7 +9,7 @@ use crate::asset::value::{
     ValueEntityList, ValueEnum, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList,
     ValueLocalVarRef, ValuePrefab, ValueString, ValueVarSnapshotRef, ValueVector,
 };
-use anyhow::{bail, Result};
+use std::sync::LazyLock;
 
 // ========================================================================
 // 随机 / 数学常量

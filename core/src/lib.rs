@@ -19,3 +19,5 @@ extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_structures;
 extern crate rustc_target;
+extern crate rustc_ast;
+extern crate rustc_data_structures;

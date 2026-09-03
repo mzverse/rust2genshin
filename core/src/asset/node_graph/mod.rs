@@ -1,4 +1,4 @@
-use super::value::{AnyValue, CloneValue, Value};
+use super::value::{AnyValue, Value};
 use crate::asset::generated::{AssetData, ClientTypeId, GraphVariable, Identifier, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, ServerTypeId, TypedValue, asset_data, identifier, node_graph_container, pin_signature, typed_value};
 use crate::asset::{Asset, Side};
 use slab::Slab;
@@ -60,15 +60,12 @@ impl Connection {
         self.1
     }
 }
-impl Into<Link> for Connection {
-    fn into(self) -> Link {
-        Link::Connection(self)
+impl From<Connection> for Link {
+    fn from(connection: Connection) -> Link {
+        Link::Connection(connection)
     }
 }
 
-trait NodeKindExtra {
-    fn get_references(&self, kind: NodeKind) -> Vec<Identifier>;
-}
 #[derive(Clone)]
 pub struct NodeKind {
     pub id: i64,
@@ -153,6 +150,11 @@ impl Node {
         }
     }
 }
+impl From<NodeKind> for Node {
+    fn from(kind: NodeKind) -> Self {
+        Self::new(kind)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Link {
@@ -174,18 +176,10 @@ impl Link {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValueIn {
     pub default: Option<AnyValue>,
     pub link: Option<Link>,
-}
-impl Default for ValueIn {
-    fn default() -> Self {
-        Self {
-            default: None,
-            link: None,
-        }
-    }
 }
 impl ValueIn {
     pub fn value(default: AnyValue) -> Self {
@@ -378,7 +372,7 @@ impl<T: NodeGraphExtra + 'static> Asset for NodeGraph<T> {
                                             value: Some(ValueSelected::encode(n.kind.values_out_types[i].clone(), false, n.kind.selectors_out[i], side)),
                                             r#type: Some(n.kind.values_out_types[i].get_type_id(side)),
                                             connection: vec![].tap_mut(|cs| {
-                                                for Connection(target, j) in x.into_iter().copied().flat_map(Link::connection) {
+                                                for Connection(target, j) in x.iter().copied().flat_map(Link::connection) {
                                                     let sig_tar = PinSignature {
                                                         kind: PinType::InValue as i32,
                                                         index: j as i32,
@@ -395,7 +389,7 @@ impl<T: NodeGraphExtra + 'static> Asset for NodeGraph<T> {
                                             persistent_pin_uid: None,
                                         })
                                     }
-                                    fn process_controls<'a, S: 'a>(pins: &mut Vec<PinData>, controls: &'a Vec<S>, kind: PinType, tar: PinType)
+                                    fn process_controls<'a, S: 'a>(pins: &mut Vec<PinData>, controls: &'a [S], kind: PinType, tar: PinType)
                                     where
                                         &'a S: IntoIterator<Item = &'a Link>,
                                     {
@@ -411,8 +405,7 @@ impl<T: NodeGraphExtra + 'static> Asset for NodeGraph<T> {
                                                 value: None,
                                                 r#type: None,
                                                 connection: vec![].tap_mut(|cs| {
-                                                    let mut iter = x.into_iter().copied().flat_map(Link::connection);
-                                                    while let Some(Connection(target, j)) = iter.next() {
+                                                    for Connection(target, j) in x.into_iter().copied().flat_map(Link::connection) {
                                                         let sig_tar = PinSignature {
                                                             kind: tar as i32,
                                                             index: j as i32,
@@ -512,10 +505,6 @@ struct ValueSelected {
     pub is_set: bool,
 }
 impl ValueSelected {
-    pub fn new(index: i32, value: AnyValue) -> Self {
-        Self { index, value, is_set: false }
-    }
-
     pub fn encode(value: AnyValue, is_set: bool, selected: Option<i32>, side: Side) -> TypedValue {
         match selected {
             None => value.encode(is_set, side),
