@@ -8,9 +8,8 @@ use crate::asset::node_graph::control::node_switch;
 use crate::asset::node_graph::execution::node_set_local;
 use rustc_abi::Size;
 use rustc_index::IndexVec;
-use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
@@ -129,10 +128,15 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             } else {
                 self.span_err(span, "Reborrow from raw ptr is unsupported")
             },
+            Rvalue::Ref(_, _, _) => panic!(),
+            Rvalue::RawPtr(_, p) => {
+                let Some(ProjectionElem::Deref) = p.projection.last() else {
+                    return self.span_err(span, format!("RawPtr rvalue is unsupported: {p:?}"))?;
+                };
+                return self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(Place { local: p.local, projection: self.tcx.mk_place_elems(&p.projection[0..p.projection.len() - 1]) }), WithRetag::No), span);
+            },
             Rvalue::Repeat(_, _)
-            | Rvalue::Ref(_, _, _)
             | Rvalue::ThreadLocalRef(_)
-            | Rvalue::RawPtr(_, _)
             | Rvalue::Cast(_, _, _)
             | Rvalue::Discriminant(_)
             | Rvalue::Aggregate(_, _)
