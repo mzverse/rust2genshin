@@ -48,3 +48,23 @@ pub fn solve(a: f32, b: f32, c: f32) -> f32 {
 pub fn delta(a: f32, b: f32, c: f32) -> f32 {
     b * b - 4. * a * c
 }
+
+#[unsafe(no_mangle)]
+pub fn cast_i32_to_f32(x: i32) -> f32 {
+    x as f32
+}
+
+#[unsafe(no_mangle)]
+pub fn cast_f32_to_i32(x: f32) -> i32 {
+    x as i32
+}
+
+#[unsafe(no_mangle)]
+pub fn cast_bool_to_i32(b: bool) -> i32 {
+    b as i32
+}
+
+#[unsafe(no_mangle)]
+pub fn cast_i32_to_bool(x: i32) -> bool {
+    x as i32 != 0
+}
