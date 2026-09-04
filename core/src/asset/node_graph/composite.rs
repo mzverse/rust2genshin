@@ -1,17 +1,17 @@
 use crate::asset::generated::{AssetData, Identifier, InterfaceMapping, NodeGraphData, NodeInterface, NodeInterfaceContainer, PinInterface, PinSignature, asset_data, identifier, node_interface, node_interface_container, pin_interface};
 use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeGraphExtra, NodeKind, NodeRef, PinType};
 use crate::asset::value::{AnyValue};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tap::Tap;
 
 pub struct NodeGraphExtraEncoding {
     name: String,
-    pins: HashMap<PinType, Vec<(String, Option<AnyValue>)>>,
+    pins: BTreeMap<PinType, Vec<(String, Option<AnyValue>)>>,
 }
 
 pub struct NodeGraphComposite {
     pub(crate) description: String,
-    pub(crate) pins: HashMap<PinType, Vec<String>>,
+    pub(crate) pins: BTreeMap<PinType, Vec<String>>,
 }
 impl NodeGraphExtra for NodeGraphComposite {
     type Data = NodeGraphExtraEncoding;
@@ -34,7 +34,7 @@ impl NodeGraphExtra for NodeGraphComposite {
             name: graph.name.clone(),
             pins: self.pins.iter().map(|(k, v)| (*k, v.iter().map(|x| (x.clone(), None)).collect())).collect(),
         };
-        let mut pins_data: HashMap<PinType, Vec<Vec<Connection>>> = self.pins.iter().map(|(k, v)| (*k, vec![vec![]; v.len()])).collect();
+        let mut pins_data: BTreeMap<PinType, Vec<Vec<Connection>>> = self.pins.iter().map(|(k, v)| (*k, vec![vec![]; v.len()])).collect();
         for (i, n) in &graph.nodes {
             for (j, links) in n.controls_in.iter().enumerate() {
                 for k in links.iter().copied().flat_map(Link::export) {
@@ -155,7 +155,7 @@ impl NodeGraphComposite {
     pub const DECL_OFFSET: i64 = 0x100000;
 
     pub fn new() -> Self {
-        let mut pins = HashMap::new();
+        let mut pins = BTreeMap::new();
         pins.insert(PinType::InControl, vec![]);
         pins.insert(PinType::OutControl, vec![]);
         pins.insert(PinType::InValue, vec![]);

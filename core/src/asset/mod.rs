@@ -8,8 +8,6 @@ pub mod value;
 use generated::*;
 use prost::Message;
 use slab::Slab;
-use std::fs::File;
-use std::io::Write;
 use std::ops::Sub;
 use std::path::Path;
 
@@ -88,8 +86,15 @@ impl AssetBundle {
     }
 
     /// .gia Genshin Impact Assets
+    ///
+    /// Skips the write when the existing file already has the same bytes.
+    /// This preserves the file's mtime across rebuilds with no inputs
+    /// changed, which lets `demo/build.rs` track the .gia via
+    /// `cargo:rerun-if-changed` without triggering an infinite loop on
+    /// every successful build. External modifications (different bytes)
+    /// are still detected — they advance the mtime and force one extra
+    /// rebuild to overwrite the externally written content.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let mut file = File::create(path)?;
         let data = self.encode().encode_to_vec();
         // GIA 文件头:5 × u32 大端,共 20 字节
         // (权威格式见 GIA 项目 utils/protobuf/decode.ts 的 unwrap_gia/wrap_gia):
@@ -99,14 +104,24 @@ impl AssetBundle {
         //   [0x0C] 文件类型 = 3(加载器严格校验,GIA = 3,固定值)
         //   [0x10] proto 数据长度(严格校验 = 文件总大小 - 24)
         // 尾部 4 字节:0x0679(严格校验)
-        file.write_all(&((data.len() + 20) as u32).to_be_bytes())?;
-        file.write_all(&1u32.to_be_bytes())?;
-        file.write_all(&0x0326u32.to_be_bytes())?;
-        file.write_all(&(FileType::AssetBundle as u32).to_be_bytes())?;
-        file.write_all(&(data.len() as u32).to_be_bytes())?;
-        file.write_all(data.as_ref())?;
-        file.write_all(&0x0679u32.to_be_bytes())?;
-        file.flush()?;
+        let mut new_bytes = Vec::with_capacity(data.len() + 24);
+        new_bytes.extend_from_slice(&((data.len() + 20) as u32).to_be_bytes());
+        new_bytes.extend_from_slice(&1u32.to_be_bytes());
+        new_bytes.extend_from_slice(&0x0326u32.to_be_bytes());
+        new_bytes.extend_from_slice(&(FileType::AssetBundle as u32).to_be_bytes());
+        new_bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        new_bytes.extend_from_slice(data.as_ref());
+        new_bytes.extend_from_slice(&0x0679u32.to_be_bytes());
+
+        if let Ok(existing) = std::fs::read(path) {
+            if existing == new_bytes {
+                // Content unchanged — preserve mtime so the next build
+                // doesn't re-trigger due to this artifact.
+                return Ok(());
+            }
+        }
+
+        std::fs::write(path, &new_bytes)?;
         Ok(())
     }
 }

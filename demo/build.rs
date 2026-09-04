@@ -5,25 +5,36 @@
 //!      submodules declared with `mod foo;`).
 //!   2. The rust2genshin backend cdylib (so the .gia is regenerated
 //!      with the new backend logic).
+//!   3. `target/rust2genshin_demo.gia` — an external rewrite of the
+//!      artifact (e.g. another process edits it) invalidates the build
+//!      and triggers one extra rebuild to overwrite the external content
+//!      with the canonical backend output.
 //!
 //! Without (2), `cargo build -p rust2genshin-demo` would not invalidate
 //! the demo's incremental cache when only the backend's source files
 //! change, leaving `target/rust2genshin_demo.gia` stale.
 //!
-//! Note: `target/rust2genshin_demo.gia` is intentionally NOT tracked
-//! here. The .gia is a write-only artifact from cargo's perspective;
-//! tracking its mtime via cargo:rerun-if-changed would create a loop
-//! because every successful build advances the .gia's mtime, which
-//! would then re-trigger the next build. External edits to the .gia
-//! are not auto-detected — run `cargo +nightly clean -p
-//! rust2genshin-demo && cargo +nightly run -p build-demo` to force
-//! regeneration.
+//! # Why (3) doesn't cause an infinite rebuild loop
+//!
+//! `cargo:rerun-if-changed=<gia>` would normally trigger every build:
+//! the backend writes the .gia each run, advancing its mtime, which
+//! would then re-trigger the next build. The backend's `save()`
+//! (see `core/src/asset/mod.rs::AssetBundle::save`) sidesteps this by
+//! comparing the new bytes against the existing file and skipping the
+//! write when they match. The mtime only advances when content
+//! actually changes — either from a real source change or from an
+//! external edit — so the rebuild loop is broken after at most one
+//! extra build.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = manifest_dir
+        .parent()
+        .map(|p| p.join("target"))
+        .unwrap_or_else(|| PathBuf::from("target"));
 
     // Track every file under src/ — submodules are picked up via mod foo;
     // and any non-.rs file (e.g. a build-data file) should also retrigger.
@@ -40,15 +51,18 @@ fn main() {
     } else {
         "librust2genshin.so"
     };
-    let target_dir = manifest_dir
-        .parent()
-        .map(|p| p.join("target"))
-        .unwrap_or_else(|| PathBuf::from("target"));
     let dll_path = target_dir.join("debug").join(dll_name);
     // `cargo:rerun-if-changed` on a missing path is a no-op (cargo treats
     // it as "file does not exist, do not track"). Emit unconditionally so
     // the rerun fires once the file exists.
     println!("cargo:rerun-if-changed={}", dll_path.display());
+
+    // Track the .gia artifact itself. Safe thanks to the backend's
+    // content-equal skip-write (see module docs).
+    let gia_path = target_dir.join("rust2genshin_demo.gia");
+    if gia_path.exists() {
+        println!("cargo:rerun-if-changed={}", gia_path.display());
+    }
 }
 
 fn emit_dir_rerun(dir: &Path) {
