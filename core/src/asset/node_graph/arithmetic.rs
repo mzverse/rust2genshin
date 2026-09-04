@@ -600,7 +600,7 @@ pub fn node_assemble_list(ty: AnyValue) -> NodeKind {
 
 /// 类型转换(ID 180,泛型变体):K 类型值转为 V 类型值;
 /// shell 固定 180,kernel 随 (K,V) 组合(11 种,见特判);输出 R<V>。
-pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> NodeKind {
+pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> Option<NodeKind> {
     let mut result = NodeKind::expr(180, vec![from_ty.clone()], to_ty.clone());
     // kernel 由 (K,V) 组合决定(11 种)
     result.kernel_id = match (from_ty.get_server_type(), to_ty.get_server_type()) {
@@ -614,7 +614,7 @@ pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> NodeKind {
         (ServerTypeId::SFloat, ServerTypeId::SInt) => 187,
         (ServerTypeId::SFloat, ServerTypeId::SString) => 188,
         (ServerTypeId::SVector, ServerTypeId::SString) => 189,
-        (from, to) => panic!("Arithmetic.General.Convert_Type does not support {from:?} -> {to:?}"),
+        _ => return None,
     };
     // 输入 R<K> 的 selected index(Int→0、Ety→1、Gid→2、Bol→3、Flt→4、Vec→5)
     let selected_in = match from_ty.get_server_type() {
@@ -624,7 +624,7 @@ pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> NodeKind {
         ServerTypeId::SBoolean => 3,
         ServerTypeId::SFloat => 4,
         ServerTypeId::SVector => 5,
-        other => panic!("Unsupported type: {other:?}"),
+        _ => unreachable!(),
     };
     // 输出 R<V> 的 selected index(Bol→0、Flt→1、Str→2、Int→3)
     let selected_out = match to_ty.get_server_type() {
@@ -632,11 +632,11 @@ pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> NodeKind {
         ServerTypeId::SFloat => 1,
         ServerTypeId::SString => 2,
         ServerTypeId::SInt => 3,
-        other => panic!("Unsupported type: {other:?}"),
+        _ => unreachable!(),
     };
     result.selectors_in[0] = selected_in.into();
     result.selectors_out[0] = selected_out.into();
-    result
+    result.into()
 }
 
 /// 创建字典(ID 1088):key 列表 + value 列表 → 字典

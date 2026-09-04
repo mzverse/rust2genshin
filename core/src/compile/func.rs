@@ -1,8 +1,10 @@
+use std::panic::catch_unwind;
+use downcast::Downcast;
 use crate::asset::value::{ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
 
 use super::*;
 use crate::asset::node_graph::ValueIn;
-use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
+use crate::asset::node_graph::arithmetic::{node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract, NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::node_graph::execution::node_set_local;
@@ -56,7 +58,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             todo!()
         }
         let decl = self.body.local_decls.get(place.local).unwrap();
-        let node = self.graph.insert(Node::new(node_set_local(compile_ty(self.compiler, decl.source_info.span, decl.ty)?)));
+        let node = self.graph.insert(Node::new(node_set_local(self.compiler.compile_ty(decl.source_info.span, decl.ty)?)));
         self.graph.connect_value(Connection(*self.locals.get(place.local).unwrap(), 0), Connection(node, 0));
         self.graph.set_value_in(Connection(node, 1), value);
         Ok(Block::singleton(node, 0))
@@ -68,8 +70,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
-                let kind0 = compile_ty(self.compiler, v.0.span(&self.body.local_decls), ty0)?;
-                let node = self.graph.insert(Node::new(match op {
+                let kind0 = self.compiler.compile_ty(v.0.span(&self.body.local_decls), ty0)?;
+                let mut node = self.graph.insert(Node::new(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
                         node_add(kind0),
                     BinOp::Sub | BinOp::SubUnchecked | BinOp::SubWithOverflow =>
@@ -78,7 +80,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         node_multiply(kind0),
                     BinOp::Div => {
                         if kind0.is::<ValueInt>() {
-                            self.tcx.dcx().span_warn(span, "Div is slow and big, see `divide`");
+                            self.tcx.dcx().span_warn(span, "Div of i32 is slow and big, see `divide`");
                         }
                         node_divide(kind0)
                     },
@@ -88,7 +90,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     BinOp::BitOr => if ty.is_bool() { NODE_OR.clone() } else { NODE_BITWISE_OR.clone() },
                     BinOp::Eq | BinOp::Ne => node_equal(kind0),
                     BinOp::Shl | BinOp::ShlUnchecked => NODE_LEFT_SHIFT.clone(),
-                    BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, find_lib_fn(self.compiler, "<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
+                    BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, self.compiler.find_lib_fn("<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
                     BinOp::Lt => node_less_than(kind0),
                     BinOp::Le => node_less_equal(kind0),
                     BinOp::Ge => node_greater_equal(kind0),
@@ -103,15 +105,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 if matches!(op, BinOp::Ne) {
                     // ! (a == b) — invert the equal node's bool output
                     let not_node = self.graph.insert(Node::new(NODE_NOT.clone()));
-                    self.graph.set_value_in(Connection(not_node, 0), ValueIn::link(Connection(node, 0).into()));
-                    ValueIn::link(Connection(not_node, 0).into())
-                } else {
-                    ValueIn::link(Connection(node, 0).into())
+                    self.graph.connect_value(Connection(node, 0), Connection(not_node, 0));
+                    node = not_node;
                 }
+                ValueIn::link(Connection(node, 0).into())
             }
             Rvalue::UnaryOp(op, v) => {
                 let ty = v.ty(&self.body.local_decls, self.tcx);
-                let _kind = compile_ty(self.compiler, v.span(&self.body.local_decls), ty)?;
+                let _kind = self.compiler.compile_ty(v.span(&self.body.local_decls), ty)?;
                 let node = self.graph.insert(Node::new(match op {
                     UnOp::Not => if ty.is_bool() {
                         NODE_NOT.clone()
@@ -142,23 +143,20 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 return self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(Place { local: p.local, projection: self.tcx.mk_place_elems(&p.projection[0..p.projection.len() - 1]) }), WithRetag::No), span);
             },
             Rvalue::Cast(kind, op, target_ty) => {
-                let from_ty = compile_ty(self.compiler, op.span(&self.body.local_decls),
-                                         op.ty(&self.body.local_decls, self.tcx))?;
-                let to_ty = compile_ty(self.compiler, span, *target_ty)?;
-                if from_ty.get_server_type() == to_ty.get_server_type() {
+                let from_ty = op.ty(&self.body.local_decls, self.tcx);
+                let from_kind = self.compiler.compile_ty(span, from_ty)?;
+                let to_kind = self.compiler.compile_ty(span, *target_ty)?;
+                if from_kind.is_instance(&to_kind) {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
-                } else if cast_supported(&from_ty, &to_ty) {
-                    let node = self.graph.insert(Node::new(
-                        crate::asset::node_graph::arithmetic::node_convert_type(from_ty, to_ty)
-                    ));
+                } else {
+                    let Some(node) = node_convert_type(from_kind, to_kind) else {
+                        return self.span_err(span, format!("Unsupported cast ({kind:?}) {from_ty:?} → {target_ty:?}"));
+                    };
+                    let node = self.graph.insert(Node::new(node));
                     let v = self.compile_operand(op, span)?;
                     self.graph.set_value_in(Connection(node, 0), v);
                     ValueIn::link(Connection(node, 0).into())
-                } else {
-                    return self.span_err(span, format!(
-                        "Unsupported cast {from_ty:?} → {to_ty:?} ({kind:?})"
-                    ))?;
                 }
             }
             Rvalue::Repeat(_, _)
@@ -201,7 +199,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             FloatTy::F64 |
                             FloatTy::F128 => return self.span_err(co.span, format!("Unsupported const: {:?}", co.const_)),
                         },
-                        TyKind::Adt(_, _) => todo!(),
+                        TyKind::Adt(d, a) => {
+                            if d.did().krate != self.compiler.lib {
+                                return self.span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
+                            } else {
+                                match self.tcx.def_path_str(d.did()).as_str() {
+                                    "rust2genshin_lib::Guid" => ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into(),
+                                    _ => panic!("adt: {d:?} {a:?}"),
+                                }
+                            }
+                        },
                         TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
                         TyKind::Ref(_, e, _) => {
                             if e.is_str() {
@@ -358,8 +365,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
         let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
-        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| compile_ty(self.compiler, span, *x)).collect::<Result<_>>()?;
-        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| compile_ty(self.compiler, span, *x)).collect::<Result<_>>()?;
+        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
+        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
         let node = self.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
             native?
         } else {
@@ -380,19 +387,4 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
         Ok(block)
     }
-}
-
-/// Returns true if the (from, to) type pair has a corresponding kernel in
-/// `node_convert_type`. Mirrors the 11 cases in
-/// `core/src/asset/node_graph::arithmetic::node_convert_type`.
-fn cast_supported(from: &AnyValue, to: &AnyValue) -> bool {
-    use crate::asset::generated::ServerTypeId::*;
-    matches!(
-        (from.get_server_type(), to.get_server_type()),
-        (SInt, SBoolean) | (SInt, SFloat) | (SInt, SString)
-        | (SEntity, SString) | (SGuid, SString)
-        | (SBoolean, SInt) | (SBoolean, SString)
-        | (SFloat, SInt) | (SFloat, SString)
-        | (SVector, SString)
-    )
 }

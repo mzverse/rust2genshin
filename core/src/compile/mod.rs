@@ -2,7 +2,7 @@ use crate::asset::AssetBundle;
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -151,70 +151,80 @@ pub(crate) fn is_unit(ty: Ty) -> bool {
     }
 }
 
-
-fn find_lib_fn<'tcx>(compiler: &Compiler<'tcx>, name: &str) -> Result<Instance<'tcx>> {
-    for (s, _) in compiler.tcx.exported_non_generic_symbols(compiler.lib) {
-        if let ExportedSymbol::NonGeneric(id) = *s {
-            compiler.tcx.dcx().note(compiler.tcx.def_path_str(id));
-            if compiler.tcx.def_path_str(id) == name {
-                return Ok(Instance::mono(compiler.tcx, id));
+impl<'tcx> Compiler<'tcx> {
+    fn find_lib_fn(&self, name: &str) -> Result<Instance<'tcx>> {
+        for (s, _) in self.tcx.exported_non_generic_symbols(self.lib) {
+            if let ExportedSymbol::NonGeneric(id) = *s {
+                self.tcx.dcx().note(self.tcx.def_path_str(id));
+                if self.tcx.def_path_str(id) == name {
+                    return Ok(Instance::mono(self.tcx, id));
+                }
+            } else {
+                panic!();
             }
-        } else {
-            panic!();
         }
+        self.err(format!("Lib fn not found: {name}"))
     }
-    compiler.err(format!("Lib fn not found: {name}"))
-}
-pub(crate) fn compile_ty<'tcx>(compiler: &Compiler<'tcx>, span: Span, ty: Ty) -> Result<AnyValue> {
-    Ok(match ty.kind() {
-        TyKind::Bool => ValueBool::def(),
-        TyKind::Char => return compiler.span_err(span, "Char is unsupported"),
-        TyKind::Int(ty) => match ty {
-            IntTy::I8 | IntTy::I16 | IntTy::I64 | IntTy::I128 =>
-                return compiler.span_err(span, format!("Unsupported int: {}", ty.name())),
-            IntTy::Isize | IntTy::I32 => ValueInt::def(),
-        },
-        TyKind::Uint(_) => todo!(),
-        TyKind::Float(ty) => match ty {
-            FloatTy::F16 |
-            FloatTy::F64 |
-            FloatTy::F128 =>
-                return compiler.span_err(span, format!("Unsupported float: {}", ty.name())),
-            FloatTy::F32 => ValueFloat::def(),
-        },
-        TyKind::RawPtr(e, _) => if e.is_str() { ValueString::def() } else {
-            return compiler.span_err(span, format!("RawPtr is unsupported: {e:?}"));
-        },
-        TyKind::Str => ValueString::def(),
-        TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-            todo!("{e:?}")
-        },
-        TyKind::Adt(d, a) =>
-            return compiler.span_err(span, format!("Adt: {d:?} = {a:?}")),
-        TyKind::Foreign(_) => todo!(),
-        TyKind::Array(_, _) => todo!(),
-        TyKind::Pat(_, _) => todo!(),
-        TyKind::Slice(_) => todo!(),
-        TyKind::FnDef(_, _) => todo!(),
-        TyKind::FnPtr(_, _) => todo!(),
-        TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
-        TyKind::Closure(_, _) => todo!(),
-        TyKind::Alias(_, _) => todo!(),
-        TyKind::Dynamic(_, _)
-        | TyKind::CoroutineClosure(_, _)
-        | TyKind::Coroutine(_, _)
-        | TyKind::CoroutineWitness(_, _)
-        | TyKind::Never
-        | TyKind::Param(_)
-        | TyKind::Bound(_, _)
-        | TyKind::Placeholder(_)
-        | TyKind::Infer(_)
-        | TyKind::Error(_)
-        | TyKind::UnsafeBinder(_) => {
-            compiler.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind())).expect("TODO: panic message");
-            panic!();
-        }
-    })
+
+    fn compile_ty(&self, span: Span, ty: Ty) -> Result<AnyValue> {
+        Ok(match ty.kind() {
+            TyKind::Bool => ValueBool::def(),
+            TyKind::Char => return self.span_err(span, "Char is unsupported"),
+            TyKind::Int(ty) => match ty {
+                IntTy::I8 | IntTy::I16 | IntTy::I64 | IntTy::I128 =>
+                    return self.span_err(span, format!("Unsupported int: {}", ty.name())),
+                IntTy::Isize | IntTy::I32 => ValueInt::def(),
+            },
+            TyKind::Uint(_) => todo!(),
+            TyKind::Float(ty) => match ty {
+                FloatTy::F16 |
+                FloatTy::F64 |
+                FloatTy::F128 =>
+                    return self.span_err(span, format!("Unsupported float: {}", ty.name())),
+                FloatTy::F32 => ValueFloat::def(),
+            },
+            TyKind::RawPtr(e, _) => if e.is_str() { ValueString::def() } else {
+                return self.span_err(span, format!("RawPtr is unsupported: {e:?}"));
+            },
+            TyKind::Str => ValueString::def(),
+            TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
+                todo!("{e:?}")
+            },
+            TyKind::Adt(d, a) => {
+                if d.did().krate == self.lib {
+                    match self.tcx.def_path(d.did()).to_string_no_crate_verbose().as_str() {
+                        "::Guid" => return Ok(ValueGuid::def()),
+                        "::entity::Entity" => return Ok(ValueEntity::def()),
+                        other => panic!("{other}"),
+                    }
+                }
+                return self.span_err(span, format!("Adt: {d:?} = {a:?}"));
+            },
+            TyKind::Foreign(_) => todo!(),
+            TyKind::Array(_, _) => todo!(),
+            TyKind::Pat(_, _) => todo!(),
+            TyKind::Slice(_) => todo!(),
+            TyKind::FnDef(_, _) => todo!(),
+            TyKind::FnPtr(_, _) => todo!(),
+            TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
+            TyKind::Closure(_, _) => todo!(),
+            TyKind::Alias(_, _) => todo!(),
+            TyKind::Dynamic(_, _)
+            | TyKind::CoroutineClosure(_, _)
+            | TyKind::Coroutine(_, _)
+            | TyKind::CoroutineWitness(_, _)
+            | TyKind::Never
+            | TyKind::Param(_)
+            | TyKind::Bound(_, _)
+            | TyKind::Placeholder(_)
+            | TyKind::Infer(_)
+            | TyKind::Error(_)
+            | TyKind::UnsafeBinder(_) => {
+                self.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind())).expect("TODO: panic message");
+                panic!();
+            }
+        })
+    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
@@ -347,7 +357,7 @@ impl<'tcx> Compiler<'tcx> {
                 locals.push(NodeRef::from(usize::MAX));
                 continue;
             }
-            let kind = compile_ty(self, x.source_info.span, self.monomorphize(func, x.ty))?;
+            let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
             let local = graph.insert(Node::new(node_local(kind.clone())));
             graph.set_default(Connection(local, 0), kind);
             locals.push(local);

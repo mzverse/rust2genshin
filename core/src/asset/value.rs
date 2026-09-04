@@ -36,7 +36,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
                 }),
             }),
             tracker: None,
-            storage: if is_set { Some(self.encode_storage(side)) } else { None },
+            storage: if is_set { self.encode_storage(side) } else { None },
         }
     }
 
@@ -85,7 +85,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         }
     }
 
-    fn encode_storage(&self, side: Side) -> typed_value::Storage;
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage>;
 
     fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
         None
@@ -95,7 +95,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         None
     }
 
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+    fn is_instance(&self, value: &AnyValue) -> bool {
         value.type_id() == TypeId::of::<Self>()
     }
 }
@@ -149,11 +149,11 @@ impl Value for ValueBool {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CBoolean
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValEnum(Enum { value: match self.0 {
             true => 1,
             false => 0
-        }})
+        }}).into()
     }
 }
 
@@ -171,8 +171,8 @@ impl Value for ValueInt {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CInt
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValInt(Int { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValInt(Int { value: self.0 }).into()
     }
 }
 
@@ -190,8 +190,8 @@ impl Value for ValueString {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CString
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValString(Str { value: self.0.clone() })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValString(Str { value: self.0.clone() }).into()
     }
 }
 
@@ -216,8 +216,8 @@ impl Value for ValueFloat {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CFloat
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValFloat(Flt { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValFloat(Flt { value: self.0 }).into()
     }
 }
 
@@ -236,10 +236,10 @@ impl Value for ValueVector {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CVector
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValVector(Vec3f {
             value: Some(vec3f::Value { x: self.0, y: self.1, z: self.2 }),
-        })
+        }).into()
     }
 }
 
@@ -258,17 +258,17 @@ impl Value for ValueGuid {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CGuid
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
 }
 
 /// 运行时实体对象(句柄)(SEntity=1 / CEntity=1)
 #[derive(Clone, Debug)]
-pub struct ValueEntity(pub i64);
+pub struct ValueEntity;
 impl Default for ValueEntity {
     fn default() -> Self {
-        Self(0)
+        Self
     }
 }
 impl Value for ValueEntity {
@@ -278,8 +278,8 @@ impl Value for ValueEntity {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEntity
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        None
     }
 }
 
@@ -298,8 +298,8 @@ impl Value for ValueEnum {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEnumItem
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValEnum(Enum { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValEnum(Enum { value: self.0 }).into()
     }
 }
 
@@ -318,8 +318,8 @@ impl Value for ValueFaction {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CFaction
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
 }
 
@@ -338,8 +338,8 @@ impl Value for ValueConfig {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CConfig
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
 }
 
@@ -358,8 +358,8 @@ impl Value for ValuePrefab {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CPrefab
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
 }
 
@@ -380,8 +380,8 @@ impl Value for ValueLocalVarRef {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 as i64 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 as i64 }).into()
     }
 }
 
@@ -400,8 +400,8 @@ impl Value for ValueVarSnapshotRef {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
-        typed_value::Storage::ValId(Id { value: self.0 as i64 })
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValId(Id { value: self.0 as i64 }).into()
     }
 }
 
@@ -422,14 +422,14 @@ impl Value for ValueEntityList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEntityList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
-                let v = &ValueEntity(*x);
+                let v = &ValueEntity;
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -448,14 +448,14 @@ impl Value for ValueGuidList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CGuidList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueGuid(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -474,14 +474,14 @@ impl Value for ValueIntList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CIntList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueInt(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -500,14 +500,14 @@ impl Value for ValueBoolList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CBooleanList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueBool(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -526,14 +526,14 @@ impl Value for ValueFloatList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CFloatList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueFloat(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -552,14 +552,14 @@ impl Value for ValueStringList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CStringList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueString(x.clone());
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -578,7 +578,7 @@ impl Value for ValueVectorList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CVectorList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0
                 .iter()
@@ -588,7 +588,7 @@ impl Value for ValueVectorList {
                     v.encode(true, side)
                 })
                 .collect(),
-        ))
+        )).into()
     }
 }
 
@@ -607,14 +607,14 @@ impl Value for ValueEnumList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEnumList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueEnum(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -633,14 +633,14 @@ impl Value for ValueFactionList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueFaction(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -659,14 +659,14 @@ impl Value for ValueConfigList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CConfigList
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValueConfig(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -685,14 +685,14 @@ impl Value for ValuePrefabList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, _side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
             self.0.iter().map(|x| {
                 let v = &ValuePrefab(*x);
                 let side = Side::Server;
                 v.encode(true, side)
             }).collect(),
-        ))
+        )).into()
     }
 }
 
@@ -738,7 +738,7 @@ impl Value for ValueDict {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
         // MapStorage.pairs 是 TypedValue 列表,每个元素用 ValPair 包装键值对
         typed_value::Storage::ValMap(MapStorage {
             pairs: self
@@ -757,7 +757,7 @@ impl Value for ValueDict {
                     }
                 })
                 .collect(),
-        })
+        }).into()
     }
     fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
         Some(type_definition::server_type::Schema::MapBinding(type_definition::MapKeyValueBinding {
@@ -809,10 +809,10 @@ impl Value for ValueStruct {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::ClientUnknown
     }
-    fn encode_storage(&self, side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValStruct(StructStorage {
             field: self.fields.iter().map(|f| f.encode(true, side)).collect(),
-        })
+        }).into()
     }
     fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
         Some(type_definition::server_type::Schema::StructRef(type_definition::StructReference {

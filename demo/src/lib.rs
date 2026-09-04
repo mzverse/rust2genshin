@@ -6,6 +6,7 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use core::f32::consts::PI;
+use rust2genshin_lib::entity::Entity;
 
 #[unsafe(no_mangle)]
 pub fn dis_square(a: f32, b: f32) -> f32 {
@@ -23,19 +24,24 @@ pub fn div(a: i32, b: i32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub fn div_checked(a: i32, b: i32) -> i32 {
+    a / b
+}
+
+#[unsafe(no_mangle)]
 pub fn hello_world() {
     log("Hello");
     log("World");
 }
 
-// #[unsafe(no_mangle)]
-// pub fn test(a: i32, b: i32) -> i32 {
-//     a >> b
-// }
+#[unsafe(no_mangle)]
+pub fn test() -> i32 {
+    player::get_player_id_by_guid(Guid(1145))
+}
 
-#[unsafe(export_name = "awawa")]
-pub fn test1(a: i32, b: i32) -> i32 {
-    a.shr(b)
+#[unsafe(no_mangle)]
+pub fn test1(id: Guid) -> Entity {
+    Entity::get(id)
 }
 
 #[unsafe(no_mangle)]

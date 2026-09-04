@@ -529,11 +529,11 @@ impl Value for ValueSelected {
         self.value.get_client_type()
     }
 
-    fn encode_storage(&self, side: Side) -> typed_value::Storage {
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValPoly(PolymorphicValue {
             chosen_type_index: self.index,
             actual_value: Some(self.value.encode(self.is_set, side).into()),
             extra_meta: None,
-        }.into())
+        }.into()).into()
     }
 }
