@@ -3,6 +3,7 @@ use crate::asset::generated::{AssetData, ClientTypeId, GraphVariable, Identifier
 use crate::asset::{Asset, Side};
 use slab::Slab;
 use std::any::TypeId;
+use std::collections::HashSet;
 use tap::Tap;
 
 pub mod arithmetic;
@@ -70,7 +71,7 @@ impl From<Connection> for Link {
 pub struct NodeKind {
     pub id: i64,
     pub kernel_id: i64,
-    pub kind: identifier::AssetKind,
+    pub asset_kind: identifier::AssetKind,
 
     pub controls_in_num: usize,
     pub controls_out_num: usize,
@@ -81,6 +82,11 @@ pub struct NodeKind {
     pub selectors_out: Vec<Option<i32>>,
 
     pub references: Vec<Identifier>,
+}
+impl PartialEq for NodeKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.kernel_id == other.kernel_id && self.asset_kind == other.asset_kind
+    }
 }
 impl NodeKind {
     pub fn new(
@@ -93,7 +99,7 @@ impl NodeKind {
         Self {
             id,
             kernel_id: id,
-            kind: identifier::AssetKind::SysCallStub,
+            asset_kind: identifier::AssetKind::SysCallStub,
             controls_in_num,
             controls_out_num,
             selectors_in: vec![None; values_in_types.len()],
@@ -120,7 +126,7 @@ impl NodeKind {
         Identifier {
             source: identifier::Source::SystemDefined as i32,
             category: identifier::Category::ServerBasic as i32,
-            kind: self.kind as i32,
+            kind: self.asset_kind as i32,
             guid: 0,
             runtime_id: self.id,
         }
@@ -134,11 +140,17 @@ impl NodeKind {
 }
 pub struct Node {
     pub kind: NodeKind,
-    controls_in: Vec<Vec<Link>>,
-    controls_out: Vec<Vec<Link>>,
-    values_in: Vec<ValueIn>,
-    values_out: Vec<Vec<Link>>,
+    pub controls_in: Vec<Vec<Link>>,
+    pub controls_out: Vec<Vec<Link>>,
+    pub values_in: Vec<ValueIn>,
+    pub values_out: Vec<Vec<Link>>,
 }
+impl From<NodeKind> for Node {
+    fn from(kind: NodeKind) -> Self {
+        Self::new(kind)
+    }
+}
+
 impl Node {
     pub fn new(kind: NodeKind) -> Node {
         Node {
@@ -149,10 +161,14 @@ impl Node {
             kind,
         }
     }
-}
-impl From<NodeKind> for Node {
-    fn from(kind: NodeKind) -> Self {
-        Self::new(kind)
+    #[must_use]
+    pub fn get_neighbors(&self) -> HashSet<NodeRef> {
+        self.controls_in.iter()
+            .chain(self.controls_out.iter())
+            .chain(self.values_out.iter())
+            .flatten().copied()
+            .chain(self.values_in.iter().flat_map(|x| x.link))
+            .filter_map(Link::connection).map(|x| x.0).collect()
     }
 }
 
@@ -209,7 +225,7 @@ pub trait NodeGraphExtra: Sized {
 pub struct NodeGraph<T: NodeGraphExtra> {
     pub class: NodeGraphClass,
     pub name: String,
-    nodes: Slab<Node>,
+    pub nodes: Slab<Node>,
     pub extra: T,
 }
 impl<T: NodeGraphExtra> NodeGraph<T> {
@@ -230,12 +246,35 @@ impl<T: NodeGraphExtra> NodeGraph<T> {
         &self.nodes[key.into()]
     }
 
+    fn get_node_mut(&mut self, key: NodeRef) -> &mut Node {
+        &mut self.nodes[key.into()]
+    }
+
+    pub fn get_nodes(&self) -> Vec<NodeRef> {
+        self.nodes.iter().map(|x| x.0.into()).collect()
+    }
+
     pub fn insert(&mut self, node: Node) -> NodeRef {
         self.nodes.insert(node).into()
     }
     pub fn remove(&mut self, key: NodeRef) -> Node {
-        // TODO
-        self.nodes.remove(key.into())
+        let node = self.nodes.remove(key.into());
+        for Connection(r, i) in node.values_in.iter().flat_map(|x| x.link).flat_map(Link::connection) {
+            self.get_node_mut(r).values_out[i].retain(|x| !matches!(x, Link::Connection(Connection(x, _)) if *x == key));
+        }
+        for Connection(r, i) in node.values_out.iter().flatten().copied().flat_map(Link::connection) {
+            let l = &mut self.get_node_mut(r).values_in[i].link;
+            if let Some(Link::Connection(Connection(x, _))) = l && *x == key {
+                *l = None;
+            }
+        }
+        for Connection(r, i) in node.controls_in.iter().flatten().copied().flat_map(Link::connection) {
+            self.get_node_mut(r).controls_out[i].retain(|x| !matches!(x, Link::Connection(Connection(x, _)) if *x == key));
+        }
+        for Connection(r, i) in node.controls_out.iter().flatten().copied().flat_map(Link::connection) {
+            self.get_node_mut(r).controls_in[i].retain(|x| !matches!(x, Link::Connection(Connection(x, _)) if *x == key));
+        }
+        node
     }
 
     pub fn set_default(&mut self, place: Connection, value: AnyValue) {

@@ -21,6 +21,7 @@ use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use crate::compile::optimize::Optimizer;
 
 pub mod func;
 pub mod native;
@@ -392,6 +393,11 @@ impl<'tcx> Compiler<'tcx> {
             graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
             let node = *locals.get(mir::RETURN_PLACE).unwrap();
             graph.export_value_out(Connection(node, 1), 0);
+        }
+        let mut optimizer = Optimizer::new(&mut graph);
+        optimizer.optimize();
+        if !optimizer.proxies.is_empty() {
+            todo!()
         }
         let asset_id = self.assets.insert(graph.into());
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {

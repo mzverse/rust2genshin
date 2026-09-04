@@ -26,6 +26,9 @@
 //! external edit — so the rebuild loop is broken after at most one
 //! extra build.
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
+
+use std::fmt::format;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,13 +47,7 @@ fn main() {
     // cdylib into `target/debug/` and loads it via -Zcodegen-backend.
     // When its mtime advances, invalidate the demo so rustc is re-run
     // and the backend regenerates the .gia.
-    let dll_name = if cfg!(windows) {
-        "rust2genshin.dll"
-    } else if cfg!(target_os = "macos") {
-        "librust2genshin.dylib"
-    } else {
-        "librust2genshin.so"
-    };
+    let dll_name = format!("{DLL_PREFIX}rust2genshin{DLL_SUFFIX}");
     let dll_path = target_dir.join("debug").join(dll_name);
     // `cargo:rerun-if-changed` on a missing path is a no-op (cargo treats
     // it as "file does not exist, do not track"). Emit unconditionally so

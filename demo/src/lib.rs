@@ -72,5 +72,5 @@ pub fn cast_bool_to_i32(b: bool) -> i32 {
 
 #[unsafe(no_mangle)]
 pub fn cast_i32_to_bool(x: i32) -> bool {
-    x as i32 != 0
+    x != 0
 }

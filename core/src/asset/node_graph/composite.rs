@@ -175,7 +175,7 @@ pub fn node_composite(
     values_out_types: Vec<AnyValue>,
 ) -> NodeKind {
     let mut result = NodeKind::new(id + NodeGraphComposite::DECL_OFFSET, controls_in_num, controls_out_num, values_in_types, values_out_types);
-    result.kind = identifier::AssetKind::GeneratedStub;
+    result.asset_kind = identifier::AssetKind::GeneratedStub;
     result.references = vec![Identifier {
         source: 0,
         category: identifier::Category::NodeDecl as i32,
