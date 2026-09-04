@@ -1,4 +1,4 @@
-use crate::asset::AssetBundle;
+use crate::asset::{AssetBundle, Side};
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
@@ -359,7 +359,9 @@ impl<'tcx> Compiler<'tcx> {
             }
             let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
             let local = graph.insert(Node::new(node_local(kind.clone())));
-            graph.set_default(Connection(local, 0), kind);
+            if kind.encode_storage(Side::Server /*TODO*/).is_some() {
+                graph.set_default(Connection(local, 0), kind);
+            }
             locals.push(local);
         }
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
