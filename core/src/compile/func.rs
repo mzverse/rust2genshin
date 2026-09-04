@@ -86,12 +86,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     BinOp::BitXor => if ty.is_bool() { NODE_XOR.clone() } else { NODE_BITWISE_XOR.clone() },
                     BinOp::BitAnd => if ty.is_bool() { NODE_AND.clone() } else { NODE_BITWISE_AND.clone() },
                     BinOp::BitOr => if ty.is_bool() { NODE_OR.clone() } else { NODE_BITWISE_OR.clone() },
-                    BinOp::Eq => node_equal(kind0),
+                    BinOp::Eq | BinOp::Ne => node_equal(kind0),
                     BinOp::Shl | BinOp::ShlUnchecked => NODE_LEFT_SHIFT.clone(),
                     BinOp::Shr | BinOp::ShrUnchecked => return self.compile_call(span, find_lib_fn(self.compiler, "<i32 as rust2genshin_lib::math::I32>::shr")?, &[dummy_spanned(v.0.clone()), dummy_spanned(v.1.clone())], place),
                     BinOp::Lt => node_less_than(kind0),
                     BinOp::Le => node_less_equal(kind0),
-                    BinOp::Ne => todo!(),
                     BinOp::Ge => node_greater_equal(kind0),
                     BinOp::Gt => node_greater_than(kind0),
                     | BinOp::Cmp
@@ -101,7 +100,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let b = self.compile_operand(&v.1, span)?;
                 self.graph.set_value_in(Connection(node, 0), a);
                 self.graph.set_value_in(Connection(node, 1), b);
-                ValueIn::link(Connection(node, 0).into())
+                if matches!(op, BinOp::Ne) {
+                    // ! (a == b) — invert the equal node's bool output
+                    let not_node = self.graph.insert(Node::new(NODE_NOT.clone()));
+                    self.graph.set_value_in(Connection(not_node, 0), ValueIn::link(Connection(node, 0).into()));
+                    ValueIn::link(Connection(not_node, 0).into())
+                } else {
+                    ValueIn::link(Connection(node, 0).into())
+                }
             }
             Rvalue::UnaryOp(op, v) => {
                 let ty = v.ty(&self.body.local_decls, self.tcx);
@@ -135,9 +141,28 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 };
                 return self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(Place { local: p.local, projection: self.tcx.mk_place_elems(&p.projection[0..p.projection.len() - 1]) }), WithRetag::No), span);
             },
+            Rvalue::Cast(kind, op, target_ty) => {
+                let from_ty = compile_ty(self.compiler, op.span(&self.body.local_decls),
+                                         op.ty(&self.body.local_decls, self.tcx))?;
+                let to_ty = compile_ty(self.compiler, span, *target_ty)?;
+                if from_ty.get_server_type() == to_ty.get_server_type() {
+                    // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
+                    self.compile_operand(op, span)?
+                } else if cast_supported(&from_ty, &to_ty) {
+                    let node = self.graph.insert(Node::new(
+                        crate::asset::node_graph::arithmetic::node_convert_type(from_ty, to_ty)
+                    ));
+                    let v = self.compile_operand(op, span)?;
+                    self.graph.set_value_in(Connection(node, 0), v);
+                    ValueIn::link(Connection(node, 0).into())
+                } else {
+                    return self.span_err(span, format!(
+                        "Unsupported cast {from_ty:?} → {to_ty:?} ({kind:?})"
+                    ))?;
+                }
+            }
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)
-            | Rvalue::Cast(_, _, _)
             | Rvalue::Discriminant(_)
             | Rvalue::Aggregate(_, _)
             | Rvalue::CopyForDeref(_)
