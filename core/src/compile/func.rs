@@ -356,3 +356,18 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(block)
     }
 }
+
+/// Returns true if the (from, to) type pair has a corresponding kernel in
+/// `node_convert_type`. Mirrors the 11 cases in
+/// `core/src/asset/node_graph::arithmetic::node_convert_type`.
+fn cast_supported(from: &AnyValue, to: &AnyValue) -> bool {
+    use crate::asset::generated::ServerTypeId::*;
+    matches!(
+        (from.get_server_type(), to.get_server_type()),
+        (SInt, SBoolean) | (SInt, SFloat) | (SInt, SString)
+        | (SEntity, SString) | (SGuid, SString)
+        | (SBoolean, SInt) | (SBoolean, SString)
+        | (SFloat, SInt) | (SFloat, SString)
+        | (SVector, SString)
+    )
+}
