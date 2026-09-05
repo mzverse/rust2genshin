@@ -74,23 +74,3 @@ pub fn cast_bool_to_i32(b: bool) -> i32 {
 pub fn cast_i32_to_bool(x: i32) -> bool {
     x != 0
 }
-
-#[unsafe(no_mangle)]
-pub fn make_tuple(a: i32, b: f32) -> (i32, f32) {
-    (a, b)
-}
-
-#[unsafe(no_mangle)]
-pub fn tuple_first(t: (i32, f32)) -> i32 {
-    t.0
-}
-
-#[unsafe(no_mangle)]
-pub fn tuple_second(t: (i32, f32)) -> f32 {
-    t.1
-}
-
-#[unsafe(no_mangle)]
-pub fn nested_tuple_first(t: ((i32, f32), bool)) -> i32 {
-    t.0.0
-}
