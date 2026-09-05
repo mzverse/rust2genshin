@@ -152,6 +152,18 @@ pub(crate) fn is_unit(ty: Ty) -> bool {
     }
 }
 
+/// Cache key for interned tuple struct schemas. Uses the arity and a stable
+/// debug-string of the element types' `AnyValue`s. Two equal tuples produce
+/// the same key; the cache prevents duplicate struct-definition generation.
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub(crate) struct TupleKey(pub(crate) String);
+
+impl core::fmt::Debug for TupleKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl<'tcx> Compiler<'tcx> {
     fn find_lib_fn(&self, name: &str) -> Result<Instance<'tcx>> {
         for (s, _) in self.tcx.exported_non_generic_symbols(self.lib) {
@@ -226,6 +238,54 @@ impl<'tcx> Compiler<'tcx> {
             }
         })
     }
+
+    /// Intern a tuple type as a genshin `SStruct` schema. Generates a
+    /// `StructureDefinition` asset on first encounter and caches the
+    /// resulting `struct_id` for subsequent lookups.
+    ///
+    /// The cache key is a string derived from the element types' `AnyValue`
+    /// debug representation. Element types are resolved via `compile_ty`
+    /// (which canonicalizes `i32`/`isize` to `ValueInt`, etc.) before
+    /// keying, so types that map to the same engine type share a schema.
+    pub(crate) fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<i64> {
+        let TyKind::Tuple(elem_tys) = ty.kind() else {
+            return self.span_err(span, "intern_tuple_schema called with non-tuple type");
+        };
+        if elem_tys.is_empty() {
+            return self.span_err(span, "unit tuple () has no struct schema; use bool/unit instead");
+        }
+        // Resolve element types first (recursively interns nested tuples).
+        let elem_kinds: Vec<AnyValue> = elem_tys.iter()
+            .map(|t| self.compile_ty(span, t))
+            .collect::<Result<_>>()?;
+        // Use a string key to keep this HashMap independent of MIR type identity.
+        let key = TupleKey(format!("[{}]", elem_kinds.iter()
+            .map(|k| format!("{:?}", k))
+            .collect::<Vec<_>>().join(", ")));
+        if let Some(&id) = self.tuple_schemas.get(&key) {
+            return Ok(id);
+        }
+        // Build the StructureDefinition.
+        use crate::asset::node_graph::structure::{StructField, StructureDefinition};
+        let fields: Vec<StructField> = elem_kinds.iter().enumerate()
+            .map(|(i, k)| StructField {
+                name: format!("field_{i}"),
+                value: k.clone(),
+                is_set: false,
+            })
+            .collect();
+        let name = format!("Tuple_{}", elem_kinds.iter()
+            .map(|k| format!("{:?}", k.get_server_type()))
+            .collect::<Vec<_>>().join("_"));
+        let def = StructureDefinition {
+            name,
+            version: 1,
+            fields,
+        };
+        let id = self.assets.insert(Box::new(def));
+        self.tuple_schemas.insert(key, id);
+        Ok(id)
+    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
@@ -235,6 +295,7 @@ pub(crate) struct Compiler<'tcx> {
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, i64>,
+    tuple_schemas: HashMap<TupleKey, i64>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -259,6 +320,7 @@ impl<'tcx> Compiler<'tcx> {
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
             compiling: HashSet::new(),
             compiled: HashMap::new(),
+            tuple_schemas: HashMap::new(),
         })
     }
     fn save(&self, out_dir: &Path) {
