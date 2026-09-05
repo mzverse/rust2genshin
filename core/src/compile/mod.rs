@@ -360,7 +360,7 @@ impl<'tcx> Compiler<'tcx> {
             }
             let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
             let local = graph.insert(Node::new(node_local(kind.clone())));
-            if kind.encode_storage(Side::Server /*TODO*/).is_some() {
+            if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                 graph.set_default(Connection(local, 0), kind);
             }
             locals.push(local);
