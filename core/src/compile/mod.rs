@@ -221,8 +221,8 @@ impl<'tcx> Compiler<'tcx> {
             | TyKind::Infer(_)
             | TyKind::Error(_)
             | TyKind::UnsafeBinder(_) => {
-                self.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind())).expect("TODO: panic message");
-                panic!();
+                let _ = self.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind())).ok();
+                panic!("Unsupported type: {:?}", ty.kind());
             }
         })
     }
