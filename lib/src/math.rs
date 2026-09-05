@@ -16,11 +16,31 @@ impl Divide for i32 {
     fn divide(self, rhs: Self) -> Self;
 }
 
+/// Integer math helpers backed by genshin node-graph kernel operations.
+///
+/// # Safety
+///
+/// This trait must only be implemented for primitive integer types whose
+/// genshin node-graph kernel IDs match those in the `#[native_calc(N)]`
+/// attributes on each method. The current implementation targets `i32` and
+/// uses kernel `779` (ushr) plus an inlined shr. Implementing this trait
+/// for any other type would dispatch to wrong kernel IDs and produce a
+/// corrupt node graph.
 pub unsafe trait I32 {
     fn ushr(self, rhs: Self) -> Self;
     fn shr(self, rhs: Self) -> Self;
 }
 
+/// Float math helpers backed by genshin node-graph kernel operations.
+///
+/// # Safety
+///
+/// This trait must only be implemented for primitive float types whose
+/// genshin node-graph kernel IDs match those in the `#[native_calc(N)]`
+/// attributes on each method. The current implementation targets `f32`
+/// and uses kernels `221` (sqrt), `215` (log), `291-296` (trig). Implementing
+/// this trait for any other type would dispatch to wrong kernel IDs and
+/// produce a corrupt node graph.
 pub unsafe trait F32 {
     fn sqrt(self) -> Self;
 
