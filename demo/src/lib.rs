@@ -20,11 +20,6 @@ pub fn circumference(r: f32) -> f32 {
 
 #[unsafe(no_mangle)]
 pub fn div(a: i32, b: i32) -> i32 {
-    a.divide(b)
-}
-
-#[unsafe(no_mangle)]
-pub fn div_checked(a: i32, b: i32) -> i32 {
     a / b
 }
 
@@ -49,8 +44,6 @@ pub fn solve(a: f32, b: f32, c: f32) -> f32 {
     (- b + delta(a, b, c).sqrt()) / (2. * a)
 }
 
-#[inline(never)]
-#[unsafe(no_mangle)]
 pub fn delta(a: f32, b: f32, c: f32) -> f32 {
     b * b - 4. * a * c
 }

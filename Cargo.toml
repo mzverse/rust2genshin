@@ -19,5 +19,6 @@ rust2genshin-lib = { path = "lib" }
 downcast = "0"
 anyhow = "1"
 tap = "1"
+either = "1"
 
 [workspace.lints.rust]
