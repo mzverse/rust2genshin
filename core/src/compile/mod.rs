@@ -1,4 +1,5 @@
 use crate::asset::{AssetBundle, Side};
+use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
@@ -422,13 +423,22 @@ impl<'tcx> Compiler<'tcx> {
         let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
         graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
-        let mut locals = IndexVec::<Local, NodeRef>::new(); // TODO: adapt for struct, struct list and map
+        let mut locals = IndexVec::<Local, NodeRef>::new(); // TODO: adapt for struct list and map
         for x in &body.local_decls {
             if is_unit(x.ty) {
                 locals.push(NodeRef::from(usize::MAX));
                 continue;
             }
             let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
+            // Skip tuple locals — they don't fit Genshin's scalar-only node_local.
+            // Tuple values are constructed inline at use sites via STRUCT_ASSEMBLY
+            // and consumed inline via STRUCT_SPLIT. Attempting to read or write a
+            // tuple local with field projections will trigger a span_err in
+            // compile_operand_projection (via NodeRef::MAX pin access).
+            if matches!(kind.get_server_type(), ServerTypeId::SStruct) {
+                locals.push(NodeRef::from(usize::MAX));
+                continue;
+            }
             let local = graph.insert(Node::new(node_local(kind.clone())));
             if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                 graph.set_default(Connection(local, 0), kind);
