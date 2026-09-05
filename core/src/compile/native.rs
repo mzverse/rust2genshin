@@ -17,10 +17,10 @@ impl<'tcx> CompilingFn<'tcx, '_> {
             return Ok(NODE_LOG.clone()).into();
         }
         if let InstanceKind::Intrinsic(def_id) = func.def {
-            return match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
+            let _: Result<NodeKind> = match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
                 "black_box" => todo!(),
-                other => todo!("intrinsic: {other}") as Result<_>,
-            }.into();
+                other => todo!("intrinsic: {other}"),
+            };
         }
         let def = func.default_span(self.tcx);
         let expn = def.ctxt().outer_expn().expn_data().call_site;
