@@ -13,4 +13,3 @@ workspace = true
 
 [dependencies]
 rust2genshin-lib = { workspace = true }
-rand = "0.10.2"

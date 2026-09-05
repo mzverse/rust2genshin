@@ -20,7 +20,6 @@ tap = { workspace = true }
 prost = "0"
 syn = "3"
 proc-macro2 = "1"
-id-pool = "0"
 slab = "0"
 
 [build-dependencies]

@@ -16,11 +16,8 @@ rust-version = "1.100.0"
 
 [workspace.dependencies]
 rust2genshin-lib = { path = "lib" }
-enum_dispatch = "0"
 downcast = "0"
 anyhow = "1"
-slotmap = "1"
-indexmap = "2"
 tap = "1"
 
 [workspace.lints.rust]
