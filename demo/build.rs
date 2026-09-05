@@ -28,7 +28,6 @@
 
 use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 
-use std::fmt::format;
 use std::fs;
 use std::path::{Path, PathBuf};
 

@@ -41,11 +41,11 @@ pub fn unbox<T>(boxed: Box<T>) -> T {
     Box::into_inner(boxed)
 }
 impl<T> Box<T> {
-    pub fn new(value: T) -> Self {
+    pub fn new(_value: T) -> Self {
         todo!()
     }
     #[allow(clippy::wrong_self_convention)]
-    pub fn into_inner(boxed: Self) -> T {
+    pub fn into_inner(_boxed: Self) -> T {
         todo!()
     }
 }
