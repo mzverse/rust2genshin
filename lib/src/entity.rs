@@ -8,12 +8,20 @@ use crate::list::List;
 pub struct Entity(&'static EntityInternal);
 
 unsafe extern "Rust" {
-    pub type EntityInternal;
+    type EntityInternal;
 }
 
 impl Entity {
+    /// Get the entity who mounted the current node graph
+    #[native_calc(73)]
+    pub fn current() -> Self;
+
+    /// Get by GUID
     #[native_calc(75)]
     pub fn get(id: Guid) -> Self;
+
+    #[native_calc(76)]
+    pub fn get_id(self) -> Guid;
 
     ///
     /// # Returns

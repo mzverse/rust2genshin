@@ -66,10 +66,9 @@ pub fn my_composite() {
     为性能起见，`i32`的四则运算默认自动溢出，即原生的运算节点
 
 - 整数除法
-    
-    `i32`的除法默认会生成一堆检查，请改用`divide`方法，对应**除法节点**
 
-    注意`i32::MIN.divide(-1)`等于`0`
+    - 除数为`0`时触发错误并得到`0`
+    - `i32::MIN / -1`等于`0`
 
 # Todo List
 
@@ -84,6 +83,14 @@ pub fn my_composite() {
 - unsigned int
 - `i64`
 - client node graph
+
+## 编译流程
+
+正确的流程应为分别编译每个crate，再link得到最终.gia
+
+但.gia本身不支持link，所以我们现在先偷懒直接编译目标crate了
+
+后果就是无法获取依赖中的MIR
 
 # 不被支持的特性
 
