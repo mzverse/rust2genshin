@@ -195,9 +195,19 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 values_in_types.push(struct_id_selector.clone());
                 values_in_types.extend(field_kinds.iter().cloned());
                 node_kind.values_in_types = values_in_types;
+                // Mark pin 0 (struct_id selector) as polymorphic so the wire format
+                // encodes it as a ValPoly wrapper, not a raw ValInt. See
+                // node_set_local (execution.rs:51) and node_add (arithmetic.rs:102-104)
+                // for the established pattern. Without this, the engine doesn't
+                // interpret pin 0 as a struct selector.
                 node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
+                node_kind.selectors_in[0] = Some(0);
                 node_kind.values_out_types = vec![placeholder];
                 node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
+                // Mark the assembled struct output (pin 0) as polymorphic for the
+                // same reason — the engine expects a ValPoly wrapper around the
+                // returned struct value.
+                node_kind.selectors_out[0] = Some(0);
                 let mut node = Node::new(node_kind);
                 // Resize values_in / values_out after Node::new (which sizes
                 // them from the empty Vecs in the static template).
