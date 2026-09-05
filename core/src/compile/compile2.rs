@@ -51,6 +51,10 @@ impl ExtraBackendMethods for R2gCodegenBackend {
 
 
         let _time_to_codegen = start_time.elapsed();
+        // The `0` is unreachable since `todo!()` diverges; clippy flags it.
+        // We need *some* value of type `u64` here so the function compiles, and `0` is
+        // the natural placeholder. Suppress the lint at the expression site.
+        #[allow(unreachable_code)]
         (todo!(), 0)
     }
 }
