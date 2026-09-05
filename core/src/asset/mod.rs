@@ -1,3 +1,9 @@
+// The generated bindings contain a `Payload` oneof enum whose largest
+// variant (`InterfaceData`) is ~424 bytes — clippy flags it as `large_enum_variant`.
+// Boxing the variant is not an option for prost-generated code without
+// restructuring the .proto schema, so we allow the lint at the include site.
+// This is the standard pattern for generated code that triggers clippy lints.
+#[allow(clippy::large_enum_variant)]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/rust2genshin.rs"));
 }
