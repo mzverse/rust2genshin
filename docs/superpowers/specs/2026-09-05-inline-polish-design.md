@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Status:** Approved (brainstorming complete)
-**Scope:** Remove or document 7 inline `// TODO` markers that are stale, debug-leftovers, or undocumented-but-correct code. No behavior changes.
+**Scope:** Remove or document 4 inline `// TODO` markers that are stale, debug-leftovers, or undocumented-but-correct code. No behavior changes. Keep `// TODO` markers that reference unimplemented features.
 
 ## Context
 
@@ -12,25 +12,31 @@ This spec clears those markers without touching logic. The user's full remaining
 
 ## Scope
 
-**In scope (Group A — 7 edits in 4 files):**
+**In scope (Group A — 4 edits in 2 files):**
 
 1. `core/src/compile/mod.rs:224` — clean up the span_err + expect + panic pattern.
 2. `core/src/compile/mod.rs:265` — delete a commented-out debug `eprintln!`.
 3. `core/src/compile/mod.rs:363` — document why `Side::Server` is hardcoded for locals.
 4. `core/src/compile/func.rs:175` — remove a bare stale `// TODO` on `Operand::Copy`.
-5. `lib/src/dict.rs:21` — remove a bare stale `// TODO`.
-6. `lib/src/list.rs:4` — remove a `// TODO` on the placeholder `List` struct.
-7. `core/src/asset/node_graph/mod.rs:468-471` — replace 4 `// TODO` markers with one explanatory comment block.
 
-**Out of scope (deferred to separate sub-projects):**
+**Out of scope — kept as-is (TODOs reference unimplemented features):**
 
-- `lib/src/entity.rs:60-64` — three entity methods (IDs 245, 668, 250) plus a "modify model color/material" comment. These are API surface additions that need engine doc lookup; not polish.
+- `lib/src/dict.rs:21` — `// TODO` references the unimplemented feature of extending `DictKey` to additional types (currently only `i32`/`String`/`Guid`/`Entity`).
+- `lib/src/list.rs:4` — `// TODO` on the placeholder `List<T>` struct references the unimplemented full list type / list methods.
+- `core/src/asset/node_graph/mod.rs:468-471` — four `// TODO` markers, each tied to a specific unimplemented feature: `attached_comment` (comments support), `context_declaration` (context scope), `signal_version` (events feature), `using_structs` (struct feature).
+- `core/src/asset/node_graph/composite.rs:97` — `// TODO: enum ...` on `encode_type_detail`. Tied to the enum support feature.
+- `core/src/asset/node_graph/composite.rs:139` — `meta_pins: vec![] // TODO`. Tied to polymorphic / meta-pin support (not yet exercised by the backend).
+
+**Out of scope — kept as-is (TODOs reference API surface / decisions):**
+
+- `lib/src/entity.rs:60-64` — three entity methods (IDs 245, 668, 250) plus a "modify model color/material" comment. API surface additions that need engine doc lookup; not polish.
 - `lib/src/math.rs:5` — `Vec3` ops. API design question; needs user decisions on what to add.
 - `lib/src/player.rs:4` — `// TODO: rename` on `get_player_id_by_guid`. Needs a name decision.
+
+**Out of scope — kept as-is (TODOs reference Tier 2 features):**
+
 - `core/src/compile/mod.rs:305` — event_handler entrypoint management. Tied to the events Tier 2 feature.
 - `core/src/compile/mod.rs:354` — adapt locals for struct/list/map. Tied to the struct Tier 2 feature.
-- `core/src/asset/node_graph/composite.rs:97` — `// TODO: enum ...` on `encode_type_detail`. Tied to the enum support feature.
-- `core/src/asset/node_graph/composite.rs:139` — `meta_pins: vec![] // TODO`. May already be correct (empty default); needs a separate investigation to confirm.
 
 ## Approach
 
@@ -100,62 +106,9 @@ Operand::Move(p) => {
 
 **Rationale:** `Operand::Copy` and `Operand::Move` are intentionally handled identically because `node_local` is a value-type holder — both arms just read the local's value-output pin. The TODO was a stale marker. The arm merging is correct.
 
-### Edit 5 — `lib/src/dict.rs:21`
+### Edit 5 — (removed from scope)
 
-**Before** (line 21, last line of file):
-
-```rust
-// TODO
-```
-
-**After:** delete the line entirely. The file ends at line 20 (`unsafe impl DictKey for Entity {}`) with a trailing newline.
-
-**Rationale:** The 4 `DictKey` impls (`i32`, `String`, `Guid`, `Entity`) are complete. The trailing bare `// TODO` is a stale marker.
-
-### Edit 6 — `lib/src/list.rs:4`
-
-**Before** (line 4):
-
-```rust
-pub struct List<T>(i32, PhantomData<T>); // TODO
-```
-
-**After:**
-
-```rust
-pub struct List<T>(i32, PhantomData<T>);
-```
-
-**Rationale:** `List` is an intentional placeholder for the eventual real list type. List-element methods (`push`, `get`, iteration) are deferred to a future sub-project (tied to list literal support). Removing the TODO doesn't claim the type is complete — it acknowledges the TODO is a placeholder marker rather than outstanding work. The `// TODO` would re-appear as a separate `// TODO: list methods` or be tracked in README if needed.
-
-### Edit 7 — `core/src/asset/node_graph/mod.rs:468-471`
-
-**Before** (lines 466-471):
-
-```rust
-x_pos: 0.,
-y_pos: 0.,
-attached_comment: None, // TODO
-context_declaration: None, // TODO
-signal_version: None, // TODO
-using_structs: vec![], // TODO
-```
-
-**After** (replace the four `// TODO` markers and add a single block comment immediately before the struct literal):
-
-```rust
-// Backend-generated graphs: no UI comments, no context scope, no signal
-// versioning, no struct usage. All four are intentionally empty defaults;
-// populating them is deferred to the comments / events / struct sub-projects.
-x_pos: 0.,
-y_pos: 0.,
-attached_comment: None,
-context_declaration: None,
-signal_version: None,
-using_structs: vec![],
-```
-
-**Rationale:** Four separate `// TODO` markers carrying the same meaning are noise. One block comment is clearer and points to the sub-projects that would populate them.
+The original edits 5 (`lib/src/dict.rs:21`), 6 (`lib/src/list.rs:4`), and 7 (`core/src/asset/node_graph/mod.rs:468-471`) were dropped after brainstorming review: each `// TODO` referenced an unimplemented feature, so per the project's "keep TODOs on unimplemented features" rule, those markers stay in place.
 
 ## Components
 
@@ -163,9 +116,6 @@ using_structs: vec![],
 
 - `core/src/compile/mod.rs` — edits 1, 2, 3.
 - `core/src/compile/func.rs` — edit 4.
-- `lib/src/dict.rs` — edit 5.
-- `lib/src/list.rs` — edit 6.
-- `core/src/asset/node_graph/mod.rs` — edit 7.
 
 ### Unchanged
 
@@ -194,10 +144,9 @@ Compare the `.gia` SHA-256 before and after the edits. Expected: **byte-identica
 
 ## Risks
 
-- **Edit 7 location:** the comment block goes immediately before the struct literal at line 466. If the surrounding code is reorganized (unlikely in this scope), the comment may end up detached from the fields. Mitigation: place the comment right next to the four fields, not at file scope.
 - **Edit 1 dead-code warning:** the `let _ = ...` binding is intentional to suppress unused-result. If the project's `#![deny(unused_must_use)]` is set in this file, the warning will fire. Mitigation: check; if so, use a `#[allow(unused_must_use)]` on the line or `let _ = (/* ... */).ok();` pattern.
 - **Edit 4 verification:** `Operand::Copy` and `Operand::Move` semantics may differ for `Copy` vs non-`Copy` types. Since `node_local` always holds a value (not a reference), and the local's output pin is a value (always copyable), the merge is safe. If a future change introduces reference-holding locals, this assumption must be revisited.
 
 ## Out-of-spec follow-ups
 
-After this polish pass, the remaining `// TODO` markers in the codebase are the **deferred** items listed in the Scope/Out-of-scope section above. They will each become their own brainstorm → spec → plan → implement cycle, following the same pattern as `cast` (Tier 1) and now `inline-polish` (Group A).
+After this polish pass, the remaining `// TODO` markers in the codebase are the **kept** items listed in the Scope/Out-of-scope sections above. They will each become their own brainstorm → spec → plan → implement cycle when picked up, following the same pattern as `cast` (Tier 1) and now `inline-polish` (Group A). The first natural follow-up is **tuple (Tier 1 #4)** because the inline `// TODO` at `core/src/compile/mod.rs:210` (`TyKind::Tuple(tys) => todo!(...)`) is right next to code that's already exercised by empty tuple handling in `is_unit`.
