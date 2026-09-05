@@ -2,7 +2,7 @@ use crate::asset::{AssetBundle, Side};
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -179,7 +179,7 @@ impl<'tcx> Compiler<'tcx> {
         self.err(format!("Lib fn not found: {name}"))
     }
 
-    fn compile_ty(&self, span: Span, ty: Ty) -> Result<AnyValue> {
+    fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
         Ok(match ty.kind() {
             TyKind::Bool => ValueBool::def(),
             TyKind::Char => return self.span_err(span, "Char is unsupported"),
@@ -219,7 +219,15 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
+            TyKind::Tuple(tys) => {
+                // Empty tuples are unreachable here — `is_unit` filters them upstream.
+                // Non-empty tuples are interned as genshin `SStruct` schemas.
+                if tys.is_empty() {
+                    unreachable!("unit tuple () should be filtered by is_unit before reaching compile_ty");
+                }
+                let (struct_id, fields) = self.intern_tuple_schema(span, ty)?;
+                ValueStruct::new(struct_id, fields).into()
+            }
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
@@ -247,7 +255,7 @@ impl<'tcx> Compiler<'tcx> {
     /// debug representation. Element types are resolved via `compile_ty`
     /// (which canonicalizes `i32`/`isize` to `ValueInt`, etc.) before
     /// keying, so types that map to the same engine type share a schema.
-    pub(crate) fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<i64> {
+    pub(crate) fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<(i64, Vec<AnyValue>)> {
         let TyKind::Tuple(elem_tys) = ty.kind() else {
             return self.span_err(span, "intern_tuple_schema called with non-tuple type");
         };
@@ -263,7 +271,7 @@ impl<'tcx> Compiler<'tcx> {
             .map(|k| format!("{:?}", k))
             .collect::<Vec<_>>().join(", ")));
         if let Some(&id) = self.tuple_schemas.get(&key) {
-            return Ok(id);
+            return Ok((id, elem_kinds));
         }
         // Build the StructureDefinition.
         use crate::asset::node_graph::structure::{StructField, StructureDefinition};
@@ -284,7 +292,7 @@ impl<'tcx> Compiler<'tcx> {
         };
         let id = self.assets.insert(Box::new(def));
         self.tuple_schemas.insert(key, id);
-        Ok(id)
+        Ok((id, elem_kinds))
     }
 }
 
