@@ -136,12 +136,8 @@ impl<T: ValueClone> CloneValue for T {
 }
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueBool(pub bool);
-impl Default for ValueBool {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
 impl Value for ValueBool {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SBoolean
@@ -158,12 +154,8 @@ impl Value for ValueBool {
 }
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueInt(pub i32);
-impl Default for ValueInt {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
 impl Value for ValueInt {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SInt
@@ -177,12 +169,8 @@ impl Value for ValueInt {
 }
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueString(pub String);
-impl Default for ValueString {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
 impl Value for ValueString {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SString
@@ -245,12 +233,8 @@ impl Value for ValueVector {
 
 /// 全局唯一 ID(SGuid=2 / CGuid=14)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueGuid(pub i64);
-impl Default for ValueGuid {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueGuid {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SGuid
@@ -285,12 +269,8 @@ impl Value for ValueEntity {
 
 /// 枚举项(SEnumItem=14 / CEnumItem=13)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueEnum(pub i64);
-impl Default for ValueEnum {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueEnum {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEnumItem
@@ -305,12 +285,8 @@ impl Value for ValueEnum {
 
 /// 阵营/势力(SFaction=17 / CFaction=16)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueFaction(pub i64);
-impl Default for ValueFaction {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueFaction {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SFaction
@@ -325,12 +301,8 @@ impl Value for ValueFaction {
 
 /// 配置表引用(SConfig=20 / CConfig=18)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueConfig(pub i64);
-impl Default for ValueConfig {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueConfig {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SConfig
@@ -345,12 +317,8 @@ impl Value for ValueConfig {
 
 /// 预制体引用(SPrefab=21 / CPrefab=19)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValuePrefab(pub i64);
-impl Default for ValuePrefab {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValuePrefab {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SPrefab
@@ -367,12 +335,8 @@ impl Value for ValuePrefab {
 
 /// 局部变量引用(SLocalVarRef=16,运行时栈内存引用)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueLocalVarRef(pub u32);
-impl Default for ValueLocalVarRef {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueLocalVarRef {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SLocalVarRef
@@ -387,12 +351,8 @@ impl Value for ValueLocalVarRef {
 
 /// 变量快照引用(SVarSnapshotRef=28,实体删除时访问原始数据)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueVarSnapshotRef(pub u32);
-impl Default for ValueVarSnapshotRef {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 impl Value for ValueVarSnapshotRef {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SVarSnapshotRef
@@ -409,12 +369,8 @@ impl Value for ValueVarSnapshotRef {
 
 /// 实体列表(SEntityList=13 / CEntityList=2)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueEntityList(pub Vec<i64>);
-impl Default for ValueEntityList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueEntityList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEntityList
@@ -424,7 +380,7 @@ impl Value for ValueEntityList {
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
+            self.0.iter().map(|_x| {
                 let v = &ValueEntity;
                 let side = Side::Server;
                 v.encode(true, side)
@@ -435,12 +391,8 @@ impl Value for ValueEntityList {
 
 /// GUID 列表(SGuidList=7 / CGuidList=15)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueGuidList(pub Vec<i64>);
-impl Default for ValueGuidList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueGuidList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SGuidList
@@ -461,12 +413,8 @@ impl Value for ValueGuidList {
 
 /// 整数列表(SIntList=8 / CIntList=4)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueIntList(pub Vec<i32>);
-impl Default for ValueIntList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueIntList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SIntList
@@ -487,12 +435,8 @@ impl Value for ValueIntList {
 
 /// 布尔列表(SBooleanList=9 / CBooleanList=6)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueBoolList(pub Vec<bool>);
-impl Default for ValueBoolList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueBoolList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SBooleanList
@@ -513,12 +457,8 @@ impl Value for ValueBoolList {
 
 /// 浮点列表(SFloatList=10 / CFloatList=8)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueFloatList(pub Vec<f32>);
-impl Default for ValueFloatList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueFloatList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SFloatList
@@ -539,12 +479,8 @@ impl Value for ValueFloatList {
 
 /// 字符串列表(SStringList=11 / CStringList=10)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueStringList(pub Vec<String>);
-impl Default for ValueStringList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueStringList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SStringList
@@ -565,12 +501,8 @@ impl Value for ValueStringList {
 
 /// 向量列表(SVectorList=15 / CVectorList=12)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueVectorList(pub Vec<(f32, f32, f32)>);
-impl Default for ValueVectorList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueVectorList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SVectorList
@@ -594,12 +526,8 @@ impl Value for ValueVectorList {
 
 /// 枚举列表(SEnumList=18 / CEnumList=17)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueEnumList(pub Vec<i64>);
-impl Default for ValueEnumList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueEnumList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEnumList
@@ -620,12 +548,8 @@ impl Value for ValueEnumList {
 
 /// 阵营列表(SFactionList=24;客户端无对应类型)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueFactionList(pub Vec<i64>);
-impl Default for ValueFactionList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueFactionList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SFactionList
@@ -646,12 +570,8 @@ impl Value for ValueFactionList {
 
 /// 配置表列表(SConfigList=22 / CConfigList=20)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValueConfigList(pub Vec<i64>);
-impl Default for ValueConfigList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValueConfigList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SConfigList
@@ -672,12 +592,8 @@ impl Value for ValueConfigList {
 
 /// 预制体列表(SPrefabList=23;客户端无对应类型)
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ValuePrefabList(pub Vec<i64>);
-impl Default for ValuePrefabList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 impl Value for ValuePrefabList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SPrefabList
@@ -719,7 +635,7 @@ impl ValueDict {
         }
     }
     pub fn infer(data: Vec<(AnyValue, AnyValue)>) -> Result<Self> {
-        if let Some(first) = data.get(0) {
+        if let Some(first) = data.first() {
             Ok(Self {
                 key_type: CloneValue::clone(first.0.as_ref()),
                 value_type: CloneValue::clone(first.1.as_ref()),

@@ -110,7 +110,7 @@ impl<'a, 'tcx> EntryPointCollector<'a, 'tcx> {
 /// 属性本身在展开时被宏消费(hir_attrs 里没有),但宏用标准写法(syn/quote)
 /// 重新生成函数头 token(call_site span),item span 因此带有宏展开上下文,
 /// 即 `ExpnKind::Macro(MacroKind::Attr, "event_listener")`。
-fn is_event_listener(span: Span, tcx: TyCtxt<'_>) -> bool {
+fn is_event_listener(span: Span, _tcx: TyCtxt<'_>) -> bool {
     use rustc_span::hygiene::{ExpnKind, MacroKind};
     use rustc_span::Symbol;
     matches!(

@@ -121,7 +121,7 @@ impl NodeGraphExtra for NodeGraphComposite {
                 inner: Some(node_interface_container::InnerWrapper {
                     interface: Some(NodeInterface {
                         id: Some(node_interface::Signature {
-                            shell_ref: Some(decl_id.clone()),
+                            shell_ref: Some(decl_id),
                             kernel_ref: Some(decl_id),
                             graph_ref: Some(Identifier {
                                 source: identifier::Source::UserDefined as i32,
@@ -164,6 +164,12 @@ impl NodeGraphComposite {
             description: String::new(),
             pins,
         }
+    }
+}
+
+impl Default for NodeGraphComposite {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

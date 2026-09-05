@@ -113,13 +113,12 @@ impl AssetBundle {
         new_bytes.extend_from_slice(data.as_ref());
         new_bytes.extend_from_slice(&0x0679u32.to_be_bytes());
 
-        if let Ok(existing) = std::fs::read(path) {
-            if existing == new_bytes {
+        if let Ok(existing) = std::fs::read(path)
+            && existing == new_bytes {
                 // Content unchanged — preserve mtime so the next build
                 // doesn't re-trigger due to this artifact.
                 return Ok(());
             }
-        }
 
         std::fs::write(path, &new_bytes)?;
         Ok(())

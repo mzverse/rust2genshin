@@ -79,7 +79,7 @@ impl<'a, E: NodeGraphExtra> Optimizer<'a, E> {
         }
     }
 
-    pub fn relink_value(&mut self, from: Link, to: Link) {
+    pub fn relink_value(&mut self, _from: Link, _to: Link) {
         todo!()
     }
 }

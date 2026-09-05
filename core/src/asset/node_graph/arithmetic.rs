@@ -89,16 +89,16 @@ pub static NODE_CREATE_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 加法(ID 200,泛型变体):shell 固定 200,kernel 随类型(Int→200、Flt→201)。
 pub fn node_add(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(200, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 200;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 201;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -108,16 +108,16 @@ pub fn node_add(ty: AnyValue) -> NodeKind {
 /// 减法(ID 202,泛型变体):shell 固定 202,kernel 随类型(Int→202、Flt→203)。
 pub fn node_subtract(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(202, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 202;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 203;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -127,16 +127,16 @@ pub fn node_subtract(ty: AnyValue) -> NodeKind {
 /// 乘法(ID 204,泛型变体):shell 固定 204,kernel 随类型(Int→204、Flt→205)。
 pub fn node_multiply(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(204, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 204;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 205;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -146,16 +146,16 @@ pub fn node_multiply(ty: AnyValue) -> NodeKind {
 /// 除法(ID 206,泛型变体):shell 固定 206,kernel 随类型(Int→206、Flt→207)。
 pub fn node_divide(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(206, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 206;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 207;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -165,16 +165,16 @@ pub fn node_divide(ty: AnyValue) -> NodeKind {
 /// 幂运算(ID 209,泛型变体):shell 固定 209,kernel 随类型(Int→209、Flt→210)。
 pub fn node_power(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(209, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 209;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 210;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -184,16 +184,16 @@ pub fn node_power(ty: AnyValue) -> NodeKind {
 /// 取大值(ID 211,泛型变体):shell 固定 211,kernel 随类型(Int→211、Flt→212)。
 pub fn node_max(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(211, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 211;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 212;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -203,16 +203,16 @@ pub fn node_max(ty: AnyValue) -> NodeKind {
 /// 取小值(ID 213,泛型变体):shell 固定 213,kernel 随类型(Int→213、Flt→214)。
 pub fn node_min(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(213, vec![ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 213;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 214;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_out[0] = selected.into();
@@ -231,16 +231,16 @@ pub static NODE_MODULO: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 绝对值(ID 216,泛型变体):shell 固定 216,kernel 随类型(Int→216、Flt→217)。
 pub fn node_abs(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(216, vec![ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 216;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 217;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_out[0] = selected.into();
     result
@@ -249,16 +249,16 @@ pub fn node_abs(ty: AnyValue) -> NodeKind {
 /// 取符号(ID 218,泛型变体):-1 / 0 / 1;shell 固定 218,kernel 随类型(Int→218、Flt→219)。
 pub fn node_sign(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(218, vec![ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 218;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 219;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_out[0] = selected.into();
     result
@@ -268,16 +268,16 @@ pub fn node_sign(ty: AnyValue) -> NodeKind {
 /// shell 固定 222,kernel 随类型(Int→222、Flt→223)。
 pub fn node_clamp(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(222, vec![ty.clone(), ty.clone(), ty.clone()], ty.clone());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 222;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 223;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result.selectors_in[2] = selected.into();
@@ -412,16 +412,16 @@ pub static NODE_ENUM_EQUAL: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 小于(ID 230,泛型变体):shell 固定 230,kernel 随类型(Int→230、Flt→235);输出 Bol。
 pub fn node_less_than(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(230, vec![ty.clone(), ty.clone()], ValueBool::def());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 230;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 235;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result
@@ -430,16 +430,16 @@ pub fn node_less_than(ty: AnyValue) -> NodeKind {
 /// 小于等于(ID 231,泛型变体):shell 固定 231,kernel 随类型(Int→231、Flt→236);输出 Bol。
 pub fn node_less_equal(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(231, vec![ty.clone(), ty.clone()], ValueBool::def());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 231;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 236;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result
@@ -448,16 +448,16 @@ pub fn node_less_equal(ty: AnyValue) -> NodeKind {
 /// 大于(ID 232,泛型变体):shell 固定 232,kernel 随类型(Int→232、Flt→237);输出 Bol。
 pub fn node_greater_than(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(232, vec![ty.clone(), ty.clone()], ValueBool::def());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 232;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 237;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result
@@ -466,16 +466,16 @@ pub fn node_greater_than(ty: AnyValue) -> NodeKind {
 /// 大于等于(ID 233,泛型变体):shell 固定 233,kernel 随类型(Int→233、Flt→238);输出 Bol。
 pub fn node_greater_equal(ty: AnyValue) -> NodeKind {
     let mut result = NodeKind::expr(233, vec![ty.clone(), ty.clone()], ValueBool::def());
-    let selected;
-    if ty.is::<ValueInt>() {
+    
+    let selected = if ty.is::<ValueInt>() {
         result.kernel_id = 233;
-        selected = 0;
+        0
     } else if ty.is::<ValueFloat>() {
         result.kernel_id = 238;
-        selected = 1;
+        1
     } else {
         panic!("Unsupported type: {ty:?}");
-    }
+    };
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result

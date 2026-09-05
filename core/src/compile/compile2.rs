@@ -22,7 +22,7 @@ impl CodegenBackend for R2gCodegenBackend {
         "rust2genshin"
     }
 
-    fn target_cpu(&self, sess: &Session) -> String {
+    fn target_cpu(&self, _sess: &Session) -> String {
         todo!()
     }
 
@@ -30,29 +30,28 @@ impl CodegenBackend for R2gCodegenBackend {
         Box::new(rustc_codegen_ssa::base::codegen_crate(Self, tcx))
     }
 
-    fn join_codegen(&self, ongoing_codegen: Box<dyn Any>, sess: &Session, incr_comp_session: Option<&IncrCompSession>, outputs: &OutputFilenames, crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
+    fn join_codegen(&self, _ongoing_codegen: Box<dyn Any>, _sess: &Session, _incr_comp_session: Option<&IncrCompSession>, _outputs: &OutputFilenames, _crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
         todo!()
     }
 
-    fn link(&self, sess: &Session, compiled_modules: CompiledModules, crate_info: CrateInfo, metadata: EncodedMetadata, outputs: &OutputFilenames) {
+    fn link(&self, _sess: &Session, _compiled_modules: CompiledModules, _crate_info: CrateInfo, _metadata: EncodedMetadata, _outputs: &OutputFilenames) {
     }
 }
 
 impl ExtraBackendMethods for R2gCodegenBackend {
     type Module = ();
 
-    fn codegen_allocator<'tcx>(&self, tcx: TyCtxt<'tcx>, module_name: &str, methods: &[AllocatorMethod]) -> Self::Module {
+    fn codegen_allocator<'tcx>(&self, _tcx: TyCtxt<'tcx>, _module_name: &str, _methods: &[AllocatorMethod]) -> Self::Module {
         todo!()
     }
 
-    fn compile_codegen_unit(&self, tcx: TyCtxt<'_>, cgu_name: Symbol) -> (ModuleCodegen<Self::Module>, u64) {
+    fn compile_codegen_unit(&self, _tcx: TyCtxt<'_>, _cgu_name: Symbol) -> (ModuleCodegen<Self::Module>, u64) {
         let start_time = Instant::now();
 
 
 
-        let time_to_codegen = start_time.elapsed();
-        let cost = time_to_codegen.as_nanos() as u64;
-        (todo!(), cost)
+        let _time_to_codegen = start_time.elapsed();
+        (todo!(), 0)
     }
 }
 
@@ -62,31 +61,31 @@ impl WriteBackendMethods for R2gCodegenBackend {
     type ModuleBuffer = ModuleBuffer;
     type ThinData = ();
 
-    fn target_machine_factory(&self, sess: &Session, opt_level: OptLevel, target_features: &[String]) -> TargetMachineFactoryFn<Self> {
+    fn target_machine_factory(&self, _sess: &Session, _opt_level: OptLevel, _target_features: &[String]) -> TargetMachineFactoryFn<Self> {
         todo!()
     }
 
-    fn optimize_and_codegen_fat_lto(sess: &Session, cgcx: &CodegenContext, shared_emitter: &SharedEmitter, tm_factory: TargetMachineFactoryFn<Self>, exported_symbols_for_lto: &[String], each_linked_rlib_for_lto: &[PathBuf], modules: Vec<FatLtoInput<Self>>) -> CompiledModule {
+    fn optimize_and_codegen_fat_lto(_sess: &Session, _cgcx: &CodegenContext, _shared_emitter: &SharedEmitter, _tm_factory: TargetMachineFactoryFn<Self>, _exported_symbols_for_lto: &[String], _each_linked_rlib_for_lto: &[PathBuf], _modules: Vec<FatLtoInput<Self>>) -> CompiledModule {
         todo!()
     }
 
-    fn run_thin_lto(cgcx: &CodegenContext, prof: &rustc_data_structures::profiling::SelfProfilerRef, dcx: DiagCtxtHandle<'_>, exported_symbols_for_lto: &[String], each_linked_rlib_for_lto: &[PathBuf], modules: Vec<ThinLtoInput<Self>>) -> (Vec<ThinModule<Self>>, Vec<WorkProduct>) {
+    fn run_thin_lto(_cgcx: &CodegenContext, _prof: &rustc_data_structures::profiling::SelfProfilerRef, _dcx: DiagCtxtHandle<'_>, _exported_symbols_for_lto: &[String], _each_linked_rlib_for_lto: &[PathBuf], _modules: Vec<ThinLtoInput<Self>>) -> (Vec<ThinModule<Self>>, Vec<WorkProduct>) {
         todo!()
     }
 
-    fn optimize(cgcx: &CodegenContext, prof: &rustc_data_structures::profiling::SelfProfilerRef, shared_emitter: &SharedEmitter, module: &mut ModuleCodegen<Self::Module>, config: &ModuleConfig) {
+    fn optimize(_cgcx: &CodegenContext, _prof: &rustc_data_structures::profiling::SelfProfilerRef, _shared_emitter: &SharedEmitter, _module: &mut ModuleCodegen<Self::Module>, _config: &ModuleConfig) {
         todo!()
     }
 
-    fn optimize_and_codegen_thin(cgcx: &CodegenContext, prof: &rustc_data_structures::profiling::SelfProfilerRef, shared_emitter: &SharedEmitter, tm_factory: TargetMachineFactoryFn<Self>, thin: ThinModule<Self>) -> CompiledModule {
+    fn optimize_and_codegen_thin(_cgcx: &CodegenContext, _prof: &rustc_data_structures::profiling::SelfProfilerRef, _shared_emitter: &SharedEmitter, _tm_factory: TargetMachineFactoryFn<Self>, _thin: ThinModule<Self>) -> CompiledModule {
         todo!()
     }
 
-    fn codegen(cgcx: &CodegenContext, prof: &rustc_data_structures::profiling::SelfProfilerRef, shared_emitter: &SharedEmitter, module: ModuleCodegen<Self::Module>, config: &ModuleConfig) -> CompiledModule {
+    fn codegen(_cgcx: &CodegenContext, _prof: &rustc_data_structures::profiling::SelfProfilerRef, _shared_emitter: &SharedEmitter, _module: ModuleCodegen<Self::Module>, _config: &ModuleConfig) -> CompiledModule {
         todo!()
     }
 
-    fn serialize_module(module: Self::Module, is_thin: bool) -> Self::ModuleBuffer {
+    fn serialize_module(_module: Self::Module, _is_thin: bool) -> Self::ModuleBuffer {
         todo!()
     }
 }

@@ -25,19 +25,19 @@ impl StructField {
     /// 字段默认值 → proto `TypeDef.val`(Int / Bool / Str / Guid / Float / Vector)
     fn encode_val(v: &dyn Value) -> Option<sd_var_def::type_def::Val> {
         use sd_var_def::type_def::Val;
-        if let Some(i) = v.downcast_ref::<ValueInt>().ok() {
+        if let Ok(i) = v.downcast_ref::<ValueInt>() {
             Some(Val::IntVal(Int { value: i.0 }))
-        } else if let Some(b) = v.downcast_ref::<ValueBool>().ok() {
+        } else if let Ok(b) = v.downcast_ref::<ValueBool>() {
             Some(Val::BooleanVal(Enum { value: b.0 as i64 }))
-        } else if let Some(s) = v.downcast_ref::<ValueString>().ok() {
+        } else if let Ok(s) = v.downcast_ref::<ValueString>() {
             Some(Val::StrVal(Str { value: s.0.clone() }))
-        } else if let Some(g) = v.downcast_ref::<ValueGuid>().ok() {
+        } else if let Ok(g) = v.downcast_ref::<ValueGuid>() {
             // val oneof 字段 12 = Id{id:int64}(与我们的 Id{value} 同构)
             Some(Val::GuidVal(Id { value: g.0 }))
-        } else if let Some(f) = v.downcast_ref::<ValueFloat>().ok() {
+        } else if let Ok(f) = v.downcast_ref::<ValueFloat>() {
             // val oneof 字段 15 = Float{float}(与我们的 Flt{value} 同构)
             Some(Val::FloatVal(Flt { value: f.0 }))
-        } else if let Some(v3) = v.downcast_ref::<ValueVector>().ok() {
+        } else if let Ok(v3) = v.downcast_ref::<ValueVector>() {
             // val oneof 字段 22 = Vector{vec{x,y,z}}(与 Vec3f 同构)
             Some(Val::VectorVal(Vec3f {
                 value: Some(vec3f::Value { x: v3.0, y: v3.1, z: v3.2 }),
