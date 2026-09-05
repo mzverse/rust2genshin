@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Status:** Approved (brainstorming complete)
-**Scope:** Remove or document 4 inline `// TODO` markers that are stale, debug-leftovers, or undocumented-but-correct code. No behavior changes. Keep `// TODO` markers that reference unimplemented features.
+**Scope:** Remove or document 3 inline `// TODO` markers that are stale or undocumented-but-correct code. No behavior changes. Keep `// TODO` markers that reference unimplemented features. Leave commented-out debug statements alone.
 
 ## Context
 
@@ -12,12 +12,11 @@ This spec clears those markers without touching logic. The user's full remaining
 
 ## Scope
 
-**In scope (Group A — 4 edits in 2 files):**
+**In scope (Group A — 3 edits in 2 files):**
 
 1. `core/src/compile/mod.rs:224` — clean up the span_err + expect + panic pattern.
-2. `core/src/compile/mod.rs:265` — delete a commented-out debug `eprintln!`.
-3. `core/src/compile/mod.rs:363` — document why `Side::Server` is hardcoded for locals.
-4. `core/src/compile/func.rs:175` — remove a bare stale `// TODO` on `Operand::Copy`.
+2. `core/src/compile/mod.rs:363` — document why `Side::Server` is hardcoded for locals.
+3. `core/src/compile/func.rs:175` — remove a bare stale `// TODO` on `Operand::Copy`.
 
 **Out of scope — kept as-is (TODOs reference unimplemented features):**
 
@@ -60,19 +59,7 @@ panic!("Unsupported type: {:?}", ty.kind());
 
 **Rationale:** The `expect("TODO: panic message")` and the second `panic!()` are both noise. The pattern is "emit diagnostic then panic"; a single `panic!` after the (ignored) diagnostic result is clearer. The `let _ =` suppresses the unused-`Result` warning; the `panic!` will not return.
 
-### Edit 2 — `core/src/compile/mod.rs:265`
-
-**Before** (line 265):
-
-```rust
-// eprintln!("{:?}", self.tcx.output_filenames(()).with_extension("gia")); // TODO
-```
-
-**After:** delete the entire line.
-
-**Rationale:** Stale debug code, no longer needed (the actual output path is built a few lines later via `out_dir.join(...)`).
-
-### Edit 3 — `core/src/compile/mod.rs:363`
+### Edit 2 — `core/src/compile/mod.rs:363`
 
 **Before** (line 363):
 
@@ -88,7 +75,7 @@ if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has 
 
 **Rationale:** Hardcoding `Side::Server` here is correct — `node_local` (the value this `is_some` check gates) is a server-only concept; see `ValueLocalVarRef` which returns `ClientTypeId::ClientUnknown`. The TODO is just a stale marker; replacing it with an explanatory comment documents the choice.
 
-### Edit 4 — `core/src/compile/func.rs:175`
+### Edit 3 — `core/src/compile/func.rs:175`
 
 **Before** (line 175):
 
@@ -106,16 +93,16 @@ Operand::Move(p) => {
 
 **Rationale:** `Operand::Copy` and `Operand::Move` are intentionally handled identically because `node_local` is a value-type holder — both arms just read the local's value-output pin. The TODO was a stale marker. The arm merging is correct.
 
-### Edit 5 — (removed from scope)
+### Removed from scope
 
-The original edits 5 (`lib/src/dict.rs:21`), 6 (`lib/src/list.rs:4`), and 7 (`core/src/asset/node_graph/mod.rs:468-471`) were dropped after brainstorming review: each `// TODO` referenced an unimplemented feature, so per the project's "keep TODOs on unimplemented features" rule, those markers stay in place.
+The originally-proposed edits 4 (`lib/src/dict.rs:21`), 5 (`lib/src/list.rs:4`), 6 (`core/src/asset/node_graph/mod.rs:468-471`) were dropped after brainstorming review: each `// TODO` referenced an unimplemented feature, so per the project's "keep TODOs on unimplemented features" rule, those markers stay in place. The originally-proposed edit 2 (`core/src/compile/mod.rs:265`, a commented-out debug `eprintln!`) was also dropped per user preference: do not remove commented-out debug statements; they stay as-is for future debugging.
 
 ## Components
 
 ### Modified
 
-- `core/src/compile/mod.rs` — edits 1, 2, 3.
-- `core/src/compile/func.rs` — edit 4.
+- `core/src/compile/mod.rs` — edits 1, 2.
+- `core/src/compile/func.rs` — edit 3.
 
 ### Unchanged
 
@@ -145,7 +132,7 @@ Compare the `.gia` SHA-256 before and after the edits. Expected: **byte-identica
 ## Risks
 
 - **Edit 1 dead-code warning:** the `let _ = ...` binding is intentional to suppress unused-result. If the project's `#![deny(unused_must_use)]` is set in this file, the warning will fire. Mitigation: check; if so, use a `#[allow(unused_must_use)]` on the line or `let _ = (/* ... */).ok();` pattern.
-- **Edit 4 verification:** `Operand::Copy` and `Operand::Move` semantics may differ for `Copy` vs non-`Copy` types. Since `node_local` always holds a value (not a reference), and the local's output pin is a value (always copyable), the merge is safe. If a future change introduces reference-holding locals, this assumption must be revisited.
+- **Edit 3 verification:** `Operand::Copy` and `Operand::Move` semantics may differ for `Copy` vs non-`Copy` types. Since `node_local` always holds a value (not a reference), and the local's output pin is a value (always copyable), the merge is safe. If a future change introduces reference-holding locals, this assumption must be revisited.
 
 ## Out-of-spec follow-ups
 
