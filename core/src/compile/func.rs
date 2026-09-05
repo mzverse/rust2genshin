@@ -2,14 +2,14 @@ use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntLis
 
 use super::*;
 use crate::asset::node_graph::ValueIn;
-use crate::asset::node_graph::arithmetic::{node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract, NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_SPLIT_STRUCT, NODE_XOR};
+use crate::asset::node_graph::arithmetic::{node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract, NODE_AND, NODE_ASSEMBLE_STRUCT, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_SPLIT_STRUCT, NODE_XOR};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::node_graph::execution::node_set_local;
 use rustc_abi::Size;
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
@@ -163,10 +163,65 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     ValueIn::link(Connection(node, 0).into())
                 }
             }
+            Rvalue::Aggregate(kind, fields) if matches!(**kind, AggregateKind::Tuple) => {
+                let struct_id = self.compiler.intern_tuple_schema(span, ty)?.0;
+                // Resolve each field's type up front. Reusing these AnyValues
+                // for both the output placeholder and the input pins avoids
+                // duplicate `compile_ty` calls and keeps the input/output type
+                // lists in lock-step.
+                let field_kinds: Vec<AnyValue> = fields
+                    .iter()
+                    .map(|f| {
+                        self.compiler
+                            .compile_ty(span, f.ty(&self.body.local_decls, self.tcx))
+                    })
+                    .collect::<Result<_>>()?;
+                // Build a ValueStruct for the output type so STRUCT_ASSEMBLY's
+                // return pin carries the right struct_id + field-type list.
+                let placeholder: AnyValue =
+                    ValueStruct::new(struct_id, field_kinds.clone()).into();
+                // Clone the static STRUCT_ASSEMBLY template and resize its
+                // dynamic input/output Vecs. STRUCT_ASSEMBLY's contract:
+                //   - input pin 0 = struct_id selector (ValueInt)
+                //   - input pins 1..N = field values (one per tuple element)
+                //   - output pin 0 = the assembled struct (ValueStruct)
+                // The static starts with empty values_in_types / values_out_types
+                // (it's a "dynamic-pin" node), so we resize both `kind.*` and
+                // `node.*` Vecs in lock-step, matching the pattern used by
+                // NODE_SPLIT_STRUCT for dynamic-output nodes.
+                let mut node_kind = NODE_ASSEMBLE_STRUCT.clone();
+                let struct_id_selector: AnyValue = ValueInt(struct_id as i32).into();
+                let mut values_in_types = Vec::with_capacity(1 + field_kinds.len());
+                values_in_types.push(struct_id_selector.clone());
+                values_in_types.extend(field_kinds.iter().cloned());
+                node_kind.values_in_types = values_in_types;
+                node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
+                node_kind.values_out_types = vec![placeholder];
+                node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
+                let mut node = Node::new(node_kind);
+                // Resize values_in / values_out after Node::new (which sizes
+                // them from the empty Vecs in the static template).
+                node.values_in
+                    .resize(node.kind.values_in_types.len(), ValueIn::default());
+                node.values_out
+                    .resize(node.kind.values_out_types.len(), Vec::new());
+                let node_ref = self.graph.insert(node);
+                // Wire the struct_id selector at input pin 0.
+                self.graph.set_value_in(
+                    Connection(node_ref, 0),
+                    ValueIn::value(ValueInt(struct_id as i32).into()),
+                );
+                // Wire the field operands to dynamic input pins 1..N+1.
+                for (i, field) in fields.iter().enumerate() {
+                    let v = self.compile_operand(field, span)?;
+                    self.graph.set_value_in(Connection(node_ref, i + 1), v);
+                }
+                ValueIn::link(Connection(node_ref, 0).into())
+            }
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)
             | Rvalue::Discriminant(_)
-            | Rvalue::Aggregate(_, _)
+            | Rvalue::Aggregate(_, _) // non-Tuple AggregateKind still panics
             | Rvalue::CopyForDeref(_)
             | Rvalue::WrapUnsafeBinder(_, _)
                 => todo!("{:?}", value),
