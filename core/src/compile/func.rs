@@ -172,7 +172,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
         Ok(match op {
-            Operand::Copy(p) | // TODO
+            Operand::Copy(p) |
             Operand::Move(p) => {
                 if !p.projection.is_empty() {
                     todo!("struct is still unsupported")
