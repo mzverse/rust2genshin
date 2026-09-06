@@ -60,7 +60,10 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                         match k {
                             LocalVarKind::Ret => {
                                 self.graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
-                                self.graph.export_value_out(l.getter(), self.r);
+                                // Ret arm is always LocalVar::Basic; getter returns
+                                // ValueIn::link(Link::Connection(...)), so unwrap both.
+                                let conn = l.getter(self.graph, kind.clone()).link.unwrap().connection().unwrap();
+                                self.graph.export_value_out(conn, self.r);
                                 self.r += 1;
                             }
                             LocalVarKind::Arg => {
@@ -388,7 +391,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     }
                 }
 
-                ValueIn::link(local.getter().into())
+                let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
+                local.getter(self.graph, src_kind)
             }
 
             Operand::Constant(co) => {
