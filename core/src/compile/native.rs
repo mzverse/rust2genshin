@@ -1,14 +1,15 @@
 use super::Result;
 use crate::asset::node_graph::NodeKind;
-use crate::asset::node_graph::arithmetic::node_divide;
+use crate::asset::node_graph::arithmetic::{node_divide, node_power};
 use crate::asset::node_graph::execution::NODE_LOG;
 use crate::asset::value::{AnyValue, ValueDefault, ValueInt};
-use crate::compile::{CompilingFn, WithTcx, get_expn_macro_attr};
+use crate::compile::{WithTcx, get_expn_macro_attr};
 use rustc_attr_ir::LangItem;
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Instance, InstanceKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
+use crate::compile::func::CompilingFn;
 
 impl<'tcx> CompilingFn<'tcx, '_> {
     pub fn compile_native_call(&self, span: Span, func: Instance, params: Vec<AnyValue>, ret: Vec<AnyValue>) -> Option<Result<NodeKind>> {
@@ -34,6 +35,7 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                         };
                         match id.as_str() {
                             "divide" => Ok(node_divide(ValueInt::def())).into(),
+                            "power" => Ok(node_power(params[0].clone())).into(),
                             _ => self.span_err(expn, format!("Unknown intrinsic {}", id)).into(),
                         }
                     },

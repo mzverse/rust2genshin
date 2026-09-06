@@ -1,4 +1,4 @@
-use rust2genshin_lib_internal::native_calc;
+use rust2genshin_lib_internal::{native, native_calc};
 
 pub struct Vec3 { // TODO
     pub x: f32,
@@ -19,6 +19,7 @@ pub struct Vec3 { // TODO
 pub unsafe trait I32 {
     fn ushr(self, rhs: Self) -> Self;
     fn shr(self, rhs: Self) -> Self;
+    fn ipow(self, rhs: Self) -> Self;
 }
 
 /// Float math helpers backed by genshin node-graph kernel operations.
@@ -35,6 +36,7 @@ pub unsafe trait F32 {
     fn sqrt(self) -> Self;
 
     fn log(self, base: Self) -> Self;
+    fn pow(self, exp: Self) -> Self;
 
     fn sin(self) -> Self;
     fn cos(self) -> Self;
@@ -62,13 +64,20 @@ unsafe impl I32 for i32 {
             result
         }
     }
+
+    #[native("power")]
+    fn ipow(self, rhs: Self) -> Self;
 }
+
 unsafe impl F32 for f32 {
     #[native_calc(221)]
     fn sqrt(self) -> Self;
 
     #[native_calc(215)]
     fn log(self, base: Self) -> Self;
+
+    #[native("power")]
+    fn pow(self, exp: Self) -> Self;
 
     #[native_calc(291)]
     fn sin(self) -> Self;

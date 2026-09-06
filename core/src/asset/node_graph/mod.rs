@@ -327,10 +327,11 @@ impl<T: NodeGraphExtra> NodeGraph<T> {
     }
 
     pub fn export_value_in(&mut self, inner: Connection, outer: usize) {
+        if let Some(Link::Connection(Connection(f, i))) = self.nodes[inner.node().into()].values_in[inner.pin()].link {
+            self.get_node_mut(f).values_out[i].retain(|x| !matches!(*x, Link::Connection(t) if t == inner));
+        }
         let node = &mut self.nodes[inner.node().into()];
-        let link = &mut node.values_in[inner.pin()].link;
-        assert!(link.is_none(), "has connected");
-        *link = Some(Link::Export(outer));
+        node.values_in[inner.pin()].link = Some(Link::Export(outer));
     }
 
     pub fn export_value_out(&mut self, inner: Connection, outer: usize) {

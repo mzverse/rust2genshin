@@ -1,9 +1,10 @@
-use crate::asset::{AssetBundle, Side};
-use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{Connection, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct};
+use crate::asset::node_graph::{Connection, Link, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
+use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct};
+use crate::asset::{AssetBundle, Side};
+use crate::compile::func::{CompilingFn, CompilingLocals, LocalVar, LocalVarKind};
+use crate::compile::optimize::Optimizer;
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -14,6 +15,7 @@ use rustc_middle::hir::nested_filter;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir::{BasicBlock, Body, Local};
 use rustc_middle::query::QueryKey;
+use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{FloatTy, Instance, IntTy, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_middle::{mir, ty};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
@@ -22,7 +24,7 @@ use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use crate::compile::optimize::Optimizer;
+use tap::Tap;
 
 pub mod func;
 pub mod native;
@@ -127,19 +129,9 @@ pub(crate) trait WithTcx<'tcx> {
     fn span_err<T>(&self, span: Span, msg: impl Into<rustc_errors::DiagMessage>) -> Result<T> {
         Err(self.get_tcx().dcx().span_err(span, msg.into()))
     }
-}
 
-pub(crate) struct CompilingFn<'tcx, 'a> {
-    pub tcx: TyCtxt<'tcx>,
-    pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut NodeGraph<NodeGraphComposite>,
-    pub body: &'a Body<'tcx>,
-    pub locals: &'a Vec<NodeRef>,
-    pub local_ranges: &'a IndexVec<Local, std::ops::Range<usize>>,
-}
-impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
-    fn get_tcx(&self) -> TyCtxt<'tcx> {
-        self.tcx
+    fn monomorphize(&self, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
+        func.instantiate_mir_and_normalize_erasing_regions(self.get_tcx(), TypingEnv::fully_monomorphized(), ty::EarlyBinder::bind(self.get_tcx(), ty))
     }
 }
 
@@ -151,18 +143,6 @@ pub(crate) fn is_unit(ty: Ty) -> bool {
         cs.is_empty()
     } else {
         false
-    }
-}
-
-/// Cache key for interned tuple struct schemas. Uses the arity and a stable
-/// debug-string of the element types' `AnyValue`s. Two equal tuples produce
-/// the same key; the cache prevents duplicate struct-definition generation.
-#[derive(Clone, Eq, PartialEq, Hash)]
-pub(crate) struct TupleKey(pub(crate) String);
-
-impl core::fmt::Debug for TupleKey {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -181,7 +161,7 @@ impl<'tcx> Compiler<'tcx> {
         self.err(format!("Lib fn not found: {name}"))
     }
 
-    fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
+    fn compile_ty(&self, span: Span, ty: Ty) -> Result<AnyValue> {
         Ok(match ty.kind() {
             TyKind::Bool => ValueBool::def(),
             TyKind::Char => return self.span_err(span, "Char is unsupported"),
@@ -221,15 +201,7 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => {
-                // Empty tuples are unreachable here — `is_unit` filters them upstream.
-                // Non-empty tuples are interned as genshin `SStruct` schemas.
-                if tys.is_empty() {
-                    unreachable!("unit tuple () should be filtered by is_unit before reaching compile_ty");
-                }
-                let (struct_id, fields) = self.intern_tuple_schema(span, ty)?;
-                ValueStruct::new(struct_id, fields).into()
-            }
+            TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
@@ -248,96 +220,6 @@ impl<'tcx> Compiler<'tcx> {
             }
         })
     }
-
-    /// Intern a tuple type as a genshin `SStruct` schema. Generates a
-    /// `StructureDefinition` asset on first encounter and caches the
-    /// resulting `struct_id` for subsequent lookups.
-    ///
-    /// The cache key is a string derived from the element types' `AnyValue`
-    /// debug representation. Element types are resolved via `compile_ty`
-    /// (which canonicalizes `i32`/`isize` to `ValueInt`, etc.) before
-    /// keying, so types that map to the same engine type share a schema.
-    pub(crate) fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<(i64, Vec<AnyValue>)> {
-        let TyKind::Tuple(elem_tys) = ty.kind() else {
-            return self.span_err(span, "intern_tuple_schema called with non-tuple type");
-        };
-        if elem_tys.is_empty() {
-            return self.span_err(span, "unit tuple () has no struct schema; use bool/unit instead");
-        }
-        // Resolve element types first (recursively interns nested tuples).
-        let elem_kinds: Vec<AnyValue> = elem_tys.iter()
-            .map(|t| self.compile_ty(span, t))
-            .collect::<Result<_>>()?;
-        // Use a string key to keep this HashMap independent of MIR type identity.
-        let key = TupleKey(format!("[{}]", elem_kinds.iter()
-            .map(|k| format!("{:?}", k))
-            .collect::<Vec<_>>().join(", ")));
-        if let Some(&id) = self.tuple_schemas.get(&key) {
-            return Ok((id, elem_kinds));
-        }
-        // Build the StructureDefinition.
-        use crate::asset::node_graph::structure::{StructField, StructureDefinition};
-        let fields: Vec<StructField> = elem_kinds.iter().enumerate()
-            .map(|(i, k)| StructField {
-                name: format!("field_{i}"),
-                value: k.clone(),
-                is_set: false,
-            })
-            .collect();
-        let name = format!("Tuple_{}", elem_kinds.iter()
-            .map(|k| format!("{:?}", k.get_server_type()))
-            .collect::<Vec<_>>().join("_"));
-        let def = StructureDefinition {
-            name,
-            version: 1,
-            fields,
-        };
-        let id = self.assets.insert(Box::new(def));
-        self.tuple_schemas.insert(key, id);
-        Ok((id, elem_kinds))
-    }
-
-    /// Recursively flatten a tuple (or nested tuple) into scalar sub-locals,
-    /// depth-first pre-order. For `((i32, f32), bool)`, this produces 3
-    /// sub-locals in order: i32, f32, bool. Each leaf gets a `node_local`
-    /// (with default if storage-encodable), and the resulting `NodeRef`s are
-    /// pushed onto `locals`.
-    fn flatten_tuple_fields(
-        locals: &mut Vec<NodeRef>,
-        graph: &mut NodeGraph<NodeGraphComposite>,
-        kind: &AnyValue,
-    ) {
-        let Ok(s) = kind.as_ref().downcast_ref::<ValueStruct>() else { return; };
-        for field_kind in &s.fields {
-            if matches!(field_kind.get_server_type(), ServerTypeId::SStruct) {
-                // Recurse: nested tuple's children appear before later siblings.
-                Self::flatten_tuple_fields(locals, graph, field_kind);
-            } else {
-                let sub = graph.insert(Node::new(node_local(field_kind.clone())));
-                if field_kind.encode_storage(Side::Server).is_some() {
-                    graph.set_default(Connection(sub, 0), field_kind.clone());
-                }
-                locals.push(sub);
-            }
-        }
-    }
-
-    /// Enumerate the leaf types of a tuple in depth-first pre-order.
-    /// For `(f32, (f32, f32))` returns `[f32, f32, f32]`.
-    /// For non-tuple types, returns a single-element vector containing the type.
-    fn tuple_leaf_kinds(kind: &AnyValue) -> Vec<AnyValue> {
-        if !matches!(kind.get_server_type(), ServerTypeId::SStruct) {
-            return vec![kind.clone()];
-        }
-        let Ok(s) = kind.as_ref().downcast_ref::<ValueStruct>() else {
-            return vec![kind.clone()];
-        };
-        let mut out = Vec::new();
-        for field in &s.fields {
-            out.extend(Self::tuple_leaf_kinds(field));
-        }
-        out
-    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
@@ -347,7 +229,6 @@ pub(crate) struct Compiler<'tcx> {
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, i64>,
-    tuple_schemas: HashMap<TupleKey, i64>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -372,7 +253,6 @@ impl<'tcx> Compiler<'tcx> {
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
             compiling: HashSet::new(),
             compiled: HashMap::new(),
-            tuple_schemas: HashMap::new(),
         })
     }
     fn save(&self, out_dir: &Path) {
@@ -456,49 +336,41 @@ impl<'tcx> Compiler<'tcx> {
         Ok(asset_id)
     }
 
-    fn monomorphize(&self, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        func.instantiate_mir_and_normalize_erasing_regions(self.tcx, TypingEnv::fully_monomorphized(), ty::EarlyBinder::bind(self.tcx, ty))
-    }
-
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         // let name = self.tcx.def_path_str(id);
         let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
         graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
-        let mut locals: Vec<NodeRef> = Vec::new();
-        let mut local_ranges: IndexVec<Local, std::ops::Range<usize>> = IndexVec::new();
-        for x in &body.local_decls {
-            let start = locals.len();
+        let mut locals = IndexVec::<Local, LocalVar>::new(); // TODO: adapt for struct, struct list and map
+        let args = self.tcx.fn_arg_idents(func.def_id());
+        let mut compiling_locals = CompilingLocals {
+            compiler: self,
+            block: Block::nop(&mut graph),
+            graph: &mut graph,
+            a: 0,
+            r: 0,
+        };
+        for (i, x) in body.local_decls.iter_enumerated() {
             if is_unit(x.ty) {
-                locals.push(NodeRef::from(usize::MAX));
-                local_ranges.push(start..locals.len());
+                locals.push(LocalVar::Flat(Default::default()));
                 continue;
             }
-            let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
-            // Flatten tuple local into scalar sub-locals (one per field, recursive for nested)
-            if matches!(kind.get_server_type(), ServerTypeId::SStruct) {
-                Self::flatten_tuple_fields(&mut locals, &mut graph, &kind);
-                local_ranges.push(start..locals.len());
-                continue;
-            }
-            // Scalar local (existing path)
-            let local = graph.insert(Node::new(node_local(kind.clone())));
-            if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
-                graph.set_default(Connection(local, 0), kind);
-            }
-            locals.push(local);
-            local_ranges.push(start..locals.len());
+            let mut name = "".to_string();
+            let k = if i.index() == 0 { LocalVarKind::Ret } else if i.index() - 1 < args.len() { name = args.get(i.index() - 1).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()); LocalVarKind::Arg } else { LocalVarKind::Other };
+            locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), k, name, x.source_info.span)?);
         }
+        let CompilingLocals{ mut block, .. } = compiling_locals;
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
+        graph.export_control_in(block.begin, 0);
         for (k, result) in {
             let mut compiling = CompilingFn {
                 tcx: self.tcx,
+                func,
                 compiler: self,
                 graph: &mut graph,
                 body,
                 locals: &locals,
-                local_ranges: &local_ranges,
             };
             for x in body.basic_blocks.iter() {
                 blocks.push(compiling.compile_basic_block(&x.statements)?);
@@ -508,51 +380,8 @@ impl<'tcx> Compiler<'tcx> {
             graph.connect_control(blocks.get(k).unwrap().end, result?);
         }
         graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
-        graph.export_control_in(blocks.get(mir::START_BLOCK).unwrap().begin, 0);
         graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
-        let mut next_in_pin = 0;
-        for (i, param) in self.tcx.fn_arg_idents(func.def_id()).iter().enumerate() {
-            let base_name = param.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i));
-            let range = local_ranges.get(Local::arg(i)).unwrap().clone();
-            let param_local = body.local_decls.get(Local::arg(i)).unwrap();
-            let param_kind = self.compile_ty(param_local.source_info.span, self.monomorphize(func, param_local.ty))?;
-            if matches!(param_kind.get_server_type(), ServerTypeId::SStruct) {
-                // Tuple parameter: emit N pins with dot-suffixed names (one per leaf field)
-                for (leaf_idx, _leaf_kind) in Self::tuple_leaf_kinds(&param_kind).into_iter().enumerate() {
-                    let pin_name = format!("{}.field_{}", base_name, leaf_idx);
-                    graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(pin_name);
-                    let sub = locals[range.start + leaf_idx];
-                    graph.export_value_in(Connection(sub, 0), next_in_pin);
-                    next_in_pin += 1;
-                }
-            } else {
-                // Scalar parameter (existing path)
-                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(base_name);
-                let node = locals[range.start];
-                graph.export_value_in(Connection(node, 0), next_in_pin);
-                next_in_pin += 1;
-            }
-        }
-
-        if !is_unit(body.return_ty()) {
-            let ret_range = local_ranges.get(mir::RETURN_PLACE).unwrap().clone();
-            let ret_local = body.local_decls.get(mir::RETURN_PLACE).unwrap();
-            let ret_kind = self.compile_ty(ret_local.source_info.span, self.monomorphize(func, ret_local.ty))?;
-            if matches!(ret_kind.get_server_type(), ServerTypeId::SStruct) {
-                // Tuple return: emit N pins (one per leaf field)
-                for (leaf_idx, _leaf_kind) in Self::tuple_leaf_kinds(&ret_kind).into_iter().enumerate() {
-                    let pin_name = format!("result.field_{}", leaf_idx);
-                    graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(pin_name);
-                    let sub = locals[ret_range.start + leaf_idx];
-                    graph.export_value_out(Connection(sub, 1), leaf_idx);
-                }
-            } else {
-                // Scalar return (existing path)
-                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
-                let node = locals[ret_range.start];
-                graph.export_value_out(Connection(node, 1), 0);
-            }
-        }
+        block.extend(&mut graph, blocks.get(mir::START_BLOCK).unwrap().clone());
         let mut optimizer = Optimizer::new(&mut graph);
         optimizer.optimize();
         if !optimizer.proxies.is_empty() {

@@ -1,5 +1,7 @@
 #![no_std]
 
+#![allow(unused_imports)]
+
 extern crate rust2genshin_lib;
 
 use rust2genshin_lib::*;
