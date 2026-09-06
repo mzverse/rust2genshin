@@ -84,15 +84,13 @@ impl LocalVar {
             LocalVar::Basic(x) => ValueIn::link(Connection(*x, 1).into()),
             LocalVar::Struct { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
             LocalVar::Flat(fields) => {
-                // Insert STRUCT_ASSEMBLY (kernel 300002): collects per-field leaf getters
-                // into a single struct value. The struct_id selector (selectors_in[0])
-                // identifies which struct schema to assemble; the dynamic field inputs
-                // (pins 0..N) come from each leaf's getter().
+                // Insert STRUCT_ASSEMBLY (kernel 300002). Each immediate child of this
+                // Flat gets one input pin (pin i). Nested Flat children recurse via
+                // their own getter() call, so each level only ever sees its own arity.
                 //
                 // NOTE: `kind` is typically NOT a ValueStruct here, because
                 // `solve_local` builds Flat without calling `compile_ty` on the tuple
-                // (compile_ty todo!()s on Tuple). We extract struct_id and per-field
-                // types from the leaves themselves, not from `kind`.
+                // (compile_ty todo!()s on Tuple).
                 use crate::asset::node_graph::arithmetic::NODE_ASSEMBLE_STRUCT;
 
                 let mut node_kind = NODE_ASSEMBLE_STRUCT.clone();
@@ -100,44 +98,19 @@ impl LocalVar {
                 // tuple_schemas in Compiler — but since Flat locals don't go through
                 // intern_tuple_schema, we don't have one. Use 0 as a placeholder;
                 // downstream readers must resolve it from the source place's type.
-                // (For the current demo, the demo functions only access fields,
-                // never the whole tuple via a Flat::getter, so this is unused.)
                 node_kind.selectors_in[0] = Some(0);
-                // Recursively compute leaf types from the Flat's children.
-                fn collect_leaf_kinds(lv: &LocalVar) -> Vec<AnyValue> {
-                    match lv {
-                        LocalVar::Basic(_) => {
-                            // We don't know the scalar type without compile_ty;
-                            // for Basic leaves that are parameter sub-locals, the
-                            // type is whatever was passed in via `solve_local`. We
-                            // use a placeholder of ValueBool for now; set_value_in
-                            // does runtime type checking via encode.
-                            vec![crate::asset::value::ValueBool::def()]
-                        }
-                        LocalVar::Struct { .. } => {
-                            // Out of scope for this sub-project; fall back to placeholder.
-                            vec![crate::asset::value::ValueBool::def()]
-                        }
-                        LocalVar::Flat(inner) => {
-                            let mut out = Vec::new();
-                            for child in inner {
-                                out.extend(collect_leaf_kinds(child));
-                            }
-                            out
-                        }
-                    }
-                }
-                let leaf_types: Vec<AnyValue> = fields.iter().flat_map(collect_leaf_kinds).collect();
-                // Input types are N leaf types. struct_id goes via selectors_in[0], not a data pin.
-                node_kind.values_in_types = leaf_types;
+                // Per-child type vec: length = fields.len(). Leaf scalar types aren't
+                // carried in the LocalVar tree, so use a placeholder per child.
+                let field_types: Vec<AnyValue> = fields
+                    .iter()
+                    .map(|_| crate::asset::value::ValueBool::def() as AnyValue)
+                    .collect();
+                node_kind.values_in_types = field_types;
                 // Output type is `kind` itself (a struct, when used).
                 node_kind.values_out_types = vec![kind.clone()];
                 let node_ref = graph.insert(node_kind.into());
-                // Wire each leaf's getter to the corresponding field input pin (pin i).
+                // Wire each immediate child's getter to its input pin (pin i).
                 for (i, field) in fields.iter().enumerate() {
-                    // The leaf's kind is unknown at this point (Basic leaves don't carry
-                    // it), so pass a placeholder. set_value_in does runtime type checking
-                    // via encode; mismatches panic there, not at this compile step.
                     let leaf_value = field.getter(graph, crate::asset::value::ValueBool::def());
                     graph.set_value_in(Connection(node_ref, i), leaf_value);
                 }
@@ -155,7 +128,43 @@ impl LocalVar {
                 Block::singleton(node, 0)
             },
             LocalVar::Struct { .. } => todo!(),
-            LocalVar::Flat(_) => todo!(),
+            LocalVar::Flat(fields) => {
+                // Insert STRUCT_SPLIT (kernel 300003): takes the struct value and produces
+                // one output pin per *immediate* child. Nested Flat children recurse via
+                // their own setter(), so each level only ever sees its own arity.
+                //
+                // As with `getter`, `kind` here is whatever `compile_ty` returned for the
+                // tuple place type. The struct-in pin takes `kind`; the per-child
+                // outputs use placeholder types (leaf scalar types are not carried in
+                // the LocalVar tree). Note:
+                // this produces a latent kernel_id mismatch in the recursive set_local
+                // path — the leaf's actual type (e.g. ValueInt) is not propagated, so
+                // set_local may pick a different kernel than the leaf's node_local.
+                // Acceptable for now: the Flat arms are dead code today (compile_assign
+                // walks projections to a Basic leaf before calling setter), but this
+                // must be revisited if/when whole-tuple moves become common. See
+                // follow-up issue "thread leaf kind through LocalVar".
+                use crate::asset::node_graph::arithmetic::NODE_SPLIT_STRUCT;
+
+                let mut node_kind = NODE_SPLIT_STRUCT.clone();
+                let field_types: Vec<AnyValue> = fields
+                    .iter()
+                    .map(|_| crate::asset::value::ValueBool::def() as AnyValue)
+                    .collect();
+                node_kind.values_in_types = vec![kind.clone()];
+                node_kind.values_out_types = field_types.clone();
+                let node_ref = graph.insert(node_kind.into());
+                // Wire the value to the struct input (pin 0).
+                graph.set_value_in(Connection(node_ref, 0), value);
+                // For each immediate child, recurse with its output pin (pin i).
+                let mut block = Block::nop(graph);
+                for (i, field) in fields.iter().enumerate() {
+                    let leaf_kind = field_types[i].clone();
+                    let block_for_field = field.setter(graph, leaf_kind, ValueIn::link(Connection(node_ref, i).into()));
+                    block.extend(graph, block_for_field);
+                }
+                block
+            },
         }
     }
 }
