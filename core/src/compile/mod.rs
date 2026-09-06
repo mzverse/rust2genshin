@@ -321,6 +321,23 @@ impl<'tcx> Compiler<'tcx> {
             }
         }
     }
+
+    /// Enumerate the leaf types of a tuple in depth-first pre-order.
+    /// For `(f32, (f32, f32))` returns `[f32, f32, f32]`.
+    /// For non-tuple types, returns a single-element vector containing the type.
+    fn tuple_leaf_kinds(kind: &AnyValue) -> Vec<AnyValue> {
+        if !matches!(kind.get_server_type(), ServerTypeId::SStruct) {
+            return vec![kind.clone()];
+        }
+        let Ok(s) = kind.as_ref().downcast_ref::<ValueStruct>() else {
+            return vec![kind.clone()];
+        };
+        let mut out = Vec::new();
+        for field in &s.fields {
+            out.extend(Self::tuple_leaf_kinds(field));
+        }
+        out
+    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
@@ -493,15 +510,51 @@ impl<'tcx> Compiler<'tcx> {
         graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
         graph.export_control_in(blocks.get(mir::START_BLOCK).unwrap().begin, 0);
         graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
+        let mut next_in_pin = 0;
         for (i, param) in self.tcx.fn_arg_idents(func.def_id()).iter().enumerate() {
-            graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(param.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i).to_string()));
-            let node = *locals.get(Local::arg(i)).unwrap();
-            graph.export_value_in(Connection(node, 0), i);
+            let base_name = param.as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i));
+            let range = local_ranges.get(Local::arg(i)).unwrap().clone();
+            let param_local = body.local_decls.get(Local::arg(i)).unwrap();
+            let param_kind = self.compile_ty(param_local.source_info.span, self.monomorphize(func, param_local.ty))?;
+            if matches!(param_kind.get_server_type(), ServerTypeId::SStruct) {
+                // Tuple parameter: emit N pins with dot-suffixed names (one per leaf field)
+                for (leaf_idx, _leaf_kind) in Self::tuple_leaf_kinds(&param_kind).into_iter().enumerate() {
+                    let pin_name = format!("{}.field_{}", base_name, leaf_idx);
+                    graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(pin_name);
+                    let sub = locals[range.start + leaf_idx];
+                    graph.export_value_in(Connection(sub, 0), next_in_pin);
+                    next_in_pin += 1;
+                }
+            } else {
+                // Scalar parameter (existing path)
+                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(base_name);
+                let node = locals[range.start];
+                graph.export_value_in(Connection(node, 0), next_in_pin);
+                next_in_pin += 1;
+            }
         }
+
+        let mut next_out_pin = 0;
         if !is_unit(body.return_ty()) {
-            graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
-            let node = *locals.get(mir::RETURN_PLACE).unwrap();
-            graph.export_value_out(Connection(node, 1), 0);
+            let ret_range = local_ranges.get(mir::RETURN_PLACE).unwrap().clone();
+            let ret_local = body.local_decls.get(mir::RETURN_PLACE).unwrap();
+            let ret_kind = self.compile_ty(ret_local.source_info.span, self.monomorphize(func, ret_local.ty))?;
+            if matches!(ret_kind.get_server_type(), ServerTypeId::SStruct) {
+                // Tuple return: emit N pins (one per leaf field)
+                for (leaf_idx, _leaf_kind) in Self::tuple_leaf_kinds(&ret_kind).into_iter().enumerate() {
+                    let pin_name = format!("result.field_{}", leaf_idx);
+                    graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(pin_name);
+                    let sub = locals[ret_range.start + leaf_idx];
+                    graph.export_value_out(Connection(sub, 1), next_out_pin);
+                    next_out_pin += 1;
+                }
+            } else {
+                // Scalar return (existing path)
+                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
+                let node = locals[ret_range.start];
+                graph.export_value_out(Connection(node, 1), next_out_pin);
+                next_out_pin += 1;
+            }
         }
         let mut optimizer = Optimizer::new(&mut graph);
         optimizer.optimize();
