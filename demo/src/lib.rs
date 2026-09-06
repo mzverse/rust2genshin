@@ -89,3 +89,32 @@ pub fn tuple_second(t: (i32, f32)) -> f32 {
 pub fn nested_tuple_first(t: ((i32, f32), bool)) -> i32 {
     t.0.0
 }
+
+#[unsafe(no_mangle)]
+pub fn swap_pair(p: (i32, f32)) -> (i32, f32) {
+    let mut pair = p;
+    let tmp = pair.0;
+    pair.0 = pair.1 as i32;
+    pair.1 = tmp as f32;
+    pair
+}
+
+#[unsafe(no_mangle)]
+pub fn copy_pair(p: (i32, f32)) -> (i32, f32) {
+    let copy = p;
+    copy
+}
+
+#[unsafe(no_mangle)]
+pub fn update_field(p: (i32, f32), v: i32) -> (i32, f32) {
+    let mut pair = p;
+    pair.0 = v;
+    pair
+}
+
+#[unsafe(no_mangle)]
+pub fn nested_update(p: ((i32, f32), bool), n: i32) -> ((i32, f32), bool) {
+    let mut pair = p;
+    pair.0.0 = n;
+    pair
+}

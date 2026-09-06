@@ -201,7 +201,23 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => todo!("Todo tuple: {:?}", tys),
+            TyKind::Tuple(tys) => {
+                // Empty tuples are unreachable here — `is_unit` filters them upstream.
+                if tys.is_empty() {
+                    return Ok(ValueBool::def());
+                }
+                // For non-empty tuples, build a `ValueStruct` placeholder (struct_id: 0)
+                // by recursively resolving the field types. We don't generate a real
+                // `StructureDefinition` (no intern_tuple_schema cache); the struct_id=0
+                // is a placeholder that STRUCT_ASSEMBLY/STRUCT_SPLIT use only to wire
+                // per-field connections. The recursive field types are needed so that
+                // `compile_operand` and `compile_assign` can pass a struct-shaped `kind`
+                // to `LocalVar::Flat::getter` / `setter`.
+                let field_kinds: Vec<AnyValue> = tys.iter()
+                    .map(|t| self.compile_ty(span, t))
+                    .collect::<Result<_>>()?;
+                ValueStruct::new(0, field_kinds).into()
+            }
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
