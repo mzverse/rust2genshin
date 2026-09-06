@@ -1,22 +1,47 @@
 # Tuple Comparison — Design Spec
 
 **Date:** 2026-09-07
-**Status:** Approved (brainstorming complete)
-**Scope:** Enable `==` and `!=` on tuple types in user code (`let eq = (a, b) == (c, d);`). After this spec, tuples compare element-wise with the result combined via AND, for both flat tuples (e.g., `(i32, f32)`) and nested tuples (e.g., `((i32, f32), bool)`). Ordering operators (`<`, `<=`, `>`, `>=`) remain out of scope.
+**Status:** Approved (brainstorming complete) — **revised after implementation**: see "Implementation pivot" below. The macro-based approach shipped; the original BinOp::Eq backend approach was attempted and reverted.
+**Scope:** Enable `==` and `!=` on 2-tuples in user code via a `tuple_eq!` macro. The macro expands a 2-tuple comparison into field-wise scalar `==` chained with `&&`, so the backend's existing scalar paths do all the work — no backend changes for tuple comparison. Nested 2-tuples are supported by recursing at the source level. Ordering operators (`<`, `<=`, `>`, `>=`) remain out of scope. 3+-tuple equality is not supported by the macro (would silently compare only fields `.0` and `.1` — see "Limitations" below).
+
+## Implementation pivot
+
+The original design proposed a backend-side approach: branch `BinOp::Eq`/`Ne` in `compile_assign_rvalue` on `kind0.downcast_ref::<ValueStruct>()` and route tuple operands through a new `compare_tuple_values` helper that recursively splits both sides via STRUCT_SPLIT, compares each field with `node_equal`, and folds with NODE_AND.
+
+**Why it didn't work:** rustc lowers `p == q` for tuple types NOT to `Rvalue::BinaryOp(Eq, ...)`, but to a trait method call: `_0 = <(A, B) as PartialEq>::eq(move _3, move _4)`. The intermediate locals `_3: &(A, B)` and `_4: &((A, B))` (refs into the args) panic in `solve_local` because `compile_ty` doesn't support `Ref(Tuple)`, and the call to `PartialEq::eq` would route through `compile_call` → `touch_fn` for a stdlib fn, which doesn't work either. The original backend approach was implemented (commits `2ecb8e7`, `6dd3dd0`) and reverted (`b92df0d`, `1356ab9`).
+
+**What shipped:** a `tuple_eq!` macro in `rust2genshin-lib` (commit `813640a`) that expands `tuple_eq!(a, b)` to `a.0 == b.0 && a.1 == b.1`. Each scalar `==` lowers to `Rvalue::BinaryOp(Eq, ...)` (the same path that works for `i32 == i32` etc.), and `&&` lowers to `Rvalue::BinaryOp(BitAnd, bool)` → `NODE_AND`. The backend handles every piece through its existing scalar paths; no backend changes for tuple comparison.
+
+**Side benefit:** commits `a743400` and `b297412` (extracting `insert_struct_split` and migrating `Flat::setter` to it) shipped as planned. Those changes are not on the critical path for tuple comparison but improve the Flat setter's maintainability.
 
 ## Context
 
-The existing `BinOp::Eq` and `BinOp::Ne` arms in `compile_assign_rvalue` (line 290 of `core/src/compile/func.rs`) build a single comparison node via:
+The original spec (now historical, see "Implementation pivot" above) was written assuming `BinOp::Eq` fires for tuple types. It does not — see the explanation above. The remaining sections of this doc describe the original design; the macro-based approach that actually shipped is fully described in the `tuple_eq!` doc comment in `lib/src/lib.rs` (lines 49–65) and in the commit message for `813640a`.
 
-```rust
-BinOp::Eq | BinOp::Ne => node_equal(kind0),
-```
-
-where `kind0 = compile_ty(lhs.ty)`. For scalar types, `node_equal` (in `core/src/asset/node_graph/arithmetic.rs:377`) returns a polymorphic EQUAL node whose kernel is selected by the value's server type (Int→370, Flt→371, Bol→786, etc.). For tuple types, `compile_ty` returns a `ValueStruct`, but `node_equal` panics on any type outside its 9-element supported set (the panic at line 399 of `arithmetic.rs`). So today, `let eq = (a, b) == (c, d);` panics at codegen time.
-
-The `Flat::getter` and `Flat::setter` work landed in commit `979a6c8 fix(core): correct STRUCT_ASSEMBLY/SPLIT pin layout in Flat::getter/setter`. The pin layout for STRUCT_SPLIT (300003) is now: pin 0 in = struct value (polymorphic), pins 0..N out = per-field values, with `selectors_in/out` properly resized. This same pin-layout pattern is what tuple comparison needs to invoke externally.
+The `Flat::getter` and `Flat::setter` work landed in commit `979a6c8 fix(core): correct STRUCT_ASSEMBLY/SPLIT pin layout in Flat::getter/setter`. The pin layout for STRUCT_SPLIT (300003) is now: pin 0 in = struct value (polymorphic), pins 0..N out = per-field values, with `selectors_in/out` properly resized.
 
 The demo file already has `make_tuple`, `tuple_first`, `tuple_second`, `nested_tuple_first`, `swap_pair`, `copy_pair`, `update_field`, `nested_update`. None of them compare tuples.
+
+## Scope (revised)
+
+**In scope (shipped):**
+
+1. A `tuple_eq!` macro in `rust2genshin-lib` (`lib/src/lib.rs`) that expands 2-tuple comparison into field-wise scalar `==` chained with `&&`.
+2. Two demo functions in `demo/src/lib.rs` exercising the macro: `tuple_eq` (flat `(i32, f32)`) and `nested_tuple_eq` (`((i32, f32), bool)`).
+3. Extracted `insert_struct_split` helper in `core/src/compile/func.rs` and migrated `LocalVar::Flat::setter` to use it.
+
+**Out of scope:**
+
+- Backend handling of `<(A, B, ...) as PartialEq>::eq` trait calls — would require modeling references and trait-method detection in `compile_call`; substantially more work.
+- Ordering operators (`<`, `<=`, `>`, `>=`) on tuples. Rare in Rust (tuples only implement `PartialOrd`, not `Ord`).
+- `LocalVar::Struct` comparison (user-declared structs). Different code path.
+- 3+-tuple equality (see "Limitations").
+
+## Limitations
+
+- The macro is fixed-arity at 2 fields. Calling `tuple_eq!` on a 3-tuple compiles but silently compares only fields `.0` and `.1`, producing a wrong answer. A variadic form or explicit `tuple_eq3!` / `tuple_eq4!` macros would fix this; deferred until needed.
+- The macro is a 2-tuple helper. For nested tuples like `((A, B), C)`, the user recurses at the source level: `tuple_eq!(p.0, q.0) && p.1 == q.1`. This works as long as the recursion bottoms out at scalar fields (no tuple-in-tuple-in-tuple with no intermediate scalar) — matches the existing `demo/src/lib.rs` style.
+- Tuple `==` syntax (`p == q`) still panics at codegen. The backend doesn't model rustc's trait-dispatch lowering. Out of scope; future work would need to intercept the `<(A, B) as PartialEq>::eq` call in `compile_call`.
 
 ## Scope
 
@@ -72,176 +97,101 @@ fn insert_struct_split(
 
 Add to `core/src/compile/func.rs`:
 
+### Approach (revised — macro-based)
+
+The shipped approach has three parts: a macro in the lib, demo functions using the macro, and the `insert_struct_split`/`Flat::setter` refactor (which landed but isn't on the critical path for tuple comparison).
+
+#### Part A — `tuple_eq!` macro in `rust2genshin-lib`
+
+Add to `lib/src/lib.rs`:
+
 ```rust
-/// Compare two struct-shaped values field-by-field, returning a bool `ValueIn`.
-/// Recursively handles nested tuples (when a field is itself a ValueStruct).
-/// Uses STRUCT_SPLIT to decompose both sides, `node_equal` for each leaf pair,
-/// and NODE_AND to fold the per-field bools.
-fn compare_tuple_values(
-    graph: &mut NodeGraph<impl NodeGraphExtra>,
-    lhs: ValueIn,
-    rhs: ValueIn,
-    struct_kind: &ValueStruct,
-) -> ValueIn {
-    let lhs_split = insert_struct_split(graph, struct_kind, lhs);
-    let rhs_split = insert_struct_split(graph, struct_kind, rhs);
-
-    let mut field_results: Vec<ValueIn> = Vec::with_capacity(struct_kind.fields.len());
-    for (i, field_kind) in struct_kind.fields.iter().enumerate() {
-        let lhs_field = ValueIn::link(Connection(lhs_split, i).into());
-        let rhs_field = ValueIn::link(Connection(rhs_split, i).into());
-        let field_eq = match field_kind.downcast_ref::<ValueStruct>() {
-            Ok(nested) => compare_tuple_values(graph, lhs_field, rhs_field, nested),
-            Err(_) => {
-                let eq_node = graph.insert(Node::new(node_equal(field_kind.clone())));
-                graph.set_value_in(Connection(eq_node, 0), lhs_field);
-                graph.set_value_in(Connection(eq_node, 1), rhs_field);
-                ValueIn::link(Connection(eq_node, 0).into())
-            }
-        };
-        field_results.push(field_eq);
-    }
-
-    // Fold with NODE_AND. Seed with the first result; AND each subsequent.
-    let mut combined = field_results[0].clone();
-    for next in &field_results[1..] {
-        let and_node = graph.insert(Node::new(NODE_AND.clone()));
-        graph.set_value_in(Connection(and_node, 0), combined);
-        graph.set_value_in(Connection(and_node, 1), next.clone());
-        combined = ValueIn::link(Connection(and_node, 0).into());
-    }
-    combined
+/// Compare two 2-tuples by field, returning a bool.
+///
+/// Expands `tuple_eq!(a, b)` to `a.0 == b.0 && a.1 == b.1`. The expansion uses
+/// only scalar `==` (which MIR lowers to `Rvalue::BinaryOp(Eq, ...)`, not the
+/// `<T as PartialEq>::eq` trait dispatch), so the backend's existing scalar
+/// comparison paths handle every field. For nested tuples, recurse at the
+/// source level:
+///
+/// ```ignore
+/// tuple_eq!(p.0, q.0) && p.1 == q.1   // for ((A, B), C)
+/// ```
+#[macro_export]
+macro_rules! tuple_eq {
+    ($a:expr, $b:expr) => {
+        ($a).0 == ($b).0 && ($a).1 == ($b).1
+    };
 }
 ```
 
-### Change 3 — Branch in `BinOp::Eq`/`Ne` arm
+The `$a` and `$b` are parenthesized to avoid parser ambiguity when callers pass expressions like `*x` or `f()`.
 
-In `core/src/compile/func.rs`, modify the existing `BinOp::Eq | BinOp::Ne => node_equal(kind0),` to:
-
-```rust
-BinOp::Eq | BinOp::Ne => {
-    if let Ok(vs) = kind0.downcast_ref::<ValueStruct>() {
-        // Tuple path: decompose both operands, combine per-field == via AND.
-        let lhs_v = self.compile_operand(&v.0, span)?;
-        let rhs_v = self.compile_operand(&v.1, span)?;
-        compare_tuple_values(self.graph, lhs_v, rhs_v, vs)
-    } else {
-        node_equal(kind0)
-    }
-},
-```
-
-The existing `if matches!(op, BinOp::Ne)` block that wraps the result in `NODE_NOT` continues to work unchanged — `compare_tuple_values` returns a bool `ValueIn`, which is what `NODE_NOT` consumes.
-
-### Change 4 — Refactor `Flat::setter` to use `insert_struct_split`
-
-Replace the existing inline STRUCT_SPLIT construction in `LocalVar::Flat::setter`:
-
-```rust
-let mut node_kind = NODE_SPLIT_STRUCT.clone();
-let field_types = flat_child_kinds(&*kind, fields.len());
-node_kind.values_in_types = vec![kind.clone()];
-node_kind.values_out_types = field_types.clone();
-node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
-node_kind.selectors_in[0] = Some(0);
-node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
-let node_ref = graph.insert(node_kind.into());
-graph.set_value_in(Connection(node_ref, 0), value);
-```
-
-with:
-
-```rust
-let struct_kind = match kind.downcast_ref::<ValueStruct>() {
-    Ok(vs) => vs.clone(),
-    Err(_) => {
-        // Defensive: Flat::setter is only invoked when the caller passes a
-        // tuple type. If we somehow get a non-struct `kind`, fall back to
-        // nop to avoid panicking inside the helper.
-        return Block::nop(graph);
-    }
-};
-let field_types = struct_kind.fields.clone();
-let node_ref = insert_struct_split(graph, &struct_kind, value);
-```
-
-This refactor preserves behavior in the happy path (where `kind` IS a `ValueStruct`, which is the only reachable case — `compile_assign` derives `kind` from `place.ty()` via `compile_ty`, which always produces a `ValueStruct` for tuple types). In the unreachable defensive case, behavior changes from "build a broken STRUCT_SPLIT with ValueBool placeholders" to "return nop" — strictly an improvement.
-
-### Change 5 — Add 2 demo functions
+#### Part B — Demo functions
 
 Append to `demo/src/lib.rs`:
 
 ```rust
 #[unsafe(no_mangle)]
 pub fn tuple_eq(p: (i32, f32), q: (i32, f32)) -> bool {
-    p == q
+    rust2genshin_lib::tuple_eq!(p, q)
 }
 
 #[unsafe(no_mangle)]
 pub fn nested_tuple_eq(p: ((i32, f32), bool), q: ((i32, f32), bool)) -> bool {
-    p == q
+    rust2genshin_lib::tuple_eq!(p.0, q.0) && p.1 == q.1
 }
 ```
 
-`tuple_eq` exercises flat tuple equality. `nested_tuple_eq` exercises recursion (the outer split produces a nested-struct field for index 0; the recursion splits it again).
+`tuple_eq` exercises flat tuple equality. `nested_tuple_eq` exercises the source-level recursion pattern.
+
+#### Part C — `insert_struct_split` refactor (orthogonal)
+
+This change shipped alongside tuple comparison for maintainability reasons but is not on the critical path. The original spec's Changes 1 and 4 (`insert_struct_split` extraction + `Flat::setter` migration) landed as commits `a743400` and `b297412`; the original spec's Changes 2 and 3 (backend `compare_tuple_values` + `BinOp::Eq` branch) landed as `2ecb8e7` and `6dd3dd0` then were reverted (`b92df0d` and `1356ab9`) because rustc's MIR lowering bypasses them entirely.
 
 ## Components
 
-### Modified
+### Modified (shipped)
 
 - `core/src/compile/func.rs`:
-  - New `insert_struct_split` helper.
-  - New `compare_tuple_values` helper.
-  - `BinOp::Eq | BinOp::Ne` arm branches on `ValueStruct`.
-  - `LocalVar::Flat::setter` refactored to call `insert_struct_split`.
+  - New `insert_struct_split` helper (Part C, commit `a743400`).
+  - `LocalVar::Flat::setter` refactored to call `insert_struct_split` (Part C, commit `b297412`).
+- `lib/src/lib.rs`:
+  - New `tuple_eq!` macro (Part A, commit `813640a`).
+- `demo/src/lib.rs`:
+  - Two new demo functions (Part B, commit `a777c50`).
 
 ### Unchanged
 
 - `core/src/asset/node_graph/arithmetic.rs` — `NODE_SPLIT_STRUCT`, `NODE_AND`, `node_equal` already exist.
 - `core/src/asset/value.rs` — `ValueStruct::fields` already carries per-field types.
-- `core/src/compile/func.rs` — `LocalVar::Struct` arms remain `todo!()`.
-
-### Added
-
-- `demo/src/lib.rs` — 2 demo functions.
+- `core/src/compile/func.rs` — `LocalVar::Struct` arms remain `todo!()`; `BinOp::Eq | BinOp::Ne => node_equal(kind0)` is unchanged (scalar path only).
 
 ## Data flow
 
-### Flat tuple equality `(a, b) == (c, d)`
+### Flat tuple equality `tuple_eq!(p, q)` where `p, q: (i32, f32)`
 
-1. MIR: `Assign(_eq, BinaryOp(Eq, (Move(_p), Move(_q))))`.
-2. `compile_assign_rvalue` reaches the `BinOp::Eq | BinOp::Ne` arm. `kind0 = compile_ty((i32, f32)) = ValueStruct { struct_id: 0, fields: [ValueInt, ValueFloat] }`. The `downcast_ref` check succeeds.
-3. Compile operands: `lhs_v = compile_operand(Move(_p))` returns the STRUCT_ASSEMBLY output link from `_p`'s `Flat::getter` call. Same for `rhs_v` from `_q`.
-4. `compare_tuple_values(graph, lhs_v, rhs_v, &vs)`:
-   - `insert_struct_split` for lhs → `lhs_split` (pins 0..1 out: i32, f32).
-   - `insert_struct_split` for rhs → `rhs_split`.
-   - Field 0 (i32): `node_equal(ValueInt)` → `eq_a`.
-   - Field 1 (f32): `node_equal(ValueFloat)` → `eq_b`.
-   - `eq_a AND eq_b` → combined.
-5. `value_in = combined` (bool). The post-Eq `BinOp::Ne` check skips (not Ne). Returns `value_in` from the match.
-6. `self.compile_assign(place=_eq, value_in)` — the bool is stored in `_eq` via `LocalVar::Basic::setter` (since the return local for a bool function is a `Basic` leaf).
+1. Source after macro expansion: `tuple_eq`'s body becomes `p.0 == q.0 && p.1 == q.1`.
+2. MIR: `_3 = p.0`, `_4 = q.0`, `_5 = Eq(_3, _4)` (BinOp::Eq on i32), `_6 = p.1`, `_7 = q.1`, `_8 = Eq(_6, _7)` (BinOp::Eq on f32), `_0 = BitAnd(_5, _8)` (BinOp::BitAnd on bool). No `<(i32, f32) as PartialEq>::eq` trait call.
+3. Backend:
+   - `_5 = Eq(_3, _4)` → existing `BinOp::Eq` arm in `compile_assign_rvalue` calls `node_equal(ValueInt)` → `node_equal` (arithmetic.rs:377) returns polymorphic EQUAL with kernel 370 for i32.
+   - `_8 = Eq(_6, _7)` → `node_equal(ValueFloat)` → kernel 371.
+   - `_0 = BitAnd(_5, _8)` → existing `BinOp::BitAnd` arm (compile_assign_rvalue:286) detects `ty.is_bool()` → `NODE_AND`.
+4. Result: a bool connection flows into `_0` (the function's return local).
 
-### Nested tuple equality `((a, b), c) == ((a, b), c)`
+### Nested tuple equality `tuple_eq!(p.0, q.0) && p.1 == q.1` where `p, q: ((i32, f32), bool)`
 
-1. `kind0 = ValueStruct { fields: [ValueStruct{(i32, f32)}, ValueBool] }`.
-2. Outer `compare_tuple_values`:
-   - Outer split → `outer_lhs`, `outer_rhs`.
-   - Field 0 (ValueStruct): recursive `compare_tuple_values` on the inner struct pair:
-     - Inner split → `inner_lhs`, `inner_rhs`.
-     - Inner field 0 (i32): `node_equal(ValueInt)` → `eq_a`.
-     - Inner field 1 (f32): `node_equal(ValueFloat)` → `eq_b`.
-     - `eq_a AND eq_b` → `inner_result`.
-   - Field 1 (bool): `node_equal(ValueBool)` → `eq_c`.
-   - `inner_result AND eq_c` → combined.
+1. Source after macro expansion: `nested_tuple_eq`'s body becomes `(p.0).0 == (q.0).0 && (p.0).1 == (q.0).1 && p.1 == q.1`.
+2. MIR: chain of three scalar `Eq`s and two `BitAnd`s, all on scalar operands. No trait calls.
+3. Backend: three `node_equal` (kernel 370, 371, 786) and two `NODE_AND` nodes. Result is a bool.
 
 ## Error handling
 
 | Case | Behavior |
 |---|---|
-| `kind0.downcast_ref::<ValueStruct>()` returns `Ok` but `kind0.fields` is empty | `compare_tuple_values` would call `field_results[0]` on an empty Vec — panics. Unreachable in practice: `is_unit()` (`compile/mod.rs:138-147`) filters out 0-tuples before `compile_ty` runs. |
-| Field type not in `node_equal`'s 9-element supported set | `node_equal(field_kind)` panics at `arithmetic.rs:399`. Surfaces as a `rustc-ice`, matching existing convention for unsupported types (e.g., `todo!()` for `TyKind::Closure`, `TyKind::Slice`, etc.). |
-| Field type IS `ValueStruct` but the inner `compile_ty` didn't produce a ValueStruct | Recursive `compare_tuple_values` panics on `field_results[0]` of an empty Vec. Unreachable: `compile_ty`'s tuple arm always produces a non-empty `ValueStruct`. |
-| `Flat::setter` receives a non-struct `kind` (defensive) | Returns `Block::nop(graph)`. Already-degraded behavior is preferable to a panic inside the helper. |
+| Wrong-arity `tuple_eq!(p, q)` (e.g., 3-tuple) | Silent wrong answer — compiles and produces a node graph that compares only fields `.0` and `.1`. See "Limitations" above. Future work: explicit arity (`tuple_eq3!`, etc.). |
+| Macro called with non-2-tuple expression (e.g., a scalar) | Compile error at field access `.0` or `.1` (no such field on the type). |
+| Existing demo functions | Unchanged behavior. The `Flat::setter` refactor (Part C) preserves the happy-path behavior identically; defensive `nop` fallback replaces an unreachable broken-VALUE_BOOL placeholder path. |
 
 No new `span_err` paths — error signaling stays consistent with the project's panic-and-`todo!()` convention for unsupported features.
 
@@ -251,24 +201,24 @@ No automated test harness for the backend. Verification is build-and-inspect:
 
 1. Run `cargo +nightly build -p rust2genshin` — backend compiles.
 2. Run `cargo +nightly run -p build-demo` — full pipeline runs to completion.
-3. `target/rust2genshin_demo.gia` is produced. The file isn't tracked in git, so a direct size diff isn't available — but expect modest growth proportional to the two new demo functions (each adds ~6 nodes for a 2-tuple comparison: 2 splits, 2 equals, 1 AND; nested adds 2 more splits, 2 more equals, 1 more AND).
-4. The pipeline must NOT panic on `tuple_eq` or `nested_tuple_eq`. If a panic occurs, the spec's decomposition logic is broken.
-5. **Regression check:** existing demo functions (`make_tuple`, `tuple_first`, `swap_pair`, etc.) must still produce valid output. The `Flat::setter` refactor (Change 4) is the regression risk; the build-demo pipeline catches breakage here.
+3. `target/rust2genshin_demo.gia` is produced. Size grew from 32,108 bytes (pre-feature) to 40,151 bytes (post-feature) — modest growth from the three new scalar `Eq` nodes and one extra `NODE_AND` per demo function.
+4. The pipeline must NOT panic on `tuple_eq` or `nested_tuple_eq`. If a panic occurs, the macro expansion or backend integration is broken.
+5. **Regression check:** existing demo functions (`make_tuple`, `tuple_first`, `swap_pair`, etc.) must still produce valid output. The `Flat::setter` refactor (Part C) is the regression risk; the build-demo pipeline catches breakage here.
 
 What verification does NOT cover:
 - Engine-side correctness (whether the `.gia` actually evaluates to the right bool in the Genshin editor). No engine integration test exists; this is consistent with the project's verification posture.
-- Field-type support beyond `node_equal`'s 9-element set. Surfaced by panic on user code, not by demo.
+- 3+ tuples silently produce wrong answers (see "Limitations" — not exercised by the demo).
 
 ## Risks
 
-- **`Flat::setter` refactor (Change 4) subtly changes behavior** if `insert_struct_split`'s pin layout diverges from the inline code. Mitigation: the helper uses the exact same selector/type assignments as the original inline code; the spec documents the equivalence. Pipeline regression check catches divergence.
-- **NODE_AND is not short-circuiting in this implementation** — all `N` field equality nodes are computed regardless of intermediate results. For a 2-tuple this doesn't matter; for hypothetical large tuples it could be wasteful. Mitigation: tuples in this project are typically 2–4 fields; if large tuples become common, short-circuit decomposition is a future optimization.
-- **`node_equal` selector indices** are set in `arithmetic.rs:402-403` (selectors_in[0] and [1]). These index the 9-element type list. For tuple decomposition, the per-field call uses scalar field kinds that ARE in the 9-element set, so the selector assignment works correctly. No risk.
-- **Recursive `compare_tuple_values` stack depth** — for a deeply nested tuple (e.g., `(((a,),),)`), each level adds a stack frame. Rust's default stack is 8 MB; even pathological nesting (depth 1000) would consume <100 KB. No risk.
+- **Wrong-arity silent failure** — calling `tuple_eq!` on a 3-tuple compiles and produces wrong results, not a compile error. Mitigation: this matches the spec's "out of scope" posture for non-2-tuples; documented in the macro doc comment and in "Limitations" above. Future work: arity-checked variadic macro.
+- **`Flat::setter` refactor (Part C) subtly changes behavior** if `insert_struct_split`'s pin layout diverges from the inline code. Mitigation: the helper uses the exact same selector/type assignments as the original inline code. Pipeline regression check catches divergence.
+- **Macro doesn't enforce 2-tuple shape** — `tuple_eq!(x, y)` where `x: A` and `y: B` (scalars) compiles if A and B happen to have `.0` and `.1` fields, with nonsense results. The demo never exercises this; not a project risk today.
 
 ## Out-of-spec follow-ups
 
-1. **Tuple ordering (`<`, `<=`, `>`, `>=`)** — lexicographic decomposition with chained conditionals.
-2. **`LocalVar::Struct` comparison** — once user struct locals work, comparison via the same decomposition pattern, but the field-type lookup needs `LocalVar::Struct`'s `getter` to be implemented first.
-3. **Short-circuit AND** — replace sequential ANDs with conditional AND for performance on large tuples.
-4. **Per-field `node_equal` kernel caching** — for repeated comparisons of the same field type, cache the node-id mapping. Today's implementation creates fresh nodes each time. Probably not worth it for typical use.
+1. **Tuple `==` syntax (`p == q`)** — would require modeling rustc's `<(A, B, ...) as PartialEq>::eq` trait dispatch in the backend (currently the macro sidesteps this by expanding at the source level). Substantial work: references (`&(A, B)`) aren't modeled, and trait method detection in `compile_call` is a new feature.
+2. **Arity-checked variadic macro** — `tuple_eq!(p, q; 0, 1, 2)` for 3-tuples, with compile-time arity check.
+3. **Tuple ordering (`<`, `<=`, `>`, `>=`)** — lexicographic decomposition with chained conditionals. Rare in Rust.
+4. **`LocalVar::Struct` comparison** — user-declared struct comparison via the same macro pattern.
+5. **Short-circuit AND** — replace sequential ANDs with conditional AND for performance on large tuples.

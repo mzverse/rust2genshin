@@ -2,15 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enable `==` and `!=` on tuple types (`(a, b) == (c, d)`) by decomposing the comparison into per-field equality combined with NODE_AND. Recurses for nested tuples.
+**Goal:** Enable `==` and `!=` on 2-tuples via a `tuple_eq!` macro that expands to field-wise scalar `==` chained with `&&`.
 
-**Architecture:** Six sequential tasks. Task 1 extracts `insert_struct_split` from `Flat::setter` into a reusable helper. Task 2 refactors `Flat::setter` to use it (validates the helper on a known-working path). Task 3 adds `compare_tuple_values` (the recursive decomposer). Task 4 branches the `BinOp::Eq`/`Ne` arm in `compile_assign_rvalue` to route tuple operands through the new helper. Task 5 adds two demo functions. Task 6 runs the full pipeline to verify the `.gia` artifact is produced.
+**Architecture:** Four tasks. The original plan's six tasks (backend-side `compare_tuple_values` helper + `BinOp::Eq` branch) were attempted, committed (`2ecb8e7`, `6dd3dd0`), and reverted (`b92df0d`, `1356ab9`) — see "Pivot" below. The shipped approach sidesteps the backend entirely: the macro expands at source level to scalar `==` chains, which MIR lowers to `Rvalue::BinaryOp(Eq, ...)` (not `<T as PartialEq>::eq` trait dispatch), and the backend's existing scalar paths handle every piece.
 
-**Tech Stack:** Rust nightly, `rustc_private`, existing `crate::asset::node_graph::arithmetic::{NODE_SPLIT_STRUCT, NODE_AND, node_equal}`, `crate::asset::value::ValueStruct`, `crate::asset::node_graph::{Connection, Node, ValueIn, NodeGraph}`.
+**Tech Stack:** Rust nightly, `rustc_private`, existing `crate::asset::node_graph::arithmetic::{NODE_AND, node_equal}`, `macro_rules!`, no new backend code.
 
 **Project root:** `F:/rust2genshin/`
 
-**Spec:** `docs/superpowers/specs/2026-09-07-tuple-comparison-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-07-tuple-comparison-design.md` (revised after implementation)
+
+## Pivot from original plan
+
+The original plan's Tasks 3 and 4 (`compare_tuple_values` helper + `BinOp::Eq`/`Ne` branching in `compile_assign_rvalue`) made an architectural assumption that turned out to be wrong: that rustc lowers tuple `p == q` to `Rvalue::BinaryOp(BinOp::Eq, ...)`. It does not — for tuples, rustc emits a trait method call: `_0 = <(A, B) as PartialEq>::eq(move _3, move _4)`. The intermediate locals `_3: &(A, B)` and `_4: &(A, B)` panic in `solve_local` before the `BinOp::Eq` branch ever fires. Those tasks landed and were reverted.
+
+The shipped approach: a `tuple_eq!` macro in `rust2genshin-lib` (commit `813640a`) that expands to field-wise scalar `==` chained with `&&`. Every comparison is between scalar fields, which MIR DOES lower to `Rvalue::BinaryOp(Eq, ...)` (the same path that works for `i32 == i32`). The `&&` lowers to `BinOp::BitAnd(bool)` → `NODE_AND`. No backend changes needed for tuple comparison.
+
+Tasks 1 and 2 from the original plan (`insert_struct_split` extraction + `Flat::setter` migration, commits `a743400` and `b297412`) shipped as planned and remain in place — they're not on the critical path for tuple comparison but improve `Flat::setter`'s maintainability.
 
 ---
 
