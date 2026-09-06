@@ -296,6 +296,31 @@ impl<'tcx> Compiler<'tcx> {
         self.tuple_schemas.insert(key, id);
         Ok((id, elem_kinds))
     }
+
+    /// Recursively flatten a tuple (or nested tuple) into scalar sub-locals,
+    /// depth-first pre-order. For `((i32, f32), bool)`, this produces 3
+    /// sub-locals in order: i32, f32, bool. Each leaf gets a `node_local`
+    /// (with default if storage-encodable), and the resulting `NodeRef`s are
+    /// pushed onto `locals`.
+    fn flatten_tuple_fields(
+        locals: &mut Vec<NodeRef>,
+        graph: &mut NodeGraph<NodeGraphComposite>,
+        kind: &AnyValue,
+    ) {
+        let Ok(s) = kind.as_ref().downcast_ref::<ValueStruct>() else { return; };
+        for field_kind in &s.fields {
+            if matches!(field_kind.get_server_type(), ServerTypeId::SStruct) {
+                // Recurse: nested tuple's children appear before later siblings.
+                Self::flatten_tuple_fields(locals, graph, field_kind);
+            } else {
+                let sub = graph.insert(Node::new(node_local(field_kind.clone())));
+                if field_kind.encode_storage(Side::Server).is_some() {
+                    graph.set_default(Connection(sub, 0), field_kind.clone());
+                }
+                locals.push(sub);
+            }
+        }
+    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
@@ -434,16 +459,13 @@ impl<'tcx> Compiler<'tcx> {
                 continue;
             }
             let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
-            // Skip tuple locals — they don't fit Genshin's scalar-only node_local.
-            // Tuple values are constructed inline at use sites via STRUCT_ASSEMBLY
-            // and consumed inline via STRUCT_SPLIT. Attempting to read or write a
-            // tuple local with field projections will trigger a span_err in
-            // compile_operand_projection (via NodeRef::MAX pin access).
+            // Flatten tuple local into scalar sub-locals (one per field, recursive for nested)
             if matches!(kind.get_server_type(), ServerTypeId::SStruct) {
-                locals.push(NodeRef::from(usize::MAX));
+                Self::flatten_tuple_fields(&mut locals, &mut graph, &kind);
                 local_ranges.push(start..locals.len());
                 continue;
             }
+            // Scalar local (existing path)
             let local = graph.insert(Node::new(node_local(kind.clone())));
             if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                 graph.set_default(Connection(local, 0), kind);
