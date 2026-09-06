@@ -354,7 +354,6 @@ impl<'tcx> Compiler<'tcx> {
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
-        // let name = self.tcx.def_path_str(id);
         let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
         graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
@@ -376,7 +375,7 @@ impl<'tcx> Compiler<'tcx> {
             let k = if i.index() == 0 { LocalVarKind::Ret } else if i.index() - 1 < args.len() { name = args.get(i.index() - 1).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()); LocalVarKind::Arg } else { LocalVarKind::Other };
             locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), k, name, x.source_info.span)?);
         }
-        let CompilingLocals{ mut block, .. } = compiling_locals;
+        let CompilingLocals { mut block, .. } = compiling_locals;
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
         graph.export_control_in(block.begin, 0);
         for (k, result) in {
@@ -395,16 +394,16 @@ impl<'tcx> Compiler<'tcx> {
         } {
             graph.connect_control(blocks.get(k).unwrap().end, result?);
         }
-        graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
-        graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
         block.extend(&mut graph, blocks.get(mir::START_BLOCK).unwrap().clone());
         let mut optimizer = Optimizer::new(&mut graph);
         optimizer.optimize();
-        if !optimizer.proxies.is_empty() {
-            todo!()
-        }
-        if !optimizer.provided.is_empty() {
-            todo!()
+        match optimizer.proxies.as_slice() {
+            [] => {
+                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
+                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
+            },
+            [(from, to)] if *from == 0 && *to == 0 => (),
+            _ => panic!(),
         }
         let asset_id = self.assets.insert(graph.into());
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {

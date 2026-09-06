@@ -172,7 +172,7 @@ impl Node {
             .chain(self.values_out.iter())
             .flatten().copied()
             .chain(self.values_in.iter().flat_map(|x| x.link))
-            .filter_map(Link::connection).map(|x| x.0).collect()
+            .filter_map(Link::connection).map(|x| x.node()).collect()
     }
 }
 

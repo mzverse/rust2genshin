@@ -620,6 +620,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             other => return self.span_err(span, format!("Unsupported call controls: {other}")),
         };
         if !is_unit(sig.output()) {
+            // TODO: flat
             let value = self.compile_assign(destination, ValueIn::link(Connection(node, 0).into()))?;
             block.extend(self.graph, value);
         }

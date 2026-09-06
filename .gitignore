@@ -3,3 +3,4 @@
 # build.ps1 生成的机器相关配置(含本机 sysroot 绝对路径,每台机器不同)
 .cargo/config.toml
 /tools/
+/rustc-ice-*
