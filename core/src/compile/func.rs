@@ -96,6 +96,30 @@ fn flat_child_kinds(kind: &dyn crate::asset::value::Value, n: usize) -> Vec<AnyV
         .collect()
 }
 
+/// Insert a STRUCT_SPLIT (kernel 300003) sized for `struct_kind.fields.len()`.
+/// Pin layout:
+///   - input pin 0 = struct value (polymorphic ValueStruct)
+///   - output pins 0..N-1 = per-field values (typed per `struct_kind.fields`)
+/// The struct input is wired from `value`. Returns the NodeRef; the caller
+/// consumes per-field outputs via `Connection(node, i)`.
+fn insert_struct_split(
+    graph: &mut NodeGraph<impl NodeGraphExtra>,
+    struct_kind: &ValueStruct,
+    value: ValueIn,
+) -> NodeRef {
+    let mut node_kind = crate::asset::node_graph::arithmetic::NODE_SPLIT_STRUCT.clone();
+    node_kind.values_in_types = vec![AnyValue::from(struct_kind.clone())];
+    node_kind.values_out_types = struct_kind.fields.clone();
+    // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
+    // (empty) values_*, so resize both in lock-step (see Flat::setter).
+    node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
+    node_kind.selectors_in[0] = Some(0);
+    node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
+    let node_ref = graph.insert(node_kind.into());
+    graph.set_value_in(Connection(node_ref, 0), value);
+    node_ref
+}
+
 impl LocalVar {
     pub fn getter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue) -> ValueIn {
         match self {
