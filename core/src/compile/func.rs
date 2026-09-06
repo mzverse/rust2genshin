@@ -1,3 +1,4 @@
+use crate::asset::generated::ServerTypeId;
 use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
 
 use super::*;
@@ -57,14 +58,32 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             return Ok(Block::nop(self.graph));
         }
         // Derive the type: when the projection is a chain of Fields (tuple
-        // per-field write), use the deepest Field's ty; otherwise use the
-        // parent local's decl.ty (scalar write).
+        // per-field write), use the deepest Field's ty. When the projection is
+        // empty and the destination is a tuple, return span_err since the
+        // caller must use per-field writes (the Aggregate arm already does
+        // this). Otherwise use the parent local's decl.ty (scalar write).
         let field_ty = place.projection.iter().rev().find_map(|elem| match elem {
             ProjectionElem::Field(_, ty) => Some(ty),
             _ => None,
         });
         let decl = self.body.local_decls.get(place.local).unwrap();
-        let ty = field_ty.unwrap_or(decl.ty);
+        let ty = if let Some(ft) = field_ty {
+            ft
+        } else if matches!(
+            self.compiler.compile_ty(decl.source_info.span, decl.ty)?.get_server_type(),
+            ServerTypeId::SStruct
+        ) {
+            // Tuple destination with empty projection: caller must use per-field writes.
+            return self.span_err(
+                decl.source_info.span,
+                format!(
+                    "Whole-tuple assignment to local {:?} requires per-field writes; this is handled by the Aggregate arm, not compile_assign",
+                    place.local
+                ),
+            );
+        } else {
+            decl.ty
+        };
         let node = self.graph.insert(Node::new(node_set_local(self.compiler.compile_ty(decl.source_info.span, ty)?)));
         self.graph.connect_value(Connection(local_ref, 0), Connection(node, 0));
         self.graph.set_value_in(Connection(node, 1), value);
