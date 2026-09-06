@@ -195,19 +195,12 @@ impl LocalVar {
                 // Pin 0 is dual-purpose: in is the struct, out is the first field.
                 // Nested Flat children recurse via their own setter(), so each
                 // level only ever sees its own arity.
-                use crate::asset::node_graph::arithmetic::NODE_SPLIT_STRUCT;
-
-                let mut node_kind = NODE_SPLIT_STRUCT.clone();
-                let field_types = flat_child_kinds(&*kind, fields.len());
-                node_kind.values_in_types = vec![kind.clone()];
-                node_kind.values_out_types = field_types.clone();
-                // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
-                // (empty) values_*, so resize both in lock-step (see getter).
-                node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
-                node_kind.selectors_in[0] = Some(0);
-                node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
-                let node_ref = graph.insert(node_kind.into());
-                graph.set_value_in(Connection(node_ref, 0), value);
+                let struct_kind = match kind.downcast_ref::<ValueStruct>() {
+                    Ok(vs) => vs.clone(),
+                    Err(_) => return Block::nop(graph),
+                };
+                let field_types = struct_kind.fields.clone();
+                let node_ref = insert_struct_split(graph, &struct_kind, value);
                 let mut block = Block::nop(graph);
                 for (i, field) in fields.iter().enumerate() {
                     let block_for_field = field.setter(graph, field_types[i].clone(), ValueIn::link(Connection(node_ref, i).into()));
