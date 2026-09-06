@@ -136,10 +136,13 @@ impl LocalVar {
                 use crate::asset::node_graph::arithmetic::NODE_ASSEMBLE_STRUCT;
 
                 let mut node_kind = NODE_ASSEMBLE_STRUCT.clone();
-                // struct_id 0 is a placeholder — Flat locals don't go through
-                // intern_tuple_schema, so downstream readers must resolve the
-                // struct_id from the source place's type.
-                let struct_id_selector: AnyValue = ValueInt(0).into();
+                // The struct_id flows from `compile_ty` → `intern_tuple_schema`,
+                // which gives each unique tuple shape a registered schema and a
+                // non-zero id. Pin 0 (the polymorphic selector) carries it.
+                let struct_id = kind.downcast_ref::<ValueStruct>()
+                    .expect("Flat::getter called with non-struct kind")
+                    .struct_id as i32;
+                let struct_id_selector: AnyValue = ValueInt(struct_id).into();
                 let field_types = flat_child_kinds(&*kind, fields.len());
                 // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
                 // (empty) values_*, so resize both in lock-step when we resize the
@@ -155,7 +158,7 @@ impl LocalVar {
                 node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
                 node_kind.selectors_out[0] = Some(0);
                 let node_ref = graph.insert(node_kind.into());
-                graph.set_value_in(Connection(node_ref, 0), ValueIn::value(ValueInt(0).into()));
+                graph.set_value_in(Connection(node_ref, 0), ValueIn::value(ValueInt(struct_id).into()));
                 // Each child's getter must produce the matching pin type. For a
                 // nested Flat, that's `field_types[i]`; for a leaf Basic, it's the
                 // node's declared value out (pin 1, by node_local convention).

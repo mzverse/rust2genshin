@@ -161,7 +161,7 @@ impl<'tcx> Compiler<'tcx> {
         self.err(format!("Lib fn not found: {name}"))
     }
 
-    fn compile_ty(&self, span: Span, ty: Ty) -> Result<AnyValue> {
+    fn compile_ty(&mut self, span: Span, ty: Ty) -> Result<AnyValue> {
         Ok(match ty.kind() {
             TyKind::Bool => ValueBool::def(),
             TyKind::Char => return self.span_err(span, "Char is unsupported"),
@@ -206,17 +206,13 @@ impl<'tcx> Compiler<'tcx> {
                 if tys.is_empty() {
                     return Ok(ValueBool::def());
                 }
-                // For non-empty tuples, build a `ValueStruct` placeholder (struct_id: 0)
-                // by recursively resolving the field types. We don't generate a real
-                // `StructureDefinition` (no intern_tuple_schema cache); the struct_id=0
-                // is a placeholder that STRUCT_ASSEMBLY/STRUCT_SPLIT use only to wire
-                // per-field connections. The recursive field types are needed so that
-                // `compile_operand` and `compile_assign` can pass a struct-shaped `kind`
-                // to `LocalVar::Flat::getter` / `setter`.
-                let field_kinds: Vec<AnyValue> = tys.iter()
-                    .map(|t| self.compile_ty(span, t))
-                    .collect::<Result<_>>()?;
-                ValueStruct::new(0, field_kinds).into()
+                // Non-empty tuples get a real SStruct schema: each unique tuple
+                // shape is registered once and the asset_id is cached. The
+                // `kind` flows into STRUCT_ASSEMBLY/STRUCT_SPLIT, where the
+                // struct_id drives the polymorphic selector pin (and the
+                // value-side struct_id in pin wiring for STRUCT_SPLIT).
+                let (struct_id, field_kinds) = self.intern_tuple_schema(span, ty)?;
+                ValueStruct::new(struct_id, field_kinds).into()
             }
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
@@ -236,15 +232,80 @@ impl<'tcx> Compiler<'tcx> {
             }
         })
     }
+
+    /// Intern a tuple type as a genshin `SStruct` schema. Generates a
+    /// `StructureDefinition` asset on first encounter and caches the
+    /// resulting `struct_id` for subsequent lookups.
+    ///
+    /// Element types are resolved via `compile_ty` first (which canonicalizes
+    /// `i32`/`isize` to `ValueInt`, etc.) so types that map to the same
+    /// engine type share a schema. The cache key is the string
+    /// representation of those canonicalized kinds — independent of MIR type
+    /// identity.
+    fn intern_tuple_schema(&mut self, span: Span, ty: Ty) -> Result<(i64, Vec<AnyValue>)> {
+        let TyKind::Tuple(elem_tys) = ty.kind() else {
+            return self.span_err(span, "intern_tuple_schema called with non-tuple type");
+        };
+        if elem_tys.is_empty() {
+            return self.span_err(span, "unit tuple () has no struct schema");
+        }
+        // Resolve element types first (recursively interns nested tuples).
+        let elem_kinds: Vec<AnyValue> = elem_tys.iter()
+            .map(|t| self.compile_ty(span, t))
+            .collect::<Result<_>>()?;
+        let key = TupleKey(format!("[{}]", elem_kinds.iter()
+            .map(|k| format!("{k:?}"))
+            .collect::<Vec<_>>().join(", ")));
+        if let Some(&id) = self.tuple_schemas.get(&key) {
+            return Ok((id, elem_kinds));
+        }
+        // Build the StructureDefinition and insert it as an asset.
+        use crate::asset::node_graph::structure::{StructField, StructureDefinition};
+        let fields: Vec<StructField> = elem_kinds.iter().enumerate()
+            .map(|(i, k)| StructField {
+                name: format!("field_{i}"),
+                value: k.clone(),
+                is_set: false,
+            })
+            .collect();
+        let name = format!("Tuple_{}", elem_kinds.iter()
+            .map(|k| format!("{:?}", k.get_server_type()))
+            .collect::<Vec<_>>()
+            .join("_"));
+        let def = StructureDefinition {
+            name,
+            version: 1,
+            fields,
+        };
+        let id = self.assets.insert(Box::new(def));
+        self.tuple_schemas.insert(key, id);
+        Ok((id, elem_kinds))
+    }
 }
 
 const LIB_NAME: &str = "rust2genshin_lib";
+
+/// Cache key for interned tuple struct schemas. Uses the element-type debug
+/// representation so two structurally-equal tuples share a schema. Element
+/// types are resolved via `compile_ty` first (canonicalizing `i32`/`isize`
+/// → `ValueInt`, etc.), so types that map to the same engine type share a
+/// schema.
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub(crate) struct TupleKey(pub(crate) String);
+
+impl core::fmt::Debug for TupleKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 pub(crate) struct Compiler<'tcx> {
     tcx: TyCtxt<'tcx>,
     lib: CrateNum,
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, i64>,
+    tuple_schemas: HashMap<TupleKey, i64>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -269,6 +330,7 @@ impl<'tcx> Compiler<'tcx> {
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
             compiling: HashSet::new(),
             compiled: HashMap::new(),
+            tuple_schemas: HashMap::new(),
         })
     }
     fn save(&self, out_dir: &Path) {
