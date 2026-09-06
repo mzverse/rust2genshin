@@ -111,10 +111,10 @@ pub fn nested_update(p: ((i32, f32), bool), n: i32) -> ((i32, f32), bool) {
 
 #[unsafe(no_mangle)]
 pub fn tuple_eq(p: (i32, f32), q: (i32, f32)) -> bool {
-    p == q
+    rust2genshin_lib::tuple_eq!(p, q)
 }
 
 #[unsafe(no_mangle)]
 pub fn nested_tuple_eq(p: ((i32, f32), bool), q: ((i32, f32), bool)) -> bool {
-    p == q
+    rust2genshin_lib::tuple_eq!(p.0, q.0) && p.1 == q.1
 }
