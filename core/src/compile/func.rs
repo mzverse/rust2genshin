@@ -2,7 +2,7 @@ use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntLis
 
 use super::*;
 use crate::asset::node_graph::ValueIn;
-use crate::asset::node_graph::arithmetic::{node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract, NODE_AND, NODE_ASSEMBLE_STRUCT, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_SPLIT_STRUCT, NODE_XOR};
+use crate::asset::node_graph::arithmetic::{node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract, NODE_AND, NODE_ASSEMBLE_STRUCT, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::node_graph::execution::node_set_local;
@@ -51,19 +51,22 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(block.unwrap_or_else(|| Block::nop(self.graph)))
     }
 
-    fn compile_assign(&mut self, place: Place, value: ValueIn) -> Result<Block> {
-        if !place.projection.is_empty() {
-            // For write paths, we don't currently support tuple field writes
-            // (would require STRUCT_MODIFY rather than STRUCT_SPLIT). Defer.
-            let span = self.body.local_decls[place.local].source_info.span;
-            return self.span_err(
-                span,
-                format!("Write into place projection is unsupported: {:?}", place),
-            );
+    fn compile_assign(&mut self, place: Place<'tcx>, value: ValueIn) -> Result<Block> {
+        let local_ref = self.local_node(place, self.body.local_decls[place.local].source_info.span)?;
+        if local_ref == NodeRef::from(usize::MAX) {
+            return Ok(Block::nop(self.graph));
         }
+        // Derive the type: when the projection is a chain of Fields (tuple
+        // per-field write), use the deepest Field's ty; otherwise use the
+        // parent local's decl.ty (scalar write).
+        let field_ty = place.projection.iter().rev().find_map(|elem| match elem {
+            ProjectionElem::Field(_, ty) => Some(ty),
+            _ => None,
+        });
         let decl = self.body.local_decls.get(place.local).unwrap();
-        let node = self.graph.insert(Node::new(node_set_local(self.compiler.compile_ty(decl.source_info.span, decl.ty)?)));
-        self.graph.connect_value(Connection(*self.locals.get(place.local).unwrap(), 0), Connection(node, 0));
+        let ty = field_ty.unwrap_or(decl.ty);
+        let node = self.graph.insert(Node::new(node_set_local(self.compiler.compile_ty(decl.source_info.span, ty)?)));
+        self.graph.connect_value(Connection(local_ref, 0), Connection(node, 0));
         self.graph.set_value_in(Connection(node, 1), value);
         Ok(Block::singleton(node, 0))
     }
@@ -234,14 +237,50 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         self.compile_assign(place, value_in)
     }
 
+    /// Translate a `Place` (possibly with a Field projection chain) to a single
+    /// `NodeRef` from the flat locals vector. Returns the unit sentinel
+    /// `NodeRef::MAX` for unit locals. Errors on unsupported projections or
+    /// out-of-bounds field indices.
+    fn local_node(&self, place: Place<'tcx>, span: Span) -> Result<NodeRef> {
+        use rustc_middle::mir::ProjectionElem;
+        let range = self.local_ranges.get(place.local).unwrap().clone();
+        if range.is_empty() {
+            return Ok(NodeRef::from(usize::MAX));
+        }
+        let mut offset = 0;
+        for elem in place.projection {
+            match elem {
+                ProjectionElem::Field(idx, _) => {
+                    offset += idx.as_usize();
+                }
+                other => return self.span_err(
+                    span,
+                    format!("Unsupported projection element: {:?}", other),
+                ),
+            }
+        }
+        if offset >= range.len() {
+            return self.span_err(
+                span,
+                format!(
+                    "Field offset {} out of bounds for tuple with {} field(s)",
+                    offset,
+                    range.len()
+                ),
+            );
+        }
+        Ok(self.locals[range.start + offset])
+    }
+
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                if !p.projection.is_empty() {
-                    return self.compile_operand_projection(*p, span);
+                let node_ref = self.local_node(*p, span)?;
+                if node_ref == NodeRef::from(usize::MAX) {
+                    return Ok(ValueIn::value(crate::asset::value::ValueBool::def()));
                 }
-                ValueIn::link(Connection(*self.locals.get(p.local).unwrap(), 1).into())
+                ValueIn::link(Connection(node_ref, 1).into())
             }
 
             Operand::Constant(co) => {
@@ -312,83 +351,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             }
             Operand::RuntimeChecks(_) => ValueIn::value(ValueBool(false).into()),
         })
-    }
-
-    /// Resolve a Place with a non-empty projection chain to a `ValueIn`,
-    /// inserting `STRUCT_SPLIT` nodes as needed.
-    ///
-    /// Only chains consisting entirely of `ProjectionElem::Field(i, _)` are
-    /// supported. Other projection kinds (Deref, Index, ConstantIndex, etc.)
-    /// trigger `span_err` and defer to follow-up sub-projects.
-    fn compile_operand_projection(&mut self, place: Place<'tcx>, span: Span) -> Result<ValueIn> {
-        use rustc_middle::mir::ProjectionElem;
-        let local_ref = *self.locals.get(place.local).unwrap();
-        let base_kind = self.compiler.compile_ty(
-            span,
-            self.body.local_decls[place.local].ty,
-        )?;
-        // The base local's output pin is pin 1 (per node_local's contract).
-        let mut current_input = ValueIn::link(Connection(local_ref, 1).into());
-        let mut current_kind: AnyValue = base_kind;
-        for elem in place.projection {
-            match elem {
-                ProjectionElem::Field(field_idx, _) => {
-                    // Build a fresh STRUCT_SPLIT node per field access. The engine
-                    // treats pins 0..N-1 as the field outputs (one per struct field),
-                    // even though NODE_SPLIT_STRUCT declares values_out_types=[] in
-                    // the Rust `NodeKind` (dynamic-output node). We resize the
-                    // node's `values_out` Vec to match the struct's field count
-                    // so `connect_value`/`set_value_in` can write to pin `field_idx`.
-                    let struct_field_count = match current_kind.downcast_ref::<ValueStruct>() {
-                        Ok(s) => s.fields.len(),
-                        Err(_) => return self.span_err(
-                            span,
-                            format!("Field access into non-struct: {:?}", current_kind),
-                        ),
-                    };
-                    if field_idx.as_usize() >= struct_field_count {
-                        return self.span_err(
-                            span,
-                            format!(
-                                "Field index {} out of bounds for struct with {} field(s)",
-                                field_idx.as_usize(),
-                                struct_field_count
-                            ),
-                        );
-                    }
-                    let mut node = Node::new(NODE_SPLIT_STRUCT.clone());
-                    // NODE_SPLIT_STRUCT declares `values_out_types=[]` (dynamic-output
-                    // node). Populate `kind.values_out_types` with the struct's actual
-                    // field types so downstream nodes can read `kind.values_out_types[pin]`
-                    // to determine each output pin's type (e.g. `connect_value`'s type
-                    // assertion at line 289 of node_graph/mod.rs).
-                    node.kind.values_out_types = match current_kind.downcast_ref::<ValueStruct>() {
-                        Ok(s) => s.fields.clone(),
-                        Err(_) => return self.span_err(
-                            span,
-                            format!("Field access into non-struct: {:?}", current_kind),
-                        ),
-                    };
-                    node.values_out.resize(struct_field_count, Vec::new());
-                    let node_ref = self.graph.insert(node);
-                    self.graph.set_value_in(Connection(node_ref, 0), current_input);
-                    current_input = ValueIn::link(Connection(node_ref, field_idx.as_usize()).into());
-                    // Advance the type tracker to the field's type.
-                    current_kind = match current_kind.downcast_ref::<ValueStruct>() {
-                        Ok(s) => s.fields[field_idx.as_usize()].clone(),
-                        Err(_) => return self.span_err(
-                            span,
-                            format!("Field access into non-struct: {:?}", current_kind),
-                        ),
-                    };
-                }
-                other => return self.span_err(
-                    span,
-                    format!("Unsupported projection element in field access: {:?}", other),
-                ),
-            }
-        }
-        Ok(current_input)
     }
 
     pub(crate) fn compile_terminator(
