@@ -165,7 +165,7 @@ let field_types = struct_kind.fields.clone();
 let node_ref = insert_struct_split(graph, &struct_kind, value);
 ```
 
-Note: this is a small refactor — the existing `Flat::setter` already has correct pin-layout logic, but having the construction in two places is a maintenance hazard. The refactor preserves behavior identically.
+This refactor preserves behavior in the happy path (where `kind` IS a `ValueStruct`, which is the only reachable case — `compile_assign` derives `kind` from `place.ty()` via `compile_ty`, which always produces a `ValueStruct` for tuple types). In the unreachable defensive case, behavior changes from "build a broken STRUCT_SPLIT with ValueBool placeholders" to "return nop" — strictly an improvement.
 
 ### Change 5 — Add 2 demo functions
 
@@ -251,7 +251,7 @@ No automated test harness for the backend. Verification is build-and-inspect:
 
 1. Run `cargo +nightly build -p rust2genshin` — backend compiles.
 2. Run `cargo +nightly run -p build-demo` — full pipeline runs to completion.
-3. `target/rust2genshin_demo.gia` is produced. Spot-check size vs prior commit (32,108 bytes pre-spec) — expect modest growth from the new decomposition nodes.
+3. `target/rust2genshin_demo.gia` is produced. The file isn't tracked in git, so a direct size diff isn't available — but expect modest growth proportional to the two new demo functions (each adds ~6 nodes for a 2-tuple comparison: 2 splits, 2 equals, 1 AND; nested adds 2 more splits, 2 more equals, 1 more AND).
 4. The pipeline must NOT panic on `tuple_eq` or `nested_tuple_eq`. If a panic occurs, the spec's decomposition logic is broken.
 5. **Regression check:** existing demo functions (`make_tuple`, `tuple_first`, `swap_pair`, etc.) must still produce valid output. The `Flat::setter` refactor (Change 4) is the regression risk; the build-demo pipeline catches breakage here.
 
