@@ -335,28 +335,15 @@ After this sub-project, the next natural follow-ups are:
 4. **Struct support (Tier 2)** — same machinery (struct schemas, ASSEMBLY/SPLIT/MODIFY) but driven by user-declared struct types rather than auto-generated tuple schemas.
 5. **Pattern destructuring** `let (a, b) = tup;` — should work automatically after field access lands, but needs verification with demo cases.
 
-## Known limitation: tuple locals
+## Resolved: tuple locals (via flattening)
 
-The Genshin `node_local` kernel id 58 (used by `core/src/asset/node_graph/query.rs`)
-only supports scalar types (`SInt`, `SFloat`, `SBoolean`, `SString`, etc.).
-Tuple-typed Rust locals therefore cannot be allocated via `node_local`.
+The Genshin `node_local` kernel id 58 still only supports scalar types —
+this is a fundamental engine constraint. Rather than adding new node types or
+restructuring Rust-side tuple handling, this limitation was resolved by
+**flattening**: each tuple-typed MIR Local is shredded into N consecutive
+scalar slots in the locals vector, where N is the tuple's arity (recursive
+for nested tuples). Field access becomes a flat-index lookup with no
+node-graph machinery needed.
 
-The current implementation (`commit f8910933`) handles this by **skipping tuple locals
-in `compile_fn`** — locals whose compiled kind reports `ServerTypeId::SStruct`
-are mapped to `NodeRef::MAX`, mirroring the existing `is_unit` early-out.
-
-Consequence: functions cannot have tuple-typed parameters, tuple-typed return
-values, or `let t = (a, b);` patterns that would create a tuple temporary.
-Any of these will compile through `compile_ty` (the type is accepted) but
-fail at encode time when the tuple local is referenced.
-
-This is a fundamental Genshin architectural constraint: structs are passed via
-composite-node I/O, not via locals. Supporting tuple locals in this backend
-would require either:
-- Adding a new "struct-local" node type to the asset layer and wiring it
-  through `query.rs`, `execution.rs`, and the encode pipeline, or
-- Restructuring Rust-side tuple handling to avoid locals entirely (use inline
-  construction at every use site, with tuple values flowing through composite
-  node pins).
-
-This is tracked as a follow-up sub-project.
+See `docs/superpowers/specs/2026-09-05-tuple-locals-design.md` for the full
+design.
