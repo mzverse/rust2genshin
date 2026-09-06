@@ -82,12 +82,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         node_subtract(kind0),
                     BinOp::Mul | BinOp::MulUnchecked | BinOp::MulWithOverflow =>
                         node_multiply(kind0),
-                    BinOp::Div => {
-                        if kind0.is::<ValueInt>() {
-                            self.tcx.dcx().span_warn(span, "Div of i32 is slow and big, see `divide`");
-                        }
-                        node_divide(kind0)
-                    },
+                    BinOp::Div => node_divide(kind0),
                     BinOp::Rem => NODE_MODULO.clone(),
                     BinOp::BitXor => if ty.is_bool() { NODE_XOR.clone() } else { NODE_BITWISE_XOR.clone() },
                     BinOp::BitAnd => if ty.is_bool() { NODE_AND.clone() } else { NODE_BITWISE_AND.clone() },

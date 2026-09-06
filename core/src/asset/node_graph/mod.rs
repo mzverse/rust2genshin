@@ -122,6 +122,10 @@ impl NodeKind {
         Self::new(id, 0, 1, vec![], value_out_type)
     }
 
+    pub fn shell_eq(&self, other: &NodeKind) -> bool {
+        self.asset_kind == other.asset_kind && self.id == other.id
+    }
+
     fn encode_shell(&self) -> Identifier {
         Identifier {
             source: identifier::Source::SystemDefined as i32,
@@ -284,8 +288,11 @@ impl<T: NodeGraphExtra> NodeGraph<T> {
     }
 
     pub fn connect_value(&mut self, from: Connection, to: Connection) {
+        let to_node = self.nodes.get_mut(to.node().into()).unwrap();
+        if let Some(Link::Connection(Connection(f, i))) = to_node.values_in[to.pin()].link {
+            self.get_node_mut(f).values_out[i].retain(|x| !matches!(*x, Link::Connection(t) if t == to));
+        }
         let (from_node, to_node) = self.nodes.get2_mut(from.node().into(), to.node().into()).unwrap();
-        assert!(to_node.values_in[to.pin()].link.is_none(), "has connected");
         assert!(to_node.kind.values_in_types[to.pin()].is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], to_node.kind.values_in_types[to.pin()]);
         from_node.values_out[from.pin()].push(to.into());
         to_node.values_in[to.pin()].link = Some(from.into());

@@ -418,7 +418,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
-        self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
+        // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         // let name = self.tcx.def_path_str(id);
         let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
@@ -477,6 +477,9 @@ impl<'tcx> Compiler<'tcx> {
         let mut optimizer = Optimizer::new(&mut graph);
         optimizer.optimize();
         if !optimizer.proxies.is_empty() {
+            todo!()
+        }
+        if !optimizer.provided.is_empty() {
             todo!()
         }
         let asset_id = self.assets.insert(graph.into());

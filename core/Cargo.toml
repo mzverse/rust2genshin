@@ -17,6 +17,7 @@ workspace = true
 downcast = { workspace = true }
 anyhow = { workspace = true }
 tap = { workspace = true }
+either = { workspace = true }
 prost = "0"
 syn = "3"
 proc-macro2 = "1"

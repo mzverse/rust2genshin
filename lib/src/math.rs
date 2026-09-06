@@ -1,19 +1,9 @@
-use rust2genshin_lib_internal::{native, native_calc};
-
-pub use core::f32::consts::PI;
+use rust2genshin_lib_internal::native_calc;
 
 pub struct Vec3 { // TODO
     pub x: f32,
     pub y: f32,
     pub z: f32,
-}
-
-pub trait Divide: Sized {
-    fn divide(self, rhs: Self) -> Self;
-}
-impl Divide for i32 {
-    #[native("divide")]
-    fn divide(self, rhs: Self) -> Self;
 }
 
 /// Integer math helpers backed by genshin node-graph kernel operations.
