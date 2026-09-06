@@ -79,11 +79,70 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
 }
 
 impl LocalVar {
-    pub fn getter(&self) -> Connection {
+    pub fn getter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue) -> ValueIn {
         match self {
-            LocalVar::Basic(x) => Connection(*x, 1),
-            LocalVar::Struct { getter, .. } => Connection(*getter, 0),
-            LocalVar::Flat(_) => todo!(),
+            LocalVar::Basic(x) => ValueIn::link(Connection(*x, 1).into()),
+            LocalVar::Struct { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
+            LocalVar::Flat(fields) => {
+                // Insert STRUCT_ASSEMBLY (kernel 300002): collects per-field leaf getters
+                // into a single struct value. The struct_id selector (selectors_in[0])
+                // identifies which struct schema to assemble; the dynamic field inputs
+                // (pins 0..N) come from each leaf's getter().
+                //
+                // NOTE: `kind` is typically NOT a ValueStruct here, because
+                // `solve_local` builds Flat without calling `compile_ty` on the tuple
+                // (compile_ty todo!()s on Tuple). We extract struct_id and per-field
+                // types from the leaves themselves, not from `kind`.
+                use crate::asset::node_graph::arithmetic::NODE_ASSEMBLE_STRUCT;
+
+                let mut node_kind = NODE_ASSEMBLE_STRUCT.clone();
+                // Set the struct_id selector. struct_id comes from the cached
+                // tuple_schemas in Compiler — but since Flat locals don't go through
+                // intern_tuple_schema, we don't have one. Use 0 as a placeholder;
+                // downstream readers must resolve it from the source place's type.
+                // (For the current demo, the demo functions only access fields,
+                // never the whole tuple via a Flat::getter, so this is unused.)
+                node_kind.selectors_in[0] = Some(0);
+                // Recursively compute leaf types from the Flat's children.
+                fn collect_leaf_kinds(lv: &LocalVar) -> Vec<AnyValue> {
+                    match lv {
+                        LocalVar::Basic(_) => {
+                            // We don't know the scalar type without compile_ty;
+                            // for Basic leaves that are parameter sub-locals, the
+                            // type is whatever was passed in via `solve_local`. We
+                            // use a placeholder of ValueBool for now; set_value_in
+                            // does runtime type checking via encode.
+                            vec![crate::asset::value::ValueBool::def()]
+                        }
+                        LocalVar::Struct { .. } => {
+                            // Out of scope for this sub-project; fall back to placeholder.
+                            vec![crate::asset::value::ValueBool::def()]
+                        }
+                        LocalVar::Flat(inner) => {
+                            let mut out = Vec::new();
+                            for child in inner {
+                                out.extend(collect_leaf_kinds(child));
+                            }
+                            out
+                        }
+                    }
+                }
+                let leaf_types: Vec<AnyValue> = fields.iter().flat_map(collect_leaf_kinds).collect();
+                // Input types are N leaf types. struct_id goes via selectors_in[0], not a data pin.
+                node_kind.values_in_types = leaf_types;
+                // Output type is `kind` itself (a struct, when used).
+                node_kind.values_out_types = vec![kind.clone()];
+                let node_ref = graph.insert(node_kind.into());
+                // Wire each leaf's getter to the corresponding field input pin (pin i).
+                for (i, field) in fields.iter().enumerate() {
+                    // The leaf's kind is unknown at this point (Basic leaves don't carry
+                    // it), so pass a placeholder. set_value_in does runtime type checking
+                    // via encode; mismatches panic there, not at this compile step.
+                    let leaf_value = field.getter(graph, crate::asset::value::ValueBool::def());
+                    graph.set_value_in(Connection(node_ref, i), leaf_value);
+                }
+                ValueIn::link(Connection(node_ref, 0).into())
+            }
         }
     }
 
