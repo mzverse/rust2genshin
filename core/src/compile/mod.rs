@@ -534,7 +534,6 @@ impl<'tcx> Compiler<'tcx> {
             }
         }
 
-        let mut next_out_pin = 0;
         if !is_unit(body.return_ty()) {
             let ret_range = local_ranges.get(mir::RETURN_PLACE).unwrap().clone();
             let ret_local = body.local_decls.get(mir::RETURN_PLACE).unwrap();
@@ -545,15 +544,13 @@ impl<'tcx> Compiler<'tcx> {
                     let pin_name = format!("result.field_{}", leaf_idx);
                     graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(pin_name);
                     let sub = locals[ret_range.start + leaf_idx];
-                    graph.export_value_out(Connection(sub, 1), next_out_pin);
-                    next_out_pin += 1;
+                    graph.export_value_out(Connection(sub, 1), leaf_idx);
                 }
             } else {
                 // Scalar return (existing path)
                 graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push("".into());
                 let node = locals[ret_range.start];
-                graph.export_value_out(Connection(node, 1), next_out_pin);
-                next_out_pin += 1;
+                graph.export_value_out(Connection(node, 1), 0);
             }
         }
         let mut optimizer = Optimizer::new(&mut graph);
