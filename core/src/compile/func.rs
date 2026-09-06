@@ -100,6 +100,7 @@ fn flat_child_kinds(kind: &dyn crate::asset::value::Value, n: usize) -> Vec<AnyV
 /// Pin layout:
 ///   - input pin 0 = struct value (polymorphic ValueStruct)
 ///   - output pins 0..N-1 = per-field values (typed per `struct_kind.fields`)
+///
 /// The struct input is wired from `value`. Returns the NodeRef; the caller
 /// consumes per-field outputs via `Connection(node, i)`.
 fn insert_struct_split(

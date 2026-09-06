@@ -90,9 +90,8 @@ pub fn swap_pair(p: (i32, f32)) -> (i32, f32) {
 }
 
 #[unsafe(no_mangle)]
-pub fn copy_pair(p: (i32, f32), q: (i32, f32)) -> (i32, f32) {
-    let copy = p;
-    copy
+pub fn copy_pair(p: (i32, f32), _q: (i32, f32)) -> (i32, f32) {
+    p
 }
 
 #[unsafe(no_mangle)]
