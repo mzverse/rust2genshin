@@ -330,6 +330,23 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
                 let kind0 = self.compiler.compile_ty(v.0.span(&self.body.local_decls), ty0)?;
+                // Tuple equality short-circuits the normal node-construction flow because
+                // there's no single comparison node — we emit a STRUCT_SPLIT-based
+                // decomposition that returns a bool ValueIn directly.
+                if matches!(op, BinOp::Eq | BinOp::Ne) {
+                    if let Ok(vs) = kind0.downcast_ref::<ValueStruct>() {
+                        let lhs_v = self.compile_operand(&v.0, span)?;
+                        let rhs_v = self.compile_operand(&v.1, span)?;
+                        let mut eq_value = compare_tuple_values(self.graph, lhs_v, rhs_v, vs);
+                        if matches!(op, BinOp::Ne) {
+                            let not_node = self.graph.insert(Node::new(NODE_NOT.clone()));
+                            let eq_conn = eq_value.link.unwrap().connection().unwrap();
+                            self.graph.connect_value(eq_conn, Connection(not_node, 0));
+                            eq_value = ValueIn::link(Connection(not_node, 0).into());
+                        }
+                        return self.compile_assign(place, eq_value);
+                    }
+                }
                 let mut node = self.graph.insert(Node::new(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
                         node_add(kind0),
