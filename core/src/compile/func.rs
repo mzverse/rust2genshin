@@ -81,41 +81,74 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
     }
 }
 
+/// Extract the immediate-child kinds of a Flat local, given the outer
+/// `kind` (a `ValueStruct` built by `compile_ty` for tuple types). Returns
+/// `n` placeholder `ValueBool`s if `kind` isn't a `ValueStruct`.
+fn flat_child_kinds(kind: &dyn crate::asset::value::Value, n: usize) -> Vec<AnyValue> {
+    let vs = kind.downcast_ref::<ValueStruct>().ok();
+    (0..n)
+        .map(|i| {
+            vs.as_ref()
+                .and_then(|v| v.fields.get(i))
+                .cloned()
+                .unwrap_or_else(|| crate::asset::value::ValueBool::def() as AnyValue)
+        })
+        .collect()
+}
+
 impl LocalVar {
     pub fn getter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue) -> ValueIn {
         match self {
             LocalVar::Basic(x) => ValueIn::link(Connection(*x, 1).into()),
             LocalVar::Struct { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
             LocalVar::Flat(fields) => {
-                // Insert STRUCT_ASSEMBLY (kernel 300002). Each immediate child of this
-                // Flat gets one input pin (pin i). Nested Flat children recurse via
-                // their own getter() call, so each level only ever sees its own arity.
-                //
-                // NOTE: `kind` is typically NOT a ValueStruct here, because
-                // `solve_local` builds Flat without calling `compile_ty` on the tuple
-                // (compile_ty todo!()s on Tuple).
+                // STRUCT_ASSEMBLY (kernel 300002). Pin layout, per the contract used
+                // by `Aggregate(Tuple, _)` (see commit b194d96):
+                //   - input pin 0 = struct_id selector (polymorphic ValueInt)
+                //   - input pins 1..N+1 = field values (one per tuple element)
+                //   - output pin 0 = the assembled struct (polymorphic ValueStruct)
+                // Nested Flat children recurse via their own getter() call, so each
+                // level only ever sees its own arity.
                 use crate::asset::node_graph::arithmetic::NODE_ASSEMBLE_STRUCT;
 
                 let mut node_kind = NODE_ASSEMBLE_STRUCT.clone();
-                // Set the struct_id selector. struct_id comes from the cached
-                // tuple_schemas in Compiler — but since Flat locals don't go through
-                // intern_tuple_schema, we don't have one. Use 0 as a placeholder;
-                // downstream readers must resolve it from the source place's type.
+                // struct_id 0 is a placeholder — Flat locals don't go through
+                // intern_tuple_schema, so downstream readers must resolve the
+                // struct_id from the source place's type.
+                let struct_id_selector: AnyValue = ValueInt(0).into();
+                let field_types = flat_child_kinds(&*kind, fields.len());
+                // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
+                // (empty) values_*, so resize both in lock-step when we resize the
+                // values vectors — selectors_out is otherwise still length 0 and
+                // panics the encoder.
+                let mut values_in_types = Vec::with_capacity(1 + field_types.len());
+                values_in_types.push(struct_id_selector);
+                values_in_types.extend(field_types.iter().cloned());
+                node_kind.values_in_types = values_in_types;
+                node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
                 node_kind.selectors_in[0] = Some(0);
-                // Per-child type vec: length = fields.len(). Leaf scalar types aren't
-                // carried in the LocalVar tree, so use a placeholder per child.
-                let field_types: Vec<AnyValue> = fields
-                    .iter()
-                    .map(|_| crate::asset::value::ValueBool::def() as AnyValue)
-                    .collect();
-                node_kind.values_in_types = field_types;
-                // Output type is `kind` itself (a struct, when used).
                 node_kind.values_out_types = vec![kind.clone()];
+                node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
+                node_kind.selectors_out[0] = Some(0);
                 let node_ref = graph.insert(node_kind.into());
-                // Wire each immediate child's getter to its input pin (pin i).
+                graph.set_value_in(Connection(node_ref, 0), ValueIn::value(ValueInt(0).into()));
+                // Each child's getter must produce the matching pin type. For a
+                // nested Flat, that's `field_types[i]`; for a leaf Basic, it's the
+                // node's declared value out (pin 1, by node_local convention).
                 for (i, field) in fields.iter().enumerate() {
-                    let leaf_value = field.getter(graph, crate::asset::value::ValueBool::def());
-                    graph.set_value_in(Connection(node_ref, i), leaf_value);
+                    let leaf_kind = match field {
+                        LocalVar::Basic(child_ref) => graph
+                            .get_node(*child_ref)
+                            .kind
+                            .values_out_types
+                            .get(1)
+                            .cloned()
+                            .expect("basic child node must have value output pin 1"),
+                        LocalVar::Struct { .. } => crate::asset::value::ValueBool::def(),
+                        LocalVar::Flat(_) => field_types[i].clone(),
+                    };
+                    let leaf_value = field.getter(graph, leaf_kind);
+                    graph.set_value_in(Connection(node_ref, i + 1), leaf_value);
                 }
                 ValueIn::link(Connection(node_ref, 0).into())
             }
@@ -132,38 +165,28 @@ impl LocalVar {
             },
             LocalVar::Struct { .. } => todo!(),
             LocalVar::Flat(fields) => {
-                // Insert STRUCT_SPLIT (kernel 300003): takes the struct value and produces
-                // one output pin per *immediate* child. Nested Flat children recurse via
-                // their own setter(), so each level only ever sees its own arity.
-                //
-                // As with `getter`, `kind` here is whatever `compile_ty` returned for the
-                // tuple place type. The struct-in pin takes `kind`; the per-child
-                // outputs use placeholder types (leaf scalar types are not carried in
-                // the LocalVar tree). Note:
-                // this produces a latent kernel_id mismatch in the recursive set_local
-                // path — the leaf's actual type (e.g. ValueInt) is not propagated, so
-                // set_local may pick a different kernel than the leaf's node_local.
-                // Acceptable for now: the Flat arms are dead code today (compile_assign
-                // walks projections to a Basic leaf before calling setter), but this
-                // must be revisited if/when whole-tuple moves become common. See
-                // follow-up issue "thread leaf kind through LocalVar".
+                // STRUCT_SPLIT (kernel 300003). Pin layout:
+                //   - input pin 0 = the struct value (polymorphic ValueStruct)
+                //   - output pins 0..N-1 = per-field values (one per tuple element)
+                // Pin 0 is dual-purpose: in is the struct, out is the first field.
+                // Nested Flat children recurse via their own setter(), so each
+                // level only ever sees its own arity.
                 use crate::asset::node_graph::arithmetic::NODE_SPLIT_STRUCT;
 
                 let mut node_kind = NODE_SPLIT_STRUCT.clone();
-                let field_types: Vec<AnyValue> = fields
-                    .iter()
-                    .map(|_| crate::asset::value::ValueBool::def() as AnyValue)
-                    .collect();
+                let field_types = flat_child_kinds(&*kind, fields.len());
                 node_kind.values_in_types = vec![kind.clone()];
                 node_kind.values_out_types = field_types.clone();
+                // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
+                // (empty) values_*, so resize both in lock-step (see getter).
+                node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
+                node_kind.selectors_in[0] = Some(0);
+                node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
                 let node_ref = graph.insert(node_kind.into());
-                // Wire the value to the struct input (pin 0).
                 graph.set_value_in(Connection(node_ref, 0), value);
-                // For each immediate child, recurse with its output pin (pin i).
                 let mut block = Block::nop(graph);
                 for (i, field) in fields.iter().enumerate() {
-                    let leaf_kind = field_types[i].clone();
-                    let block_for_field = field.setter(graph, leaf_kind, ValueIn::link(Connection(node_ref, i).into()));
+                    let block_for_field = field.setter(graph, field_types[i].clone(), ValueIn::link(Connection(node_ref, i).into()));
                     block.extend(graph, block_for_field);
                 }
                 block
