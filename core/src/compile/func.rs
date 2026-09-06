@@ -120,6 +120,46 @@ fn insert_struct_split(
     node_ref
 }
 
+/// Compare two struct-shaped values field-by-field, returning a bool `ValueIn`.
+/// Recursively handles nested tuples (when a field is itself a ValueStruct).
+/// Uses STRUCT_SPLIT to decompose both sides, `node_equal` for each leaf pair,
+/// and NODE_AND to fold the per-field bools.
+fn compare_tuple_values(
+    graph: &mut NodeGraph<impl NodeGraphExtra>,
+    lhs: ValueIn,
+    rhs: ValueIn,
+    struct_kind: &ValueStruct,
+) -> ValueIn {
+    let lhs_split = insert_struct_split(graph, struct_kind, lhs);
+    let rhs_split = insert_struct_split(graph, struct_kind, rhs);
+
+    let mut field_results: Vec<ValueIn> = Vec::with_capacity(struct_kind.fields.len());
+    for (i, field_kind) in struct_kind.fields.iter().enumerate() {
+        let lhs_field = ValueIn::link(Connection(lhs_split, i).into());
+        let rhs_field = ValueIn::link(Connection(rhs_split, i).into());
+        let field_eq = match field_kind.downcast_ref::<ValueStruct>() {
+            Ok(nested) => compare_tuple_values(graph, lhs_field, rhs_field, nested),
+            Err(_) => {
+                let eq_node = graph.insert(Node::new(node_equal(field_kind.clone())));
+                graph.set_value_in(Connection(eq_node, 0), lhs_field);
+                graph.set_value_in(Connection(eq_node, 1), rhs_field);
+                ValueIn::link(Connection(eq_node, 0).into())
+            }
+        };
+        field_results.push(field_eq);
+    }
+
+    // Fold with NODE_AND. Seed with the first result; AND each subsequent.
+    let mut combined = field_results[0].clone();
+    for next in &field_results[1..] {
+        let and_node = graph.insert(Node::new(NODE_AND.clone()));
+        graph.set_value_in(Connection(and_node, 0), combined);
+        graph.set_value_in(Connection(and_node, 1), next.clone());
+        combined = ValueIn::link(Connection(and_node, 0).into());
+    }
+    combined
+}
+
 impl LocalVar {
     pub fn getter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue) -> ValueIn {
         match self {
