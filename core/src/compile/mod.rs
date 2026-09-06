@@ -134,7 +134,8 @@ pub(crate) struct CompilingFn<'tcx, 'a> {
     pub compiler: &'a mut Compiler<'tcx>,
     pub graph: &'a mut NodeGraph<NodeGraphComposite>,
     pub body: &'a Body<'tcx>,
-    pub locals: &'a IndexVec<Local, NodeRef>,
+    pub locals: &'a Vec<NodeRef>,
+    pub local_ranges: &'a IndexVec<Local, std::ops::Range<usize>>,
 }
 impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -423,10 +424,13 @@ impl<'tcx> Compiler<'tcx> {
         let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
         let body = self.tcx.instance_mir(func.def);
         graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
-        let mut locals = IndexVec::<Local, NodeRef>::new(); // TODO: adapt for struct list and map
+        let mut locals: Vec<NodeRef> = Vec::new();
+        let mut local_ranges: IndexVec<Local, std::ops::Range<usize>> = IndexVec::new();
         for x in &body.local_decls {
+            let start = locals.len();
             if is_unit(x.ty) {
                 locals.push(NodeRef::from(usize::MAX));
+                local_ranges.push(start..locals.len());
                 continue;
             }
             let kind = self.compile_ty(x.source_info.span, self.monomorphize(func, x.ty))?;
@@ -437,6 +441,7 @@ impl<'tcx> Compiler<'tcx> {
             // compile_operand_projection (via NodeRef::MAX pin access).
             if matches!(kind.get_server_type(), ServerTypeId::SStruct) {
                 locals.push(NodeRef::from(usize::MAX));
+                local_ranges.push(start..locals.len());
                 continue;
             }
             let local = graph.insert(Node::new(node_local(kind.clone())));
@@ -444,6 +449,7 @@ impl<'tcx> Compiler<'tcx> {
                 graph.set_default(Connection(local, 0), kind);
             }
             locals.push(local);
+            local_ranges.push(start..locals.len());
         }
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
         for (k, result) in {
@@ -453,6 +459,7 @@ impl<'tcx> Compiler<'tcx> {
                 graph: &mut graph,
                 body,
                 locals: &locals,
+                local_ranges: &local_ranges,
             };
             for x in body.basic_blocks.iter() {
                 blocks.push(compiling.compile_basic_block(&x.statements)?);
