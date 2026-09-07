@@ -18,12 +18,14 @@ impl<'a, E: NodeGraphExtra> Optimizer<'a, E> {
     }
 
     pub fn optimize(&mut self) {
-        self.eliminate_solos();
+        while self.eliminate_solos() {
+        }
     }
 
-    pub fn eliminate_solos(&mut self) {
+    pub fn eliminate_solos(&mut self) -> bool {
         let mut queue: VecDeque<NodeRef> = self.graph.get_nodes().into();
         let mut set: HashSet<NodeRef> = queue.iter().copied().collect();
+        let mut result = false;
         while let Some(node) = queue.pop_front() {
             if !set.remove(&node) {
                 unreachable!()
@@ -32,12 +34,14 @@ impl<'a, E: NodeGraphExtra> Optimizer<'a, E> {
             if self.eliminate_solo(node).is_some() {
                 continue;
             }
+            result = true;
             for x in neighbors {
                 if set.insert(x) {
                     queue.push_back(x);
                 }
             }
         }
+        result
     }
 
     pub fn eliminate_solo(&mut self, node: NodeRef) -> Option<()> {
