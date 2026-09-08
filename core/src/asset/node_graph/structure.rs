@@ -3,14 +3,21 @@
 //! 分层设计:NodeGraph(深度封装,INode 节点,连线单向)→ RawNodeGraph(proto 的
 //! 简单封装,包含全部信息)→ proto。`RawNodeGraph::encode` 把图编码为资产。
 
-use crate::asset::{Asset, Side};
 use crate::asset::generated::asset_data::Payload;
+use crate::asset::generated::identifier::{AssetKind, Category};
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
-use crate::asset::value::{
-    AnyValue, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueVector,
-};
+use crate::asset::node_graph::{NodeKind, PinType};
+use crate::asset::node_graph::composite::{encode_node_decl, node_decl, NodeGraphDecl};
+use crate::asset::value::{AnyValue, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct, ValueVector};
+use crate::asset::{Asset, Side};
+use std::collections::HashMap;
 
+
+/// 拼装结构体: 字段值 → 结构体
+pub fn node_assemble_struct(st: ValueStruct) -> NodeKind {
+    node_decl(st.struct_id + StructureDefinition::OFFSET_ASSEMBLE, 0, 0, st.fields.clone(), vec![st.into()])
+}
 
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
 pub struct StructField {
@@ -104,6 +111,10 @@ pub struct StructureDefinition {
 }
 
 impl StructureDefinition {
+    pub const OFFSET_ASSEMBLE: i64 = 0x100000;
+    pub const OFFSET_DESTRUCT: i64 = Self::OFFSET_ASSEMBLE * 2;
+    pub const OFFSET_MODIFY: i64 = Self::OFFSET_ASSEMBLE * 3;
+
     /// 组装 proto `Field`(generic_field 与 concrete_field 相同,见 proto 注释)。
     /// `index` 为 Field.index,真实导出里它等于 structVersion。
     fn encode_field(&self, id: i64, index: i32) -> structure_definition_data::Field {
@@ -116,22 +127,52 @@ impl StructureDefinition {
             index,
         }
     }
+
+    fn encode_decl_assemble(&self, id: i64) -> AssetData {
+        let mut pins = HashMap::default();
+        pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
+        pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(id, vec![]).into()), PinSignature {
+            kind: pin_signature::Kind::StructRef as i32,
+            index: 0,
+            source_ref: None,
+        }.into())]);
+        encode_node_decl(id + Self::OFFSET_ASSEMBLE, &NodeGraphDecl {
+            name: "Assemble Struct".to_string(),
+            description: "".to_string(),
+            pins,
+            implementation: node_interface::Implementation {
+                category: node_interface::implementation::Category::StructAssembly as i32,
+                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id }).into(),
+            },
+            template_root: node_interface::TemplateRoot::Struct,
+            template_sub: node_interface::TemplateSub::StructSub,
+        }, vec![Identifier {
+            source: 0,
+            category: Category::Default as i32,
+            kind: AssetKind::Structure as i32,
+            guid: id,
+            runtime_id: 0,
+        }])
+    }
 }
 
 impl Asset for StructureDefinition {
     fn encode(&self, _side: Side, id: i64) -> Vec<AssetData> {
         // Field.index 对齐 structVersion(真实导出中二者相等)
         let field = self.encode_field(id, self.version);
-        vec![AssetData {
+        let mut result = vec![
+            self.encode_decl_assemble(id),
+        ];
+        result.push(AssetData {
             // 对齐真实导出:source_domain 省略(0)、runtime_id 省略(0)
             id: Some(Identifier {
                 source: 0,
-                category: identifier::Category::Default as i32,
-                kind: identifier::AssetKind::Structure as i32,
+                category: Category::Default as i32,
+                kind: AssetKind::Structure as i32,
                 guid: id,
                 runtime_id: 0,
             }),
-            references: vec![],
+            references: result.iter().map(|x: &AssetData| x.id.unwrap()).collect(),
             name: self.name.clone(),
             r#type: asset_data::Type::Structure as i32,
             payload: Some(Payload::StructData(StructureDefinitionContainer {
@@ -140,10 +181,10 @@ impl Asset for StructureDefinition {
                     concrete_field: Some(field),
                     struct_version: self.version,
                     item_count: self.fields.len() as i32,
-                    // 参考真实导出没有字段 5(unknown1),写 0 即省略
-                    unknown1: 0,
+                    unknown1: 1,
                 }),
             })),
-        }]
+        });
+        result
     }
 }

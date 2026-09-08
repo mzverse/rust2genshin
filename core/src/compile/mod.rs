@@ -202,15 +202,9 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
             TyKind::Tuple(tys) => {
-                // Empty tuples are unreachable here — `is_unit` filters them upstream.
                 if tys.is_empty() {
-                    return Ok(ValueBool::def());
+                    panic!();
                 }
-                // Non-empty tuples get a real SStruct schema: each unique tuple
-                // shape is registered once and the asset_id is cached. The
-                // `kind` flows into STRUCT_ASSEMBLY/STRUCT_SPLIT, where the
-                // struct_id drives the polymorphic selector pin (and the
-                // value-side struct_id in pin wiring for STRUCT_SPLIT).
                 let (struct_id, field_kinds) = self.intern_tuple_schema(span, ty)?;
                 ValueStruct::new(struct_id, field_kinds).into()
             }

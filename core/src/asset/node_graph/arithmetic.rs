@@ -650,12 +650,6 @@ pub static NODE_ASSEMBLE_DICTIONARY: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::expr(1788, vec![ValueInt::def(), ValueInt::def()], ValueDict::new(ValueInt::default(), ValueInt::default()).into())
 });
 
-/// 拼装结构体(ID 300002):字段值 → 结构体
-pub static NODE_ASSEMBLE_STRUCT: LazyLock<NodeKind> = LazyLock::new(|| {
-    // 字段值输入动态添加,按结构体定义顺序
-    NodeKind::expr(300002, vec![], ValueStruct::new(0, vec![]).into())
-});
-
 /// 拆分结构体(ID 300003):结构体 → 字段值(动态)
 pub static NODE_SPLIT_STRUCT: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::new(300003, 0, 0, vec![ValueStruct::new(0, vec![]).into()], vec![])

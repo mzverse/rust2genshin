@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
+use crate::asset::generated::type_definition::TypeDetail;
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -15,26 +16,30 @@ pub trait CloneValue {
     fn clone(&self) -> AnyValue;
 }
 pub trait Value: Any + CloneValue + Debug + Send + Sync {
+    fn encode_type(&self, side: Side) -> TypeDetail {
+        match side {
+            Side::Server => TypeDetail::ServerSide(type_definition::ServerType {
+                type_tag: self.get_server_type() as i32,
+                r#impl: 0,
+                schema: self.encode_schema(),
+            }),
+            Side::Client => TypeDetail::ClientSide(type_definition::ClientType {
+                type_tag: self.get_client_type() as i32,
+            }),
+        }
+    }
+
     fn encode(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
             widget: self.get_widget_type() as i32,
             is_set,
-            r#type: Some(TypeDefinition {
+            r#type: TypeDefinition {
                 backend: match side {
                     Side::Server => type_definition::Backend::Server as i32,
                     Side::Client => type_definition::Backend::Client as i32,
                 },
-                type_detail: Some(match side {
-                    Side::Server => type_definition::TypeDetail::ServerSide(type_definition::ServerType {
-                        type_tag: self.get_server_type() as i32,
-                        r#impl: 0,
-                        schema: self.encode_schema(),
-                    }),
-                    Side::Client => type_definition::TypeDetail::ClientSide(type_definition::ClientType {
-                        type_tag: self.get_client_type() as i32,
-                    }),
-                }),
-            }),
+                type_detail: self.encode_type(side).into(),
+            }.into(),
             tracker: None,
             storage: if is_set { self.encode_storage(side) } else { None },
         }
