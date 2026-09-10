@@ -1,10 +1,11 @@
 use crate::asset::Side;
-use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, type_definition, typed_value, vec3f};
+use crate::asset::generated::type_definition::TypeDetail;
+use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, TypeDefinition, TypedValue, Vec3f, pin_interface, type_definition, typed_value, vec3f};
+use crate::asset::structure::ValueStruct;
 use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
-use crate::asset::generated::type_definition::TypeDetail;
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -684,68 +685,19 @@ impl Value for ValueDict {
         Some(type_definition::server_type::Schema::MapBinding(type_definition::MapKeyValueBinding {
             key_type: self.key_type.get_server_type() as i32,
             value_type: self.value_type.get_server_type() as i32,
-            value_struct_id: if let Ok(value) = self.value_type.as_ref().downcast_ref::<ValueStruct>() {
-                Some(value.struct_id)
-            } else {
-                None
-            },
+            value_struct_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
         }))
     }
     fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
         Some(pin_interface::type_info::Detail::MapType(pin_interface::type_info::MapType {
             key: self.key_type.get_server_type() as i32,
             value: self.value_type.get_server_type() as i32,
-            struct_id: if let Ok(value) = self.value_type.as_ref().downcast_ref::<ValueStruct>() {
-                Some(value.struct_id)
-            } else {
-                None
-            },
+            struct_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
         }))
     }
     fn is_instance(&self, value: &Box<dyn Value>) -> bool {
         matches!(value.downcast_ref::<ValueDict>(), Ok(value)
             if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
-    }
-}
-
-// ---------- 结构体值(SStruct=25,仅服务器) ----------
-
-/// 结构体值(SStruct=25;客户端不支持 Struct)。
-/// `struct_id` 指向 StructureDefinition 的 schema_id;`fields` 为字段值,
-/// 按结构体定义顺序排列。
-#[derive(Clone, Debug)]
-pub struct ValueStruct {
-    pub struct_id: i64,
-    pub fields: Vec<AnyValue>,
-}
-impl ValueStruct {
-    pub fn new(struct_id: i64, fields: Vec<AnyValue>) -> Self {
-        Self { struct_id, fields }
-    }
-}
-impl Value for ValueStruct {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SStruct
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValStruct(StructStorage {
-            field: self.fields.iter().map(|f| f.encode(true, side)).collect(),
-        }).into()
-    }
-    fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
-        Some(type_definition::server_type::Schema::StructRef(type_definition::StructReference {
-            schema_id: self.struct_id,
-        }))
-    }
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.struct_id }),)
-    }
-
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
-        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.struct_id == self.struct_id)
     }
 }
 
@@ -805,27 +757,5 @@ mod tests {
         assert_eq!(ValueFactionList(vec![]).get_client_type(), ClientTypeId::ClientUnknown);
         assert_eq!(ValueDict::new(ValueString::default(), ValueString::default()).get_client_type(), ClientTypeId::ClientUnknown);
         assert_eq!(ValueLocalVarRef(0).get_client_type(), ClientTypeId::ClientUnknown);
-    }
-
-    #[test]
-    fn struct_value_encodes() {
-        assert_eq!(ValueStruct::new(100, vec![]).get_server_type(), ServerTypeId::SStruct);
-        assert_eq!(ValueStruct::new(100, vec![]).get_client_type(), ClientTypeId::ClientUnknown);
-
-        let s = ValueStruct::new(100, vec![Box::new(ValueInt(10)) as AnyValue]).encode(true, Side::Server);
-        let Some(typed_value::Storage::ValStruct(st)) = s.storage else {
-            panic!("not a struct");
-        };
-        assert_eq!(st.field.len(), 1);
-        assert!(matches!(st.field[0].storage, Some(typed_value::Storage::ValInt(_))));
-
-        // schema 携带 struct_id(StructReference)
-        let Some(TypeDefinition { type_detail: Some(type_definition::TypeDetail::ServerSide(ty)), .. }) = s.r#type else {
-            panic!("no server type");
-        };
-        assert!(matches!(
-            ty.schema,
-            Some(type_definition::server_type::Schema::StructRef(ref r)) if r.schema_id == 100
-        ));
     }
 }

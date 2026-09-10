@@ -29,7 +29,7 @@ This applies machine-applicable fixes for:
 - `match_result_ok` (6) — `Some(x).ok()` → `Some(x)`
 - `collapsible_if` (2) — combine nested `if` blocks with `&&`
 - `get_first` (1) — `data.get(0)` → `data.first()`
-- `new_without_default` (1) — add `Default` impl to `NodeGraphComposite`
+- `new_without_default` (1) — add `Default` impl to `CompositeNodeGraph`
 - `clone_on_copy` (1) — remove `.clone()` on Copy types
 - `manual_map` (1) — refactor to `Option::map`
 - Many unused imports (auto-removed)

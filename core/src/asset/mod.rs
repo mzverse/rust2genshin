@@ -10,12 +10,26 @@ pub mod generated {
 
 pub mod node_graph;
 pub mod value;
+pub mod structure;
 
+pub use generated::Identifier;
+pub use asset_bundle_data::Mode as GameMode;
+
+use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Formatter, Write};
 use generated::*;
 use prost::Message;
-use slab::Slab;
-use std::ops::Sub;
 use std::path::Path;
+use tap::Tap;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum FileType {
+    Project = 1, // .gip
+    Level = 2, // .gil
+    AssetBundle = 3, // .gia
+    Runtime = 4, // ?
+}
 
 #[derive(Clone, Copy)]
 pub enum Side {
@@ -23,63 +37,102 @@ pub enum Side {
     Client,
 }
 
-pub trait Asset: 'static {
-    fn encode(&self, side: Side, id: i64) -> Vec<AssetData>;
+pub struct AssetRef<T: Asset + ?Sized> {
+    root: Identifier,
+    data: T::RefData,
 }
-impl<T: Asset> From<T> for Box<dyn Asset> {
-    fn from(value: T) -> Self {
-        Box::new(value)
+impl<T: Asset> AssetRef<T> {
+    pub fn new(root: Identifier, extra: T::RefData) -> Self {
+        Self {
+            root,
+            data: extra,
+        }
     }
 }
-
-#[repr(u32)]
-#[derive(Clone, Copy)]
-pub enum FileType {
-    Project = 1, // .gip
-    Level = 2, // 
-    AssetBundle = 3, // .gia
-    Runtime = 4, //
+impl<T: Asset> Clone for AssetRef<T>
+where
+    T::RefData: Clone,
+{
+    fn clone(&self) -> Self {
+        Self::new(self.root, self.data.clone())
+    }
 }
-pub use asset_bundle_data::Mode as GameMode;
+impl<T: Asset> Debug for AssetRef<T>
+where
+    T::RefData: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.root.fmt(f)?;
+        f.write_char(' ')?;
+        self.data.fmt(f)?;
+        Ok(())
+    }
+}
+impl<T: Asset> PartialEq for AssetRef<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+    }
+}
+impl<T: Asset> Eq for AssetRef<T> {
+}
+
+pub trait Asset {
+    type RefData: Sized;
+
+    #[must_use]
+    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self>;
+}
 
 pub struct AssetBundle {
-    pub(crate) mode: GameMode,
-    pub(crate) assets: Slab<Box<dyn Asset>>,
-    pub(crate) display: Vec<i64>,
+    pub mode: GameMode,
+    pub allocators: HashMap<identifier::Category, i64>,
+    pub assets: Vec<AssetData>,
+    pub primary: HashSet<Identifier>,
 }
 
 const ENGINE_VERSION: &str = "7.0.0";
 
 impl AssetBundle {
-    pub const ID_BEGIN: i64 = 0x40000000;
-
     pub fn new(mode: GameMode) -> Self {
-        let assets = Slab::new();
+        let mut allocators = HashMap::default();
+        allocators.insert(identifier::Category::ServerNodeGraph, 0x40000001);
+        allocators.insert(identifier::Category::Default, 0x40400001);
+        allocators.insert(identifier::Category::NodeDecl, 0x60000001);
         Self {
             mode,
-            assets,
-            display: Vec::new(),
+            allocators,
+            assets: Default::default(),
+            primary: Default::default(),
         }
     }
 
-    pub fn insert(&mut self, asset: Box<dyn Asset>) -> i64 {
-        Self::ID_BEGIN + self.assets.insert(asset) as i64
+    pub fn alloc(&mut self, cat: identifier::Category, kind: identifier::AssetKind) -> Identifier {
+        let allocator = self.allocators.get_mut(&cat).unwrap_or_else(|| panic!("{cat:?}"));
+        Identifier {
+            source: 0,
+            category: cat as i32,
+            kind: kind as i32,
+            guid: *allocator,
+            runtime_id: 0,
+        }.tap(|_| *allocator += 1)
     }
 
-    pub fn remove(&mut self, id: i64) -> Box<dyn Asset> {
-        self.assets.remove(id.sub(Self::ID_BEGIN) as usize)
+    pub fn push(&mut self, asset: AssetData) {
+        self.assets.push(asset);
     }
 
-    pub fn encode(&self) -> AssetBundleData {
+    pub fn set_primary(&mut self, r: &AssetRef<impl Asset + ?Sized>) {
+        self.primary.insert(r.root);
+    }
+
+    pub fn encode(self) -> AssetBundleData {
         let mut primary = Vec::new();
         let mut dependencies = Vec::new();
-        for (i, asset) in &self.assets {
-            for data in asset.encode(Side::Server, Self::ID_BEGIN + i as i64) {
-                if self.display.contains(&data.id.unwrap().guid) {
-                    primary.push(data);
-                } else {
-                    dependencies.push(data);
-                }
+        for asset in self.assets {
+            if self.primary.contains(&asset.id.unwrap()) {
+                primary.push(asset);
+            } else {
+                dependencies.push(asset);
             }
         }
         AssetBundleData {
@@ -100,7 +153,7 @@ impl AssetBundle {
     /// every successful build. External modifications (different bytes)
     /// are still detected — they advance the mtime and force one extra
     /// rebuild to overwrite the externally written content.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+    pub fn save(self, path: &Path) -> std::io::Result<()> {
         let data = self.encode().encode_to_vec();
         // GIA 文件头:5 × u32 大端,共 20 字节
         // (权威格式见 GIA 项目 utils/protobuf/decode.ts 的 unwrap_gia/wrap_gia):

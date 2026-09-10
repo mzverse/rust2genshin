@@ -1,8 +1,9 @@
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{Connection, Link, Node, NodeGraph, NodeGraphClass, NodeGraphComposite, NodeGraphExtra, NodeGraphStatic, NodeRef};
-use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct};
-use crate::asset::{AssetBundle, Side};
+use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
+use crate::asset::structure::{StructureDefinition, ValueStruct};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
+use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use crate::compile::func::{CompilingFn, CompilingLocals, LocalVar, LocalVarKind};
 use crate::compile::optimize::Optimizer;
 use proc_macro2::TokenStream;
@@ -104,12 +105,12 @@ impl Block {
             end: Connection(node, out),
         }
     }
-    pub fn nop(graph: &mut NodeGraph<impl NodeGraphExtra>) -> Self {
+    pub fn nop(graph: &mut NodeGraph) -> Self {
         let node = graph.insert(Node::new(NODE_IF.clone()));
         graph.set_default(Connection(node, 0), ValueBool(true).into());
         Self::singleton(node, 0)
     }
-    pub fn extend(&mut self, graph: &mut NodeGraph<impl NodeGraphExtra>, other: Block) {
+    pub fn extend(&mut self, graph: &mut NodeGraph, other: Block) {
         graph.connect_control(self.end, other.begin);
         *self = Self {
             begin: self.begin,
@@ -206,7 +207,7 @@ impl<'tcx> Compiler<'tcx> {
                     panic!();
                 }
                 let (struct_id, field_kinds) = self.intern_tuple_schema(span, ty)?;
-                ValueStruct::new(struct_id, field_kinds).into()
+                ValueStruct::new(struct_id.clone(), field_kinds).into()
             }
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
@@ -236,7 +237,7 @@ impl<'tcx> Compiler<'tcx> {
     /// engine type share a schema. The cache key is the string
     /// representation of those canonicalized kinds — independent of MIR type
     /// identity.
-    fn intern_tuple_schema(&mut self, span: Span, ty: Ty) -> Result<(i64, Vec<AnyValue>)> {
+    fn intern_tuple_schema(&mut self, span: Span, ty: Ty) -> Result<(&AssetRef<StructureDefinition>, Vec<AnyValue>)> {
         let TyKind::Tuple(elem_tys) = ty.kind() else {
             return self.span_err(span, "intern_tuple_schema called with non-tuple type");
         };
@@ -250,11 +251,11 @@ impl<'tcx> Compiler<'tcx> {
         let key = TupleKey(format!("[{}]", elem_kinds.iter()
             .map(|k| format!("{k:?}"))
             .collect::<Vec<_>>().join(", ")));
-        if let Some(&id) = self.tuple_schemas.get(&key) {
+        if let Some(id) = self.tuple_schemas.get(&key) {
             return Ok((id, elem_kinds));
         }
         // Build the StructureDefinition and insert it as an asset.
-        use crate::asset::node_graph::structure::{StructField, StructureDefinition};
+        use crate::asset::structure::{StructField, StructureDefinition};
         let fields: Vec<StructField> = elem_kinds.iter().enumerate()
             .map(|(i, k)| StructField {
                 name: format!("field_{i}"),
@@ -271,9 +272,8 @@ impl<'tcx> Compiler<'tcx> {
             version: 1,
             fields,
         };
-        let id = self.assets.insert(Box::new(def));
-        self.tuple_schemas.insert(key, id);
-        Ok((id, elem_kinds))
+        let id = def.apply(&mut self.assets);
+        Ok((self.tuple_schemas.entry(key).or_insert(id), elem_kinds))
     }
 }
 
@@ -285,7 +285,7 @@ const LIB_NAME: &str = "rust2genshin_lib";
 /// → `ValueInt`, etc.), so types that map to the same engine type share a
 /// schema.
 #[derive(Clone, Eq, PartialEq, Hash)]
-pub(crate) struct TupleKey(pub(crate) String);
+pub struct TupleKey(pub String);
 
 impl core::fmt::Debug for TupleKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -293,13 +293,13 @@ impl core::fmt::Debug for TupleKey {
     }
 }
 
-pub(crate) struct Compiler<'tcx> {
+pub struct Compiler<'tcx> {
     tcx: TyCtxt<'tcx>,
     lib: CrateNum,
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
-    compiled: HashMap<Instance<'tcx>, i64>,
-    tuple_schemas: HashMap<TupleKey, i64>,
+    compiled: HashMap<Instance<'tcx>, AssetRef<CompositeNodeGraph>>,
+    tuple_schemas: HashMap<TupleKey, AssetRef<StructureDefinition>>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -327,7 +327,7 @@ impl<'tcx> Compiler<'tcx> {
             tuple_schemas: HashMap::new(),
         })
     }
-    fn save(&self, out_dir: &Path) {
+    fn save(self, out_dir: &Path) {
         // eprintln!("{:?}", self.tcx.output_filenames(()).with_extension("gia")); // TODO
         let path = out_dir.join(format!(
             "{}.gia",
@@ -371,7 +371,7 @@ impl<'tcx> Compiler<'tcx> {
                 // TODO: manage entrypoint (event_handler)
             }
         }
-        let main = NodeGraph::<Vec<NodeGraphStatic>>::new(NodeGraphClass::Entity, self.tcx.crate_name(LOCAL_CRATE).to_string(), Default::default());
+        let main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
         // for (i, _) in &self.assets.assets {
         //     main.insert(
         //         NodeComposite {
@@ -385,39 +385,38 @@ impl<'tcx> Compiler<'tcx> {
         //     );
         // }
         // TODO
-        if !main.is_empty() {
-            let main_id = self.assets.insert(main.into());
-            self.assets.display.push(main_id);
+        if !main.graph.is_empty() {
+            let main = main.apply(&mut self.assets);
+            self.assets.set_primary(&main);
         }
-        if self.assets.display.is_empty() {
+        if self.assets.primary.is_empty() {
             self.tcx.dcx().warn("No primary assets, may be not able to import");
         }
         Ok(())
     }
 
-    pub(crate) fn touch_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
+    pub fn touch_fn(&mut self, func: Instance<'tcx>) -> Result<&AssetRef<CompositeNodeGraph>> {
         if let Some(asset_id) = self.compiled.get(&func) {
-            return Ok(*asset_id);
+            return Ok(asset_id);
         }
         if !self.compiling.insert(func) {
             return self.span_err(func.default_span(self.tcx), "Recursive call");
         }
         let asset_id = self.compile_fn(func)?;
         self.compiling.remove(&func);
-        self.compiled.insert(func, asset_id);
-        Ok(asset_id)
+        Ok(self.compiled.entry(func).or_insert(asset_id))
     }
 
-    fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<i64> {
+    fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<AssetRef<CompositeNodeGraph>> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
-        let mut graph = NodeGraph::new(NodeGraphClass::Entity, self.tcx.symbol_name(func).to_string(), NodeGraphComposite::new());
+        let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.symbol_name(func).to_string()));
         let body = self.tcx.instance_mir(func.def);
-        graph.extra.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
+        graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, LocalVar>::new(); // TODO: adapt for struct, struct list and map
         let args = self.tcx.fn_arg_idents(func.def_id());
         let mut compiling_locals = CompilingLocals {
             compiler: self,
-            block: Block::nop(&mut graph),
+            block: Block::nop(&mut graph.graph),
             graph: &mut graph,
             a: 0,
             r: 0,
@@ -433,7 +432,7 @@ impl<'tcx> Compiler<'tcx> {
         }
         let CompilingLocals { mut block, .. } = compiling_locals;
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
-        graph.export_control_in(block.begin, 0);
+        graph.graph.export_control_in(block.begin, 0);
         for (k, result) in {
             let mut compiling = CompilingFn {
                 tcx: self.tcx,
@@ -448,22 +447,22 @@ impl<'tcx> Compiler<'tcx> {
             }
             body.basic_blocks.iter_enumerated().map(|(k, v)| (k, compiling.compile_terminator(&blocks, v.terminator.as_ref().unwrap()))).collect::<Vec<_>>()
         } {
-            graph.connect_control(blocks.get(k).unwrap().end, result?);
+            graph.graph.connect_control(blocks.get(k).unwrap().end, result?);
         }
-        block.extend(&mut graph, blocks.get(mir::START_BLOCK).unwrap().clone());
-        let mut optimizer = Optimizer::new(&mut graph);
+        block.extend(&mut graph.graph, blocks.get(mir::START_BLOCK).unwrap().clone());
+        let mut optimizer = Optimizer::new(&mut graph.graph);
         optimizer.optimize();
         match optimizer.proxies.as_slice() {
             [] => {
-                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
-                graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
+                graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
+                graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());
             },
             [(from, to)] if *from == 0 && *to == 0 => (),
             _ => panic!(),
         }
-        let asset_id = self.assets.insert(graph.into());
+        let asset_id = graph.apply(&mut self.assets);
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
-            self.assets.display.push(asset_id + NodeGraphComposite::DECL_OFFSET);
+            self.assets.set_primary(&asset_id);
         }
         Ok(asset_id)
     }

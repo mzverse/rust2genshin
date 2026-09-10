@@ -22,6 +22,7 @@ pub static NODE_BREAK: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 分支数量随 cases 动态变化;此处 controls_out 按 1 个 default 分支声明,
 /// 编译期按需扩展。
 pub fn node_switch(ty: AnyValue, cases: usize) -> NodeKind {
+    assert!(cases <= 10);
     let mut result = NodeKind::new(3, 1, 1 + cases, vec![ty.clone(), ty.clone()], vec![]);
     let selected;
     if ty.is::<ValueInt>() {

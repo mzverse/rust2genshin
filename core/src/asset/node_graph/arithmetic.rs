@@ -9,7 +9,7 @@ use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum, ValueFloat,
-    ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueStruct, ValueVector,
+    ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueVector,
 };
 use std::sync::LazyLock;
 
@@ -648,9 +648,4 @@ pub static NODE_CREATE_DICTIONARY: LazyLock<NodeKind> = LazyLock::new(|| {
 pub static NODE_ASSEMBLE_DICTIONARY: LazyLock<NodeKind> = LazyLock::new(|| {
     // 键值对动态添加,这里按 1 对占位
     NodeKind::expr(1788, vec![ValueInt::def(), ValueInt::def()], ValueDict::new(ValueInt::default(), ValueInt::default()).into())
-});
-
-/// 拆分结构体(ID 300003):结构体 → 字段值(动态)
-pub static NODE_SPLIT_STRUCT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(300003, 0, 0, vec![ValueStruct::new(0, vec![]).into()], vec![])
 });

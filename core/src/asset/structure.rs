@@ -7,16 +7,20 @@ use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::identifier::{AssetKind, Category};
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
+use crate::asset::node_graph::decl::NodeDecl;
 use crate::asset::node_graph::{NodeKind, PinType};
-use crate::asset::node_graph::composite::{encode_node_decl, node_decl, NodeGraphDecl};
-use crate::asset::value::{AnyValue, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueStruct, ValueVector};
-use crate::asset::{Asset, Side};
+use crate::asset::value::{AnyValue, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueVector};
+use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use std::collections::HashMap;
-
+use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
-pub fn node_assemble_struct(st: ValueStruct) -> NodeKind {
-    node_decl(st.struct_id + StructureDefinition::OFFSET_ASSEMBLE, 0, 0, st.fields.clone(), vec![st.into()])
+pub fn node_assemble_struct(st: &ValueStruct) -> NodeKind {
+    st.st.data.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
+}
+
+pub fn node_destruct_struct(st: &ValueStruct) -> NodeKind {
+    st.st.data.get(&StructureNodeDecl::DestructServer).unwrap().data.clone()
 }
 
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
@@ -111,10 +115,6 @@ pub struct StructureDefinition {
 }
 
 impl StructureDefinition {
-    pub const OFFSET_ASSEMBLE: i64 = 0x100000;
-    pub const OFFSET_DESTRUCT: i64 = Self::OFFSET_ASSEMBLE * 2;
-    pub const OFFSET_MODIFY: i64 = Self::OFFSET_ASSEMBLE * 3;
-
     /// 组装 proto `Field`(generic_field 与 concrete_field 相同,见 proto 注释)。
     /// `index` 为 Field.index,真实导出里它等于 structVersion。
     fn encode_field(&self, id: i64, index: i32) -> structure_definition_data::Field {
@@ -127,53 +127,100 @@ impl StructureDefinition {
             index,
         }
     }
+}
 
-    fn encode_decl_assemble(&self, id: i64) -> AssetData {
-        let mut pins = HashMap::default();
-        pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
-        pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(id, vec![]).into()), PinSignature {
-            kind: pin_signature::Kind::StructRef as i32,
-            index: 0,
-            source_ref: None,
-        }.into())]);
-        encode_node_decl(id + Self::OFFSET_ASSEMBLE, &NodeGraphDecl {
-            name: "Assemble Struct".to_string(),
-            description: "".to_string(),
-            pins,
-            implementation: node_interface::Implementation {
-                category: node_interface::implementation::Category::StructAssembly as i32,
-                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id }).into(),
-            },
-            template_root: node_interface::TemplateRoot::Struct,
-            template_sub: node_interface::TemplateSub::StructSub,
-        }, vec![Identifier {
-            source: 0,
-            category: Category::Default as i32,
-            kind: AssetKind::Structure as i32,
-            guid: id,
-            runtime_id: 0,
-        }])
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
+pub enum StructureNodeDecl {
+    AssembleServer,
+    DestructServer,
+}
+
+// ---------- 结构体值(SStruct=25,仅服务器) ----------
+
+/// 结构体值(SStruct=25;客户端不支持 Struct)。
+/// `struct_id` 指向 StructureDefinition 的 schema_id;`fields` 为字段值,
+/// 按结构体定义顺序排列。
+#[derive(Clone, Debug)]
+pub struct ValueStruct {
+    pub st: AssetRef<StructureDefinition>,
+    pub fields: Vec<AnyValue>,
+}
+impl ValueStruct {
+    pub fn new(r: AssetRef<StructureDefinition>, fields: Vec<AnyValue>) -> Self {
+        Self { st: r, fields }
+    }
+}
+impl Value for ValueStruct {
+    fn get_server_type(&self) -> ServerTypeId {
+        ServerTypeId::SStruct
+    }
+    fn get_client_type(&self) -> ClientTypeId {
+        ClientTypeId::ClientUnknown
+    }
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValStruct(StructStorage {
+            field: self.fields.iter().map(|f| f.encode(true, side)).collect(),
+        }).into()
+    }
+    fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
+        Some(type_definition::server_type::Schema::StructRef(type_definition::StructReference {
+            schema_id: self.st.root.guid,
+        }))
+    }
+    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
+        Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.st.root.guid }),)
+    }
+
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.st == self.st)
     }
 }
 
 impl Asset for StructureDefinition {
-    fn encode(&self, _side: Side, id: i64) -> Vec<AssetData> {
+    type RefData = HashMap<StructureNodeDecl, AssetRef<NodeDecl>>;
+
+    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
+        let mut result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), Default::default());
+        for (k, name, imp, pins) in [
+            (StructureNodeDecl::AssembleServer, "Assemble Struct Server", node_interface::Implementation {
+                category: node_interface::implementation::Category::StructAssembly as i32,
+                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+            }, HashMap::default().tap_mut(|pins| {
+                pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
+                pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
+                    kind: pin_signature::Kind::StructRef as i32,
+                    index: 0,
+                    source_ref: None,
+                }.into())]);
+            })),
+            (StructureNodeDecl::DestructServer, "Destruct Struct Server", node_interface::Implementation { // TODO
+                category: node_interface::implementation::Category::StructAssembly as i32,
+                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+            }, HashMap::default().tap_mut(|pins| {
+                pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
+                pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
+                    kind: pin_signature::Kind::StructRef as i32,
+                    index: 0,
+                    source_ref: None,
+                }.into())]);
+            })),
+        ] {
+            result.data.insert(k, NodeDecl {
+                name: name.to_string(),
+                description: "".to_string(),
+                pins,
+                implementation: imp,
+                template_root: node_interface::TemplateRoot::Struct,
+                template_sub: node_interface::TemplateSub::StructSub,
+                references: vec![result.root],
+            }.apply(bundle));
+        }
         // Field.index 对齐 structVersion(真实导出中二者相等)
-        let field = self.encode_field(id, self.version);
-        let mut result = vec![
-            self.encode_decl_assemble(id),
-        ];
-        result.push(AssetData {
-            // 对齐真实导出:source_domain 省略(0)、runtime_id 省略(0)
-            id: Some(Identifier {
-                source: 0,
-                category: Category::Default as i32,
-                kind: AssetKind::Structure as i32,
-                guid: id,
-                runtime_id: 0,
-            }),
-            references: result.iter().map(|x: &AssetData| x.id.unwrap()).collect(),
-            name: self.name.clone(),
+        let field = self.encode_field(result.root.guid, self.version);
+        bundle.push(AssetData {
+            id: result.root.into(),
+            references: result.data.values().map(|x| x.root).collect(),
+            name: self.name,
             r#type: asset_data::Type::Structure as i32,
             payload: Some(Payload::StructData(StructureDefinitionContainer {
                 def: Some(StructureDefinitionData {

@@ -1,19 +1,19 @@
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::execution::node_set_local;
 use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeGraphExtra, NodeKind, NodeRef, ValueIn};
+use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeKind, NodeRef, ValueIn};
 use crate::asset::value::ValueBool;
 use std::collections::{HashSet, VecDeque};
 
-pub struct Optimizer<'a, E: NodeGraphExtra> {
-    pub graph: &'a mut NodeGraph<E>,
+pub struct Optimizer<'a> {
+    pub graph: &'a mut NodeGraph,
     pub proxies: Vec<(usize, usize)>,
 }
 
-impl<'a, E: NodeGraphExtra> Optimizer<'a, E> {
+impl<'a> Optimizer<'a> {
     #![allow(clippy::result_large_err)]
 
-    pub fn new(graph: &'a mut NodeGraph<E>) -> Self {
+    pub fn new(graph: &'a mut NodeGraph) -> Self {
         Self { graph, proxies: Default::default() }
     }
 

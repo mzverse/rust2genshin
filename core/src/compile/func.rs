@@ -6,6 +6,7 @@ use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITW
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::node_graph::execution::node_set_local;
+use crate::asset::structure::{ValueStruct, node_assemble_struct, node_destruct_struct};
 use rustc_abi::{FieldIdx, Size};
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
@@ -13,7 +14,6 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, Const, ConstOperand, C
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
-use crate::asset::node_graph::structure::node_assemble_struct;
 
 #[derive(Clone)]
 pub enum LocalVar {
@@ -32,7 +32,7 @@ pub enum LocalVarKind {
 }
 pub(super) struct CompilingLocals<'a, 'tcx> {
     pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut NodeGraph<NodeGraphComposite>,
+    pub graph: &'a mut CompositeNodeGraph,
     pub block: Block,
     pub a: usize,
     pub r: usize,
@@ -49,32 +49,36 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
             },
             _ => {
                 let kind = self.compiler.compile_ty(span, ty)?;
-                if ValueStruct::new(0, vec![]).is_instance(&kind) {
-                    todo!()
-                } else {
-                    let local = self.graph.insert(Node::new(node_local(kind.clone())));
-                    if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
-                        self.graph.set_default(Connection(local, 0), kind.clone());
+                match kind.downcast::<ValueStruct>() {
+                    Ok(kind) => {
+                        todo!("{kind:?}")
                     }
-                    LocalVar::Basic(local).tap(|l| {
-                        match k {
-                            LocalVarKind::Ret => {
-                                self.graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
-                                // Ret arm is always LocalVar::Basic; getter returns
-                                // ValueIn::link(Link::Connection(...)), so unwrap both.
-                                let conn = l.getter(self.graph, kind.clone()).link.unwrap().connection().unwrap();
-                                self.graph.export_value_out(conn, self.r);
-                                self.r += 1;
-                            }
-                            LocalVarKind::Arg => {
-                                self.graph.extra.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(name);
-                                let block = l.setter(self.graph, kind, ValueIn::link(Link::Export(self.a)));
-                                self.block.extend(self.graph, block);
-                                self.a += 1;
-                            }
-                            LocalVarKind::Other => (),
+                    Err(kind) => {
+                        let kind = kind.into_object();
+                        let local = self.graph.graph.insert(Node::new(node_local(kind.clone())));
+                        if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
+                            self.graph.graph.set_default(Connection(local, 0), kind.clone());
                         }
-                    })
+                        LocalVar::Basic(local).tap(|l| {
+                            match k {
+                                LocalVarKind::Ret => {
+                                    self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
+                                    // Ret arm is always LocalVar::Basic; getter returns
+                                    // ValueIn::link(Link::Connection(...)), so unwrap both.
+                                    let conn = l.getter(&mut self.graph.graph, kind.clone()).link.unwrap().connection().unwrap();
+                                    self.graph.graph.export_value_out(conn, self.r);
+                                    self.r += 1;
+                                }
+                                LocalVarKind::Arg => {
+                                    self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(name);
+                                    let block = l.setter(&mut self.graph.graph, kind, ValueIn::link(Link::Export(self.a)));
+                                    self.block.extend(&mut self.graph.graph, block);
+                                    self.a += 1;
+                                }
+                                LocalVarKind::Other => (),
+                            }
+                        })
+                    }
                 }
             },
         })
@@ -89,11 +93,11 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
 /// The struct input is wired from `value`. Returns the NodeRef; the caller
 /// consumes per-field outputs via `Connection(node, i)`.
 fn insert_struct_split(
-    graph: &mut NodeGraph<impl NodeGraphExtra>,
+    graph: &mut NodeGraph,
     struct_kind: &ValueStruct,
     value: ValueIn,
 ) -> NodeRef {
-    let mut node_kind = crate::asset::node_graph::arithmetic::NODE_SPLIT_STRUCT.clone();
+    let mut node_kind = node_destruct_struct(struct_kind);
     node_kind.values_in_types = vec![AnyValue::from(struct_kind.clone())];
     node_kind.values_out_types = struct_kind.fields.clone();
     // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
@@ -107,13 +111,13 @@ fn insert_struct_split(
 }
 
 impl LocalVar {
-    pub fn getter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue) -> ValueIn {
+    pub fn getter(&self, graph: &mut NodeGraph, kind: AnyValue) -> ValueIn {
         match self {
             LocalVar::Basic(x) => ValueIn::link(Connection(*x, 1).into()),
             LocalVar::Struct { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
             LocalVar::Flat(fields) => {
                 let kind = *kind.downcast::<ValueStruct>().expect("Flat::getter called with non-struct kind");
-                let node_ref = graph.insert(node_assemble_struct(Clone::clone(&kind)).into());
+                let node_ref = graph.insert(node_assemble_struct(&kind).into());
                 for (i, field) in fields.iter().enumerate() {
                     let v = field.getter(graph, kind.fields[i].clone());
                     graph.set_value_in(Connection(node_ref, i), v);
@@ -123,7 +127,7 @@ impl LocalVar {
         }
     }
 
-    pub fn setter(&self, graph: &mut NodeGraph<impl NodeGraphExtra>, kind: AnyValue, value: ValueIn) -> Block {
+    pub fn setter(&self, graph: &mut NodeGraph, kind: AnyValue, value: ValueIn) -> Block {
         match self {
             LocalVar::Basic(x) => {
                 let node = graph.insert(node_set_local(kind).into());
@@ -160,7 +164,7 @@ pub(super) struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
     pub func: Instance<'tcx>,
     pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut NodeGraph<NodeGraphComposite>,
+    pub graph: &'a mut CompositeNodeGraph,
     pub body: &'a Body<'tcx>,
     pub locals: &'a IndexVec<Local, LocalVar>,
 }
@@ -202,11 +206,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             } {
                 match block.as_mut() {
                     None => block = Some(nb),
-                    Some(block) => block.extend(self.graph, nb),
+                    Some(block) => block.extend(&mut self.graph.graph, nb),
                 }
             }
         }
-        Ok(block.unwrap_or_else(|| Block::nop(self.graph)))
+        Ok(block.unwrap_or_else(|| Block::nop(&mut self.graph.graph)))
     }
 
     pub fn compile_assign(&mut self, place: Place<'tcx>, value: ValueIn) -> Result<Block> {
@@ -224,7 +228,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             }
         }
         let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
-        Ok(local.setter(self.graph, kind, value))
+        Ok(local.setter(&mut self.graph.graph, kind, value))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -234,7 +238,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
                 let kind0 = self.compiler.compile_ty(v.0.span(&self.body.local_decls), ty0)?;
-                let mut node = self.graph.insert(Node::new(match op {
+                let mut node = self.graph.graph.insert(Node::new(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
                         node_add(kind0),
                     BinOp::Sub | BinOp::SubUnchecked | BinOp::SubWithOverflow =>
@@ -258,12 +262,12 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }));
                 let a = self.compile_operand(&v.0, span)?;
                 let b = self.compile_operand(&v.1, span)?;
-                self.graph.set_value_in(Connection(node, 0), a);
-                self.graph.set_value_in(Connection(node, 1), b);
+                self.graph.graph.set_value_in(Connection(node, 0), a);
+                self.graph.graph.set_value_in(Connection(node, 1), b);
                 if matches!(op, BinOp::Ne) {
                     // ! (a == b) — invert the equal node's bool output
-                    let not_node = self.graph.insert(Node::new(NODE_NOT.clone()));
-                    self.graph.connect_value(Connection(node, 0), Connection(not_node, 0));
+                    let not_node = self.graph.graph.insert(Node::new(NODE_NOT.clone()));
+                    self.graph.graph.connect_value(Connection(node, 0), Connection(not_node, 0));
                     node = not_node;
                 }
                 ValueIn::link(Connection(node, 0).into())
@@ -271,7 +275,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::UnaryOp(op, v) => {
                 let ty = v.ty(&self.body.local_decls, self.tcx);
                 let _kind = self.compiler.compile_ty(v.span(&self.body.local_decls), ty)?;
-                let node = self.graph.insert(Node::new(match op {
+                let node = self.graph.graph.insert(Node::new(match op {
                     UnOp::Not => if ty.is_bool() {
                         NODE_NOT.clone()
                     } else {
@@ -285,7 +289,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     UnOp::PtrMetadata => todo!(),
                 }));
                 let value = self.compile_operand(v, span)?;
-                self.graph.set_value_in(Connection(node, 0), value);
+                self.graph.graph.set_value_in(Connection(node, 0), value);
                 ValueIn::link(Connection(node, 0).into())
             },
             Rvalue::Reborrow(t, _, p) => return if t.is_str() {
@@ -311,9 +315,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let Some(node) = node_convert_type(from_kind, to_kind) else {
                         return self.span_err(span, format!("Unsupported cast ({kind:?}) {from_ty:?} → {target_ty:?}"));
                     };
-                    let node = self.graph.insert(Node::new(node));
+                    let node = self.graph.graph.insert(Node::new(node));
                     let v = self.compile_operand(op, span)?;
-                    self.graph.set_value_in(Connection(node, 0), v);
+                    self.graph.graph.set_value_in(Connection(node, 0), v);
                     ValueIn::link(Connection(node, 0).into())
                 }
             }
@@ -330,7 +334,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     TyKind::Tuple(tys) => tys,
                     _ => return self.span_err(span, format!("Aggregate(Tuple) with non-tuple type: {:?}", ty)),
                 };
-                let mut combined_block = Block::nop(self.graph);
+                let mut combined_block = Block::nop(&mut self.graph.graph);
                 for (field_idx, field_operand) in fields.iter().enumerate() {
                     let field_ty = elem_tys[field_idx];
                     let sub_place = Place {
@@ -342,7 +346,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     };
                     let value = self.compile_operand(field_operand, span)?;
                     let block = self.compile_assign(sub_place, value)?;
-                    combined_block.extend(self.graph, block);
+                    combined_block.extend(&mut self.graph.graph, block);
                 }
                 return Ok(combined_block);
             }
@@ -376,7 +380,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
 
                 let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
-                local.getter(self.graph, src_kind)
+                local.getter(&mut self.graph.graph, src_kind)
             }
 
             Operand::Constant(co) => {
@@ -455,52 +459,52 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         terminator: &Terminator<'tcx>,
     ) -> Result<Connection> {
         Ok(match &terminator.kind {
-            TerminatorKind::Return => Block::nop(self.graph).pipe(|block| {
-                self.graph.export_control_out(block.end, 0);
+            TerminatorKind::Return => Block::nop(&mut self.graph.graph).pipe(|block| {
+                self.graph.graph.export_control_out(block.end, 0);
                 block.begin
             }),
             TerminatorKind::Goto { target } => {
-                let result = Block::nop(self.graph);
-                self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
+                let result = Block::nop(&mut self.graph.graph);
+                self.graph.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
                 result.begin
             },
             TerminatorKind::Assert { target, .. } => {
                 self.tcx.dcx().span_note(terminator.source_info.span, "Ignored assert");
-                let result = Block::nop(self.graph); // same as goto
-                self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
+                let result = Block::nop(&mut self.graph.graph); // same as goto
+                self.graph.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
                 result.begin
             },
             TerminatorKind::Call { func, target, args, destination, .. } => {
                 let result = self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, *destination)?;
                 if let Some(target) = target {
-                    self.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
+                    self.graph.graph.connect_control(result.end, blocks.get(*target).unwrap().begin);
                 }
                 result.begin
             }
             TerminatorKind::TailCall { func, args, .. } => self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Place::return_place())?.pipe(|block| {
-                self.graph.export_control_out(block.end, 0);
+                self.graph.graph.export_control_out(block.end, 0);
                 block.begin
             }),
             TerminatorKind::SwitchInt { discr, targets, .. } => {
                 let node = if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
-                    let node = self.graph.insert(Node::new(NODE_IF.clone()));
-                    self.graph.connect_control(Connection(node, 0), blocks[targets.target_for_value(1u128)].begin);
-                    self.graph.connect_control(Connection(node, 1), blocks[targets.target_for_value(0u128)].begin);
+                    let node = self.graph.graph.insert(Node::new(NODE_IF.clone()));
+                    self.graph.graph.connect_control(Connection(node, 0), blocks[targets.target_for_value(1u128)].begin);
+                    self.graph.graph.connect_control(Connection(node, 1), blocks[targets.target_for_value(0u128)].begin);
                     node
                 } else {
                     if targets.all_targets().len() > 100 { // limited by Genshin Impact
                         return self.span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
                     }
-                    let node = self.graph.insert(Node::new(node_switch(ValueInt::def(), targets.all_values().len())));
-                    self.graph.set_default(Connection(node, 1), ValueIntList(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32()).collect()).into());
-                    self.graph.connect_control(Connection(node, 0), blocks[targets.otherwise()].begin);
+                    let node = self.graph.graph.insert(Node::new(node_switch(ValueInt::def(), targets.all_values().len())));
+                    self.graph.graph.set_default(Connection(node, 1), ValueIntList(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32()).collect()).into());
+                    self.graph.graph.connect_control(Connection(node, 0), blocks[targets.otherwise()].begin);
                     for i in 0..targets.all_values().len() {
-                        self.graph.connect_control(Connection(node, 1 + i), blocks[targets.all_targets()[i]].begin);
+                        self.graph.graph.connect_control(Connection(node, 1 + i), blocks[targets.all_targets()[i]].begin);
                     }
                     node
                 };
                 let value = self.compile_operand(discr, terminator.source_info.span)?;
-                self.graph.set_value_in(Connection(node, 0), value);
+                self.graph.graph.set_value_in(Connection(node, 0), value);
                 Connection(node, 0)
             },
             TerminatorKind::Drop { .. } => todo!(),
@@ -566,24 +570,24 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
         let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
         let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
-        let node = self.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
+        let node = self.graph.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
             native?
         } else {
-            node_composite(self.compiler.touch_fn(func)?, 1, 1, params, ret)
+            node_composite(self.compiler.touch_fn(func)?)
         }));
         for (i, Spanned { node: a, span }) in args.iter().enumerate() {
             let value = self.compile_operand(a, *span)?;
-            self.graph.set_value_in(Connection(node, i), value);
+            self.graph.graph.set_value_in(Connection(node, i), value);
         }
-        let mut block = match self.graph.get_node(node).kind.controls_in_num {
-            0 => Block::nop(self.graph),
+        let mut block = match self.graph.graph.get_node(node).kind.controls_in_num {
+            0 => Block::nop(&mut self.graph.graph),
             1 => Block::singleton(node, 0),
             other => return self.span_err(span, format!("Unsupported call controls: {other}")),
         };
         if !is_unit(sig.output()) {
             // TODO: flat
             let value = self.compile_assign(destination, ValueIn::link(Connection(node, 0).into()))?;
-            block.extend(self.graph, value);
+            block.extend(&mut self.graph.graph, value);
         }
         Ok(block)
     }
