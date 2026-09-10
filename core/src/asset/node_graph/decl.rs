@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use tap::Tap;
 use crate::asset::generated::{node_interface, PinSignature, AssetData, identifier, PinInterface, pin_interface, asset_data, NodeInterfaceContainer, node_interface_container, NodeInterface};
 use crate::asset::{Asset, AssetBundle, AssetRef, Identifier};
@@ -94,8 +95,8 @@ impl Asset for NodeDecl {
         AssetRef::new(id, node_decl(id.guid,
                                     self.pins.get(&PinType::InControl).map(Vec::len).unwrap_or(0),
                                     self.pins.get(&PinType::OutControl).map(Vec::len).unwrap_or(0),
-                                    self.pins.get(&PinType::InValue).unwrap().iter().map(|x| x.1.as_ref().unwrap().clone()).collect(),
-                                    self.pins.get(&PinType::OutValue).unwrap().iter().map(|x| x.1.as_ref().unwrap().clone()).collect(),
+                                    self.pins.get(&PinType::InValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.1.as_ref().cloned()).collect(),
+                                    self.pins.get(&PinType::OutValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.1.as_ref().unwrap().clone()).collect(),
         ))
     }
 }
@@ -104,10 +105,10 @@ pub fn node_decl(
     id: i64,
     controls_in_num: usize,
     controls_out_num: usize,
-    values_in_types: Vec<AnyValue>,
+    values_in_types: Vec<Option<AnyValue>>,
     values_out_types: Vec<AnyValue>,
 ) -> NodeKind {
-    let mut result = NodeKind::new(id, controls_in_num, controls_out_num, values_in_types, values_out_types);
+    let mut result = NodeKind::full(id, controls_in_num, controls_out_num, values_in_types, values_out_types);
     result.asset_kind = identifier::AssetKind::GeneratedStub;
     result.references = vec![Identifier {
         source: 0,

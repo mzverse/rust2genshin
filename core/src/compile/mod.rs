@@ -30,7 +30,6 @@ use tap::Tap;
 pub mod func;
 pub mod native;
 pub mod optimize;
-pub mod compile2;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
 

@@ -85,31 +85,6 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
     }
 }
 
-/// Insert a STRUCT_SPLIT (kernel 300003) sized for `struct_kind.fields.len()`.
-/// Pin layout:
-///   - input pin 0 = struct value (polymorphic ValueStruct)
-///   - output pins 0..N-1 = per-field values (typed per `struct_kind.fields`)
-///
-/// The struct input is wired from `value`. Returns the NodeRef; the caller
-/// consumes per-field outputs via `Connection(node, i)`.
-fn insert_struct_split(
-    graph: &mut NodeGraph,
-    struct_kind: &ValueStruct,
-    value: ValueIn,
-) -> NodeRef {
-    let mut node_kind = node_destruct_struct(struct_kind);
-    node_kind.values_in_types = vec![AnyValue::from(struct_kind.clone())];
-    node_kind.values_out_types = struct_kind.fields.clone();
-    // `NodeKind::new` sized selectors_in/selectors_out from the prototype's
-    // (empty) values_*, so resize both in lock-step (see Flat::setter).
-    node_kind.selectors_in = vec![None; node_kind.values_in_types.len()];
-    node_kind.selectors_in[0] = Some(0);
-    node_kind.selectors_out = vec![None; node_kind.values_out_types.len()];
-    let node_ref = graph.insert(node_kind.into());
-    graph.set_value_in(Connection(node_ref, 0), value);
-    node_ref
-}
-
 impl LocalVar {
     pub fn getter(&self, graph: &mut NodeGraph, kind: AnyValue) -> ValueIn {
         match self {
@@ -148,7 +123,8 @@ impl LocalVar {
                     Err(_) => return Block::nop(graph),
                 };
                 let field_types = struct_kind.fields.clone();
-                let node_ref = insert_struct_split(graph, &struct_kind, value);
+                let node_ref = graph.insert(node_destruct_struct(&struct_kind).into());
+                graph.set_value_in(Connection(node_ref, 0), value);
                 let mut block = Block::nop(graph);
                 for (i, field) in fields.iter().enumerate() {
                     let block_for_field = field.setter(graph, field_types[i].clone(), ValueIn::link(Connection(node_ref, i).into()));
@@ -492,7 +468,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     self.graph.graph.connect_control(Connection(node, 1), blocks[targets.target_for_value(0u128)].begin);
                     node
                 } else {
-                    if targets.all_targets().len() > 100 { // limited by Genshin Impact
+                    if targets.all_targets().len() > 10 { // limited by Genshin Impact
                         return self.span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
                     }
                     let node = self.graph.graph.insert(Node::new(node_switch(ValueInt::def(), targets.all_values().len())));

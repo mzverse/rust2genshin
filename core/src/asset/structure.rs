@@ -194,15 +194,15 @@ impl Asset for StructureDefinition {
                 }.into())]);
             })),
             (StructureNodeDecl::DestructServer, "Destruct Struct Server", node_interface::Implementation { // TODO
-                category: node_interface::implementation::Category::StructAssembly as i32,
-                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+                category: node_interface::implementation::Category::StructSplit as i32,
+                template: node_interface::implementation::Template::SplitStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
-                pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
-                pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
+                pins.insert(PinType::InValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
                     kind: pin_signature::Kind::StructRef as i32,
                     index: 0,
                     source_ref: None,
                 }.into())]);
+                pins.insert(PinType::OutValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
             })),
         ] {
             result.data.insert(k, NodeDecl {

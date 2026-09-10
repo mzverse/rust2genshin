@@ -81,7 +81,7 @@ pub struct NodeKind {
 
     pub controls_in_num: usize,
     pub controls_out_num: usize,
-    pub values_in_types: Vec<AnyValue>,
+    pub values_in_types: Vec<Option<AnyValue>>,
     pub values_out_types: Vec<AnyValue>,
 
     pub selectors_in: Vec<Option<i32>>,
@@ -100,6 +100,15 @@ impl NodeKind {
         controls_in_num: usize,
         controls_out_num: usize,
         values_in_types: Vec<AnyValue>,
+        values_out_types: Vec<AnyValue>,
+    ) -> Self {
+        Self::full(id, controls_in_num, controls_out_num,values_in_types.into_iter().map(Some).collect(), values_out_types)
+    }
+    pub fn full(
+        id: i64,
+        controls_in_num: usize,
+        controls_out_num: usize,
+        values_in_types: Vec<Option<AnyValue>>,
         values_out_types: Vec<AnyValue>,
     ) -> Self {
         Self {
@@ -280,7 +289,9 @@ impl NodeGraph {
 
     pub fn set_default(&mut self, place: Connection, value: AnyValue) {
         let node = &mut self.nodes[place.node().into()];
-        assert!(node.kind.values_in_types[place.pin()].is_instance(&value), "{value:?} is not {:?}", node.kind.values_in_types[place.pin()]);
+        if let Some(kind) = &node.kind.values_in_types[place.pin()] {
+            assert!(kind.is_instance(&value), "{value:?} is not {:?}", node.kind.values_in_types[place.pin()]);
+        }
         node.values_in[place.pin()].default = Some(value);
     }
 
@@ -290,7 +301,9 @@ impl NodeGraph {
             self.get_node_mut(f).values_out[i].retain(|x| !matches!(*x, Link::Connection(t) if t == to));
         }
         let (from_node, to_node) = self.nodes.get2_mut(from.node().into(), to.node().into()).unwrap();
-        assert!(to_node.kind.values_in_types[to.pin()].is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], to_node.kind.values_in_types[to.pin()]);
+        if let Some(kind) = &to_node.kind.values_in_types[to.pin()] {
+            assert!(kind.is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], to_node.kind.values_in_types[to.pin()]);
+        }
         from_node.values_out[from.pin()].push(to.into());
         to_node.values_in[to.pin()].link = Some(from.into());
     }
@@ -368,6 +381,9 @@ impl NodeGraph {
                                 process_controls(pins, &n.controls_in, PinType::InControl, PinType::OutControl);
                                 process_controls(pins, &n.controls_out, PinType::OutControl, PinType::InControl);
                                 for (i, x) in n.values_in.iter().enumerate() {
+                                    let Some(kind) = n.kind.values_in_types[i].clone() else {
+                                        continue;
+                                    };
                                     let sig = PinSignature {
                                         kind: PinType::InValue as i32,
                                         index: i as i32,
@@ -376,8 +392,8 @@ impl NodeGraph {
                                     pins.push(PinData {
                                         shell_sig: sig.into(),
                                         kernel_sig: sig.into(),
-                                        value: Some(ValueSelected::encode(x.default.clone().unwrap_or(n.kind.values_in_types[i].clone()), x.default.is_some(), n.kind.selectors_in[i], side)),
-                                        r#type: Some(n.kind.values_in_types[i].get_type_id(side)),
+                                        value: Some(ValueSelected::encode(x.default.clone().unwrap_or_else(|| kind.clone()), x.default.is_some(), n.kind.selectors_in[i], side)),
+                                        r#type: Some(kind.get_type_id(side)),
                                         connection: vec![].tap_mut(|cs| {
                                             if let Some(Connection(target, j)) = x.link.and_then(Link::connection) {
                                                 let sig_tar = PinSignature {

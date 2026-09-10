@@ -23,19 +23,22 @@ pub static NODE_BREAK: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 编译期按需扩展。
 pub fn node_switch(ty: AnyValue, cases: usize) -> NodeKind {
     assert!(cases <= 10);
-    let mut result = NodeKind::new(3, 1, 1 + cases, vec![ty.clone(), ty.clone()], vec![]);
     let selected;
+    let kernel_id;
+    let ty1: AnyValue;
     if ty.is::<ValueInt>() {
-        result.kernel_id = 3;
+        kernel_id = 3;
         selected = 0;
-        result.values_in_types[1] = ValueIntList::def();
+        ty1 = ValueIntList::def();
     } else if ty.is::<ValueString>() {
-        result.kernel_id = 4;
+        kernel_id = 4;
         selected = 1;
-        result.values_in_types[1] = ValueStringList::def();
+        ty1 = ValueStringList::def();
     } else {
         panic!("Unsupported type: {ty:?}");
     }
+    let mut result = NodeKind::new(3, 1, 1 + cases, vec![ty.clone(), ty1], vec![]);
+    result.kernel_id = kernel_id;
     result.selectors_in[0] = selected.into();
     result.selectors_in[1] = selected.into();
     result
