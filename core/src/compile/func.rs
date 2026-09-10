@@ -1,148 +1,27 @@
 use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
+use std::iter;
 
 use super::*;
 use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::asset::node_graph::execution::node_set_local;
-use crate::asset::structure::{ValueStruct, node_assemble_struct, node_destruct_struct};
+use crate::compile::place::{CompiledPlace, compile_place};
 use rustc_abi::{FieldIdx, Size};
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, PlaceElem, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
 
-#[derive(Clone)]
-pub enum LocalVar {
-    Basic(NodeRef),
-    Struct {
-        node: NodeRef,
-        getter: NodeRef,
-    },
-    Flat(IndexVec<FieldIdx, LocalVar>),
-}
-#[derive(Clone, Copy)]
-pub enum LocalVarKind {
-    Ret,
-    Arg,
-    Other,
-}
-pub(super) struct CompilingLocals<'a, 'tcx> {
-    pub compiler: &'a mut Compiler<'tcx>,
-    pub graph: &'a mut CompositeNodeGraph,
-    pub block: Block,
-    pub a: usize,
-    pub r: usize,
-}
-impl<'tcx> CompilingLocals<'_, 'tcx> {
-    pub fn solve_local(&mut self, ty: Ty<'tcx>, k: LocalVarKind, name: String, span: Span) -> Result<LocalVar> {
-        Ok(match ty.kind() {
-            TyKind::Tuple(es) => {
-                let mut fs = IndexVec::new();
-                for (i, t) in es.iter().enumerate() {
-                    fs.push(self.solve_local(t, k, format!("{name}.{i}"), span)?);
-                }
-                LocalVar::Flat(fs)
-            },
-            _ => {
-                let kind = self.compiler.compile_ty(span, ty)?;
-                match kind.downcast::<ValueStruct>() {
-                    Ok(kind) => {
-                        todo!("{kind:?}")
-                    }
-                    Err(kind) => {
-                        let kind = kind.into_object();
-                        let local = self.graph.graph.insert(Node::new(node_local(kind.clone())));
-                        if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
-                            self.graph.graph.set_default(Connection(local, 0), kind.clone());
-                        }
-                        LocalVar::Basic(local).tap(|l| {
-                            match k {
-                                LocalVarKind::Ret => {
-                                    self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
-                                    // Ret arm is always LocalVar::Basic; getter returns
-                                    // ValueIn::link(Link::Connection(...)), so unwrap both.
-                                    let conn = l.getter(&mut self.graph.graph, kind.clone()).link.unwrap().connection().unwrap();
-                                    self.graph.graph.export_value_out(conn, self.r);
-                                    self.r += 1;
-                                }
-                                LocalVarKind::Arg => {
-                                    self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(name);
-                                    let block = l.setter(&mut self.graph.graph, kind, ValueIn::link(Link::Export(self.a)));
-                                    self.block.extend(&mut self.graph.graph, block);
-                                    self.a += 1;
-                                }
-                                LocalVarKind::Other => (),
-                            }
-                        })
-                    }
-                }
-            },
-        })
-    }
-}
-
-impl LocalVar {
-    pub fn getter(&self, graph: &mut NodeGraph, kind: AnyValue) -> ValueIn {
-        match self {
-            LocalVar::Basic(x) => ValueIn::link(Connection(*x, 1).into()),
-            LocalVar::Struct { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
-            LocalVar::Flat(fields) => {
-                let kind = *kind.downcast::<ValueStruct>().expect("Flat::getter called with non-struct kind");
-                let node_ref = graph.insert(node_assemble_struct(&kind).into());
-                for (i, field) in fields.iter().enumerate() {
-                    let v = field.getter(graph, kind.fields[i].clone());
-                    graph.set_value_in(Connection(node_ref, i), v);
-                }
-                ValueIn::link(Connection(node_ref, 0).into())
-            }
-        }
-    }
-
-    pub fn setter(&self, graph: &mut NodeGraph, kind: AnyValue, value: ValueIn) -> Block {
-        match self {
-            LocalVar::Basic(x) => {
-                let node = graph.insert(node_set_local(kind).into());
-                graph.connect_value(Connection(*x, 0), Connection(node, 0));
-                graph.set_value_in(Connection(node, 1), value);
-                Block::singleton(node, 0)
-            },
-            LocalVar::Struct { .. } => todo!(),
-            LocalVar::Flat(fields) => {
-                // STRUCT_SPLIT (kernel 300003). Pin layout:
-                //   - input pin 0 = the struct value (polymorphic ValueStruct)
-                //   - output pins 0..N-1 = per-field values (one per tuple element)
-                // Pin 0 is dual-purpose: in is the struct, out is the first field.
-                // Nested Flat children recurse via their own setter(), so each
-                // level only ever sees its own arity.
-                let struct_kind = match kind.downcast_ref::<ValueStruct>() {
-                    Ok(vs) => vs.clone(),
-                    Err(_) => return Block::nop(graph),
-                };
-                let field_types = struct_kind.fields.clone();
-                let node_ref = graph.insert(node_destruct_struct(&struct_kind).into());
-                graph.set_value_in(Connection(node_ref, 0), value);
-                let mut block = Block::nop(graph);
-                for (i, field) in fields.iter().enumerate() {
-                    let block_for_field = field.setter(graph, field_types[i].clone(), ValueIn::link(Connection(node_ref, i).into()));
-                    block.extend(graph, block_for_field);
-                }
-                block
-            },
-        }
-    }
-}
-
-pub(super) struct CompilingFn<'tcx, 'a> {
+pub struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
     pub func: Instance<'tcx>,
     pub compiler: &'a mut Compiler<'tcx>,
     pub graph: &'a mut CompositeNodeGraph,
     pub body: &'a Body<'tcx>,
-    pub locals: &'a IndexVec<Local, LocalVar>,
+    pub locals: &'a IndexVec<Local, CompiledPlace>,
 }
 impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -190,25 +69,12 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     pub fn compile_assign(&mut self, place: Place<'tcx>, value: ValueIn) -> Result<Block> {
-        let mut local = self.locals.get(place.local).unwrap();
-        for x in place.projection {
-            match x {
-                PlaceElem::Field(i, _) => {
-                    match local {
-                        LocalVar::Basic(_) => unreachable!(),
-                        LocalVar::Struct { .. } => todo!(),
-                        LocalVar::Flat(v) => local = v.get(i).unwrap(),
-                    }
-                },
-                other => todo!("{other:?}")
-            }
-        }
         let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
-        Ok(local.setter(&mut self.graph.graph, kind, value))
+        Ok(compile_place(&self.locals, place).setter(&mut self.graph.graph, kind, value))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
-        let ty = value.ty(&self.body.local_decls, self.tcx);
+        let ty = self.mono(value.ty(&self.body.local_decls, self.tcx));
         let value_in = match value {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
@@ -249,7 +115,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 ValueIn::link(Connection(node, 0).into())
             }
             Rvalue::UnaryOp(op, v) => {
-                let ty = v.ty(&self.body.local_decls, self.tcx);
                 let _kind = self.compiler.compile_ty(v.span(&self.body.local_decls), ty)?;
                 let node = self.graph.graph.insert(Node::new(match op {
                     UnOp::Not => if ty.is_bool() {
@@ -298,14 +163,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             }
             Rvalue::Aggregate(kind, fields) if matches!(**kind, AggregateKind::Tuple) => {
-                // Whole-tuple aggregate: write each field to its corresponding
-                // sub-local. The target local `_t` (the function's `place.local`)
-                // has been flattened into N sub-locals during compile_fn's
-                // local-init; field index `i` corresponds to sub-local at
-                // `local_ranges[place.local].start + i`. `mk_place_elems` needs
-                // an actual field type (not `()`) for `ProjectionElem::Field`,
-                // so we resolve each tuple element type from the aggregate's
-                // own rvalue type.
                 let elem_tys: &[Ty<'tcx>] = match ty.kind() {
                     TyKind::Tuple(tys) => tys,
                     _ => return self.span_err(span, format!("Aggregate(Tuple) with non-tuple type: {:?}", ty)),
@@ -315,10 +172,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let field_ty = elem_tys[field_idx];
                     let sub_place = Place {
                         local: place.local,
-                        projection: self.tcx.mk_place_elems(&[ProjectionElem::Field(
+                        projection: self.tcx.mk_place_elems(&place.projection.iter().chain(iter::once(ProjectionElem::Field(
                             FieldIdx::from_usize(field_idx),
                             field_ty,
-                        )]),
+                        ))).collect::<Vec<_>>()),
                     };
                     let value = self.compile_operand(field_operand, span)?;
                     let block = self.compile_assign(sub_place, value)?;
@@ -341,22 +198,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                let mut local = self.locals.get(p.local).unwrap();
-                for e in p.projection {
-                    match e {
-                        PlaceElem::Field(i, _) => {
-                            match local {
-                                LocalVar::Basic(_) => unreachable!(),
-                                LocalVar::Struct { .. } => todo!("struct"),
-                                LocalVar::Flat(v) => local = v.get(i).unwrap(),
-                            }
-                        }
-                        _ => todo!("{e:?}"),
-                    }
-                }
-
                 let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
-                local.getter(&mut self.graph.graph, src_kind)
+                compile_place(&self.locals, *p).getter(&mut self.graph.graph, src_kind)
             }
 
             Operand::Constant(co) => {

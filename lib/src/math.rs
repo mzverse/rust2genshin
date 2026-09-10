@@ -47,7 +47,6 @@ pub unsafe trait F32 {
     fn atan(self) -> Self;
 }
 
-
 unsafe impl I32 for i32 {
     #[native_calc(779)]
     fn ushr(self, rhs: Self) -> Self;

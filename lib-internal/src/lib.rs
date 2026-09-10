@@ -21,6 +21,7 @@ pub fn native(_args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #[allow(unused_variables)]
         #[inline(never)]
+        #[rustc_no_mir_inline]
         #item
     }.into()
 }

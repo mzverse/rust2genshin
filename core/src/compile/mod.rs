@@ -1,10 +1,9 @@
 use crate::asset::node_graph::control::NODE_IF;
-use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
+use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
 use crate::asset::structure::{StructureDefinition, ValueStruct};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
-use crate::asset::{Asset, AssetBundle, AssetRef, Side};
-use crate::compile::func::{CompilingFn, CompilingLocals, LocalVar, LocalVarKind};
+use crate::asset::{Asset, AssetBundle, AssetRef};
+use crate::compile::func::CompilingFn;
 use crate::compile::optimize::Optimizer;
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
@@ -26,10 +25,12 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use tap::Tap;
+use crate::compile::place::{CompiledPlace, CompilingLocals, LocalVarKind};
 
 pub mod func;
 pub mod native;
 pub mod optimize;
+pub mod place;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
 
@@ -183,7 +184,7 @@ impl<'tcx> Compiler<'tcx> {
             },
             TyKind::Str => ValueString::def(),
             TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-                todo!("{e:?}")
+                return self.span_err(span, "Ref is unsupported, see `Box as Deref`".to_string());
             },
             TyKind::Adt(d, a) => {
                 if d.did().krate == self.lib {
@@ -411,7 +412,7 @@ impl<'tcx> Compiler<'tcx> {
         let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.symbol_name(func).to_string()));
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
-        let mut locals = IndexVec::<Local, LocalVar>::new(); // TODO: adapt for struct, struct list and map
+        let mut locals = IndexVec::<Local, CompiledPlace>::new(); // TODO: adapt for struct, struct list and map
         let args = self.tcx.fn_arg_idents(func.def_id());
         let mut compiling_locals = CompilingLocals {
             compiler: self,
@@ -422,7 +423,7 @@ impl<'tcx> Compiler<'tcx> {
         };
         for (i, x) in body.local_decls.iter_enumerated() {
             if is_unit(x.ty) {
-                locals.push(LocalVar::Flat(Default::default()));
+                locals.push(CompiledPlace::Flat(Default::default()));
                 continue;
             }
             let mut name = "".to_string();

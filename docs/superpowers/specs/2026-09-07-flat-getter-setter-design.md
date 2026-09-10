@@ -6,7 +6,7 @@
 
 ## Context
 
-The current `LocalVar` enum (introduced by commit `b5f82b0 refactor(core): flat tuple`) has three variants:
+The current `CompiledPlace` enum (introduced by commit `b5f82b0 refactor(core): flat tuple`) has three variants:
 - `LocalVar::Basic(NodeRef)` — scalar local.
 - `LocalVar::Struct { node: NodeRef, getter: NodeRef }` — user struct (currently `todo!()`).
 - `LocalVar::Flat(IndexVec<FieldIdx, LocalVar>)` — recursively flattened tuple (e.g., `(i32, (f32, bool))` becomes `Flat([Basic, Flat([Basic, Basic])])`).
