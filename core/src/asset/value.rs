@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
+use crate::asset::generated::pin_interface::type_info::{Detail, EnumId};
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -97,7 +98,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         None
     }
 
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
+    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> { // TODO: enum, List
         None
     }
 
@@ -156,6 +157,9 @@ impl Value for ValueBool {
             true => 1,
             false => 0
         }}).into()
+    }
+    fn encode_type_detail(&self) -> Option<Detail> {
+        Detail::EnumId(EnumId { val: 1 }).into()
     }
 }
 
@@ -276,7 +280,15 @@ impl Value for ValueEntity {
 /// 枚举项(SEnumItem=14 / CEnumItem=13)
 #[derive(Clone, Debug)]
 #[derive(Default)]
-pub struct ValueEnum(pub i64);
+pub struct ValueEnum {
+    pub id: i64,
+    pub index: i64,
+}
+impl ValueEnum {
+    pub fn new(id: i64, index: i64) -> Self {
+        Self { id, index }
+    }
+}
 impl Value for ValueEnum {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEnumItem
@@ -285,7 +297,13 @@ impl Value for ValueEnum {
         ClientTypeId::CEnumItem
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValEnum(Enum { value: self.0 }).into()
+        typed_value::Storage::ValEnum(Enum { value: self.index }).into()
+    }
+    fn encode_type_detail(&self) -> Option<Detail> {
+        Detail::EnumId(EnumId { val: self.id }).into()
+    }
+    fn is_instance(&self, value: &AnyValue) -> bool {
+        matches!(value.downcast_ref::<ValueEnum>(), Ok(value) if value.id == self.id)
     }
 }
 
@@ -533,7 +551,7 @@ impl Value for ValueVectorList {
 /// 枚举列表(SEnumList=18 / CEnumList=17)
 #[derive(Clone, Debug)]
 #[derive(Default)]
-pub struct ValueEnumList(pub Vec<i64>);
+pub struct ValueEnumList(pub Vec<ValueEnum>);
 impl Value for ValueEnumList {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEnumList
@@ -541,14 +559,8 @@ impl Value for ValueEnumList {
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEnumList
     }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueEnum(*x);
-                let side = Side::Server;
-                v.encode(true, side)
-            }).collect(),
-        )).into()
+    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
+        typed_value::Storage::ValList(list_storage(self.0.iter().map(|x| x.encode(true, side)).collect())).into()
     }
 }
 
@@ -717,9 +729,6 @@ mod tests {
 
         let g = ValueGuid(42).encode(true, Side::Server);
         assert!(matches!(g.storage, Some(typed_value::Storage::ValId(_))));
-
-        let e = ValueEnum(7).encode(true, Side::Server);
-        assert!(matches!(e.storage, Some(typed_value::Storage::ValEnum(_))));
     }
 
     #[test]

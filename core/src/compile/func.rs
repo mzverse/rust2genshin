@@ -6,7 +6,7 @@ use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::compile::place::{CompiledPlace, compile_place};
+use crate::compile::place::CompiledPlace;
 use rustc_abi::{FieldIdx, Size};
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
@@ -70,7 +70,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
     pub fn compile_assign(&mut self, place: Place<'tcx>, value: ValueIn) -> Result<Block> {
         let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
-        Ok(compile_place(&self.locals, place).setter(&mut self.graph.graph, kind, value))
+        Ok(self.compile_place(place).setter(&mut self.graph.graph, kind, value))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -199,7 +199,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Operand::Copy(p) |
             Operand::Move(p) => {
                 let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
-                compile_place(&self.locals, *p).getter(&mut self.graph.graph, src_kind)
+                ValueIn::link(self.compile_place(*p).getter(&mut self.graph.graph, src_kind).into())
             }
 
             Operand::Constant(co) => {

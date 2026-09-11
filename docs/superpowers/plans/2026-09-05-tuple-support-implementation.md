@@ -15,7 +15,7 @@
 ## File Structure
 
 **Modified:**
-- `core/src/compile/mod.rs` — add `tuple_schemas: HashMap<TupleKey, i64>` to `Compiler`; add `TupleKey` newtype; add `intern_tuple_schema` method; replace the `TyKind::Tuple(tys) => todo!()` arm in `compile_ty`.
+- `core/src/compile/mod.rs` — add `tuple_schemas: HashMap<TupleKey, i64>` to `Compiler`; add `TupleKey` newtype; add `touch_tuple` method; replace the `TyKind::Tuple(tys) => todo!()` arm in `compile_ty`.
 - `core/src/compile/func.rs` — add `Rvalue::Aggregate(AggregateKind::Tuple, _)` arm; update `compile_assign` and `compile_operand` to handle `ProjectionElem::Field` chains.
 - `demo/src/lib.rs` — add 4 demo functions exercising tuple construction, field access, and nested tuples.
 
@@ -28,10 +28,10 @@
 
 ---
 
-## Task 1: Compiler cache + `intern_tuple_schema` helper
+## Task 1: Compiler cache + `touch_tuple` helper
 
 **Files:**
-- Modify: `core/src/compile/mod.rs` — add `TupleKey`, `tuple_schemas` field, `intern_tuple_schema` method.
+- Modify: `core/src/compile/mod.rs` — add `TupleKey`, `tuple_schemas` field, `touch_tuple` method.
 
 - [ ] **Step 1: Add `TupleKey` newtype and import it**
 
@@ -88,7 +88,7 @@ Ok(Self {
 })
 ```
 
-- [ ] **Step 4: Add `intern_tuple_schema` method to `Compiler`**
+- [ ] **Step 4: Add `touch_tuple` method to `Compiler`**
 
 Add the method inside `impl<'tcx> Compiler<'tcx>` (anywhere in the `impl Compiler` block). Insert after `compile_ty` or `find_lib_fn`:
 
@@ -149,7 +149,7 @@ Expected: build succeeds.
 
 If you see "cannot find type `AnyValue` in this scope" — the import for `AnyValue` is missing in `compile/mod.rs`. Add `use crate::asset::value::AnyValue;` near the top of the file.
 
-If you see "no method named `compile_ty` found" — `compile_ty` is defined later in the file. Move the `intern_tuple_schema` method definition to **after** the `compile_ty` definition (Rust doesn't care about method order, but the impl block methods can reference each other freely; the issue is usually a missing import or wrong method signature).
+If you see "no method named `compile_ty` found" — `compile_ty` is defined later in the file. Move the `touch_tuple` method definition to **after** the `compile_ty` definition (Rust doesn't care about method order, but the impl block methods can reference each other freely; the issue is usually a missing import or wrong method signature).
 
 - [ ] **Step 6: Commit**
 

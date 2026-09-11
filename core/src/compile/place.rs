@@ -8,10 +8,9 @@ use crate::compile::func::CompilingFn;
 use crate::compile::{Block, Compiler};
 use rustc_abi::FieldIdx;
 use rustc_index::IndexVec;
+use rustc_middle::mir::{Place, PlaceElem};
 use rustc_middle::ty::{Ty, TyKind};
 use rustc_span::Span;
-use std::borrow::Cow;
-use rustc_middle::mir::{Local, Place, PlaceElem};
 use tap::Tap;
 
 #[derive(Clone)]
@@ -22,6 +21,7 @@ pub enum CompiledPlace {
         getter: NodeRef,
     },
     Flat(IndexVec<FieldIdx, CompiledPlace>),
+    Field(Box<CompiledPlace>, FieldIdx),
 }
 #[derive(Clone, Copy)]
 pub enum LocalVarKind {
@@ -64,7 +64,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                                     self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
                                     // Ret arm is always LocalVar::Basic; getter returns
                                     // ValueIn::link(Link::Connection(...)), so unwrap both.
-                                    let conn = l.getter(&mut self.graph.graph, kind.clone()).link.unwrap().connection().unwrap();
+                                    let conn = l.getter(&mut self.graph.graph, kind.clone());
                                     self.graph.graph.export_value_out(conn, self.r);
                                     self.r += 1;
                                 }
@@ -85,19 +85,20 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
 }
 
 impl CompiledPlace {
-    pub fn getter(&self, graph: &mut NodeGraph, kind: AnyValue) -> ValueIn {
+    pub fn getter(&self, graph: &mut NodeGraph, kind: AnyValue) -> Connection {
         match self {
-            CompiledPlace::LocalCommon(x) => ValueIn::link(Connection(*x, 1).into()),
-            CompiledPlace::LocalEx { getter, .. } => ValueIn::link(Connection(*getter, 0).into()),
+            CompiledPlace::LocalCommon(x) => Connection(*x, 1),
+            CompiledPlace::LocalEx { getter, .. } => Connection(*getter, 0),
             CompiledPlace::Flat(fields) => {
                 let kind = *kind.downcast::<ValueStruct>().expect("Flat::getter called with non-struct kind");
                 let node_ref = graph.insert(node_assemble_struct(&kind).into());
                 for (i, field) in fields.iter().enumerate() {
                     let v = field.getter(graph, kind.fields[i].clone());
-                    graph.set_value_in(Connection(node_ref, i), v);
+                    graph.connect_value(v, Connection(node_ref, i));
                 }
-                ValueIn::link(Connection(node_ref, 0).into())
-            }
+                Connection(node_ref, 0)
+            },
+            CompiledPlace::Field(field, _) => todo!(),
         }
     }
 
@@ -131,23 +132,25 @@ impl CompiledPlace {
                 }
                 block
             },
+            CompiledPlace::Field(..) => todo!(),
         }
     }
 }
 
-pub fn compile_place<'a>(locals: &'a IndexVec<Local, CompiledPlace>, place: Place) -> Cow<'a, CompiledPlace> {
-    let mut result = locals.get(place.local).unwrap();
-    for x in place.projection {
-        match x {
-            PlaceElem::Field(i, _) => {
-                match result {
-                    CompiledPlace::LocalCommon(_) => unreachable!(),
-                    CompiledPlace::LocalEx { .. } => todo!(),
-                    CompiledPlace::Flat(v) => result = v.get(i).unwrap(),
-                }
-            },
-            other => todo!("{other:?}")
+impl CompilingFn<'_, '_> {
+    pub fn compile_place(&self, place: Place) -> CompiledPlace {
+        let mut result = self.locals.get(place.local).unwrap().clone();
+        for x in place.projection {
+            match x {
+                PlaceElem::Field(i, _) => {
+                    match result {
+                        CompiledPlace::Flat(v) => result = v.into_iter().nth(i.index()).unwrap(),
+                        other => result = CompiledPlace::Field(other.into(), i),
+                    }
+                },
+                other => todo!("{other:?}")
+            }
         }
+        result
     }
-    Cow::Borrowed(result)
 }

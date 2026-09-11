@@ -39,7 +39,7 @@ The user explicitly chose "Full tuple support (struct-mapped)" — addressing co
 
 Five mechanical changes to the compiler, each independent of the others except for the dependency ordering (struct cache must exist before `compile_ty` can use it; field access must exist before destructuring works).
 
-### Change 1 — `Compiler` cache and `intern_tuple_schema` helper
+### Change 1 — `Compiler` cache and `touch_tuple` helper
 
 Add a field to `Compiler<'tcx>` (in `core/src/compile/mod.rs`):
 
@@ -49,7 +49,7 @@ tuple_schemas: HashMap<TupleKey, i64>,
 
 `TupleKey` is a `Hash`-able wrapper around the canonicalized tuple MIR type. Using a key derived from `(usize /* arity */, Vec<AnyValue /* element types' debug IDs */>)` is simple and avoids deep MIR types in the cache. The `AnyValue` debug-print string (via `format!("{:?}", value)`) is a stable-enough identifier for hashing purposes (any two equal `AnyValue`s produce the same debug string).
 
-`intern_tuple_schema` lives on `Compiler<'tcx>`:
+`touch_tuple` lives on `Compiler<'tcx>`:
 
 ```rust
 fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<i64> {
@@ -85,7 +85,7 @@ fn intern_tuple_schema(&mut self, span: Span, ty: Ty<'tcx>) -> Result<i64> {
 }
 ```
 
-Note `intern_tuple_schema` calls `self.compile_ty` recursively for element types, which may itself recursively call `intern_tuple_schema` for nested tuples — handled by the cache.
+Note `touch_tuple` calls `self.compile_ty` recursively for element types, which may itself recursively call `touch_tuple` for nested tuples — handled by the cache.
 
 ### Change 2 — `compile_ty` for tuples
 
@@ -222,7 +222,7 @@ The existing `is_instance` on `ValueStruct` already handles struct_id equality (
   - Add `tuple_schemas: HashMap<TupleKey, i64>` to `Compiler`
   - Initialize it in `Compiler::new`
   - Add `TupleKey` newtype + `Hash` impl
-  - Add `intern_tuple_schema` method
+  - Add `touch_tuple` method
   - Replace `TyKind::Tuple(tys) => todo!(...)` in `compile_ty` with struct-interning logic
 
 - `core/src/compile/func.rs`:
@@ -244,7 +244,7 @@ The existing `is_instance` on `ValueStruct` already handles struct_id equality (
 
 1. MIR emits `Assign(_t, Aggregate(Tuple, [_a, _b]))`.
 2. The new `Rvalue::Aggregate` arm fires.
-3. `intern_tuple_schema` resolves (or creates and caches) the struct_id for `(T_a, T_b)`.
+3. `touch_tuple` resolves (or creates and caches) the struct_id for `(T_a, T_b)`.
 4. A `STRUCT_ASSEMBLY` node is inserted with kernel id 300002 and the struct_id selector.
 5. Each field operand is compiled and connected to the node's dynamic input pin `i`.
 6. The struct output is wired to `_t`'s `set_local` via the existing `compile_assign`.
@@ -262,7 +262,7 @@ The existing `is_instance` on `ValueStruct` already handles struct_id equality (
 | Case | Behavior |
 |---|---|
 | Empty tuple `()` | Already filtered by `is_unit` in `compile_fn`. `compile_ty` is not called for empty-tuple locals. |
-| Tuple with unsupported inner type | `intern_tuple_schema` propagates the inner `compile_ty` error (existing span_err behavior). |
+| Tuple with unsupported inner type | `touch_tuple` propagates the inner `compile_ty` error (existing span_err behavior). |
 | `Aggregate` of non-Tuple kind | Continues to `todo!()` (only `AggregateKind::Tuple` is wired). |
 | Projection other than single `Field(i)` | `span_err` with `"Unsupported projection: ..."` (deferred to follow-ups). |
 | Tuple cast to non-equal tuple | `span_err` (existing `cast_supported` path). |
@@ -317,7 +317,7 @@ Expected:
 
 - **`NODE_SPLIT_STRUCT` per-field output.** The existing constant has `vec![]` outputs — the engine emits all fields at once. If only one field is needed, the unused outputs are dead pins (acceptable; the node graph optimizer or the editor handles dead pins). **Mitigation:** confirm the engine accepts STRUCT_SPLIT with all fields emitted but only some read; if not, route via a different mechanism.
 
-- **Recursive `intern_tuple_schema`.** The function calls `compile_ty` on each element type, which may recursively call `intern_tuple_schema` for nested tuples. The cache prevents infinite recursion; verify with the nested tuple demo (`nested_tuple_first`).
+- **Recursive `touch_tuple`.** The function calls `compile_ty` on each element type, which may recursively call `touch_tuple` for nested tuples. The cache prevents infinite recursion; verify with the nested tuple demo (`nested_tuple_first`).
 
 - **`AnyValue` debug-string for the cache key.** Using `format!("{:?}", k)` for the key relies on `Debug` being stable across builds. Since `AnyValue` is a `Box<dyn Value>` and each `Value` impl has a fixed `Debug`, this should be stable. **Mitigation:** if two genuinely equal tuples produce different keys (unlikely), they'll generate duplicate struct defs but won't cause incorrect output.
 

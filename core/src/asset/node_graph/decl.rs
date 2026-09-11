@@ -45,7 +45,7 @@ impl Asset for NodeDecl {
                     var_type_kernel: Some(x.get_server_type() as i32),
                     placeholder: None,
                     display_state: None,
-                    detail: x.encode_type_detail(), // TODO: enum ...
+                    detail: x.encode_type_detail(),
                 }),
                 meta_sig_type: *meta,
                 persistent_pin_uid: persistent_uid + 1,
