@@ -1,4 +1,11 @@
 use core::marker::PhantomData;
 
-#[allow(dead_code)]
-pub struct List<T>(i32, PhantomData<T>); // TODO
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct List<T>(&'static ListInternal, PhantomData<T>);
+
+unsafe extern "Rust" {
+    type ListInternal;
+}
+
+// TODO

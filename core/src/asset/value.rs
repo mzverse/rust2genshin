@@ -1,12 +1,13 @@
 use crate::asset::Side;
+use crate::asset::generated::structure_definition_data::var_def::Subtype;
 use crate::asset::generated::type_definition::TypeDetail;
-use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, TypeDefinition, TypedValue, Vec3f, pin_interface, type_definition, typed_value, vec3f};
+use crate::asset::generated::{pin_interface, structure_definition_data, type_definition, typed_value, vec3f, ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, TypeDefinition, TypedValue, Vec3f};
 use crate::asset::structure::ValueStruct;
 use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
-use crate::asset::generated::pin_interface::type_info::{Detail, EnumId};
+use crate::asset::generated::structure_definition_data::var_def::value::{Dict, Val};
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -31,7 +32,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         }
     }
 
-    fn encode(&self, is_set: bool, side: Side) -> TypedValue {
+    fn encode_typed(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
             widget: self.get_widget_type() as i32,
             is_set,
@@ -102,6 +103,12 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         None
     }
 
+    fn encode_subtype(&self) -> Option<Subtype> { // TODO: enum, List
+        None
+    }
+
+    fn encode_field_value(&self) -> Val;
+
     fn is_instance(&self, value: &AnyValue) -> bool {
         value.type_id() == TypeId::of::<Self>()
     }
@@ -125,7 +132,7 @@ impl Clone for AnyValue {
 downcast!(dyn Value);
 
 pub trait ValueDefault: Value + Default {
-    fn def() -> Box<Self> {
+    fn def() -> AnyValue {
         Self::default().into()
     }
 }
@@ -145,6 +152,11 @@ impl<T: ValueClone> CloneValue for T {
 #[derive(Clone, Debug)]
 #[derive(Default)]
 pub struct ValueBool(pub bool);
+impl ValueBool {
+    pub fn encode(&self) -> Enum {
+        Enum { value: self.0 as i64 }
+    }
+}
 impl Value for ValueBool {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SBoolean
@@ -153,19 +165,25 @@ impl Value for ValueBool {
         ClientTypeId::CBoolean
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValEnum(Enum { value: match self.0 {
-            true => 1,
-            false => 0
-        }}).into()
+        typed_value::Storage::ValEnum(self.encode()).into()
     }
-    fn encode_type_detail(&self) -> Option<Detail> {
-        Detail::EnumId(EnumId { val: 1 }).into()
+    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
+        pin_interface::type_info::Detail::EnumId(pin_interface::type_info::EnumId { val: 1 }).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::BooleanVal(self.encode())
     }
 }
 
 #[derive(Clone, Debug)]
 #[derive(Default)]
 pub struct ValueInt(pub i32);
+impl ValueInt {
+    pub fn encode(&self) -> Int {
+        Int { value: self.0 }
+    }
+}
 impl Value for ValueInt {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SInt
@@ -174,13 +192,22 @@ impl Value for ValueInt {
         ClientTypeId::CInt
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValInt(Int { value: self.0 }).into()
+        typed_value::Storage::ValInt(self.encode()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::IntVal(self.encode())
     }
 }
 
 #[derive(Clone, Debug)]
 #[derive(Default)]
 pub struct ValueString(pub String);
+impl ValueString {
+    pub fn encode(&self) -> Str {
+        Str { value: self.0.clone() }
+    }
+}
 impl Value for ValueString {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SString
@@ -189,7 +216,11 @@ impl Value for ValueString {
         ClientTypeId::CString
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValString(Str { value: self.0.clone() }).into()
+        typed_value::Storage::ValString(self.encode()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::StrVal(self.encode())
     }
 }
 
@@ -200,11 +231,11 @@ impl Value for ValueString {
 // ---------- 标量 ----------
 
 /// 浮点数(SFloat=5 / CFloat=7)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValueFloat(pub f32);
-impl Default for ValueFloat {
-    fn default() -> Self {
-        Self(0.0)
+impl ValueFloat {
+    fn encode(&self) -> Flt {
+        Flt { value: self.0 }
     }
 }
 impl Value for ValueFloat {
@@ -215,19 +246,33 @@ impl Value for ValueFloat {
         ClientTypeId::CFloat
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValFloat(Flt { value: self.0 }).into()
+        typed_value::Storage::ValFloat(self.encode()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::FloatVal(self.encode())
     }
 }
 
 /// 三维向量(SVector=12 / CVector=11)
-#[derive(Clone, Debug)]
-pub struct ValueVector(pub f32, pub f32, pub f32);
-impl Default for ValueVector {
-    fn default() -> Self {
-        Self(0.0, 0.0, 0.0)
+#[derive(Clone, Debug, Default)]
+pub struct ValueVec3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+impl ValueVec3 {
+    fn encode(&self) -> Vec3f {
+        Vec3f {
+            value: vec3f::Value {
+                x: self.x,
+                y: self.y,
+                z: self.z,
+            }.into(),
+        }
     }
 }
-impl Value for ValueVector {
+impl Value for ValueVec3 {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SVector
     }
@@ -235,9 +280,11 @@ impl Value for ValueVector {
         ClientTypeId::CVector
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValVector(Vec3f {
-            value: Some(vec3f::Value { x: self.0, y: self.1, z: self.2 }),
-        }).into()
+        typed_value::Storage::ValVector(self.encode()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::Vec3Val(self.encode())
     }
 }
 
@@ -245,6 +292,11 @@ impl Value for ValueVector {
 #[derive(Clone, Debug)]
 #[derive(Default)]
 pub struct ValueGuid(pub i64);
+impl ValueGuid {
+    fn encode(&self) -> Id {
+        Id { value: self.0 }
+    }
+}
 impl Value for ValueGuid {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SGuid
@@ -253,7 +305,11 @@ impl Value for ValueGuid {
         ClientTypeId::CGuid
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 }).into()
+        typed_value::Storage::ValId(self.encode()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::GuidVal(self.encode())
     }
 }
 
@@ -274,6 +330,10 @@ impl Value for ValueEntity {
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         None
+    }
+
+    fn encode_field_value(&self) -> Val {
+        panic!()
     }
 }
 
@@ -299,9 +359,14 @@ impl Value for ValueEnum {
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValEnum(Enum { value: self.index }).into()
     }
-    fn encode_type_detail(&self) -> Option<Detail> {
-        Detail::EnumId(EnumId { val: self.id }).into()
+    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
+        pin_interface::type_info::Detail::EnumId(pin_interface::type_info::EnumId { val: self.id }).into()
     }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
+    }
+
     fn is_instance(&self, value: &AnyValue) -> bool {
         matches!(value.downcast_ref::<ValueEnum>(), Ok(value) if value.id == self.id)
     }
@@ -321,6 +386,10 @@ impl Value for ValueFaction {
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
+    }
 }
 
 /// 配置表引用(SConfig=20 / CConfig=18)
@@ -336,6 +405,10 @@ impl Value for ValueConfig {
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValId(Id { value: self.0 }).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -353,6 +426,10 @@ impl Value for ValuePrefab {
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValId(Id { value: self.0 }).into()
     }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
+    }
 }
 
 // ---------- 运行时引用(仅服务器,客户端无对应类型) ----------
@@ -360,7 +437,7 @@ impl Value for ValuePrefab {
 /// 局部变量引用(SLocalVarRef=16,运行时栈内存引用)
 #[derive(Clone, Debug)]
 #[derive(Default)]
-pub struct ValueLocalVarRef(pub u32);
+pub struct ValueLocalVarRef;
 impl Value for ValueLocalVarRef {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SLocalVarRef
@@ -369,14 +446,18 @@ impl Value for ValueLocalVarRef {
         ClientTypeId::ClientUnknown
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 as i64 }).into()
+        None
+    }
+
+    fn encode_field_value(&self) -> Val {
+        panic!();
     }
 }
 
 /// 变量快照引用(SVarSnapshotRef=28,实体删除时访问原始数据)
 #[derive(Clone, Debug)]
 #[derive(Default)]
-pub struct ValueVarSnapshotRef(pub u32);
+pub struct ValueVarSnapshotRef;
 impl Value for ValueVarSnapshotRef {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SVarSnapshotRef
@@ -385,7 +466,11 @@ impl Value for ValueVarSnapshotRef {
         ClientTypeId::ClientUnknown
     }
     fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 as i64 }).into()
+        None
+    }
+
+    fn encode_field_value(&self) -> Val {
+        panic!();
     }
 }
 
@@ -407,9 +492,13 @@ impl Value for ValueEntityList {
             self.0.iter().map(|_x| {
                 let v = &ValueEntity;
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -429,9 +518,13 @@ impl Value for ValueGuidList {
             self.0.iter().map(|x| {
                 let v = &ValueGuid(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -451,9 +544,14 @@ impl Value for ValueIntList {
             self.0.iter().map(|x| {
                 let v = &ValueInt(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+    fn encode_field_value(&self) -> Val {
+        Val::IntList(structure_definition_data::var_def::value::IntList {
+            items: self.0.clone(),
+        })
     }
 }
 
@@ -473,9 +571,13 @@ impl Value for ValueBoolList {
             self.0.iter().map(|x| {
                 let v = &ValueBool(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -495,9 +597,13 @@ impl Value for ValueFloatList {
             self.0.iter().map(|x| {
                 let v = &ValueFloat(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -517,9 +623,13 @@ impl Value for ValueStringList {
             self.0.iter().map(|x| {
                 let v = &ValueString(x.clone());
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -539,12 +649,16 @@ impl Value for ValueVectorList {
             self.0
                 .iter()
                 .map(|&(x, y, z)| {
-                    let v = &ValueVector(x, y, z);
+                    let v = &ValueVec3 { x, y, z };
                     let side = Side::Server;
-                    v.encode(true, side)
+                    v.encode_typed(true, side)
                 })
                 .collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -560,7 +674,11 @@ impl Value for ValueEnumList {
         ClientTypeId::CEnumList
     }
     fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(self.0.iter().map(|x| x.encode(true, side)).collect())).into()
+        typed_value::Storage::ValList(list_storage(self.0.iter().map(|x| x.encode_typed(true, side)).collect())).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -580,9 +698,13 @@ impl Value for ValueFactionList {
             self.0.iter().map(|x| {
                 let v = &ValueFaction(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -602,9 +724,13 @@ impl Value for ValueConfigList {
             self.0.iter().map(|x| {
                 let v = &ValueConfig(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -624,9 +750,13 @@ impl Value for ValuePrefabList {
             self.0.iter().map(|x| {
                 let v = &ValuePrefab(*x);
                 let side = Side::Server;
-                v.encode(true, side)
+                v.encode_typed(true, side)
             }).collect(),
         )).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        todo!()
     }
 }
 
@@ -685,8 +815,8 @@ impl Value for ValueDict {
                         r#type: None,
                         tracker: None,
                         storage: Some(typed_value::Storage::ValPair(Box::new(MapPairStorage {
-                            key: Some(Box::new(k.encode(true, side))),
-                            value: Some(Box::new(v.encode(true, side))),
+                            key: Some(Box::new(k.encode_typed(true, side))),
+                            value: Some(Box::new(v.encode_typed(true, side))),
                         }))),
                     }
                 })
@@ -701,15 +831,41 @@ impl Value for ValueDict {
         }))
     }
     fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        Some(pin_interface::type_info::Detail::MapType(pin_interface::type_info::MapType {
+        pin_interface::type_info::Detail::MapType(pin_interface::type_info::MapType {
             key: self.key_type.get_server_type() as i32,
             value: self.value_type.get_server_type() as i32,
-            struct_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
-        }))
+            value_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
+            unknown: 1,
+            unknown1: 1,
+        }).into()
     }
     fn is_instance(&self, value: &Box<dyn Value>) -> bool {
         matches!(value.downcast_ref::<ValueDict>(), Ok(value)
             if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
+    }
+
+    fn encode_subtype(&self) -> Option<Subtype> {
+        Subtype {
+            is_set: true,
+            struct_id: 0x41000001, // TODO
+            key: (self.key_type.get_server_type() as i32).into(),
+            value: (self.value_type.get_server_type() as i32).into(),
+            value_id: self.value_type.downcast_ref::<ValueStruct>().ok().map(ValueStruct::get_struct_id),
+        }.into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        if !self.data.is_empty() {
+            todo!();
+        }
+        Val::Dict(Dict {
+            pairs: vec![],
+            keys: vec![],
+            values: vec![],
+            key_type: self.key_type.get_server_type() as i32,
+            value_type: self.value_type.get_server_type() as i32,
+            value_type_id: self.value_type.downcast_ref::<ValueStruct>().ok().map(ValueStruct::get_struct_id),
+        })
     }
 }
 
@@ -721,27 +877,27 @@ mod tests {
     fn scalar_types_encode_storage() {
         assert_eq!(ValueFloat(1.5).get_server_type(), ServerTypeId::SFloat);
         assert_eq!(ValueFloat(1.5).get_client_type(), ClientTypeId::CFloat);
-        let f = ValueFloat(1.5).encode(true, Side::Server);
+        let f = ValueFloat(1.5).encode_typed(true, Side::Server);
         assert!(matches!(f.storage, Some(typed_value::Storage::ValFloat(_))));
 
-        let v = ValueVector(1.0, 2.0, 3.0).encode(true, Side::Server);
+        let v = ValueVec3 { x: 1.0, y: 2.0, z: 3.0 }.encode_typed(true, Side::Server);
         assert!(matches!(v.storage, Some(typed_value::Storage::ValVector(_))));
 
-        let g = ValueGuid(42).encode(true, Side::Server);
+        let g = ValueGuid(42).encode_typed(true, Side::Server);
         assert!(matches!(g.storage, Some(typed_value::Storage::ValId(_))));
     }
 
     #[test]
     fn list_types_encode() {
         assert_eq!(ValueIntList(vec![]).get_server_type(), ServerTypeId::SIntList);
-        let l = ValueIntList(vec![1, 2, 3]).encode(true, Side::Server);
+        let l = ValueIntList(vec![1, 2, 3]).encode_typed(true, Side::Server);
         let Some(typed_value::Storage::ValList(list)) = l.storage else {
             panic!("not a list");
         };
         assert_eq!(list.element.len(), 3);
         assert!(matches!(list.element[0].storage, Some(typed_value::Storage::ValInt(_))));
 
-        let sl = ValueStringList(vec!["a".to_string()]).encode(true, Side::Server);
+        let sl = ValueStringList(vec!["a".to_string()]).encode_typed(true, Side::Server);
         let Some(typed_value::Storage::ValList(sl_list)) = sl.storage else {
             panic!("not a list");
         };
@@ -753,7 +909,7 @@ mod tests {
         assert_eq!(ValueDict::new(ValueString::default(), ValueString::default()).get_server_type(), ServerTypeId::SDict);
         let d = ValueDict::infer(vec![(ValueString("k".to_string()).into(), ValueInt(1).into())])
             .unwrap()
-            .encode(true, Side::Server);
+            .encode_typed(true, Side::Server);
         let Some(typed_value::Storage::ValMap(map)) = d.storage else {
             panic!("not a map");
         };
@@ -765,6 +921,6 @@ mod tests {
     fn server_only_types_use_client_unknown() {
         assert_eq!(ValueFactionList(vec![]).get_client_type(), ClientTypeId::ClientUnknown);
         assert_eq!(ValueDict::new(ValueString::default(), ValueString::default()).get_client_type(), ClientTypeId::ClientUnknown);
-        assert_eq!(ValueLocalVarRef(0).get_client_type(), ClientTypeId::ClientUnknown);
+        assert_eq!(ValueLocalVarRef.get_client_type(), ClientTypeId::ClientUnknown);
     }
 }

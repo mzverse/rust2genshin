@@ -31,7 +31,7 @@
 ## Task 1: Compiler cache + `touch_tuple` helper
 
 **Files:**
-- Modify: `core/src/compile/mod.rs` — add `TupleKey`, `tuple_schemas` field, `touch_tuple` method.
+- Modify: `core/src/compile/mod.rs` — add `TupleKey`, `structs` field, `touch_tuple` method.
 
 - [ ] **Step 1: Add `TupleKey` newtype and import it**
 
@@ -59,7 +59,7 @@ impl core::fmt::Debug for TupleKey {
 }
 ```
 
-- [ ] **Step 2: Add `tuple_schemas` field to `Compiler`**
+- [ ] **Step 2: Add `structs` field to `Compiler`**
 
 In the `Compiler` struct definition (around line 232-238 of `core/src/compile/mod.rs`), add a new field:
 
@@ -74,7 +74,7 @@ pub(crate) struct Compiler<'tcx> {
 }
 ```
 
-- [ ] **Step 3: Initialize `tuple_schemas` in `Compiler::new`**
+- [ ] **Step 3: Initialize `structs` in `Compiler::new`**
 
 In `Compiler::new` (around line 246-263), add initialization:
 

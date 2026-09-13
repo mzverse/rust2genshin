@@ -1,7 +1,7 @@
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
 use crate::asset::structure::StructureDefinition;
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueGuid};
+use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use crate::compile::func::CompilingFn;
 use crate::compile::optimize::Optimizer;
@@ -165,27 +165,13 @@ impl<'tcx> Compiler<'tcx> {
 
 const LIB_NAME: &str = "rust2genshin_lib";
 
-/// Cache key for interned tuple struct schemas. Uses the element-type debug
-/// representation so two structurally-equal tuples share a schema. Element
-/// types are resolved via `compile_ty` first (canonicalizing `i32`/`isize`
-/// → `ValueInt`, etc.), so types that map to the same engine type share a
-/// schema.
-#[derive(Clone, Eq, PartialEq, Hash)]
-pub struct TupleKey(pub String);
-
-impl core::fmt::Debug for TupleKey {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 pub struct Compiler<'tcx> {
     tcx: TyCtxt<'tcx>,
     lib: CrateNum,
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, AssetRef<CompositeNodeGraph>>,
-    tuple_schemas: HashMap<TupleKey, AssetRef<StructureDefinition>>,
+    structs: HashMap<String, AssetRef<StructureDefinition>>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -210,7 +196,7 @@ impl<'tcx> Compiler<'tcx> {
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
             compiling: HashSet::new(),
             compiled: HashMap::new(),
-            tuple_schemas: HashMap::new(),
+            structs: HashMap::new(),
         })
     }
     fn save(self, out_dir: &Path) {
@@ -351,10 +337,5 @@ impl<'tcx> Compiler<'tcx> {
             self.assets.set_primary(&asset_id);
         }
         Ok(asset_id)
-    }
-
-    #[allow(dead_code)]
-    fn touch_struct(&mut self) {
-        todo!()
     }
 }

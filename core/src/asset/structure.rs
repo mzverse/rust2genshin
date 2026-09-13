@@ -5,22 +5,24 @@
 
 use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::identifier::{AssetKind, Category};
+use crate::asset::generated::structure_definition_data::var_def::Subtype;
+use crate::asset::generated::structure_definition_data::var_def::value::{StructVal, Val, struct_val};
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
-use crate::asset::node_graph::decl::NodeDecl;
+use crate::asset::node_graph::decl::{DeclPin, NodeDecl};
 use crate::asset::node_graph::{NodeKind, PinType};
-use crate::asset::value::{AnyValue, Value, ValueBool, ValueFloat, ValueGuid, ValueInt, ValueString, ValueVector};
+use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault};
 use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use std::collections::HashMap;
 use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
 pub fn node_assemble_struct(st: &ValueStruct) -> NodeKind {
-    st.st.data.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
+    st.st.data.decls.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
 }
 
 pub fn node_destruct_struct(st: &ValueStruct) -> NodeKind {
-    st.st.data.get(&StructureNodeDecl::DestructServer).unwrap().data.clone()
+    st.st.data.decls.get(&StructureNodeDecl::DestructServer).unwrap().data.clone()
 }
 
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
@@ -28,80 +30,36 @@ pub struct StructField {
     pub name: String,
     /// 字段值(类型由 AnyValue 自身携带,不另存 type id)
     pub value: AnyValue,
-    /// 是否有默认值(is_set=false 时 typedef3.val 为空)
-    pub is_set: bool,
 }
 
 impl StructField {
-    /// 字段默认值 → proto `TypeDef.val`(Int / Bool / Str / Guid / Float / Vector)
-    fn encode_val(v: &dyn Value) -> Option<sd_var_def::type_def::Val> {
-        use sd_var_def::type_def::Val;
-        if let Ok(i) = v.downcast_ref::<ValueInt>() {
-            Some(Val::IntVal(Int { value: i.0 }))
-        } else if let Ok(b) = v.downcast_ref::<ValueBool>() {
-            Some(Val::BooleanVal(Enum { value: b.0 as i64 }))
-        } else if let Ok(s) = v.downcast_ref::<ValueString>() {
-            Some(Val::StrVal(Str { value: s.0.clone() }))
-        } else if let Ok(g) = v.downcast_ref::<ValueGuid>() {
-            // val oneof 字段 12 = Id{id:int64}(与我们的 Id{value} 同构)
-            Some(Val::GuidVal(Id { value: g.0 }))
-        } else if let Ok(f) = v.downcast_ref::<ValueFloat>() {
-            // val oneof 字段 15 = Float{float}(与我们的 Flt{value} 同构)
-            Some(Val::FloatVal(Flt { value: f.0 }))
-        } else if let Ok(v3) = v.downcast_ref::<ValueVector>() {
-            // val oneof 字段 22 = Vector{vec{x,y,z}}(与 Vec3f 同构)
-            Some(Val::VectorVal(Vec3f {
-                value: Some(vec3f::Value { x: v3.0, y: v3.1, z: v3.2 }),
-            }))
-        } else {
-            None
-        }
-    }
-
     /// 字段 → proto `VarDef`(对齐真实导出的 wire 格式):
     ///   typedef1 = { type, subType {} }(空 subType,无 val)
     ///   typedef3 = { type, subType { type, xxxx_id {} }, val }
     fn encode_var_def(&self, index: i32) -> structure_definition_data::VarDef {
         let ty = self.value.get_server_type();
-        let val = if self.is_set { Self::encode_val(self.value.as_ref()) } else { None };
+        let kind = structure_definition_data::var_def::Kind {
+            primary: ty as i32,
+            sub: self.value.encode_subtype().or(Subtype {
+                is_set: false,
+                struct_id: 0,
+                key: None,
+                value: None,
+                value_id: None,
+            }.into()),
+        };
         structure_definition_data::VarDef {
-            typedef1: Some(sd_var_def::TypeDef {
-                r#type: ty as i32,
-                sub_type: Some(sd_var_def::type_def::SubType {
-                    r#type: 0,
-                    xxxx_id: 0,
-                    key: 0,
-                    value: 0,
-                    value_id: 0,
-                }),
-                val: None,
-            }),
-            typedef3: Some(sd_var_def::TypeDef3 {
-                r#type: ty as i32,
-                sub_type: Some(sd_var_def::type_def3::SubType {
-                    r#type: ty as i32,
-                    xxxx_id: Some(sd_var_def::type_def3::sub_type::Any {}),
-                    key: 0,
-                    value: 0,
-                    value_id: 0,
-                }),
-                val: val.clone().map(|v| match v {
-                    sd_var_def::type_def::Val::IntVal(x) => sd_var_def::type_def3::Val::IntVal(x),
-                    sd_var_def::type_def::Val::BooleanVal(x) => {
-                        sd_var_def::type_def3::Val::BooleanVal(x)
-                    }
-                    sd_var_def::type_def::Val::StrVal(x) => sd_var_def::type_def3::Val::StrVal(x),
-                    sd_var_def::type_def::Val::GuidVal(x) => sd_var_def::type_def3::Val::GuidVal(x),
-                    sd_var_def::type_def::Val::FloatVal(x) => sd_var_def::type_def3::Val::FloatVal(x),
-                    sd_var_def::type_def::Val::VectorVal(x) => {
-                        sd_var_def::type_def3::Val::VectorVal(x)
-                    }
-                }),
-            }),
+            kind: kind.into(),
             name: self.name.clone(),
             var_name: self.name.clone(),
             var_type: ty as i32,
             var_index: index,
+            def: if self.value.encode_storage(Side::Server).is_some() { sd_var_def::Value {
+                r#type: ty as i32,
+                kind: kind.into(),
+                name: None,
+                val: self.value.encode_field_value().into(),
+            }.into() } else { None },
         }
     }
 }
@@ -117,8 +75,8 @@ pub struct StructureDefinition {
 impl StructureDefinition {
     /// 组装 proto `Field`(generic_field 与 concrete_field 相同,见 proto 注释)。
     /// `index` 为 Field.index,真实导出里它等于 structVersion。
-    fn encode_field(&self, id: i64, index: i32) -> structure_definition_data::Field {
-        structure_definition_data::Field {
+    fn encode_fields(&self, id: i64, index: i32) -> structure_definition_data::Fields {
+        structure_definition_data::Fields {
             id,
             xxx: 0,
             var: self.fields.iter().enumerate().map(|(i, f)| f.encode_var_def((i as i32) + 1)).collect(),
@@ -133,6 +91,7 @@ impl StructureDefinition {
 pub enum StructureNodeDecl {
     AssembleServer,
     DestructServer,
+    Modify,
 }
 
 // ---------- 结构体值(SStruct=25,仅服务器) ----------
@@ -146,8 +105,14 @@ pub struct ValueStruct {
     pub fields: Vec<AnyValue>,
 }
 impl ValueStruct {
-    pub fn new(r: AssetRef<StructureDefinition>, fields: Vec<AnyValue>) -> Self {
-        Self { st: r, fields }
+    pub fn new(r: AssetRef<StructureDefinition>) -> Self {
+        Self {
+            fields: r.data.fields.clone(),
+            st: r,
+        }
+    }
+    pub fn get_struct_id(&self) -> i64 {
+        self.st.root.guid
     }
 }
 impl Value for ValueStruct {
@@ -159,7 +124,7 @@ impl Value for ValueStruct {
     }
     fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValStruct(StructStorage {
-            field: self.fields.iter().map(|f| f.encode(true, side)).collect(),
+            field: self.fields.iter().map(|f| f.encode_typed(true, side)).collect(),
         }).into()
     }
     fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
@@ -168,44 +133,112 @@ impl Value for ValueStruct {
         }))
     }
     fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.st.root.guid }),)
+        Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.get_struct_id() }),)
     }
 
     fn is_instance(&self, value: &Box<dyn Value>) -> bool {
         matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.st == self.st)
     }
+
+    fn encode_subtype(&self) -> Option<Subtype> {
+        Subtype {
+            is_set: true,
+            struct_id: self.get_struct_id(),
+            key: None,
+            value: None,
+            value_id: None,
+        }.into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        Val::Structure(StructVal {
+            fields: vec![],
+            struct_id: self.get_struct_id(),
+            id: struct_val::Id {
+                kind: ServerTypeId::SVarSnapshotRef as i32,
+                id: 0x40000001, // TODO
+            }.into(),
+        })
+    }
 }
 
+#[derive(Clone, Debug)]
+pub struct StructureRef {
+    fields: Vec<AnyValue>,
+    decls: HashMap<StructureNodeDecl, AssetRef<NodeDecl>>,
+}
 impl Asset for StructureDefinition {
-    type RefData = HashMap<StructureNodeDecl, AssetRef<NodeDecl>>;
+    type RefData = StructureRef;
 
     fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
-        let mut result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), Default::default());
+        let mut result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), StructureRef {
+            fields: self.fields.iter().map(|x| x.value.clone()).collect(),
+            decls: Default::default(),
+        });
         for (k, name, imp, pins) in [
             (StructureNodeDecl::AssembleServer, "Assemble Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructAssembly as i32,
                 template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
-                pins.insert(PinType::InValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
-                pins.insert(PinType::OutValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
-                    kind: pin_signature::Kind::StructRef as i32,
-                    index: 0,
-                    source_ref: None,
-                }.into())]);
+                pins.insert(PinType::InValue, self.fields.iter().map(|x| DeclPin {
+                    name: x.name.clone(),
+                    kind: x.value.clone().into(),
+                    meta: None,
+                }).collect::<Vec<_>>());
+                pins.insert(PinType::OutValue, vec![DeclPin {
+                    name: self.name.clone(),
+                    kind: Some(ValueStruct::new(result.clone()).into()),
+                    meta: pin_signature::Kind::StructRef.into(),
+                }]);
             })),
-            (StructureNodeDecl::DestructServer, "Destruct Struct Server", node_interface::Implementation { // TODO
+            (StructureNodeDecl::DestructServer, "Destruct Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructSplit as i32,
                 template: node_interface::implementation::Template::SplitStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
-                pins.insert(PinType::InValue, vec![(self.name.clone(), Some(ValueStruct::new(result.clone(), vec![]).into()), PinSignature {
-                    kind: pin_signature::Kind::StructRef as i32,
-                    index: 0,
-                    source_ref: None,
-                }.into())]);
-                pins.insert(PinType::OutValue, self.fields.iter().map(|x| (x.name.clone(), Some(x.value.clone()), None)).collect::<Vec<_>>());
+                pins.insert(PinType::InValue, vec![DeclPin {
+                    name: self.name.clone(),
+                    kind: Some(ValueStruct::new(result.clone()).into()),
+                    meta: pin_signature::Kind::StructRef.into(),
+                }]);
+                pins.insert(PinType::OutValue, self.fields.iter().map(|x| DeclPin {
+                    name: x.name.clone(),
+                    kind: Some(x.value.clone()),
+                    meta: None,
+                }).collect::<Vec<_>>());
             })),
+            // (StructureNodeDecl::Modify, "Modify Struct", node_interface::Implementation {
+            //     category: node_interface::implementation::Category::StructModify as i32,
+            //     template: node_interface::implementation::Template::ModifyStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+            // }, HashMap::default().tap_mut(|pins| { // TODO
+            //     pins.insert(PinType::InControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
+            //     pins.insert(PinType::OutControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
+            //     pins.insert(PinType::InValue, vec![].tap_mut(|pins| {
+            //         pins.push(DeclPin {
+            //             name: self.name.clone(),
+            //             kind: Some(ValueStruct::new(result.clone()).into()),
+            //             meta: pin_signature::Kind::StructRef.into(),
+            //         });
+            //         pins.push(DeclPin {
+            //             name: "Struct Key Select".to_string(),
+            //             kind: None, // TODO: mark virtual pin
+            //             meta: pin_signature::Kind::StructKeySelect.into(),
+            //         });
+            //         for field in &self.fields {
+            //             pins.push(DeclPin {
+            //                 name: field.name.clone(),
+            //                 kind: field.value.clone().into(),
+            //                 meta: pin_signature::Kind::StructKeySet.into(),
+            //             });
+            //             pins.push(DeclPin {
+            //                 name: format!("modify_{}", field.name),
+            //                 kind: ValueBool::def().into(),
+            //                 meta: pin_signature::Kind::StructKeyMod.into(),
+            //             });
+            //         }
+            //     }));
+            // })),
         ] {
-            result.data.insert(k, NodeDecl {
+            result.data.decls.insert(k, NodeDecl {
                 name: name.to_string(),
                 description: "".to_string(),
                 pins,
@@ -216,16 +249,16 @@ impl Asset for StructureDefinition {
             }.apply(bundle));
         }
         // Field.index 对齐 structVersion(真实导出中二者相等)
-        let field = self.encode_field(result.root.guid, self.version);
+        let field = self.encode_fields(result.root.guid, self.version);
         bundle.push(AssetData {
             id: result.root.into(),
-            references: result.data.values().map(|x| x.root).collect(),
-            name: self.name,
+            references: result.data.decls.values().map(|x| x.root).collect(),
+            name: "".to_string(),
             r#type: asset_data::Type::Structure as i32,
             payload: Some(Payload::StructData(StructureDefinitionContainer {
                 def: Some(StructureDefinitionData {
-                    generic_field: Some(field.clone()),
-                    concrete_field: Some(field),
+                    generic_fields: Some(field.clone()),
+                    concrete_fields: Some(field),
                     struct_version: self.version,
                     item_count: self.fields.len() as i32,
                     unknown1: 1,

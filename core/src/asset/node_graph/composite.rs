@@ -1,6 +1,6 @@
 use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::{Identifier, InterfaceMapping, PinSignature, identifier, node_interface};
-use crate::asset::node_graph::decl::NodeDecl;
+use crate::asset::node_graph::decl::{DeclPin, NodeDecl};
 use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeKind, NodeRef, PinType};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use std::collections::BTreeMap;
@@ -37,7 +37,11 @@ impl Asset for CompositeNodeGraph {
         let mut decl = NodeDecl {
             name: self.graph.name.clone(),
             description: self.description.clone(),
-            pins: self.pins.iter().map(|(k, v)| (*k, v.iter().map(|x| (x.clone(), None, None)).collect())).collect(),
+            pins: self.pins.iter().map(|(k, v)| (*k, v.iter().map(|x| DeclPin {
+                name: x.clone(),
+                kind: None,
+                meta: None,
+            }).collect())).collect(),
             implementation: node_interface::Implementation {
                 category: node_interface::implementation::Category::Composite as i32,
                 template: None,
@@ -61,13 +65,13 @@ impl Asset for CompositeNodeGraph {
             for (j, links) in n.values_in.iter().enumerate() {
                 for k in links.link.iter().copied().flat_map(Link::export) {
                     pins_data.get_mut(&PinType::InValue).unwrap()[k].push(Connection(NodeRef::from(i), j));
-                    decl.pins.get_mut(&PinType::InValue).unwrap()[k].1 = n.kind.values_in_types[j].clone().into();
+                    decl.pins.get_mut(&PinType::InValue).unwrap()[k].kind = n.kind.values_in_types[j].clone().into();
                 }
             }
             for (j, links) in n.values_out.iter().enumerate() {
                 for k in links.iter().copied().flat_map(Link::export) {
                     pins_data.get_mut(&PinType::OutValue).unwrap()[k].push(Connection(NodeRef::from(i), j));
-                    decl.pins.get_mut(&PinType::OutValue).unwrap()[k].1 = n.kind.values_out_types[j].clone().into();
+                    decl.pins.get_mut(&PinType::OutValue).unwrap()[k].kind = n.kind.values_out_types[j].clone().into();
                 }
             }
         }

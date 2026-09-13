@@ -146,6 +146,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 return self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(Place { local: p.local, projection: self.tcx.mk_place_elems(&p.projection[0..p.projection.len() - 1]) }), WithRetag::No), span);
             },
             Rvalue::Cast(kind, op, target_ty) => {
+                // FIXME: f32 to i32
                 let from_ty = op.ty(&self.body.local_decls, self.tcx);
                 let from_kind = self.compiler.compile_ty(span, from_ty)?;
                 let to_kind = self.compiler.compile_ty(span, *target_ty)?;

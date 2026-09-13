@@ -9,7 +9,7 @@ use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum, ValueFloat,
-    ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueVector,
+    ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueVec3,
 };
 use std::sync::LazyLock;
 
@@ -19,67 +19,67 @@ use std::sync::LazyLock;
 
 /// 拆分向量为分量(Arithmetic.Math.Split_Vector,ID 9):Vec → x/y/z
 pub static NODE_SPLIT_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(9, 0, 0, vec![ValueVector::def()], vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()])
+    NodeKind::new(9, 0, 0, vec![ValueVec3::def()], vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()])
 });
 
 /// 向量加法(ID 10):a + b
 pub static NODE_VECTOR_ADD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(10, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(10, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量减法(ID 11):a - b
 pub static NODE_VECTOR_SUBTRACT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(11, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(11, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量缩放(ID 12):vector * scale
 pub static NODE_VECTOR_SCALE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(12, vec![ValueVector::def(), ValueFloat::def()], ValueVector::def())
+    NodeKind::expr(12, vec![ValueVec3::def(), ValueFloat::def()], ValueVec3::def())
 });
 
 /// 向量夹角(ID 13):a 与 b 的夹角(度)
 pub static NODE_VECTOR_ANGLE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(13, vec![ValueVector::def(), ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(13, vec![ValueVec3::def(), ValueVec3::def()], ValueFloat::def())
 });
 
 /// 向量归一化(ID 74):长度归一为 1
 pub static NODE_VECTOR_NORMALIZE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(74, vec![ValueVector::def()], ValueVector::def())
+    NodeKind::expr(74, vec![ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量长度(ID 220):模长
 pub static NODE_VECTOR_LENGTH: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(220, vec![ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(220, vec![ValueVec3::def()], ValueFloat::def())
 });
 
 /// 两点距离(ID 244):a 与 b 的距离
 pub static NODE_DISTANCE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(244, vec![ValueVector::def(), ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(244, vec![ValueVec3::def(), ValueVec3::def()], ValueFloat::def())
 });
 
 /// 向量旋转(ID 474):按旋转量旋转
 pub static NODE_VECTOR_ROTATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(474, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(474, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量点积(ID 505)
 pub static NODE_VECTOR_DOT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(505, vec![ValueVector::def(), ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(505, vec![ValueVec3::def(), ValueVec3::def()], ValueFloat::def())
 });
 
 /// 向量叉积(ID 506)
 pub static NODE_VECTOR_CROSS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(506, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(506, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量转旋转(ID 519):由前向/上向量构造旋转
 pub static NODE_VECTOR_TO_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(519, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(519, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 创建向量(ID 225):x/y/z 分量
 pub static NODE_CREATE_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(225, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()], ValueVector::def())
+    NodeKind::expr(225, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()], ValueVec3::def())
 });
 
 // ========================================================================
@@ -383,7 +383,7 @@ pub fn node_equal(ty: AnyValue) -> NodeKind {
         (1, 15)
     } else if ty.is::<ValueEntity>() {
         (2, 16)
-    } else if ty.is::<ValueVector>() {
+    } else if ty.is::<ValueVec3>() {
         (3, 17)
     } else if ty.is::<ValueInt>() {
         (5, 370)

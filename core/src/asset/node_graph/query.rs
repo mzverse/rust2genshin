@@ -7,7 +7,7 @@ use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueConfigList, ValueDefault, ValueDict, ValueEntity,
     ValueEntityList, ValueEnum, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList,
-    ValueLocalVarRef, ValuePrefab, ValueString, ValueVarSnapshotRef, ValueVector,
+    ValueLocalVarRef, ValuePrefab, ValueString, ValueVarSnapshotRef, ValueVec3,
 };
 use std::sync::LazyLock;
 
@@ -41,37 +41,37 @@ pub static NODE_PI: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 零向量(ID 192)
 pub static NODE_VECTOR_ZERO: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(192, vec![], ValueVector::def())
+    NodeKind::expr(192, vec![], ValueVec3::def())
 });
 
 /// 上向量(ID 193)
 pub static NODE_VECTOR_UP: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(193, vec![], ValueVector::def())
+    NodeKind::expr(193, vec![], ValueVec3::def())
 });
 
 /// 下向量(ID 194)
 pub static NODE_VECTOR_DOWN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(194, vec![], ValueVector::def())
+    NodeKind::expr(194, vec![], ValueVec3::def())
 });
 
 /// 左向量(ID 195)
 pub static NODE_VECTOR_LEFT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(195, vec![], ValueVector::def())
+    NodeKind::expr(195, vec![], ValueVec3::def())
 });
 
 /// 右向量(ID 196)
 pub static NODE_VECTOR_RIGHT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(196, vec![], ValueVector::def())
+    NodeKind::expr(196, vec![], ValueVec3::def())
 });
 
 /// 前向量(ID 197)
 pub static NODE_VECTOR_FORWARD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(197, vec![], ValueVector::def())
+    NodeKind::expr(197, vec![], ValueVec3::def())
 });
 
 /// 后向量(ID 198)
 pub static NODE_VECTOR_BACKWARD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(198, vec![], ValueVector::def())
+    NodeKind::expr(198, vec![], ValueVec3::def())
 });
 
 // ========================================================================
@@ -109,7 +109,7 @@ pub static NODE_GET_GUID: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取变换(ID 99):位置 + 旋转
 pub static NODE_GET_TRANSFORM: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(99, 0, 0, vec![ValueEntity::def()], vec![ValueVector::def(), ValueVector::def()])
+    NodeKind::new(99, 0, 0, vec![ValueEntity::def()], vec![ValueVec3::def(), ValueVec3::def()])
 });
 
 /// 获取实体类型(ID 260)
@@ -149,7 +149,7 @@ pub static NODE_GET_BY_FACTION: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 按范围筛选实体列表(ID 380)
 pub static NODE_GET_BY_RANGE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(380, vec![ValueEntityList::def(), ValueVector::def(), ValueFloat::def()], ValueEntityList::def())
+    NodeKind::expr(380, vec![ValueEntityList::def(), ValueVec3::def(), ValueFloat::def()], ValueEntityList::def())
 });
 
 /// 是否存活(ID 507)
@@ -159,17 +159,17 @@ pub static NODE_IS_ACTIVE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取前向向量(ID 516)
 pub static NODE_GET_FORWARD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(516, vec![ValueEntity::def()], ValueVector::def())
+    NodeKind::expr(516, vec![ValueEntity::def()], ValueVec3::def())
 });
 
 /// 获取右向向量(ID 517)
 pub static NODE_GET_RIGHT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(517, vec![ValueEntity::def()], ValueVector::def())
+    NodeKind::expr(517, vec![ValueEntity::def()], ValueVec3::def())
 });
 
 /// 获取上向向量(ID 518)
 pub static NODE_GET_UP: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(518, vec![ValueEntity::def()], ValueVector::def())
+    NodeKind::expr(518, vec![ValueEntity::def()], ValueVec3::def())
 });
 
 // ========================================================================
@@ -214,7 +214,7 @@ pub static NODE_GET_OWNED_ENTITIES: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取移动速度(ID 947):速度值 + 方向
 pub static NODE_GET_MOVE_SPEED: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(947, 0, 0, vec![ValueEntity::def()], vec![ValueFloat::def(), ValueVector::def()])
+    NodeKind::new(947, 0, 0, vec![ValueEntity::def()], vec![ValueFloat::def(), ValueVec3::def()])
 });
 
 // ========================================================================
@@ -485,7 +485,7 @@ pub static NODE_GET_FOLLOW_TARGET: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取预设点变换(ID 270)
 pub static NODE_GET_PRESET_POINT_TRANSFORM: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(270, 0, 0, vec![ValueInt::def()], vec![ValueVector::def(), ValueVector::def()])
+    NodeKind::new(270, 0, 0, vec![ValueInt::def()], vec![ValueVec3::def(), ValueVec3::def()])
 });
 
 /// 按标签获取预设点(ID 271)
@@ -500,7 +500,7 @@ pub static NODE_GET_PATROL_TEMPLATE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取路径点(ID 621)
 pub static NODE_GET_WAYPOINT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(621, 0, 0, vec![ValueInt::def(), ValueInt::def()], vec![ValueVector::def(), ValueVector::def()])
+    NodeKind::new(621, 0, 0, vec![ValueInt::def(), ValueInt::def()], vec![ValueVec3::def(), ValueVec3::def()])
 });
 
 // ========================================================================

@@ -1,9 +1,12 @@
 #![no_std]
+
 #![feature(legacy_receiver_trait)]
 #![feature(coerce_unsized)]
 #![feature(unsize)]
 #![feature(extern_types)]
 #![feature(rustc_attrs)]
+
+#![allow(internal_features)]
 
 pub mod entity;
 pub mod math;

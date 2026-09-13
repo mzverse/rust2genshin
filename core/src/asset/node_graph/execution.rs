@@ -9,7 +9,7 @@ use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     AnyValue, ValueBool, ValueConfig, ValueConfigList, ValueDefault, ValueDict, ValueEntity,
     ValueEntityList, ValueEnum, ValueFaction, ValueFloat, ValueFloatList, ValueGuid, ValueInt,
-    ValueIntList, ValueLocalVarRef, ValuePrefab, ValueString, ValueStringList, ValueVector,
+    ValueIntList, ValueLocalVarRef, ValuePrefab, ValueString, ValueStringList, ValueVec3,
 };
 
 pub static NODE_LOG: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::procedure(1, vec![ValueString::def()]));
@@ -83,12 +83,12 @@ pub static NODE_CREATE_ENTITY: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 创建预制体实体(ID 252):输出实体
 pub static NODE_CREATE_PREFAB: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::func(252, vec![ValuePrefab::def(), ValueVector::def(), ValueVector::def(), ValueEntity::def(), ValueBool::def(), ValueInt::def(), ValueIntList::def()], ValueEntity::def())
+    NodeKind::func(252, vec![ValuePrefab::def(), ValueVec3::def(), ValueVec3::def(), ValueEntity::def(), ValueBool::def(), ValueInt::def(), ValueIntList::def()], ValueEntity::def())
 });
 
 /// 创建投射物(ID 256):输出实体
 pub static NODE_CREATE_PROJECTILE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::func(256, vec![ValuePrefab::def(), ValueVector::def(), ValueVector::def(), ValueEntity::def(), ValueEntity::def(), ValueBool::def(), ValueInt::def(), ValueIntList::def()], ValueEntity::def())
+    NodeKind::func(256, vec![ValuePrefab::def(), ValueVec3::def(), ValueVec3::def(), ValueEntity::def(), ValueEntity::def(), ValueBool::def(), ValueInt::def(), ValueIntList::def()], ValueEntity::def())
 });
 
 /// 结算关卡(ID 77)
@@ -166,12 +166,12 @@ pub static NODE_GLOBAL_TIMER_MODIFY: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 添加线性运动(ID 84)
 pub static NODE_ADD_LINEAR_MOTION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(84, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueVector::def()])
+    NodeKind::procedure(84, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueVec3::def()])
 });
 
 /// 添加旋转运动(ID 85)
 pub static NODE_ADD_ROTATION_MOTION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(85, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueFloat::def(), ValueVector::def()])
+    NodeKind::procedure(85, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueFloat::def(), ValueVec3::def()])
 });
 
 /// 停止并删除运动设备(ID 86)
@@ -200,12 +200,12 @@ pub static NODE_ACTIVATE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 播放单次动画(ID 93)
 pub static NODE_PLAY_TIMED: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(93, vec![ValueConfig::def(), ValueEntity::def(), ValueString::def(), ValueBool::def(), ValueBool::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueBool::def()])
+    NodeKind::procedure(93, vec![ValueConfig::def(), ValueEntity::def(), ValueString::def(), ValueBool::def(), ValueBool::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueBool::def()])
 });
 
 /// 播放循环动画(ID 94):输出播放 ID
 pub static NODE_PLAY_LOOP: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::func(94, vec![ValueConfig::def(), ValueEntity::def(), ValueString::def(), ValueBool::def(), ValueBool::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueBool::def()], ValueInt::def())
+    NodeKind::func(94, vec![ValueConfig::def(), ValueEntity::def(), ValueString::def(), ValueBool::def(), ValueBool::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueBool::def()], ValueInt::def())
 });
 
 /// 停止循环动画(ID 95)
@@ -292,7 +292,7 @@ pub static NODE_REVIVE_ALL: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 传送(ID 288)
 pub static NODE_TELEPORT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(288, vec![ValueEntity::def(), ValueVector::def(), ValueVector::def()])
+    NodeKind::procedure(288, vec![ValueEntity::def(), ValueVec3::def(), ValueVec3::def()])
 });
 
 /// 修改设备(ID 302)
@@ -317,7 +317,7 @@ pub static NODE_SET_FACTION: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 设置目标 GUID(ID 245)
 pub static NODE_SET_TARGET_GUID: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(245, vec![ValueEntity::def(), ValueGuid::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueEnum::def(), ValueEnum::def()])
+    NodeKind::procedure(245, vec![ValueEntity::def(), ValueGuid::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueEnum::def(), ValueEnum::def()])
 });
 
 /// 设置设备状态(ID 365)
@@ -380,7 +380,7 @@ pub static NODE_REMOVE_STATUS: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 攻击(ID 303)
 pub static NODE_ATTACK: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(303, vec![ValueEntity::def(), ValueFloat::def(), ValueFloat::def(), ValueVector::def(), ValueVector::def(), ValueString::def(), ValueBool::def(), ValueEntity::def()])
+    NodeKind::procedure(303, vec![ValueEntity::def(), ValueFloat::def(), ValueFloat::def(), ValueVec3::def(), ValueVec3::def(), ValueString::def(), ValueBool::def(), ValueEntity::def()])
 });
 
 /// 移除实体(ID 372)
@@ -487,17 +487,17 @@ pub static NODE_STOP_EFFECT_BY_ASSET: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 添加目标旋转(ID 520)
 pub static NODE_ADD_TARGET_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(520, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueVector::def()])
+    NodeKind::procedure(520, vec![ValueEntity::def(), ValueString::def(), ValueFloat::def(), ValueVec3::def()])
 });
 
 /// 激活固定点(ID 775)
 pub static NODE_ACTIVATE_FIXED_POINT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(775, vec![ValueEntity::def(), ValueString::def(), ValueEnum::def(), ValueFloat::def(), ValueVector::def(), ValueVector::def(), ValueBool::def(), ValueEnum::def()])
+    NodeKind::procedure(775, vec![ValueEntity::def(), ValueString::def(), ValueEnum::def(), ValueFloat::def(), ValueVec3::def(), ValueVec3::def(), ValueBool::def(), ValueEnum::def()])
 });
 
 /// 设置目标实体(ID 668)
 pub static NODE_SET_TARGET_ENTITY: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(668, vec![ValueEntity::def(), ValueEntity::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueEnum::def(), ValueEnum::def()])
+    NodeKind::procedure(668, vec![ValueEntity::def(), ValueEntity::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueEnum::def(), ValueEnum::def()])
 });
 
 // ========================================================================
@@ -902,7 +902,7 @@ pub static NODE_SET_ACTIVE_SCAN_TAG: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 创建预制体布设组(ID 757):输出实体列表
 pub static NODE_CREATE_PREFAB_GROUP: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::func(757, vec![ValueInt::def(), ValueVector::def(), ValueVector::def(), ValueEntity::def(), ValueInt::def(), ValueIntList::def(), ValueBool::def()], ValueEntityList::def())
+    NodeKind::func(757, vec![ValueInt::def(), ValueVec3::def(), ValueVec3::def(), ValueEntity::def(), ValueInt::def(), ValueIntList::def(), ValueBool::def()], ValueEntityList::def())
 });
 
 // ========================================================================

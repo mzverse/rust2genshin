@@ -392,7 +392,7 @@ message TypedValue {
     Flt              val_float  = 104; // 浮点
     Str              val_string = 105; // 字符串
     Enum             val_enum   = 106; // 枚举索引
-    Vec3f           val_vector = 107; // 向量
+    Vec3f            val_vector = 107; // 向量
     StructStorage    val_struct = 108; // 结构体数据
     ListStorage      val_list   = 109; // 数组数据
     PolymorphicValue val_poly   = 110; // 多态数值数据
@@ -633,10 +633,11 @@ message PinInterface {
     }
     message StructId { int64 val = 2; }
     message MapType {
-      ServerTypeId key   = 3;
-      ServerTypeId value = 4;
-      // if value is StructList
-      optional int64 struct_id = 5;
+      ServerTypeId    key       = 3;
+      ServerTypeId    value     = 4;
+      optional int64  value_id  = 5; // struct
+      int32           unknown   = 6; // 1
+      int32           unknown1  = 7; // common = 1; fucked = 2???
     }
   }
 
@@ -648,15 +649,15 @@ message PinInterface {
 
 // TODO: 结构体定义 (Stub)
 message StructureDefinitionData {
-  Field genericField  = 1;
-  Field concreteField = 2; // same as 1
-  int32 structVersion = 3; // Version Updated as structure is modified and as
+  Fields  genericFields   = 1;
+  Fields  concreteFields  = 2; // same as 1
+  int32   structVersion   = 3; // Version Updated as structure is modified and as
                            // other structures modified
-  int32 itemCount = 4; // item count
+  int32   itemCount       = 4; // item count
 
-  int32 unknown1 = 5; // always 1
+  int32   unknown1        = 5; // always 1
 
-  message Field {
+  message Fields {
     int64           id   = 1;
     int64           xxx  = 2; // 2 for level stru def
     repeated VarDef var = 3;
@@ -666,61 +667,69 @@ message StructureDefinitionData {
     int32  index      = 503; // same as StructureDef
   }
   message VarDef {
+    message Kind {
+      ServerTypeId  primary  = 1;
+      Subtype       sub      = 2;
+    }
+    message Subtype {
+      bool          is_set    = 1;
+      int64         struct_id = 2; // struct; pair in map = 0x41000001 +
+      optional ServerTypeId  key     = 502;
+      optional ServerTypeId  value   = 503;
+      optional int64         valueId = 504;
+    }
+    message Value {
+      message StructVal {
+        message Id {
+          ServerTypeId  kind  = 2; // S_VAR_SNAPSHOT_REF
+          int64         id    = 4; // id of value = 0x40000001 +
+        }
 
-    message TypeDef {
-      message SubType {
-        ServerTypeId type    = 1;
-        int64        xxxx_id = 2; // What are they?
-        ServerTypeId key     = 502;
-        ServerTypeId value   = 503;
-        int64        valueId = 504;
+        repeated Value  fields    = 1;
+        int64           structId  = 501;
+        Id              id        = 502;
       }
-      ServerTypeId type    = 1;
-      SubType      subType = 2;
+      message IntList {
+        repeated int32 items = 1 [packed = true];
+      }
+      message StructList {
+        // TODO
+      }
+      message Dict {
+        repeated Value  pairs       = 1;
+        repeated Value  keys        = 501;
+        repeated Value  values      = 502;
+        ServerTypeId    keyType     = 503;
+        ServerTypeId    valueType   = 504;
+        optional int64  valueTypeId = 505;
+      }
+
+      ServerTypeId    type    = 1;
+      Kind            kind    = 2;
+
+      optional string name    = 501; // field
 
       oneof val {
-        Id   guidVal  = 12; // GUID 初始值(对齐真实导出:12 { 1: int64 })
-        Int    intVal  = 13;
-        Enum   booleanVal = 14;
-        Flt  floatVal = 15; // Float 初始值(对齐真实导出:15 { 1: float })
-        Str strVal  = 16;
-        Vec3f  vectorVal = 22; // 3D 向量初始值(对齐真实导出:Vector{vec{x,y,z}})
-        // TODO: What A mess here! I can't bear anymore!!!!!
-        // He who trust himself could take a try.
-        // ESPECIALLY MAP/STRUCT BASE
+        Id          guidVal     = 12;
+        Int         intVal      = 13;
+        Enum        booleanVal  = 14;
+        Flt         floatVal    = 15;
+        Str         strVal      = 16;
+        IntList     intList     = 18;
+        // TODO: lists
+        Vec3f       vec3Val     = 22;
+        StructVal   structure   = 35;
+        StructList  structList  = 36; // FIXME
+        Dict        dict        = 37;
       }
     }
-    message TypeDef3 {
-      message SubType {
-        ServerTypeId type = 1;
-        message Any {}
-        Any          xxxx_id = 2; // Why diff from TypeDef3
-        ServerTypeId key     = 502;
-        ServerTypeId value   = 503;
-        int64        valueId = 504;
-      }
-      ServerTypeId type    = 1;
-      SubType      subType = 2;
+    Kind            kind      = 1;
+    optional Value  def       = 3;
+    string          name      = 5;
 
-      oneof val {
-        Id   guidVal  = 12; // GUID 初始值(对齐真实导出:12 { 1: int64 })
-        Int    intVal  = 13;
-        Enum   booleanVal = 14;
-        Flt  floatVal = 15; // Float 初始值(对齐真实导出:15 { 1: float })
-        Str strVal  = 16;
-        Vec3f  vectorVal = 22; // 3D 向量初始值(对齐真实导出:Vector{vec{x,y,z}})
-        // TODO: What A mess here! I can't bear anymore!!!!!
-        // He who trust himself could take a try.
-        // ESPECIALLY MAP/STRUCT BASE
-      }
-    }
-    TypeDef  typedef1 = 1;
-    TypeDef3 typedef3 = 3;
-    string   name     = 5;
-
-    string       varName  = 501;
-    ServerTypeId varType  = 502;
-    int32        varIndex = 503; // variable index
+    string          varName   = 501;
+    ServerTypeId    varType   = 502;
+    int32           varIndex  = 503; // variable index
   }
 }
 

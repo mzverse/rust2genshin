@@ -17,6 +17,7 @@ pub mod decl;
 
 pub use pin_signature::Kind as PinType;
 use crate::asset::generated::asset_data::Payload;
+use crate::asset::generated::structure_definition_data::var_def::value::Val;
 use crate::asset::generated::type_definition::server_type::Schema;
 pub(crate) use crate::asset::node_graph::composite::CompositeNodeGraph;
 
@@ -302,7 +303,7 @@ impl NodeGraph {
         }
         let (from_node, to_node) = self.nodes.get2_mut(from.node().into(), to.node().into()).unwrap();
         if let Some(kind) = &to_node.kind.values_in_types[to.pin()] {
-            assert!(kind.is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], to_node.kind.values_in_types[to.pin()]);
+            assert!(kind.is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], kind);
         }
         from_node.values_out[from.pin()].push(to.into());
         to_node.values_in[to.pin()].link = Some(from.into());
@@ -378,12 +379,44 @@ impl NodeGraph {
                             shell_ref: Some(n.kind.encode_shell()),
                             kernel_ref: Some(n.kind.encode_kernel()),
                             pins: vec![].tap_mut(|pins| {
-                                process_controls(pins, &n.controls_in, PinType::InControl, PinType::OutControl);
-                                process_controls(pins, &n.controls_out, PinType::OutControl, PinType::InControl);
+                                for (i, x) in n.controls_out.iter().enumerate() {
+                                    let sig = PinSignature {
+                                        kind: PinType::OutControl as i32,
+                                        index: i as i32,
+                                        source_ref: None,
+                                    };
+                                    let connections = x.iter().copied().flat_map(Link::connection).collect::<Vec<_>>();
+                                    if connections.is_empty() {
+                                        continue;
+                                    }
+                                    pins.push(PinData {
+                                        shell_sig: sig.into(),
+                                        kernel_sig: sig.into(),
+                                        value: None,
+                                        r#type: None,
+                                        connection: connections.iter().map(|Connection(target, j)| {
+                                            let sig_tar = PinSignature {
+                                                kind: PinType::InControl as i32,
+                                                index: *j as i32,
+                                                source_ref: None,
+                                            };
+                                            NodeConnection {
+                                                target_node_index: target.encode(),
+                                                target_pin_shell: sig_tar.into(),
+                                                target_pin_kernel: sig_tar.into(),
+                                            }
+                                        }).collect(),
+                                        binding_meta: None,
+                                        persistent_pin_uid: None,
+                                    })
+                                }
                                 for (i, x) in n.values_in.iter().enumerate() {
                                     let Some(kind) = n.kind.values_in_types[i].clone() else {
-                                        continue;
+                                        continue; // TODO
                                     };
+                                    if x.is_unset() {
+                                        continue;
+                                    }
                                     let sig = PinSignature {
                                         kind: PinType::InValue as i32,
                                         index: i as i32,
@@ -392,88 +425,23 @@ impl NodeGraph {
                                     pins.push(PinData {
                                         shell_sig: sig.into(),
                                         kernel_sig: sig.into(),
-                                        value: Some(ValueSelected::encode(x.default.clone().unwrap_or_else(|| kind.clone()), x.default.is_some(), n.kind.selectors_in[i], side)),
+                                        value: ValueSelected::encode(x.default.clone().unwrap_or_else(|| kind.clone()), x.default.is_some(), n.kind.selectors_in[i], side),
                                         r#type: Some(kind.get_type_id(side)),
-                                        connection: vec![].tap_mut(|cs| {
-                                            if let Some(Connection(target, j)) = x.link.and_then(Link::connection) {
-                                                let sig_tar = PinSignature {
-                                                    kind: PinType::OutValue as i32,
-                                                    index: j as i32,
-                                                    source_ref: None,
-                                                };
-                                                cs.push(NodeConnection {
-                                                    target_node_index: target.encode(),
-                                                    target_pin_shell: sig_tar.into(),
-                                                    target_pin_kernel: sig_tar.into(),
-                                                })
+                                        connection: x.link.and_then(Link::connection).into_iter().map(|Connection(target, j)| {
+                                            let sig_tar = PinSignature {
+                                                kind: PinType::OutValue as i32,
+                                                index: j as i32,
+                                                source_ref: None,
+                                            };
+                                            NodeConnection {
+                                                target_node_index: target.encode(),
+                                                target_pin_shell: sig_tar.into(),
+                                                target_pin_kernel: sig_tar.into(),
                                             }
-                                        }),
+                                        }).collect(),
                                         binding_meta: None,
                                         persistent_pin_uid: None,
                                     })
-                                }
-                                for (i, x) in n.values_out.iter().enumerate() {
-                                    let sig = PinSignature {
-                                        kind: PinType::OutValue as i32,
-                                        index: i as i32,
-                                        source_ref: None,
-                                    };
-                                    pins.push(PinData {
-                                        shell_sig: sig.into(),
-                                        kernel_sig: sig.into(),
-                                        value: Some(ValueSelected::encode(n.kind.values_out_types[i].clone(), false, n.kind.selectors_out[i], side)),
-                                        r#type: Some(n.kind.values_out_types[i].get_type_id(side)),
-                                        connection: vec![].tap_mut(|cs| {
-                                            for Connection(target, j) in x.iter().copied().flat_map(Link::connection) {
-                                                let sig_tar = PinSignature {
-                                                    kind: PinType::InValue as i32,
-                                                    index: j as i32,
-                                                    source_ref: None,
-                                                };
-                                                cs.push(NodeConnection {
-                                                    target_node_index: target.encode(),
-                                                    target_pin_shell: sig_tar.into(),
-                                                    target_pin_kernel: sig_tar.into(),
-                                                })
-                                            }
-                                        }),
-                                        binding_meta: None,
-                                        persistent_pin_uid: None,
-                                    })
-                                }
-                                fn process_controls<'a, S: 'a>(pins: &mut Vec<PinData>, controls: &'a [S], kind: PinType, tar: PinType)
-                                where
-                                    &'a S: IntoIterator<Item = &'a Link>,
-                                {
-                                    for (i, x) in controls.iter().enumerate() {
-                                        let sig = PinSignature {
-                                            kind: kind as i32,
-                                            index: i as i32,
-                                            source_ref: None,
-                                        };
-                                        pins.push(PinData {
-                                            shell_sig: sig.into(),
-                                            kernel_sig: sig.into(),
-                                            value: None,
-                                            r#type: None,
-                                            connection: vec![].tap_mut(|cs| {
-                                                for Connection(target, j) in x.into_iter().copied().flat_map(Link::connection) {
-                                                    let sig_tar = PinSignature {
-                                                        kind: tar as i32,
-                                                        index: j as i32,
-                                                        source_ref: None,
-                                                    };
-                                                    cs.push(NodeConnection {
-                                                        target_node_index: target.encode(),
-                                                        target_pin_shell: sig_tar.into(),
-                                                        target_pin_kernel: sig_tar.into(),
-                                                    })
-                                                }
-                                            }),
-                                            binding_meta: None,
-                                            persistent_pin_uid: None,
-                                        })
-                                    }
                                 }
                             }),
                             x_pos: 0.,
@@ -518,7 +486,7 @@ impl NodeGraphStatic {
         let mut result = GraphVariable {
             var_name: self.name.clone(),
             base_type: self.value.get_server_type() as i32,
-            storage_value: Some(self.value.encode(self.is_set, Side::Server)),
+            storage_value: Some(self.value.encode_typed(self.is_set, Side::Server)),
             is_public: self.is_public,
             schema_ref_id: None,
             container_key_type: 0,
@@ -573,14 +541,14 @@ struct ValueSelected {
     pub is_set: bool,
 }
 impl ValueSelected {
-    pub fn encode(value: AnyValue, is_set: bool, selected: Option<i32>, side: Side) -> TypedValue {
+    pub fn encode(value: AnyValue, is_set: bool, selected: Option<i32>, side: Side) -> Option<TypedValue> {
         match selected {
-            None => value.encode(is_set, side),
+            None => if is_set { value.encode_typed(is_set, side).into() } else { None },
             Some(selected) => ValueSelected {
                 index: selected,
                 value,
                 is_set,
-            }.encode(true, side),
+            }.encode_typed(true, side).into(), // TODO
         }
     }
 }
@@ -600,8 +568,12 @@ impl Value for ValueSelected {
     fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
         typed_value::Storage::ValPoly(PolymorphicValue {
             chosen_type_index: self.index,
-            actual_value: Some(self.value.encode(self.is_set, side).into()),
+            actual_value: Some(self.value.encode_typed(self.is_set, side).into()),
             extra_meta: None,
         }.into()).into()
+    }
+
+    fn encode_field_value(&self) -> Val {
+        panic!()
     }
 }

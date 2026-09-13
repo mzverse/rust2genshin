@@ -1,5 +1,10 @@
 use rust2genshin_lib_internal::{native, native_calc};
 
+pub struct Vec2 { // TODO
+    pub x: f32,
+    pub y: f32,
+}
+
 pub struct Vec3 { // TODO
     pub x: f32,
     pub y: f32,

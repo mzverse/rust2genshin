@@ -8,7 +8,7 @@ use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList,
     ValueEnum, ValueEnumList, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList,
-    ValuePrefab, ValueString, ValueVector,
+    ValuePrefab, ValueString, ValueVec3,
 };
 use std::sync::LazyLock;
 
@@ -116,67 +116,67 @@ pub static NODE_CLIENT_CONVERT_TYPE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 向量点积(ID 200063)
 pub static NODE_CLIENT_VECTOR_DOT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200063, vec![ValueVector::def(), ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(200063, vec![ValueVec3::def(), ValueVec3::def()], ValueFloat::def())
 });
 
 /// 向量叉积(ID 200064)
 pub static NODE_CLIENT_VECTOR_CROSS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200064, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200064, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 拆分向量(ID 200065):Vec → x/y/z
 pub static NODE_CLIENT_SPLIT_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(200065, 0, 0, vec![ValueVector::def()], vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()])
+    NodeKind::new(200065, 0, 0, vec![ValueVec3::def()], vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()])
 });
 
 /// 向量缩放(ID 200066)
 pub static NODE_CLIENT_VECTOR_SCALE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200066, vec![ValueFloat::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200066, vec![ValueFloat::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量夹角(ID 200067)
 pub static NODE_CLIENT_VECTOR_ANGLE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200067, vec![ValueVector::def(), ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(200067, vec![ValueVec3::def(), ValueVec3::def()], ValueFloat::def())
 });
 
 /// 向量旋转(ID 200068)
 pub static NODE_CLIENT_VECTOR_ROTATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200068, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200068, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量长度(ID 200069)
 pub static NODE_CLIENT_VECTOR_LENGTH: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200069, vec![ValueVector::def()], ValueFloat::def())
+    NodeKind::expr(200069, vec![ValueVec3::def()], ValueFloat::def())
 });
 
 /// 创建向量(ID 200070)
 pub static NODE_CLIENT_CREATE_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200070, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()], ValueVector::def())
+    NodeKind::expr(200070, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def()], ValueVec3::def())
 });
 
 /// 向量加(ID 200071)
 pub static NODE_CLIENT_VECTOR_ADD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200071, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200071, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量减(ID 200072)
 pub static NODE_CLIENT_VECTOR_SUBTRACT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200072, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200072, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量转旋转(ID 200073)
 pub static NODE_CLIENT_VECTOR_TO_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200073, vec![ValueVector::def(), ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200073, vec![ValueVec3::def(), ValueVec3::def()], ValueVec3::def())
 });
 
 /// 朝向转旋转(ID 200074)
 pub static NODE_CLIENT_ORIENTATION_TO_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200074, vec![ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200074, vec![ValueVec3::def()], ValueVec3::def())
 });
 
 /// 向量归一化(ID 200100)
 pub static NODE_CLIENT_VECTOR_NORMALIZE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200100, vec![ValueVector::def()], ValueVector::def())
+    NodeKind::expr(200100, vec![ValueVec3::def()], ValueVec3::def())
 });
 
 // ========================================================================
@@ -298,12 +298,12 @@ pub static NODE_CLIENT_GET_FACTION: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取位置(ID 200030)
 pub static NODE_CLIENT_GET_LOCATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200030, vec![ValueEntity::def()], ValueVector::def())
+    NodeKind::expr(200030, vec![ValueEntity::def()], ValueVec3::def())
 });
 
 /// 获取旋转(ID 200031)
 pub static NODE_CLIENT_GET_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200031, vec![ValueEntity::def()], ValueVector::def())
+    NodeKind::expr(200031, vec![ValueEntity::def()], ValueVec3::def())
 });
 
 /// 获取自身(ID 200033)
@@ -333,12 +333,12 @@ pub static NODE_CLIENT_IS_IN_COMBAT: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 球体过滤(ID 200043)
 pub static NODE_CLIENT_FILTER_SPHERE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200043, vec![ValueFloat::def(), ValueVector::def(), ValueInt::def(), ValueEnum::def()], ValueEntityList::def())
+    NodeKind::expr(200043, vec![ValueFloat::def(), ValueVec3::def(), ValueInt::def(), ValueEnum::def()], ValueEntityList::def())
 });
 
 /// 方形过滤(ID 200044)
 pub static NODE_CLIENT_FILTER_SQUARE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200044, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def(), ValueVector::def(), ValueInt::def(), ValueEnum::def()], ValueEntityList::def())
+    NodeKind::expr(200044, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def(), ValueVec3::def(), ValueInt::def(), ValueEnum::def()], ValueEntityList::def())
 });
 
 /// 获取实体类型(ID 200045)
@@ -348,17 +348,17 @@ pub static NODE_CLIENT_GET_ENTITY_TYPE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取相机旋转(ID 200046)
 pub static NODE_CLIENT_GET_CAMERA_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200046, vec![], ValueVector::def())
+    NodeKind::expr(200046, vec![], ValueVec3::def())
 });
 
 /// 获取挂点位置(ID 200047)
 pub static NODE_CLIENT_GET_SOCKET_LOC: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200047, vec![ValueEntity::def(), ValueString::def()], ValueVector::def())
+    NodeKind::expr(200047, vec![ValueEntity::def(), ValueString::def()], ValueVec3::def())
 });
 
 /// 获取挂点旋转(ID 200048)
 pub static NODE_CLIENT_GET_SOCKET_ROT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(200048, vec![ValueEntity::def(), ValueString::def()], ValueVector::def())
+    NodeKind::expr(200048, vec![ValueEntity::def(), ValueString::def()], ValueVec3::def())
 });
 
 /// 获取当前角色(ID 200076)
@@ -413,7 +413,7 @@ pub static NODE_CLIENT_GET_OVERLAPPING_ENTITIES: LazyLock<NodeKind> = LazyLock::
 
 /// 获取射线结果(ID 200109):命中点 + 命中实体
 pub static NODE_CLIENT_GET_RAY_RESULT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(200109, 0, 0, vec![ValueEntity::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueEnum::def(), ValueEnumList::def()], vec![ValueVector::def(), ValueEntity::def()])
+    NodeKind::new(200109, 0, 0, vec![ValueEntity::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueEnum::def(), ValueEnumList::def()], vec![ValueVec3::def(), ValueEntity::def()])
 });
 
 /// 获取射线过滤器(ID 200110)
@@ -457,7 +457,7 @@ pub static NODE_CLIENT_GET_ENTITY_TYPES: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 播放定时特效(ID 200038)
 pub static NODE_CLIENT_PLAY_TIMED_FX: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200038, vec![ValueConfig::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueBool::def()])
+    NodeKind::procedure(200038, vec![ValueConfig::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueBool::def()])
 });
 
 /// 通知服务器(ID 200039)
@@ -477,17 +477,17 @@ pub static NODE_CLIENT_SET_TARGET: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 触发命中框(位置)(ID 200051)
 pub static NODE_CLIENT_TRIGGER_HITBOX_LOC: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200051, vec![ValueEnum::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200051, vec![ValueEnum::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 发射投射物(ID 200052)
 pub static NODE_CLIENT_LAUNCH_PROJECTILE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200052, vec![ValuePrefab::def(), ValueVector::def(), ValueVector::def(), ValueEntity::def(), ValueFaction::def()])
+    NodeKind::procedure(200052, vec![ValuePrefab::def(), ValueVec3::def(), ValueVec3::def(), ValueEntity::def(), ValueFaction::def()])
 });
 
 /// 移动到点(ID 200053)
 pub static NODE_CLIENT_MOVE_TO_POINT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200053, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def(), ValueVector::def(), ValueBool::def()])
+    NodeKind::procedure(200053, vec![ValueFloat::def(), ValueFloat::def(), ValueFloat::def(), ValueVec3::def(), ValueBool::def()])
 });
 
 /// 添加状态(ID 200057)
@@ -502,7 +502,7 @@ pub static NODE_CLIENT_REMOVE_STATUS: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 触发命中框(挂点)(ID 200059)
 pub static NODE_CLIENT_TRIGGER_HITBOX_SOCKET: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200059, vec![ValueEnum::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200059, vec![ValueEnum::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 移除设备(ID 200060)
@@ -517,7 +517,7 @@ pub static NODE_CLIENT_MODIFY_WEIGHT: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 获取相机数据(ID 200062):位置 + 旋转
 pub static NODE_CLIENT_GET_CAMERA_DATA: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::new(200062, 1, 1, vec![ValueEnum::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def()], vec![ValueVector::def(), ValueVector::def()])
+    NodeKind::new(200062, 1, 1, vec![ValueEnum::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def()], vec![ValueVec3::def(), ValueVec3::def()])
 });
 
 /// 恢复血量(ID 200075)
@@ -527,7 +527,7 @@ pub static NODE_CLIENT_RECOVER_HP: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 面向(ID 200105)
 pub static NODE_CLIENT_TURN_TO_FACE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200105, vec![ValueVector::def()])
+    NodeKind::procedure(200105, vec![ValueVec3::def()])
 });
 
 /// 重置目标(ID 200106)
@@ -542,32 +542,32 @@ pub static NODE_CLIENT_EXIT_AIMING: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 触发球体命中框(位置)(ID 200111)
 pub static NODE_CLIENT_TRIGGER_SPHERE_HITBOX_LOC: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200111, vec![ValueEnum::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200111, vec![ValueEnum::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 触发矩形命中框(位置)(ID 200112)
 pub static NODE_CLIENT_TRIGGER_RECT_HITBOX_LOC: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200112, vec![ValueEnum::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200112, vec![ValueEnum::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 触发扇形命中框(位置)(ID 200113)
 pub static NODE_CLIENT_TRIGGER_SECTOR_HITBOX_LOC: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200113, vec![ValueEnum::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200113, vec![ValueEnum::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 触发球体命中框(挂点)(ID 200114)
 pub static NODE_CLIENT_TRIGGER_SPHERE_HITBOX_SOCKET: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200114, vec![ValueEnum::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200114, vec![ValueEnum::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 触发矩形命中框(挂点)(ID 200115)
 pub static NODE_CLIENT_TRIGGER_RECT_HITBOX_SOCKET: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200115, vec![ValueEnum::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200115, vec![ValueEnum::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 触发扇形命中框(挂点)(ID 200116)
 pub static NODE_CLIENT_TRIGGER_SECTOR_HITBOX_SOCKET: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(200116, vec![ValueEnum::def(), ValueString::def(), ValueVector::def(), ValueVector::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
+    NodeKind::procedure(200116, vec![ValueEnum::def(), ValueString::def(), ValueVec3::def(), ValueVec3::def(), ValueFloat::def(), ValueFloat::def(), ValueEnumList::def()])
 });
 
 /// 发送到服务器(ID 200124)

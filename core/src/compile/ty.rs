@@ -1,12 +1,14 @@
-use crate::asset::structure::{StructureDefinition, ValueStruct};
+use crate::asset::structure::{StructField, StructureDefinition, ValueStruct};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
 use crate::asset::{Asset, AssetRef};
-use crate::compile::{Compiler, Result, TupleKey, WithTcx};
+use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
-use rustc_middle::ty::{List, Ty, TyKind};
+use rustc_middle::infer::canonical::ir::GenericArgKind;
+use rustc_middle::ty::inherent::SliceLike;
+use rustc_middle::ty::{AdtDef, GenericArgsRef, List, Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 
-impl Compiler<'_> {
+impl<'tcx> Compiler<'tcx> {
     fn mangle_ty(ty: Ty) -> String {
         match ty.kind() {
             TyKind::Tuple(tys) => Self::mangle_tuple(tys),
@@ -19,39 +21,67 @@ impl Compiler<'_> {
         format!("({})", tys.iter().map(Self::mangle_ty).collect::<Vec<_>>().join(","))
     }
 
-    fn touch_tuple(&mut self, span: Span, tys: &List<Ty>) -> Result<(&AssetRef<StructureDefinition>, Vec<AnyValue>)> {
-        if tys.is_empty() {
-            return self.span_err(span, "unit tuple () has no struct schema");
+    fn mangle_adt(def: AdtDef, s: GenericArgsRef) -> String {
+        let result = format!("{def:?}");
+        if s.is_empty() {
+            result
+        } else {
+            format!("{}<{}>", result, s.iter().map(|x| match x.kind() {
+                GenericArgKind::Type(t) => Self::mangle_ty(t),
+                other => format!("{:?}", other),
+            }).collect::<Vec<_>>().join(","))
         }
+    }
+
+    fn touch_adt(&mut self, def: AdtDef<'tcx>, g: GenericArgsRef<'tcx>, span: Span) -> Result<&AssetRef<StructureDefinition>> {
+        if !def.is_struct() {
+            todo!();
+        }
+        let key = Self::mangle_adt(def, g);
+        if let Some(id) = self.structs.get(&key) {
+            return Ok(id);
+        }
+        let id = StructureDefinition {
+            name: key.clone(),
+            version: 1,
+            fields: def.non_enum_variant().fields.iter().map(|f| Ok(StructField {
+                name: f.name.to_string(),
+                value: self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, g)))?,
+            })).collect::<Result<_>>()?,
+        }.apply(&mut self.assets);
+        Ok(self.structs.entry(key).or_insert(id))
+    }
+
+    fn touch_tuple(&mut self, span: Span, tys: &List<Ty<'tcx>>) -> Result<&AssetRef<StructureDefinition>> {
+        if tys.is_empty() {
+            panic!("Unit should not be touched");
+        }
+        let key = Self::mangle_tuple(tys);
+        if let Some(id) = self.structs.get(&key) {
+            return Ok(id);
+        }
+        // Build the StructureDefinition and insert it as an asset.
+        use crate::asset::structure::{StructField, StructureDefinition};
         // Resolve element types first (recursively interns nested tuples).
         let elem_kinds: Vec<AnyValue> = tys.iter()
             .map(|t| self.compile_ty(span, t))
             .collect::<Result<_>>()?;
-        let key = TupleKey(format!("[{}]", elem_kinds.iter()
-            .map(|k| format!("{k:?}"))
-            .collect::<Vec<_>>().join(", ")));
-        if let Some(id) = self.tuple_schemas.get(&key) {
-            return Ok((id, elem_kinds));
-        }
-        // Build the StructureDefinition and insert it as an asset.
-        use crate::asset::structure::{StructField, StructureDefinition};
         let fields: Vec<StructField> = elem_kinds.iter().enumerate()
             .map(|(i, k)| StructField {
                 name: format!("{i}"),
                 value: k.clone(),
-                is_set: false,
             })
             .collect();
         let def = StructureDefinition {
-            name: Self::mangle_tuple(tys),
+            name: key.clone(),
             version: 1,
             fields,
         };
         let id = def.apply(&mut self.assets);
-        Ok((self.tuple_schemas.entry(key).or_insert(id), elem_kinds))
+        Ok(self.structs.entry(key).or_insert(id))
     }
 
-    pub fn compile_ty(&mut self, span: Span, ty: Ty) -> Result<AnyValue> {
+    pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
         Ok(match ty.kind() {
             TyKind::Bool => ValueBool::def(),
             TyKind::Char => return self.span_err(span, "Char is unsupported"),
@@ -73,17 +103,18 @@ impl Compiler<'_> {
             },
             TyKind::Str => ValueString::def(),
             TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-                return self.span_err(span, "Ref is unsupported, see `Box as Deref`".to_string());
+                return self.span_err(span, "Ref is unsupported, see `<Box as Deref>` or `#[rustc_force_inline]`".to_string());
             },
             TyKind::Adt(d, a) => {
                 if d.did().krate == self.lib {
                     match self.tcx.def_path(d.did()).to_string_no_crate_verbose().as_str() {
-                        "::Guid" => return Ok(ValueGuid::def()),
-                        "::entity::Entity" => return Ok(ValueEntity::def()),
+                        "::Guid" => ValueGuid::def(),
+                        "::entity::Entity" => ValueEntity::def(),
                         other => panic!("{other}"),
                     }
+                } else {
+                    ValueStruct::new(self.touch_adt(*d, a, span)?.clone()).into()
                 }
-                return self.span_err(span, format!("Adt: {d:?} = {a:?}"));
             },
             TyKind::Foreign(_) => todo!(),
             TyKind::Array(_, _) => todo!(),
@@ -95,8 +126,7 @@ impl Compiler<'_> {
                 if tys.is_empty() {
                     panic!();
                 }
-                let (struct_id, field_kinds) = self.touch_tuple(span, *tys)?;
-                ValueStruct::new(struct_id.clone(), field_kinds).into()
+                ValueStruct::new(self.touch_tuple(span, *tys)?.clone()).into()
             }
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),

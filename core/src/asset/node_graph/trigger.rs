@@ -8,7 +8,7 @@ use crate::asset::node_graph::NodeKind;
 use crate::asset::value::{
     ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum,
     ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValueString, ValueStringList,
-    ValueVector,
+    ValueVec3,
 };
 
 /// 变量变化(ID 36)
@@ -63,7 +63,7 @@ pub static NODE_ON_FACTION_CHANGE: LazyLock<NodeKind> = LazyLock::new(|| {
 
 /// 检测到命中(ID 253)
 pub static NODE_ON_HIT_DETECTED: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::trigger(253, vec![ValueEntity::def(), ValueGuid::def(), ValueBool::def(), ValueEntity::def(), ValueVector::def()])
+    NodeKind::trigger(253, vec![ValueEntity::def(), ValueGuid::def(), ValueBool::def(), ValueEntity::def(), ValueVec3::def()])
 });
 
 /// 角色倒下(ID 280)
@@ -138,7 +138,7 @@ pub static NODE_ON_GRAPH_VARIABLE_CHANGE: LazyLock<NodeKind> = LazyLock::new(|| 
 
 /// 销毁(ID 373)
 pub static NODE_ON_DESTROYED: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::trigger(373, vec![ValueEntity::def(), ValueGuid::def(), ValueVector::def(), ValueVector::def(), ValueEnum::def(), ValueFaction::def(), ValueEntity::def()])
+    NodeKind::trigger(373, vec![ValueEntity::def(), ValueGuid::def(), ValueVec3::def(), ValueVec3::def(), ValueEnum::def(), ValueFaction::def(), ValueEntity::def()])
 });
 
 /// 造物进入战斗(ID 374)
