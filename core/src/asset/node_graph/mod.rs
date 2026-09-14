@@ -410,38 +410,39 @@ impl NodeGraph {
                                         persistent_pin_uid: None,
                                     })
                                 }
+                                let mut kernel = 0;
                                 for (i, x) in n.values_in.iter().enumerate() {
                                     let Some(kind) = n.kind.values_in_types[i].clone() else {
-                                        continue; // TODO
-                                    };
-                                    if x.is_unset() {
                                         continue;
-                                    }
-                                    let sig = PinSignature {
-                                        kind: PinType::InValue as i32,
-                                        index: i as i32,
-                                        source_ref: None,
                                     };
-                                    pins.push(PinData {
-                                        shell_sig: sig.into(),
-                                        kernel_sig: sig.into(),
-                                        value: ValueSelected::encode(x.default.clone().unwrap_or_else(|| kind.clone()), x.default.is_some(), n.kind.selectors_in[i], side),
-                                        r#type: Some(kind.get_type_id(side)),
-                                        connection: x.link.and_then(Link::connection).into_iter().map(|Connection(target, j)| {
-                                            let sig_tar = PinSignature {
-                                                kind: PinType::OutValue as i32,
-                                                index: j as i32,
-                                                source_ref: None,
-                                            };
-                                            NodeConnection {
-                                                target_node_index: target.encode(),
-                                                target_pin_shell: sig_tar.into(),
-                                                target_pin_kernel: sig_tar.into(),
-                                            }
-                                        }).collect(),
-                                        binding_meta: None,
-                                        persistent_pin_uid: None,
-                                    })
+                                    if !x.is_unset() {
+                                        let sig = PinSignature {
+                                            kind: PinType::InValue as i32,
+                                            index: i as i32,
+                                            source_ref: None,
+                                        };
+                                        pins.push(PinData {
+                                            shell_sig: sig.into(),
+                                            kernel_sig: sig.tap_mut(|sig| sig.index = kernel).into(),
+                                            value: ValueSelected::encode(x.default.clone().unwrap_or_else(|| kind.clone()), x.default.is_some(), n.kind.selectors_in[i], side),
+                                            r#type: Some(kind.get_type_id(side)),
+                                            connection: x.link.and_then(Link::connection).into_iter().map(|Connection(target, j)| {
+                                                let sig_tar = PinSignature {
+                                                    kind: PinType::OutValue as i32,
+                                                    index: j as i32,
+                                                    source_ref: None,
+                                                };
+                                                NodeConnection {
+                                                    target_node_index: target.encode(),
+                                                    target_pin_shell: sig_tar.into(),
+                                                    target_pin_kernel: sig_tar.into(),
+                                                }
+                                            }).collect(),
+                                            binding_meta: None,
+                                            persistent_pin_uid: None,
+                                        });
+                                    }
+                                    kernel += 1;
                                 }
                             }),
                             x_pos: 0.,

@@ -35,11 +35,11 @@ impl Asset for NodeDecl {
             runtime_id: id.guid,
         };
         let mut persistent_uid = 0;
-        let mut encode_pin = |kind: PinType, index: i32, pin: &DeclPin| {
+        let mut encode_pin = |kind: Option<PinType>, index: i32, pin: &DeclPin| {
             PinInterface {
                 name: pin.name.clone(),
-                visibility_mask: 1,
-                sig: Some(PinSignature {
+                visibility_mask: kind.is_some() as i32,
+                sig: kind.map(|kind| PinSignature {
                     kind: kind as i32,
                     index,
                     source_ref: None,
@@ -54,7 +54,7 @@ impl Asset for NodeDecl {
                 }),
                 meta_sig_type: pin.meta.map(|m| PinSignature {
                     kind: m as i32,
-                    index,
+                    index: 0,
                     source_ref: None,
                 }),
                 persistent_pin_uid: persistent_uid + 1,
@@ -86,10 +86,18 @@ impl Asset for NodeDecl {
                             }).into(),
                             signal_version: None,
                         }.into(),
-                        inflows: self.pins.get(&PinType::InControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::InControl, i as i32, pin)).collect(),
-                        outflows: self.pins.get(&PinType::OutControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutControl, i as i32, pin)).collect(),
-                        inputs: self.pins.get(&PinType::InValue).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::InValue, i as i32, pin)).collect(),
-                        outputs: self.pins.get(&PinType::OutValue).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutValue, i as i32, pin)).collect(),
+                        inflows: self.pins.get(&PinType::InControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::InControl.into(), i as i32, pin)).collect(),
+                        outflows: self.pins.get(&PinType::OutControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutControl.into(), i as i32, pin)).collect(),
+                        inputs: vec![].tap_mut(|inputs| {
+                            let mut i = 0;
+                            for pin in self.pins.get(&PinType::InValue).unwrap_or(&def).iter() {
+                                inputs.push(encode_pin(pin.kind.is_some().then_some(PinType::InValue), i, pin));
+                                if pin.kind.is_some() {
+                                    i += 1;
+                                }
+                            }
+                        }),
+                        outputs: self.pins.get(&PinType::OutValue).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutValue.into(), i as i32, pin)).collect(),
                         meta_pins: vec![], // TODO
                         r#impl: self.implementation.clone().into(),
                         name: self.name.clone(),

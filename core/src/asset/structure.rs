@@ -25,6 +25,10 @@ pub fn node_destruct_struct(st: &ValueStruct) -> NodeKind {
     st.st.data.decls.get(&StructureNodeDecl::DestructServer).unwrap().data.clone()
 }
 
+pub fn node_modify_struct(st: &ValueStruct) -> NodeKind {
+    st.st.data.decls.get(&StructureNodeDecl::Modify).unwrap().data.clone()
+}
+
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
 pub struct StructField {
     pub name: String,
@@ -91,7 +95,7 @@ impl StructureDefinition {
 pub enum StructureNodeDecl {
     AssembleServer,
     DestructServer,
-    Modify,
+    Modify, // server only
 }
 
 // ---------- 结构体值(SStruct=25,仅服务器) ----------
@@ -136,10 +140,6 @@ impl Value for ValueStruct {
         Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.get_struct_id() }),)
     }
 
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
-        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.st == self.st)
-    }
-
     fn encode_subtype(&self) -> Option<Subtype> {
         Subtype {
             is_set: true,
@@ -159,6 +159,10 @@ impl Value for ValueStruct {
                 id: 0x40000001, // TODO
             }.into(),
         })
+    }
+
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.st == self.st)
     }
 }
 
@@ -206,37 +210,37 @@ impl Asset for StructureDefinition {
                     meta: None,
                 }).collect::<Vec<_>>());
             })),
-            // (StructureNodeDecl::Modify, "Modify Struct", node_interface::Implementation {
-            //     category: node_interface::implementation::Category::StructModify as i32,
-            //     template: node_interface::implementation::Template::ModifyStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
-            // }, HashMap::default().tap_mut(|pins| { // TODO
-            //     pins.insert(PinType::InControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
-            //     pins.insert(PinType::OutControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
-            //     pins.insert(PinType::InValue, vec![].tap_mut(|pins| {
-            //         pins.push(DeclPin {
-            //             name: self.name.clone(),
-            //             kind: Some(ValueStruct::new(result.clone()).into()),
-            //             meta: pin_signature::Kind::StructRef.into(),
-            //         });
-            //         pins.push(DeclPin {
-            //             name: "Struct Key Select".to_string(),
-            //             kind: None, // TODO: mark virtual pin
-            //             meta: pin_signature::Kind::StructKeySelect.into(),
-            //         });
-            //         for field in &self.fields {
-            //             pins.push(DeclPin {
-            //                 name: field.name.clone(),
-            //                 kind: field.value.clone().into(),
-            //                 meta: pin_signature::Kind::StructKeySet.into(),
-            //             });
-            //             pins.push(DeclPin {
-            //                 name: format!("modify_{}", field.name),
-            //                 kind: ValueBool::def().into(),
-            //                 meta: pin_signature::Kind::StructKeyMod.into(),
-            //             });
-            //         }
-            //     }));
-            // })),
+            (StructureNodeDecl::Modify, "Modify Struct", node_interface::Implementation {
+                category: node_interface::implementation::Category::StructModify as i32,
+                template: node_interface::implementation::Template::ModifyStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+            }, HashMap::default().tap_mut(|pins| { // TODO
+                pins.insert(PinType::InControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
+                pins.insert(PinType::OutControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
+                pins.insert(PinType::InValue, vec![].tap_mut(|pins| {
+                    pins.push(DeclPin {
+                        name: self.name.clone(),
+                        kind: Some(ValueStruct::new(result.clone()).into()),
+                        meta: pin_signature::Kind::StructRef.into(),
+                    });
+                    pins.push(DeclPin {
+                        name: "Struct Key Select".to_string(),
+                        kind: None, // virtual pin
+                        meta: pin_signature::Kind::StructKeySelect.into(),
+                    });
+                    for field in &self.fields {
+                        pins.push(DeclPin {
+                            name: format!(".{}", field.name),
+                            kind: field.value.clone().into(),
+                            meta: pin_signature::Kind::StructKeySet.into(),
+                        });
+                        pins.push(DeclPin {
+                            name: format!("modify({})", field.name),
+                            kind: ValueBool::def().into(),
+                            meta: pin_signature::Kind::StructKeyMod.into(),
+                        });
+                    }
+                }));
+            })),
         ] {
             result.data.decls.insert(k, NodeDecl {
                 name: name.to_string(),
