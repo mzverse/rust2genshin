@@ -3,16 +3,16 @@ use crate::asset::node_graph::NodeKind;
 use crate::asset::node_graph::arithmetic::{node_divide, node_power};
 use crate::asset::node_graph::execution::NODE_LOG;
 use crate::asset::value::{AnyValue, ValueDefault, ValueInt};
+use crate::compile::func::CompilingFn;
 use crate::compile::{WithTcx, get_expn_macro_attr};
 use rustc_attr_ir::LangItem;
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Instance, InstanceKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
-use crate::compile::func::CompilingFn;
 
 impl<'tcx> CompilingFn<'tcx, '_> {
-    pub fn compile_native_call(&self, span: Span, func: Instance, params: Vec<AnyValue>, ret: Vec<AnyValue>) -> Option<Result<NodeKind>> {
+    pub fn compile_native_call(&self, span: Span, func: Instance, params: Vec<AnyValue>, ret: Option<AnyValue>) -> Option<Result<NodeKind>> {
         if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
             self.tcx.dcx().span_warn(span, "Ignored panic");
             return Ok(NODE_LOG.clone()).into();
@@ -53,7 +53,7 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                             control as usize,
                             control as usize,
                             params,
-                            ret,
+                            ret.into_iter().collect(),
                         )).into()
                     },
                     _ => None

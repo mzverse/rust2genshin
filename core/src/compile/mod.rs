@@ -11,14 +11,14 @@ use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::{ImplItem, intravisit};
-use rustc_index::IndexVec;
+use rustc_index::{Idx, IndexVec};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir;
-use rustc_middle::mir::{BasicBlock, Body, Local};
+use rustc_middle::mir::{BasicBlock, Body, Local, RETURN_PLACE};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{EarlyBinder, Instance, Ty, TyCtxt, TyKind, TypingEnv};
+use rustc_middle::ty::{EarlyBinder, Instance, Ty, TyCtxt, TypingEnv};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
 use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
@@ -133,17 +133,6 @@ pub(crate) trait WithTcx<'tcx> {
 
     fn monomorphize(&self, func: Instance<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
         func.instantiate_mir_and_normalize_erasing_regions(self.get_tcx(), TypingEnv::fully_monomorphized(), EarlyBinder::bind(self.get_tcx(), ty))
-    }
-}
-
-pub(crate) fn is_unit(ty: Ty) -> bool {
-    if ty.is_never() {
-        return true;
-    }
-    if let TyKind::Tuple(cs) = ty.kind() {
-        cs.is_empty()
-    } else {
-        false
     }
 }
 
@@ -290,17 +279,26 @@ impl<'tcx> Compiler<'tcx> {
             compiler: self,
             block: Block::nop(&mut graph.graph),
             graph: &mut graph,
-            args: 0,
+            params: 0,
             rets: 0,
         };
-        for (i, x) in body.local_decls.iter_enumerated() {
-            if is_unit(x.ty) {
-                locals.push(CompiledLocal::Flat(Default::default()));
-                continue;
-            }
-            let mut name = "".to_string();
-            let k = if i.index() == 0 { LocalKind::Ret } else if i.index() - 1 < args.len() { name = args.get(i.index() - 1).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()); LocalKind::Arg } else { LocalKind::Other };
-            locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), k, name, x.source_info.span)?);
+        let Some(ret_decl) = body.local_decls.get(RETURN_PLACE) else {
+            unreachable!();
+        };
+        let (ret, r) = compiling_locals.solve_local(if ret_decl.ty.is_never() { compiling_locals.compiler.tcx.types.unit } else { compiling_locals.compiler.monomorphize(func, ret_decl.ty) }, LocalKind::Ret, "".into(), ret_decl.source_info.span)?;
+        locals.push(r);
+        let mut fn_decl = FnDecl {
+            params: vec![],
+            ret,
+        };
+        for i in 0..args.len() {
+            let decl = body.local_decls.get(Local::arg(i)).unwrap();
+            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, args.get(i).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()), decl.source_info.span)?;
+            locals.push(r);
+            fn_decl.params.push(k);
+        }
+        for x in body.local_decls.iter().skip(1 + args.len()) { // other locals
+            locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), LocalKind::Other, "".to_string(), x.source_info.span)?.1);
         }
         let CompilingLocals { mut block, .. } = compiling_locals;
         let mut blocks = IndexVec::<BasicBlock, Block>::new();
@@ -336,6 +334,6 @@ impl<'tcx> Compiler<'tcx> {
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
             self.assets.set_primary(&asset_id);
         }
-        Ok((asset_id, FnDecl {}))
+        Ok((asset_id, fn_decl))
     }
 }

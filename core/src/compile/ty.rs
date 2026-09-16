@@ -53,9 +53,6 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     fn touch_tuple(&mut self, span: Span, tys: &List<Ty<'tcx>>) -> Result<&AssetRef<StructureDefinition>> {
-        if tys.is_empty() {
-            panic!("Unit should not be touched");
-        }
         let key = Self::mangle_tuple(tys);
         if let Some(id) = self.structs.get(&key) {
             return Ok(id);
@@ -122,12 +119,7 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => {
-                if tys.is_empty() {
-                    panic!();
-                }
-                ValueStruct::new(self.touch_tuple(span, *tys)?.clone()).into()
-            }
+            TyKind::Tuple(tys) => ValueStruct::new(self.touch_tuple(span, *tys)?.clone()).into(),
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)

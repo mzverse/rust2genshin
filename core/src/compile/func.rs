@@ -29,8 +29,10 @@ impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
     }
 }
 
+#[derive(Clone)]
 pub struct FnDecl {
-    // TODO
+    pub params: Vec<CompiledLocal<()>>,
+    pub ret: CompiledLocal<()>,
 }
 
 impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
@@ -393,25 +395,34 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
         let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
         let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
-        let ret: Vec<AnyValue> = Some(sig.output()).filter(|x| !is_unit(*x)).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
-        let node = self.graph.graph.insert(Node::new(if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
-            native?
+        let ret: Option<AnyValue> = if sig.output().is_never() { None } else { Some(self.compiler.compile_ty(span, sig.output())?) };
+        let (node_kind, decl) = if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
+            (native?, FnDecl {
+                params: params.iter().map(|_| CompiledLocal::Singleton(())).collect(),
+                ret: if ret.is_some() { CompiledLocal::Singleton(()) } else { CompiledLocal::Flat(Default::default()) },
+            })
         } else {
-            node_composite(&self.compiler.touch_fn(func)?.0)
-        }));
-        for (i, &Spanned { node: ref a, span }) in args.iter().enumerate() {
-            let value = self.compile_operand(a, span)?;
-            self.graph.graph.set_value_in(Connection(node, i), value);
-        }
+            let (node, decl) = self.compiler.touch_fn(func)?;
+            (node_composite(&node), decl.clone())
+        };
+        let node = self.graph.graph.insert(Node::new(node_kind.clone()));
         let mut block = match self.graph.graph.get_node(node).kind.controls_in_num {
             0 => Block::nop(&mut self.graph.graph),
             1 => Block::singleton(node, 0),
             other => return self.span_err(span, format!("Unsupported call controls: {other}")),
         };
-        if !is_unit(sig.output()) {
-            // TODO: flat
-            let value = self.compile_assign(destination, ValueIn::link(Connection(node, 0).into()))?;
-            block.extend(&mut self.graph.graph, value);
+        if let Some(ret) = ret {
+            let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut (0..node_kind.values_out_types.len()).map(|i| ValueIn::link(Connection(node, i).into())));
+            let b = self.compile_assign(destination, value)?;
+            block.extend(&mut self.graph.graph, b);
+        }
+        let mut j = 0;
+        for (i, &Spanned { node: ref a, span }) in args.iter().enumerate() {
+            let value = self.compile_operand(a, span)?;
+            for x in decl.params[i].destructure_all(&mut self.graph.graph, &params[i], value) {
+                self.graph.graph.set_value_in(Connection(node, j), x);
+                j += 1;
+            }
         }
         Ok(block)
     }

@@ -41,18 +41,21 @@ pub struct CompilingLocals<'a, 'tcx> {
     pub compiler: &'a mut Compiler<'tcx>,
     pub graph: &'a mut CompositeNodeGraph,
     pub block: Block,
-    pub args: usize,
+    pub params: usize,
     pub rets: usize,
 }
 impl<'tcx> CompilingLocals<'_, 'tcx> {
-    pub fn solve_local(&mut self, ty: Ty<'tcx>, k: LocalKind, name: String, span: Span) -> crate::compile::Result<CompiledLocal<LocalRef>> {
+    pub fn solve_local(&mut self, ty: Ty<'tcx>, k: LocalKind, name: String, span: Span) -> crate::compile::Result<(CompiledLocal<()>, CompiledLocal<LocalRef>)> {
         Ok(match ty.kind() {
             TyKind::Tuple(es) => {
+                let mut fsk = IndexVec::new();
                 let mut fs = IndexVec::new();
                 for (i, t) in es.iter().enumerate() {
-                    fs.push(self.solve_local(t, k, format!("{name}.{i}"), span)?);
+                    let (k, r) = self.solve_local(t, k, format!("{name}.{i}"), span)?;
+                    fsk.push(k);
+                    fs.push(r);
                 }
-                CompiledLocal::Flat(fs)
+                (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))
             },
             _ => {
                 let kind = self.compiler.compile_ty(span, ty)?;
@@ -66,7 +69,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                         if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                             self.graph.graph.set_default(Connection(local, 0), kind.clone());
                         }
-                        CompiledLocal::Singleton(LocalRef::Common(local).tap(|l| {
+                        let r = CompiledLocal::Singleton(LocalRef::Common(local).tap(|l| {
                             match k {
                                 LocalKind::Ret => {
                                     self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
@@ -76,13 +79,14 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                                 }
                                 LocalKind::Arg => {
                                     self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(name);
-                                    let block = l.setter(&mut self.graph.graph, &kind, ValueIn::link(Link::Export(self.args)));
+                                    let block = l.setter(&mut self.graph.graph, &kind, ValueIn::link(Link::Export(self.params)));
                                     self.block.extend(&mut self.graph.graph, block);
-                                    self.args += 1;
+                                    self.params += 1;
                                 }
                                 LocalKind::Other => (),
                             }
-                        }))
+                        }));
+                        (CompiledLocal::Singleton(()), r)
                     }
                 }
             },
