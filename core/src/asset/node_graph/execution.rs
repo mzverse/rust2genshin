@@ -22,7 +22,7 @@ pub static NODE_LOG: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::procedure(1
 /// 变体顺序(TSI 与 kernel 均按参考 data.json,与 Get_Local 同序):
 /// Bol/Int/Str/Ety/Gid/Flt/Vec/L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/
 /// Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
-pub fn node_set_local(ty: AnyValue) -> NodeKind {
+pub fn node_set_local(ty: &AnyValue) -> NodeKind {
     let mut result = NodeKind::new(19, 1, 1, vec![ValueLocalVarRef::def(), ty.clone()], vec![]);
     let (selected, kernel) = match ty.get_server_type() {
         ServerTypeId::SBoolean => (0, 19),

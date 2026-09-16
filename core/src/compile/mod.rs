@@ -3,9 +3,9 @@ use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, No
 use crate::asset::structure::StructureDefinition;
 use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
 use crate::asset::{Asset, AssetBundle, AssetRef};
-use crate::compile::func::CompilingFn;
+use crate::compile::func::{CompilingFn, FnDecl};
 use crate::compile::optimize::Optimizer;
-use crate::compile::place::{CompiledPlace, CompilingLocals, LocalVarKind};
+use crate::compile::place::{CompiledLocal, CompilingLocals, LocalRef, LocalKind};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -170,7 +170,7 @@ pub struct Compiler<'tcx> {
     lib: CrateNum,
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
-    compiled: HashMap<Instance<'tcx>, AssetRef<CompositeNodeGraph>>,
+    compiled: HashMap<Instance<'tcx>, (AssetRef<CompositeNodeGraph>, FnDecl)>,
     structs: HashMap<String, AssetRef<StructureDefinition>>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
@@ -267,39 +267,39 @@ impl<'tcx> Compiler<'tcx> {
         Ok(())
     }
 
-    pub fn touch_fn(&mut self, func: Instance<'tcx>) -> Result<&AssetRef<CompositeNodeGraph>> {
-        if let Some(asset_id) = self.compiled.get(&func) {
-            return Ok(asset_id);
+    pub fn touch_fn(&mut self, func: Instance<'tcx>) -> Result<&(AssetRef<CompositeNodeGraph>, FnDecl)> {
+        if let Some(result) = self.compiled.get(&func) {
+            return Ok(result);
         }
         if !self.compiling.insert(func) {
             return self.span_err(func.default_span(self.tcx), "Recursive call");
         }
-        let asset_id = self.compile_fn(func)?;
+        let result = self.compile_fn(func)?;
         self.compiling.remove(&func);
-        Ok(self.compiled.entry(func).or_insert(asset_id))
+        Ok(self.compiled.entry(func).or_insert(result))
     }
 
-    fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<AssetRef<CompositeNodeGraph>> {
+    fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<(AssetRef<CompositeNodeGraph>, FnDecl)> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.symbol_name(func).to_string()));
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
-        let mut locals = IndexVec::<Local, CompiledPlace>::new(); // TODO: adapt for struct, struct list and map
+        let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map
         let args = self.tcx.fn_arg_idents(func.def_id());
         let mut compiling_locals = CompilingLocals {
             compiler: self,
             block: Block::nop(&mut graph.graph),
             graph: &mut graph,
-            a: 0,
-            r: 0,
+            args: 0,
+            rets: 0,
         };
         for (i, x) in body.local_decls.iter_enumerated() {
             if is_unit(x.ty) {
-                locals.push(CompiledPlace::Flat(Default::default()));
+                locals.push(CompiledLocal::Flat(Default::default()));
                 continue;
             }
             let mut name = "".to_string();
-            let k = if i.index() == 0 { LocalVarKind::Ret } else if i.index() - 1 < args.len() { name = args.get(i.index() - 1).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()); LocalVarKind::Arg } else { LocalVarKind::Other };
+            let k = if i.index() == 0 { LocalKind::Ret } else if i.index() - 1 < args.len() { name = args.get(i.index() - 1).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()); LocalKind::Arg } else { LocalKind::Other };
             locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), k, name, x.source_info.span)?);
         }
         let CompilingLocals { mut block, .. } = compiling_locals;
@@ -336,6 +336,6 @@ impl<'tcx> Compiler<'tcx> {
         if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
             self.assets.set_primary(&asset_id);
         }
-        Ok(asset_id)
+        Ok((asset_id, FnDecl {}))
     }
 }

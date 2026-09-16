@@ -67,7 +67,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_set_local(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if n.kind.shell_eq(&node_set_local(ValueBool(false).into())) {
+        if n.kind.shell_eq(&node_set_local(&ValueBool(false).into())) {
             let Link::Connection(source) = n.values_in[0].link.unwrap() else {
                 return Some(());
             };
@@ -108,7 +108,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_unnecessary_local_setter(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if !n.kind.shell_eq(&node_set_local(ValueBool(false).into())) {
+        if !n.kind.shell_eq(&node_set_local(&ValueBool(false).into())) {
             return Some(());
         }
         let Link::Connection(Connection(local, _)) = n.values_in[0].link.unwrap() else {

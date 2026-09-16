@@ -17,16 +17,16 @@ use std::collections::HashMap;
 use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
-pub fn node_assemble_struct(st: &ValueStruct) -> NodeKind {
-    st.st.data.decls.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
+pub fn node_assemble_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
+    st.data.decls.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
 }
 
-pub fn node_destruct_struct(st: &ValueStruct) -> NodeKind {
-    st.st.data.decls.get(&StructureNodeDecl::DestructServer).unwrap().data.clone()
+pub fn node_destructure_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
+    st.data.decls.get(&StructureNodeDecl::DestructureServer).unwrap().data.clone()
 }
 
-pub fn node_modify_struct(st: &ValueStruct) -> NodeKind {
-    st.st.data.decls.get(&StructureNodeDecl::Modify).unwrap().data.clone()
+pub fn node_modify_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
+    st.data.decls.get(&StructureNodeDecl::Modify).unwrap().data.clone()
 }
 
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
@@ -94,7 +94,7 @@ impl StructureDefinition {
 #[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
 pub enum StructureNodeDecl {
     AssembleServer,
-    DestructServer,
+    DestructureServer,
     Modify, // server only
 }
 
@@ -195,7 +195,7 @@ impl Asset for StructureDefinition {
                     meta: pin_signature::Kind::StructRef.into(),
                 }]);
             })),
-            (StructureNodeDecl::DestructServer, "Destruct Struct Server", node_interface::Implementation {
+            (StructureNodeDecl::DestructureServer, "Destructure Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructSplit as i32,
                 template: node_interface::implementation::Template::SplitStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
