@@ -26,7 +26,7 @@ use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::OutputFilenames;
-use rustc_session::{IncrCompSession, Session};
+use rustc_session::{EarlySession, IncrCompSession, Session};
 use rustc_structures::CrateType;
 use std::any::Any;
 use crate::compile;
@@ -38,7 +38,7 @@ impl CodegenBackend for R2gCodegenBackend {
         "rust2genshin"
     }
 
-    fn target_config(&self, sess: &Session) -> TargetConfig {
+    fn target_config(&self, sess: &EarlySession) -> TargetConfig {
         // 与 dummy 后端一致:把 ABI 必需特性填进 internal_target_features,
         // 否则前端会警告 x87/sse2 等目标特性未启用
         let abi_required_features = sess.target.abi_required_features();
