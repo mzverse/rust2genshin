@@ -16,9 +16,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Nightly
-      run: rustup +nightly component add rustc-dev rust-src llvm-tools-preview
     - name: Setup Protoc
       run: sudo apt install protobuf-compiler
     - name: Build
-      run: cargo +nightly run -p build-demo
+      run: cargo run -p build-demo
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-output
+        path: |
+          target/rust2genshin_demo.gia
+        if-no-files-found: error

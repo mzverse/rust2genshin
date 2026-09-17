@@ -22,21 +22,17 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 可参见github workflow
 
 1. 确保安装了[rustup](https://rustup.rs/)、cargo和[protoc](https://github.com/protocolbuffers/protobuf/releases)
-2. 安装Rust nightly和组件
-    ```shell
-   rustup +nightly component add rustc-dev rust-src llvm-tools-preview
-    ```
-3. 克隆本项目
+2. 克隆本项目
     ```shell
    git clone https://github.com/mzverse/rust2genshin
    ```
-4. 将`demo`文件夹重命名，同时记得改项目根目录的`Cargo.toml`的`members`
-5. 在重命名后的demo的`lib.rs`中编写自己的节点图（Rust代码）
-6. 构建demo
+3. 将`demo`文件夹重命名，同时记得改项目根目录的`Cargo.toml`的`members`
+4. 在重命名后的demo的`lib.rs`中编写自己的节点图（Rust代码）
+5. 构建demo
     ```shell
    cargo +nightly run -p build-demo
    ```
-7. 构建结果是`target/rust2genshin_demo.gia`
+6. 构建结果是`target/rust2genshin_demo.gia`
 
 ## Code
 
