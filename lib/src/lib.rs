@@ -5,7 +5,7 @@
 #![feature(unsize)]
 #![feature(extern_types)]
 #![feature(rustc_attrs)]
-
+#![feature(reborrow)]
 #![allow(internal_features)]
 
 pub mod entity;
@@ -37,9 +37,15 @@ impl ToString for str {
         }
     }
 }
+impl<T: ToString> ToString for &T {
+    #[inline(always)]
+    fn to_string(&self) -> String {
+        T::to_string(*self)
+    }
+}
 
-#[inline(always)]
-pub fn log(s: &(impl ToString + ?Sized)) {
+#[rustc_force_inline]
+pub fn log(s: impl ToString) {
     log_(s.to_string())
 }
 

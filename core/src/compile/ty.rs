@@ -100,7 +100,7 @@ impl<'tcx> Compiler<'tcx> {
             },
             TyKind::Str => ValueString::def(),
             TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-                return self.span_err(span, "Ref is unsupported, see `<Box as Deref>` or `#[rustc_force_inline]`".to_string());
+                return self.span_err(span, "Ref is unsupported, see `<Box as Deref>` or `#[rustc_force_inline] or #[inline(always)]`".to_string());
             },
             TyKind::Adt(d, a) => {
                 if d.did().krate == self.lib {

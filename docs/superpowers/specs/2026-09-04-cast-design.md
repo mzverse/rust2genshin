@@ -10,14 +10,14 @@ The `rust2genshin` codegen backend (`core/`) translates Rust MIR into Genshin Im
 
 Genshin's node-graph already has a **type-conversion node** (`Arithmetic.General.Convert_Type`, ID 180) with 11 type-pair kernel variants (IDs 180-189). See `core/src/asset/node_graph/arithmetic.rs` lines 603-630. The node is wired up but never invoked from `compile_assign_rvalue`.
 
-This spec adds the bridge: `Rvalue::Cast` → `node_convert_type` for the type pairs the backend already supports.
+This spec adds the bridge: `Rvalue::Cast` → `node_cast` for the type pairs the backend already supports.
 
 ## Scope
 
 **In scope:**
 
 - Casts between types `compile_ty` already accepts: `bool`, `i32`, `isize`, `f32`, `String`.
-- The 11 type-pair combinations that `node_convert_type` supports.
+- The 11 type-pair combinations that `node_cast` supports.
 - No-op casts (same source and target type, including `i32 as isize`).
 
 **Out of scope:**
@@ -93,7 +93,7 @@ fn cast_supported(from: &AnyValue, to: &AnyValue) -> bool {
 
 ### Unchanged
 
-- `core/src/asset/node_graph/arithmetic.rs` — `node_convert_type` and its kernel-ID table are used as-is.
+- `core/src/asset/node_graph/arithmetic.rs` — `node_cast` and its kernel-ID table are used as-is.
 - `core/src/compile/mod.rs` — `compile_ty` is unchanged.
 - `core/proto/asset.proto` — no schema changes needed.
 
@@ -113,7 +113,7 @@ For `let y: f32 = x as f32;` where `x: i32`:
 | Case | Behavior |
 |---|---|
 | Source == target type | Pass through (no node inserted) |
-| Supported pair (the 11 listed in `cast_supported`) | Insert `node_convert_type`, wire it up |
+| Supported pair (the 11 listed in `cast_supported`) | Insert `node_cast`, wire it up |
 | Unsupported pair | `span_err` at the `as` expression: `"Unsupported cast {from:?} → {to:?} ({kind:?})"` |
 | Source or target type rejected by `compile_ty` | The existing `compile_ty` error fires first (e.g. `Unsupported float: f64`); cast logic is not reached |
 | `CastKind::Transmute` or pointer casts with no supported mapping | Caught by the "unsupported pair" branch; `span_err` names the `CastKind` |
@@ -169,7 +169,7 @@ Inspect the `.gia` with `protoc --decode_raw` or a hex dump; confirm:
 ## Risks
 
 - **Equality on `AnyValue`:** the fast path uses `from_ty == to_ty`. `AnyValue` derives or implements equality such that two `ValueInt::def()` instances compare equal; if not, the fast path could be skipped (no correctness regression, just an extra node inserted). Mitigation: confirm equality works in practice; otherwise remove the fast path and let the slow path handle it.
-- **Selectortype pin behavior:** `node_convert_type` uses `selectors_in` for the polymorphic input. `set_value_in` writes the default value (or a link); if a future change breaks polymorphism handling, the conversion node may emit wrong-type pins. Out of scope for this spec; flag if observed in testing.
+- **Selectortype pin behavior:** `node_cast` uses `selectors_in` for the polymorphic input. `set_value_in` writes the default value (or a link); if a future change breaks polymorphism handling, the conversion node may emit wrong-type pins. Out of scope for this spec; flag if observed in testing.
 - **Future expansion:** when `unsigned int` and `i64` are added in later specs, the supported-pair list will grow. Keep `cast_supported` next to where the conversion node lives, or move it into `arithmetic.rs` as a `pub fn`.
 
 ## Out-of-spec follow-ups
@@ -177,4 +177,4 @@ Inspect the `.gia` with `protoc --decode_raw` or a hex dump; confirm:
 - `unsigned int` (Tier 1 #2): widen `compile_ty` to accept `UintTy::U32`; extend `cast_supported` to handle `u32 ↔ i32`.
 - `i64` (Tier 1 #3): widen `compile_ty` for `IntTy::I64`; extend `cast_supported`.
 - `tuple` (Tier 1 #4): add tuple→tuple / scalar→tuple casts when tuple support lands.
-- `struct` (Tier 2 #5): struct casts will go through a different node (`STRUCT_ASSEMBLY` / `STRUCT_MODIFY`), not `node_convert_type`.
+- `struct` (Tier 2 #5): struct casts will go through a different node (`STRUCT_ASSEMBLY` / `STRUCT_MODIFY`), not `node_cast`.

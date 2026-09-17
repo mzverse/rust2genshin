@@ -1,4 +1,5 @@
 use rust2genshin_lib_internal::{native, native_calc};
+use crate::{String, ToString};
 
 pub struct Vec2 { // TODO
     pub x: f32,
@@ -72,6 +73,14 @@ unsafe impl I32 for i32 {
     #[native("power")]
     fn ipow(self, rhs: Self) -> Self;
 }
+impl ToString for i32 {
+    #[inline(always)]
+    fn to_string(&self) -> String {
+        #[native("to_string")]
+        fn to_string(s: i32) -> String;
+        to_string(*self)
+    }
+}
 
 unsafe impl F32 for f32 {
     #[native_calc(221)]
@@ -100,4 +109,12 @@ unsafe impl F32 for f32 {
 
     #[native_calc(296)]
     fn atan(self) -> Self;
+}
+impl ToString for f32 {
+    #[inline(always)]
+    fn to_string(&self) -> String {
+        #[native("to_string")]
+        fn to_string(s: f32) -> String;
+        to_string(*self)
+    }
 }

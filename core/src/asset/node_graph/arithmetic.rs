@@ -600,7 +600,7 @@ pub fn node_assemble_list(ty: AnyValue) -> NodeKind {
 
 /// 类型转换(ID 180,泛型变体):K 类型值转为 V 类型值;
 /// shell 固定 180,kernel 随 (K,V) 组合(11 种,见特判);输出 R<V>。
-pub fn node_convert_type(from_ty: AnyValue, to_ty: AnyValue) -> Option<NodeKind> {
+pub fn node_cast(from_ty: AnyValue, to_ty: AnyValue) -> Option<NodeKind> {
     let mut result = NodeKind::expr(180, vec![from_ty.clone()], to_ty.clone());
     // kernel 由 (K,V) 组合决定(11 种)
     result.kernel_id = match (from_ty.get_server_type(), to_ty.get_server_type()) {

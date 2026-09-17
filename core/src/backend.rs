@@ -104,6 +104,7 @@ impl CodegenBackend for R2gCodegenBackend {
             ));
         }
 
+        sess.dcx().note("TODO: link"); // TODO
         link_binary(
             sess,
             &ArArchiveBuilderBuilder,

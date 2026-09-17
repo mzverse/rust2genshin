@@ -4,7 +4,7 @@
 
 **Goal:** Implement `Rvalue::Cast` translation in the MIR-to-node-graph compiler backend, bridging to the existing `Arithmetic.General.Convert_Type` node (IDs 180-189) for the 11 supported type-pair conversions.
 
-**Architecture:** Single new arm in `compile_assign_rvalue` (`core/src/compile/func.rs`) plus a small `cast_supported` helper. No new node definitions, no proto changes. The arm routes supported pairs to `node_convert_type`; same-type casts forward directly; everything else emits a `span_err`.
+**Architecture:** Single new arm in `compile_assign_rvalue` (`core/src/compile/func.rs`) plus a small `cast_supported` helper. No new node definitions, no proto changes. The arm routes supported pairs to `node_cast`; same-type casts forward directly; everything else emits a `span_err`.
 
 **Tech Stack:** Rust nightly, rustc_private API (`rustc_middle::mir::Rvalue::Cast`, `CastKind`, `Operand`), existing `core::asset::node_graph::arithmetic::node_convert_type`, prost/protobuf for output verification.
 
@@ -22,7 +22,7 @@
 - `demo/src/lib.rs` — add 4 demo functions exercising each supported cast (kernel IDs 180, 181, 185, 187)
 
 **Unchanged:**
-- `core/src/asset/node_graph/arithmetic.rs` — `node_convert_type` reused as-is
+- `core/src/asset/node_graph/arithmetic.rs` — `node_cast` reused as-is
 - `core/src/compile/mod.rs` — `compile_ty` unchanged
 - `core/proto/asset.proto` — no schema changes
 - All other files
@@ -67,7 +67,7 @@ pub fn cast_i32_to_bool(x: i32) -> bool {
 }
 ```
 
-Each function exercises a different kernel of `node_convert_type`:
+Each function exercises a different kernel of `node_cast`:
 - `cast_i32_to_f32` → kernel 181 (Int → Float)
 - `cast_f32_to_i32` → kernel 187 (Float → Int)
 - `cast_bool_to_i32` → kernel 185 (Bool → Int)

@@ -37,9 +37,10 @@ pub fn solve2(a: f32, b: f32, c: f32) -> (f32, f32) {
 }
 
 #[unsafe(no_mangle)]
-pub fn test_solve2() -> f32 {
+pub fn test_solve2() {
     let (x1, x2) = solve2(1., -5., 6.);
-    x1 + x2
+    log(x1);
+    log(x2);
 }
 
 #[unsafe(no_mangle)]

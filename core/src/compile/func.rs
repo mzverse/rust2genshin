@@ -3,7 +3,7 @@ use std::iter;
 
 use super::*;
 use crate::asset::node_graph::ValueIn;
-use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_convert_type, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
+use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::compile::place::{CompiledLocal, LocalRef};
@@ -160,7 +160,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
                 } else {
-                    let Some(node) = node_convert_type(from_kind, to_kind) else {
+                    let Some(node) = node_cast(from_kind, to_kind) else {
                         return self.span_err(span, format!("Unsupported cast ({kind:?}) {from_ty:?} → {target_ty:?}"));
                     };
                     let node = self.graph.graph.insert(Node::new(node));
