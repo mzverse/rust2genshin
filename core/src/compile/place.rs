@@ -7,8 +7,9 @@ use crate::asset::value::AnyValue;
 use crate::compile::func::CompilingFn;
 use crate::compile::{Block, Compiler};
 use rustc_abi::FieldIdx;
+use rustc_ast::Mutability;
 use rustc_index::IndexVec;
-use rustc_middle::mir::{Place, PlaceElem};
+use rustc_middle::mir::{Place, PlaceTy};
 use rustc_middle::ty::{Ty, TyKind};
 use rustc_span::Span;
 use tap::Tap;
@@ -18,14 +19,8 @@ pub enum CompiledLocal<T> {
     Singleton(T),
     Flat(IndexVec<FieldIdx, CompiledLocal<T>>),
 }
-#[derive(Clone)]
-pub enum LocalRef {
-    Common(NodeRef),
-    Special {
-        node: NodeRef,
-        getter: NodeRef,
-    },
-}
+#[derive(Clone, Copy)]
+pub struct LocalRef(NodeRef);
 #[derive(Clone)]
 pub enum CompiledPlace {
     Local(CompiledLocal<LocalRef>),
@@ -69,7 +64,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                         if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                             self.graph.graph.set_default(Connection(local, 0), kind.clone());
                         }
-                        let r = CompiledLocal::Singleton(LocalRef::Common(local).tap(|l| {
+                        let r = CompiledLocal::Singleton(LocalRef(local).tap(|l| {
                             match k {
                                 LocalKind::Ret => {
                                     self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutValue).unwrap().push(name);
@@ -164,23 +159,15 @@ impl<T> CompiledLocal<T> {
 impl LocalRef {
     #[must_use]
     pub fn getter(&self) -> Connection {
-        match self {
-            LocalRef::Common(x) => Connection(*x, 1),
-            LocalRef::Special { getter, .. } => Connection(*getter, 0),
-        }
+        Connection(self.0, 1)
     }
 
     #[must_use]
     pub fn setter(&self, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) -> Block {
-        match self {
-            LocalRef::Common(x) => {
-                let node = graph.insert(node_set_local(kind).into());
-                graph.connect_value(Connection(*x, 0), Connection(node, 0));
-                graph.set_value_in(Connection(node, 1), value);
-                Block::singleton(node, 0)
-            },
-            LocalRef::Special { .. } => todo!(),
-        }
+        let node = graph.insert(node_set_local(kind).into());
+        graph.connect_value(Connection(self.0, 0), Connection(node, 0));
+        graph.set_value_in(Connection(node, 1), value);
+        Block::singleton(node, 0)
     }
 }
 
@@ -224,19 +211,25 @@ impl CompiledPlace {
     }
 }
 
-impl CompilingFn<'_, '_> {
-    pub fn compile_place(&self, place: Place) -> CompiledPlace {
+impl<'tcx> CompilingFn<'tcx, '_> {
+    pub fn compile_place(&self, place: Place<'tcx>) -> CompiledPlace {
         let mut result = CompiledPlace::Local(self.locals.get(place.local).unwrap().clone());
+        let mut ty = PlaceTy::from_ty(self.mono(self.body.local_decls.get(place.local).unwrap().ty));
         for x in place.projection {
+            use rustc_middle::mir::ProjectionElem::*;
             match x {
-                PlaceElem::Field(i, _) => {
+                Field(i, _) => {
                     match result {
                         CompiledPlace::Local(CompiledLocal::Flat(v)) => result = CompiledPlace::Local(v.into_iter().nth(i.index()).unwrap()),
                         other => result = CompiledPlace::Field(other.into(), i),
                     }
                 },
+                Deref => if ty.ty.ref_mutability().unwrap() == Mutability::Mut {
+                    todo!()
+                }, // else nop
                 other => todo!("{other:?}")
             }
+            ty = ty.projection_ty(self.tcx, x);
         }
         result
     }

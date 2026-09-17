@@ -95,4 +95,3 @@ pub fn nested_update(p: ((i32, f32), bool), n: i32) -> ((i32, f32), bool) {
     pair.0.0 = n;
     pair
 }
-

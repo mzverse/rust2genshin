@@ -10,7 +10,7 @@ use crate::compile::place::{CompiledLocal, LocalRef};
 use rustc_abi::{FieldIdx, Size};
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
@@ -144,7 +144,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             } else {
                 self.span_err(span, "Reborrow from raw ptr is unsupported")
             },
-            Rvalue::Ref(_, _, _) => panic!(),
+            Rvalue::Ref(_, k, place) => match k {
+                BorrowKind::Mut { .. } => todo!(),
+                _ => self.compile_operand(&Operand::Copy(*place), span)?
+            },
             Rvalue::RawPtr(_, p) => {
                 let Some(ProjectionElem::Deref) = p.projection.last() else {
                     return self.span_err(span, format!("RawPtr rvalue is unsupported: {p:?}"))?;

@@ -23,12 +23,6 @@ pub type String = &'static str;
 pub trait ToString {
     fn to_string(&self) -> String;
 }
-impl ToString for String {
-    #[inline(always)]
-    fn to_string(&self) -> String {
-        self
-    }
-}
 impl ToString for str {
     #[inline(always)]
     fn to_string(&self) -> String {
@@ -37,7 +31,7 @@ impl ToString for str {
         }
     }
 }
-impl<T: ToString> ToString for &T {
+impl<T: ToString + ?Sized> ToString for &T {
     #[inline(always)]
     fn to_string(&self) -> String {
         T::to_string(*self)
@@ -46,11 +40,10 @@ impl<T: ToString> ToString for &T {
 
 #[rustc_force_inline]
 pub fn log(s: impl ToString) {
+    #[native_exec(1)]
+    fn log_(s: String);
     log_(s.to_string())
 }
-
-#[native_exec(1)]
-fn log_(s: String);
 
 #[repr(transparent)]
 #[derive(Copy, Clone)]

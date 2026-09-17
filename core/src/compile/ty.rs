@@ -5,7 +5,7 @@ use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{AdtDef, GenericArgsRef, List, Ty, TyKind, TypingEnv};
+use rustc_middle::ty::{AdtDef, GenericArgsRef, List, Mutability, Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 
 impl<'tcx> Compiler<'tcx> {
@@ -99,8 +99,11 @@ impl<'tcx> Compiler<'tcx> {
                 return self.span_err(span, format!("RawPtr is unsupported: {e:?}"));
             },
             TyKind::Str => ValueString::def(),
-            TyKind::Ref(_, e, _) => if e.is_str() { ValueString::def() } else {
-                return self.span_err(span, "Ref is unsupported, see `<Box as Deref>` or `#[rustc_force_inline] or #[inline(always)]`".to_string());
+            TyKind::Ref(_, e, m) => if e.is_str() { ValueString::def() } else {
+                if *m == Mutability::Mut {
+                    return self.span_err(span, "&mut is still unsupported// , see `<Box as Deref>` or `#[rustc_force_inline] or #[inline(always)]`".to_string());
+                }
+                return self.compile_ty(span, *e);
             },
             TyKind::Adt(d, a) => {
                 if d.did().krate == self.lib {
