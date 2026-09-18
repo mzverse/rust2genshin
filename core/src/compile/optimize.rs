@@ -1,13 +1,31 @@
 use crate::asset::node_graph::control::NODE_IF;
+use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeId, NodeKind, NodeRef, ValueIn};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueLocalVarRef};
+use std::collections::{HashSet, VecDeque};
+use tap::Tap;
 use crate::asset::node_graph::execution::node_set_local;
 use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeKind, NodeRef, ValueIn};
-use crate::asset::value::ValueBool;
-use std::collections::{HashSet, VecDeque};
+use crate::asset::structure::{node_assemble_struct, ValueStruct, node_destructure_struct};
 
 pub struct Optimizer<'a> {
     pub graph: &'a mut NodeGraph,
     pub proxies: Vec<(usize, usize)>,
+}
+
+pub fn node_ir_local(kind: &AnyValue) -> NodeKind {
+    NodeKind::full(NodeId::Local, 0, 0, 0, vec![kind.clone().into()], vec![ValueLocalVarRef::def(), kind.clone()])
+}
+
+pub fn node_ir_set_local(kind: &AnyValue) -> NodeKind {
+    NodeKind::full(NodeId::SetLocal, 0, 1, 1, vec![ValueLocalVarRef::def().into(), kind.clone().into()], vec![])
+}
+
+pub fn node_ir_assemble(kind: &AnyValue) -> NodeKind {
+    node_assemble_struct(&kind.downcast_ref::<ValueStruct>().unwrap().st).tap_mut(|x| x.id = NodeId::Assemble)
+}
+
+pub fn node_ir_destructure(kind: &AnyValue) -> NodeKind {
+    node_destructure_struct(&kind.downcast_ref::<ValueStruct>().unwrap().st).tap_mut(|x| x.id = NodeId::Destructure)
 }
 
 impl<'a> Optimizer<'a> {
@@ -15,6 +33,20 @@ impl<'a> Optimizer<'a> {
 
     pub fn new(graph: &'a mut NodeGraph) -> Self {
         Self { graph, proxies: Default::default() }
+    }
+
+    pub fn lower(&mut self) {
+        self.optimize();
+        for (_, node) in self.graph.nodes.iter_mut() {
+            node.kind = match node.kind.id {
+                NodeId::Low { .. } => continue,
+                NodeId::Local => node_local(node.kind.values_in_types[0].as_ref().unwrap()),
+                NodeId::SetLocal => node_set_local(node.kind.values_in_types[1].as_ref().unwrap()),
+                NodeId::Assemble => node_assemble_struct(&node.kind.values_out_types[0].downcast_ref::<ValueStruct>().unwrap().st),
+                NodeId::Destructure => node_destructure_struct(&node.kind.values_in_types[0].as_ref().unwrap().downcast_ref::<ValueStruct>().unwrap().st),
+                NodeId::Modify => todo!(),
+            };
+        }
     }
 
     pub fn optimize(&mut self) {
@@ -55,7 +87,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_if(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if n.kind == *NODE_IF && n.values_in[0].link.is_none() {
+        if n.kind.id == NODE_IF.id && n.values_in[0].link.is_none() {
             let n = self.graph.remove(node);
             let value = n.values_in[0].default.as_ref().unwrap().downcast_ref::<ValueBool>().unwrap().0;
             self.relink_controls(&n.controls_in[0], &n.controls_out[1 - value as usize]);
@@ -67,7 +99,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_set_local(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if n.kind.shell_eq(&node_set_local(&ValueBool(false).into())) {
+        if n.kind.id == NodeId::SetLocal {
             let Link::Connection(source) = n.values_in[0].link.unwrap() else {
                 return Some(());
             };
@@ -85,7 +117,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_local(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if n.kind.shell_eq(&node_local(ValueBool(false).into())) && n.values_out[0].is_empty() {
+        if n.kind.id == NodeId::Local && n.values_out[0].is_empty() {
             if !self.reset_values(n.values_out[1].clone(), n.values_in[0].clone()) {
                 return Some(());
             }
@@ -108,7 +140,7 @@ impl<'a> Optimizer<'a> {
 
     pub fn eliminate_unnecessary_local_setter(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        if !n.kind.shell_eq(&node_set_local(&ValueBool(false).into())) {
+        if n.kind.id != NodeId::SetLocal {
             return Some(());
         }
         let Link::Connection(Connection(local, _)) = n.values_in[0].link.unwrap() else {

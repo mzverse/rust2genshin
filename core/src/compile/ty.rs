@@ -1,11 +1,11 @@
 use crate::asset::structure::{StructField, StructureDefinition, ValueStruct};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueGuid, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueString};
 use crate::asset::{Asset, AssetRef};
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{AdtDef, GenericArgsRef, List, Mutability, Ty, TyKind, TypingEnv};
+use rustc_middle::ty::{AdtDef, GenericArg, GenericArgsRef, List, Mutability, Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 
 impl<'tcx> Compiler<'tcx> {
@@ -26,9 +26,10 @@ impl<'tcx> Compiler<'tcx> {
         if s.is_empty() {
             result
         } else {
-            format!("{}<{}>", result, s.iter().map(|x| match x.kind() {
+            format!("{}<{}>", result, s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).map(|x| match x {
                 GenericArgKind::Type(t) => Self::mangle_ty(t),
-                other => format!("{:?}", other),
+                GenericArgKind::Const(c) => format!("{c:?}"),
+                _ => unreachable!(),
             }).collect::<Vec<_>>().join(","))
         }
     }
@@ -79,6 +80,9 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
+        if let Some(n) = self.compile_native_ty(ty) {
+            return n;
+        }
         Ok(match ty.kind() {
             TyKind::Bool => ValueBool::def(),
             TyKind::Char => return self.span_err(span, "Char is unsupported"),
@@ -105,24 +109,14 @@ impl<'tcx> Compiler<'tcx> {
                 }
                 return self.compile_ty(span, *e);
             },
-            TyKind::Adt(d, a) => {
-                if d.did().krate == self.lib {
-                    match self.tcx.def_path(d.did()).to_string_no_crate_verbose().as_str() {
-                        "::Guid" => ValueGuid::def(),
-                        "::entity::Entity" => ValueEntity::def(),
-                        other => panic!("{other}"),
-                    }
-                } else {
-                    ValueStruct::new(self.touch_adt(*d, a, span)?.clone()).into()
-                }
-            },
+            TyKind::Adt(d, a) => ValueStruct::new(self.touch_adt(*d, a, span)?.clone()).into(),
             TyKind::Foreign(_) => todo!(),
             TyKind::Array(_, _) => todo!(),
             TyKind::Pat(_, _) => todo!(),
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => ValueStruct::new(self.touch_tuple(span, *tys)?.clone()).into(),
+            TyKind::Tuple(tys) => ValueStruct::new(self.touch_tuple(span, tys)?.clone()).into(),
             TyKind::Closure(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)

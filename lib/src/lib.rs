@@ -6,6 +6,7 @@
 #![feature(extern_types)]
 #![feature(rustc_attrs)]
 #![feature(reborrow)]
+
 #![allow(internal_features)]
 
 pub mod entity;
@@ -45,6 +46,7 @@ pub fn log(s: impl ToString) {
     log_(s.to_string())
 }
 
+#[native("Guid")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct Guid(pub i64);

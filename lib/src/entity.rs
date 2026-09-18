@@ -1,13 +1,15 @@
 use crate::Guid;
-use rust2genshin_lib_internal::{native_calc, native_exec};
+use rust2genshin_lib_internal::{native, native_calc, native_exec};
 use crate::list::List;
 
 /// A Gc ref of an entity
 #[repr(transparent)]
 #[derive(Copy, Clone)]
+#[native("Entity")]
 pub struct Entity(&'static EntityInternal);
 
 unsafe extern "Rust" {
+    #[native("Entity")]
     type EntityInternal;
 }
 
@@ -16,10 +18,11 @@ impl Entity {
     #[native_calc(73)]
     pub fn current() -> Self;
 
-    /// Get by GUID
+    /// Get preset by GUID
     #[native_calc(75)]
     pub fn get(id: Guid) -> Self;
 
+    /// Only for preset
     #[native_calc(76)]
     pub fn get_id(self) -> Guid;
 

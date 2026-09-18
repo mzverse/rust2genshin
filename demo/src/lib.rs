@@ -44,6 +44,11 @@ pub fn test_solve2() {
 }
 
 #[unsafe(no_mangle)]
+pub fn test_guid(id: Guid) -> Entity {
+    Entity::get(id)
+}
+
+#[unsafe(no_mangle)]
 pub fn to_celsius(f: f32) -> f32 {
     (f - 32.) * 5. / 9.
 }

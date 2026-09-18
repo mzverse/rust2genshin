@@ -232,7 +232,7 @@ impl<'tcx> Compiler<'tcx> {
                 // TODO: manage entrypoint (event_handler)
             }
         }
-        let main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
+        let main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
         // for (i, _) in &self.assets.assets {
         //     main.insert(
         //         NodeComposite {
@@ -270,7 +270,7 @@ impl<'tcx> Compiler<'tcx> {
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<(AssetRef<CompositeNodeGraph>, FnDecl)> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
-        let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::Entity, self.tcx.symbol_name(func).to_string()));
+        let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.symbol_name(func).to_string()));
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map
@@ -321,7 +321,7 @@ impl<'tcx> Compiler<'tcx> {
         }
         block.extend(&mut graph.graph, blocks.get(mir::START_BLOCK).unwrap().clone());
         let mut optimizer = Optimizer::new(&mut graph.graph);
-        optimizer.optimize();
+        optimizer.lower();
         match optimizer.proxies.as_slice() {
             [] => {
                 graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());

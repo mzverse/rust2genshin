@@ -279,7 +279,7 @@ pub static NODE_GET_INPUT_TYPE: LazyLock<NodeKind> = LazyLock::new(|| {
 /// initial_value(idx0,R<T>) 输入;local_variable(idx0,Loc) 与 value(idx1,R<T>) 输出。
 /// 变体顺序(TSI 与 kernel 均按参考 data.json):Bol/Int/Str/Ety/Gid/Flt/Vec/
 /// L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
-pub fn node_local(ty: AnyValue) -> NodeKind {
+pub fn node_local(ty: &AnyValue) -> NodeKind {
     let mut result = NodeKind::new(18, 0, 0, vec![ty.clone()], vec![ValueLocalVarRef::def(), ty.clone()]);
     let (selected, kernel) = match ty.get_server_type() {
         ServerTypeId::SBoolean => (0, 18),

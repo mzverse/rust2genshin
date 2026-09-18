@@ -23,18 +23,17 @@ pub(crate) use crate::asset::node_graph::composite::CompositeNodeGraph;
 
 #[derive(Copy, Clone)]
 pub enum NodeGraphKind {
-    Entity,
+    ServerEntity,
 }
 impl NodeGraphKind {
     pub fn side(&self) -> Side {
         match self {
-            NodeGraphKind::Entity => Side::Server,
+            NodeGraphKind::ServerEntity => Side::Server,
         }
     }
 }
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
-#[repr(transparent)]
 pub struct NodeRef(usize);
 
 const NODE_ID_BEGIN: i32 = 1;
@@ -74,11 +73,22 @@ impl From<Connection> for Link {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum NodeId {
+    Low {
+        kind: identifier::AssetKind,
+        id: i64,
+    },
+    Local,
+    SetLocal,
+    Assemble,
+    Destructure,
+    Modify,
+}
 #[derive(Clone, Debug)]
 pub struct NodeKind {
-    pub id: i64,
+    pub id: NodeId,
     pub kernel_id: i64,
-    pub asset_kind: identifier::AssetKind,
 
     pub controls_in_num: usize,
     pub controls_out_num: usize,
@@ -90,11 +100,6 @@ pub struct NodeKind {
 
     pub references: Vec<Identifier>,
 }
-impl PartialEq for NodeKind {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.kernel_id == other.kernel_id && self.asset_kind == other.asset_kind
-    }
-}
 impl NodeKind {
     pub fn new(
         id: i64,
@@ -103,10 +108,14 @@ impl NodeKind {
         values_in_types: Vec<AnyValue>,
         values_out_types: Vec<AnyValue>,
     ) -> Self {
-        Self::full(id, controls_in_num, controls_out_num,values_in_types.into_iter().map(Some).collect(), values_out_types)
+        Self::full(NodeId::Low {
+            id,
+            kind: identifier::AssetKind::SysCallStub,
+        }, id, controls_in_num, controls_out_num,values_in_types.into_iter().map(Some).collect(), values_out_types)
     }
     pub fn full(
-        id: i64,
+        id: NodeId,
+        kernel_id: i64,
         controls_in_num: usize,
         controls_out_num: usize,
         values_in_types: Vec<Option<AnyValue>>,
@@ -114,8 +123,7 @@ impl NodeKind {
     ) -> Self {
         Self {
             id,
-            kernel_id: id,
-            asset_kind: identifier::AssetKind::SysCallStub,
+            kernel_id,
             controls_in_num,
             controls_out_num,
             selectors_in: vec![None; values_in_types.len()],
@@ -138,17 +146,16 @@ impl NodeKind {
         Self::new(id, 0, 1, vec![], value_out_type)
     }
 
-    pub fn shell_eq(&self, other: &NodeKind) -> bool {
-        self.asset_kind == other.asset_kind && self.id == other.id
-    }
-
     fn encode_shell(&self) -> Identifier {
+        let NodeId::Low { id, kind, .. } = self.id else {
+            panic!("{:?}", self.id);
+        };
         Identifier {
             source: identifier::Source::SystemDefined as i32,
             category: identifier::Category::ServerBasic as i32,
-            kind: self.asset_kind as i32,
+            kind: kind as i32,
             guid: 0,
-            runtime_id: self.id,
+            runtime_id: id,
         }
     }
     fn encode_kernel(&self) -> Identifier {
@@ -361,7 +368,7 @@ impl NodeGraph {
             references,
             name: self.name.clone(),
             r#type: match self.class {
-                NodeGraphKind::Entity => asset_data::Type::EntityNodeGraph,
+                NodeGraphKind::ServerEntity => asset_data::Type::EntityNodeGraph,
             } as i32,
             payload: Some(Payload::GraphData(NodeGraphContainer {
                 inner: Some(node_graph_container::InnerWrapper {

@@ -1,10 +1,9 @@
 use crate::asset::Side;
-use crate::asset::node_graph::execution::node_set_local;
-use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, Node, NodeGraph, NodeRef, ValueIn};
-use crate::asset::structure::{ValueStruct, node_assemble_struct, node_destructure_struct};
+use crate::asset::structure::ValueStruct;
 use crate::asset::value::AnyValue;
 use crate::compile::func::CompilingFn;
+use crate::compile::optimize::{node_ir_assemble, node_ir_destructure, node_ir_local, node_ir_set_local};
 use crate::compile::{Block, Compiler};
 use rustc_abi::FieldIdx;
 use rustc_ast::Mutability;
@@ -60,7 +59,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                     }
                     Err(kind) => {
                         let kind = kind.into_object();
-                        let local = self.graph.graph.insert(Node::new(node_local(kind.clone())));
+                        let local = self.graph.graph.insert(Node::new(node_ir_local(&kind)));
                         if kind.encode_storage(Side::Server /* locals are server-side; SLocalVarRef has ClientUnknown */).is_some() {
                             self.graph.graph.set_default(Connection(local, 0), kind.clone());
                         }
@@ -104,8 +103,8 @@ impl<T> CompiledLocal<T> {
         match self {
             CompiledLocal::Singleton(v) => ctx.leaf(v),
             CompiledLocal::Flat(elements) => {
+                let node_ref = graph.insert(node_ir_assemble(kind).into());
                 let kind = kind.downcast_ref::<ValueStruct>().unwrap();
-                let node_ref = graph.insert(node_assemble_struct(&kind.st).into());
                 for (i, x) in elements.iter().enumerate() {
                     let v = ctx.dfs(x, graph, &kind.fields[i]);
                     graph.set_value_in(Connection(node_ref, i), v);
@@ -131,8 +130,8 @@ impl<T> CompiledLocal<T> {
         match self {
             CompiledLocal::Singleton(v) => ctx.leaf(graph, kind, v, value),
             CompiledLocal::Flat(elements) => {
+                let node_ref = graph.insert(node_ir_destructure(kind).into());
                 let kind = kind.downcast_ref::<ValueStruct>().unwrap();
-                let node_ref = graph.insert(node_destructure_struct(&kind.st).into());
                 graph.set_value_in(Connection(node_ref, 0), value);
                 for (i, field) in elements.iter().enumerate() {
                     ctx.dfs(field, graph, &kind.fields[i], ValueIn::link(Connection(node_ref, i).into()));
@@ -164,7 +163,7 @@ impl LocalRef {
 
     #[must_use]
     pub fn setter(&self, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) -> Block {
-        let node = graph.insert(node_set_local(kind).into());
+        let node = graph.insert(node_ir_set_local(kind).into());
         graph.connect_value(Connection(self.0, 0), Connection(node, 0));
         graph.set_value_in(Connection(node, 1), value);
         Block::singleton(node, 0)

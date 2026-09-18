@@ -3,7 +3,7 @@ use std::ops::Deref;
 use tap::Tap;
 use crate::asset::generated::{node_interface, PinSignature, AssetData, identifier, PinInterface, pin_interface, asset_data, NodeInterfaceContainer, node_interface_container, NodeInterface, pin_signature};
 use crate::asset::{Asset, AssetBundle, AssetRef, Identifier};
-use crate::asset::node_graph::{NodeKind, PinType};
+use crate::asset::node_graph::{NodeId, NodeKind, PinType};
 use crate::asset::value::AnyValue;
 
 pub struct DeclPin {
@@ -125,8 +125,10 @@ pub fn node_decl(
     values_in_types: Vec<Option<AnyValue>>,
     values_out_types: Vec<AnyValue>,
 ) -> NodeKind {
-    let mut result = NodeKind::full(id, controls_in_num, controls_out_num, values_in_types, values_out_types);
-    result.asset_kind = identifier::AssetKind::GeneratedStub;
+    let mut result = NodeKind::full(NodeId::Low {
+        kind: identifier::AssetKind::GeneratedStub,
+        id,
+    }, id, controls_in_num, controls_out_num, values_in_types, values_out_types);
     result.references = vec![Identifier {
         source: 0,
         category: identifier::Category::NodeDecl as i32,

@@ -14,19 +14,20 @@ use crate::asset::node_graph::{NodeKind, PinType};
 use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault};
 use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
 pub fn node_assemble_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
+    st.data.decls.read().unwrap().get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
 }
 
 pub fn node_destructure_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.get(&StructureNodeDecl::DestructureServer).unwrap().data.clone()
+    st.data.decls.read().unwrap().get(&StructureNodeDecl::DestructureServer).unwrap().data.clone()
 }
 
 pub fn node_modify_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.get(&StructureNodeDecl::Modify).unwrap().data.clone()
+    st.data.decls.read().unwrap().get(&StructureNodeDecl::Modify).unwrap().data.clone()
 }
 
 /// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
@@ -111,7 +112,7 @@ pub struct ValueStruct {
 impl ValueStruct {
     pub fn new(r: AssetRef<StructureDefinition>) -> Self {
         Self {
-            fields: r.data.fields.clone(),
+            fields: r.clone().data.fields.clone(),
             st: r,
         }
     }
@@ -169,15 +170,15 @@ impl Value for ValueStruct {
 #[derive(Clone, Debug)]
 pub struct StructureRef {
     fields: Vec<AnyValue>,
-    decls: HashMap<StructureNodeDecl, AssetRef<NodeDecl>>,
+    decls: Arc<RwLock<HashMap<StructureNodeDecl, AssetRef<NodeDecl>>>>,
 }
 impl Asset for StructureDefinition {
     type RefData = StructureRef;
 
     fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
-        let mut result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), StructureRef {
+        let result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), StructureRef {
             fields: self.fields.iter().map(|x| x.value.clone()).collect(),
-            decls: Default::default(),
+            decls: Arc::new(RwLock::new(Default::default())),
         });
         for (k, name, imp, pins) in [
             (StructureNodeDecl::AssembleServer, "Assemble Struct Server", node_interface::Implementation {
@@ -242,7 +243,7 @@ impl Asset for StructureDefinition {
                 }));
             })),
         ] {
-            result.data.decls.insert(k, NodeDecl {
+            result.data.decls.write().unwrap().insert(k, NodeDecl {
                 name: name.to_string(),
                 description: "".to_string(),
                 pins,
@@ -256,7 +257,7 @@ impl Asset for StructureDefinition {
         let field = self.encode_fields(result.root.guid, self.version);
         bundle.push(AssetData {
             id: result.root.into(),
-            references: result.data.decls.values().map(|x| x.root).collect(),
+            references: result.data.decls.read().unwrap().values().map(|x| x.root).collect(),
             name: "".to_string(),
             r#type: asset_data::Type::Structure as i32,
             payload: Some(Payload::StructData(StructureDefinitionContainer {

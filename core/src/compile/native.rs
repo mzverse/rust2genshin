@@ -1,15 +1,46 @@
-use super::Result;
+use super::{Compiler, Result};
 use crate::asset::node_graph::NodeKind;
 use crate::asset::node_graph::arithmetic::{node_cast, node_divide, node_power};
 use crate::asset::node_graph::execution::NODE_LOG;
-use crate::asset::value::{AnyValue, ValueDefault, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueDefault, ValueEntity, ValueGuid, ValueInt, ValueString};
 use crate::compile::func::CompilingFn;
 use crate::compile::{WithTcx, get_expn_macro_attr};
 use rustc_attr_ir::LangItem;
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{Instance, InstanceKind};
+use rustc_middle::ty::{Instance, InstanceKind, Ty, TyKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
+
+impl<'tcx> Compiler<'tcx> {
+    pub fn compile_native_ty(&self, ty: Ty<'tcx>) -> Option<Result<AnyValue>> {
+        match ty.kind() {
+            TyKind::Adt(d, _a) => {
+                let def = d.did().default_span(self.tcx);
+                let expn = def.ctxt().outer_expn().expn_data().call_site;
+                match get_expn_macro_attr(self.tcx, def)?.meta {
+                    Meta::List(MetaList { path, tokens, .. }) => {
+                        Ok(match path.get_ident()?.to_string().as_str() {
+                            "native" => {
+                                let id = match syn::parse2::<LitStr>(tokens) {
+                                    Ok(id) => id.value(),
+                                    Err(e) => return self.span_err(expn, e.to_string()).into(),
+                                };
+                                match id.as_str() {
+                                    "Guid" => ValueGuid::def(),
+                                    "Entity" => ValueEntity::def(),
+                                    _ => return self.span_err(expn, format!("Unknown intrinsic {}", id)).into(),
+                                }
+                            }
+                            _ => panic!(),
+                        }).into()
+                    },
+                    _ => panic!(),
+                }
+            }
+            _ => None,
+        }
+    }
+}
 
 impl<'tcx> CompilingFn<'tcx, '_> {
     pub fn compile_native_call(&self, span: Span, func: Instance, params: Vec<AnyValue>, ret: Option<AnyValue>) -> Option<Result<NodeKind>> {
