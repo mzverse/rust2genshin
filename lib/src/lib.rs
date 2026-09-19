@@ -50,3 +50,8 @@ pub fn log(s: impl ToString) {
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct Guid(pub i64);
+
+impl ToString for Guid {
+    #[native("to_string")]
+    fn to_string(&self) -> String;
+}

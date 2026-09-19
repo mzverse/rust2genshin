@@ -12,6 +12,11 @@ pub struct Vec3 { // TODO
     pub z: f32,
 }
 
+impl ToString for bool {
+    #[native("to_string")]
+    fn to_string(&self) -> String;
+}
+
 /// Integer math helpers backed by genshin node-graph kernel operations.
 ///
 /// # Safety
@@ -74,12 +79,8 @@ unsafe impl I32 for i32 {
     fn ipow(self, rhs: Self) -> Self;
 }
 impl ToString for i32 {
-    #[inline(always)]
-    fn to_string(&self) -> String {
-        #[native("to_string")]
-        fn to_string(s: i32) -> String;
-        to_string(*self)
-    }
+    #[native("to_string")]
+    fn to_string(&self) -> String;
 }
 
 unsafe impl F32 for f32 {
@@ -111,10 +112,6 @@ unsafe impl F32 for f32 {
     fn atan(self) -> Self;
 }
 impl ToString for f32 {
-    #[inline(always)]
-    fn to_string(&self) -> String {
-        #[native("to_string")]
-        fn to_string(s: f32) -> String;
-        to_string(*self)
-    }
+    #[native("to_string")]
+    fn to_string(&self) -> String;
 }

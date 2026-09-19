@@ -6,7 +6,7 @@ use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::compile::place::{CompiledLocal, LocalRef};
+use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use rustc_abi::{FieldIdx, Size};
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
@@ -14,6 +14,7 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, Con
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
+use crate::compile::optimize::node_ir_assemble;
 
 pub struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
@@ -74,9 +75,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(block.unwrap_or_else(|| Block::nop(&mut self.graph.graph)))
     }
 
-    pub fn compile_assign(&mut self, place: Place<'tcx>, value: ValueIn) -> Result<Block> {
+    pub fn compile_assign(&mut self, place: Place<'tcx>, span: Span, value: ValueIn) -> Result<Block> {
         let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
-        Ok(self.compile_place(place).setter(&mut self.graph.graph, &kind, value))
+        Ok(self.compile_place(place, span)?.setter(&mut self.graph.graph, &kind, value))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -142,10 +143,17 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Reborrow(t, _, p) => return if t.is_str() {
                 self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(*p), WithRetag::No), span)
             } else {
-                self.span_err(span, "Reborrow from raw ptr is unsupported")
+                self.span_err(span, "Reborrow from raw ptr is still unsupported")
             },
-            Rvalue::Ref(_, k, place) => match k {
-                BorrowKind::Mut { .. } => todo!(),
+            Rvalue::Ref(_region, k, place) => match k {
+                BorrowKind::Mut { .. } => if let CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter })) = self.compile_place(*place, span)? {
+                    let result = self.graph.graph.insert(node_ir_assemble(&self.compiler.compile_ty(span, ty)?).into());
+                    self.graph.graph.set_value_in(Connection(result, 0), ValueIn::link(setter));
+                    self.graph.graph.set_value_in(Connection(result, 1), ValueIn::link(getter));
+                    ValueIn::link(Connection(result, 0).into())
+                } else {
+                    return self.span_err(span, "Only local singleton can be ref mut");
+                },
                 _ => self.compile_operand(&Operand::Copy(*place), span)?
             },
             Rvalue::RawPtr(_, p) => {
@@ -188,7 +196,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         ))).collect::<Vec<_>>()),
                     };
                     let value = self.compile_operand(field_operand, span)?;
-                    let block = self.compile_assign(sub_place, value)?;
+                    let block = self.compile_assign(sub_place, span, value)?;
                     combined_block.extend(&mut self.graph.graph, block);
                 }
                 return Ok(combined_block);
@@ -201,7 +209,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             | Rvalue::WrapUnsafeBinder(_, _)
                 => todo!("{:?}", value),
         };
-        self.compile_assign(place, value_in)
+        self.compile_assign(place, span, value_in)
     }
 
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
@@ -209,7 +217,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Operand::Copy(p) |
             Operand::Move(p) => {
                 let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
-                self.compile_place(*p).getter(&mut self.graph.graph, &src_kind)
+                self.compile_place(*p, span)?.getter(&mut self.graph.graph, &src_kind)
             }
 
             Operand::Constant(co) => {
@@ -406,7 +414,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             })
         } else {
             let (node, decl) = self.compiler.touch_fn(func)?;
-            (node_composite(&node), decl.clone())
+            (node_composite(node), decl.clone())
         };
         let node = self.graph.graph.insert(Node::new(node_kind.clone()));
         let mut block = match self.graph.graph.get_node(node).kind.controls_in_num {
@@ -416,7 +424,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         };
         if let Some(ret) = ret {
             let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut (0..node_kind.values_out_types.len()).map(|i| ValueIn::link(Connection(node, i).into())));
-            let b = self.compile_assign(destination, value)?;
+            let b = self.compile_assign(destination, span, value)?;
             block.extend(&mut self.graph.graph, b);
         }
         let mut j = 0;

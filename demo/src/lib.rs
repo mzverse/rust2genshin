@@ -12,6 +12,18 @@ use rust2genshin_lib::entity::Entity;
 
 
 #[unsafe(no_mangle)]
+pub fn test_mut() {
+    let mut i = 114i32;
+    test_mut_1(&mut i);
+    log(i);
+}
+
+#[unsafe(no_mangle)]
+pub fn test_mut_1(i: &mut i32) {
+    *i = 514;
+}
+
+#[unsafe(no_mangle)]
 pub fn solve(a: f32, b: f32, c: f32) -> f32 {
     (-b + delta(a, b, c).sqrt()) / (2. * a)
 }

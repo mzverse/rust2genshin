@@ -1,11 +1,12 @@
 use crate::asset::structure::{StructField, StructureDefinition, ValueStruct};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
 use crate::asset::{Asset, AssetRef};
+use crate::compile::optimize::ValueIrMut;
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{AdtDef, GenericArg, GenericArgsRef, List, Mutability, Ty, TyKind, TypingEnv};
+use rustc_middle::ty::{AdtDef, GenericArg, GenericArgsRef, List, Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 
 impl<'tcx> Compiler<'tcx> {
@@ -104,10 +105,15 @@ impl<'tcx> Compiler<'tcx> {
             },
             TyKind::Str => ValueString::def(),
             TyKind::Ref(_, e, m) => if e.is_str() { ValueString::def() } else {
-                if *m == Mutability::Mut {
-                    return self.span_err(span, "&mut is still unsupported// , see `<Box as Deref>` or `#[rustc_force_inline] or #[inline(always)]`".to_string());
+                if m.is_mut() {
+                    ValueIrMut(self.compile_ty(span, *e)?).into()
+                } else {
+                    if e.is_never() { // write only
+                        ValueLocalVarRef::def()
+                    } else {
+                        self.compile_ty(span, *e)?
+                    }
                 }
-                return self.compile_ty(span, *e);
             },
             TyKind::Adt(d, a) => ValueStruct::new(self.touch_adt(*d, a, span)?.clone()).into(),
             TyKind::Foreign(_) => todo!(),

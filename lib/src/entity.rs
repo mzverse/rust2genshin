@@ -1,4 +1,4 @@
-use crate::Guid;
+use crate::{Guid, String, ToString};
 use rust2genshin_lib_internal::{native, native_calc, native_exec};
 use crate::list::List;
 
@@ -11,6 +11,11 @@ pub struct Entity(&'static EntityInternal);
 unsafe extern "Rust" {
     #[native("Entity")]
     type EntityInternal;
+}
+
+impl ToString for Entity {
+    #[native("to_string")]
+    fn to_string(&self) -> String;
 }
 
 impl Entity {
