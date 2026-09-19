@@ -1,6 +1,6 @@
 use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
 use std::iter;
-
+use either::Either;
 use super::*;
 use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -32,8 +32,11 @@ impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
 
 #[derive(Clone)]
 pub struct FnDecl {
+    pub control: bool,
     pub params: Vec<CompiledLocal<()>>,
     pub ret: CompiledLocal<()>,
+    pub proxies_in: Vec<usize>,
+    pub proxies_out: Vec<Option<Either<usize, AnyValue>>>,
 }
 
 impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
@@ -408,32 +411,43 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
         let ret: Option<AnyValue> = if sig.output().is_never() { None } else { Some(self.compiler.compile_ty(span, sig.output())?) };
         let (node_kind, decl) = if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
-            (native?, FnDecl {
+            let native = native?;
+            let decl = FnDecl {
+                control: match (native.controls_in_num, native.controls_out_num) {
+                    (1, 1) => true,
+                    (0, 0) => false,
+                    _ => unreachable!(),
+                },
                 params: params.iter().map(|_| CompiledLocal::Singleton(())).collect(),
                 ret: if ret.is_some() { CompiledLocal::Singleton(()) } else { CompiledLocal::Flat(Default::default()) },
-            })
+                proxies_in: (0..native.values_in_types.len()).collect(),
+                proxies_out: vec![None; native.values_out_types.len()],
+            };
+            (native, decl)
         } else {
             let (node, decl) = self.compiler.touch_fn(func)?;
             (node_composite(node), decl.clone())
         };
         let node = self.graph.graph.insert(Node::new(node_kind.clone()));
-        let mut block = match self.graph.graph.get_node(node).kind.controls_in_num {
-            0 => Block::nop(&mut self.graph.graph),
-            1 => Block::singleton(node, 0),
-            other => return self.span_err(span, format!("Unsupported call controls: {other}")),
+        let mut block = if decl.control {
+            Block::singleton(node, 0)
+        } else {
+            Block::nop(&mut self.graph.graph)
         };
+        let args = args.iter().map(|&Spanned { node: ref a, span }| self.compile_operand(a, span)).collect::<Result<Vec<_>>>()?.into_iter().enumerate()
+            .flat_map(|(i, x)| decl.params[i].destructure_all(&mut self.graph.graph, &params[i], x)).collect::<Vec<_>>();
         if let Some(ret) = ret {
-            let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut (0..node_kind.values_out_types.len()).map(|i| ValueIn::link(Connection(node, i).into())));
+            let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut decl.proxies_out.iter().enumerate().map(
+                |(i, j)| match j {
+                    Some(Either::Left(j)) => args[*j].clone(),
+                    Some(Either::Right(j)) => ValueIn::value(j.clone()),
+                    None => ValueIn::link(Connection(node, i).into()),
+                }));
             let b = self.compile_assign(destination, span, value)?;
             block.extend(&mut self.graph.graph, b);
         }
-        let mut j = 0;
-        for (i, &Spanned { node: ref a, span }) in args.iter().enumerate() {
-            let value = self.compile_operand(a, span)?;
-            for x in decl.params[i].destructure_all(&mut self.graph.graph, &params[i], value) {
-                self.graph.graph.set_value_in(Connection(node, j), x);
-                j += 1;
-            }
+        for (i, j) in decl.proxies_in.into_iter().enumerate() {
+            self.graph.graph.set_value_in(Connection(node, i), args[j].clone());
         }
         Ok(block)
     }

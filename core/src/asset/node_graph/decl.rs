@@ -1,10 +1,10 @@
+use crate::asset::generated::{AssetData, NodeInterface, NodeInterfaceContainer, PinInterface, PinSignature, asset_data, identifier, node_interface, node_interface_container, pin_interface, pin_signature};
+use crate::asset::node_graph::{NodeId, NodeKind, PinType};
+use crate::asset::value::AnyValue;
+use crate::asset::{Asset, AssetBundle, AssetRef, Identifier};
 use std::collections::HashMap;
 use std::ops::Deref;
 use tap::Tap;
-use crate::asset::generated::{node_interface, PinSignature, AssetData, identifier, PinInterface, pin_interface, asset_data, NodeInterfaceContainer, node_interface_container, NodeInterface, pin_signature};
-use crate::asset::{Asset, AssetBundle, AssetRef, Identifier};
-use crate::asset::node_graph::{NodeId, NodeKind, PinType};
-use crate::asset::value::AnyValue;
 
 pub struct DeclPin {
     pub name: String,
@@ -113,7 +113,7 @@ impl Asset for NodeDecl {
                                     self.pins.get(&PinType::InControl).map(Vec::len).unwrap_or(0),
                                     self.pins.get(&PinType::OutControl).map(Vec::len).unwrap_or(0),
                                     self.pins.get(&PinType::InValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.as_ref().cloned()).collect(),
-                                    self.pins.get(&PinType::OutValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.as_ref().unwrap().clone()).collect(),
+                                    self.pins.get(&PinType::OutValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.clone().unwrap()).collect(),
         ))
     }
 }

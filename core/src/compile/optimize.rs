@@ -5,15 +5,34 @@ use crate::asset::generated::{ClientTypeId, ServerTypeId};
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::execution::node_set_local;
 use crate::asset::node_graph::query::node_local;
-use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeId, NodeKind, NodeRef, ValueIn};
+use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, NodeId, NodeKind, NodeRef, PinType, ValueIn};
 use crate::asset::structure::{ValueStruct, node_assemble_struct, node_destructure_struct};
 use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueLocalVarRef};
-use std::collections::{HashSet, VecDeque};
+use crate::compile::func::FnDecl;
+use std::collections::{HashMap, HashSet, VecDeque};
+use either::Either;
 use tap::Tap;
 
 pub struct Optimizer<'a> {
-    pub graph: &'a mut NodeGraph,
-    pub proxies: Vec<(usize, usize)>,
+    pub graph: &'a mut CompositeNodeGraph,
+    pub decl: &'a mut FnDecl,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ValueIrNever;
+impl Value for ValueIrNever {
+    fn get_server_type(&self) -> ServerTypeId {
+        panic!()
+    }
+    fn get_client_type(&self) -> ClientTypeId {
+        panic!()
+    }
+    fn encode_storage(&self, _side: Side) -> Option<Storage> {
+        panic!()
+    }
+    fn encode_field_value(&self) -> Val {
+        panic!()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -67,13 +86,9 @@ pub fn node_ir_destructure(kind: &AnyValue) -> NodeKind {
 impl<'a> Optimizer<'a> {
     #![allow(clippy::result_large_err)]
 
-    pub fn new(graph: &'a mut NodeGraph) -> Self {
-        Self { graph, proxies: Default::default() }
-    }
-
     pub fn lower(&mut self) {
         self.optimize();
-        for (_, node) in self.graph.nodes.iter_mut() {
+        for (_, node) in self.graph.graph.nodes.iter_mut() {
             node.kind = match node.kind.id {
                 NodeId::Low { .. } => continue,
                 NodeId::Local => node_local(node.kind.values_in_types[0].as_ref().unwrap()),
@@ -88,17 +103,63 @@ impl<'a> Optimizer<'a> {
     pub fn optimize(&mut self) {
         while self.eliminate_solos() {
         }
+
+        let mut active = vec![false; self.decl.proxies_in.len()];
+        for (_i, node) in self.graph.graph.nodes.iter() {
+            for i in node.values_in.iter() {
+                if let Some(Link::Export(i)) = i.link {
+                    active[i] = true;
+                }
+            }
+        }
+        let mut rm = HashMap::new();
+        for (i, (j, _)) in active.iter().enumerate().filter(|(_, x)| **x).enumerate() {
+            rm.insert(j, i);
+        }
+        for (_i, node) in self.graph.graph.nodes.iter_mut() {
+            for i in node.values_in.iter_mut() {
+                if let Some(Link::Export(i)) = &mut i.link {
+                    *i = rm[i];
+                }
+            }
+        }
+        let mut i = 0;
+        self.graph.pins.get_mut(&PinType::InValue).unwrap().retain(|_| active[i].tap(|_| i += 1));
+        let mut i = 0;
+        self.decl.proxies_in.retain(|_| active[i].tap(|_| i += 1));
+
+        let mut active = vec![false; self.decl.proxies_out.len()];
+        for (_i, node) in self.graph.graph.nodes.iter() {
+            for i in node.values_out.iter().flatten() {
+                if let Link::Export(i) = i {
+                    active[*i] = true;
+                }
+            }
+        }
+        let mut rm = HashMap::new();
+        for (i, (j, _)) in active.iter().enumerate().filter(|(_, x)| **x).enumerate() {
+            rm.insert(j, i);
+        }
+        for (_i, node) in self.graph.graph.nodes.iter_mut() {
+            for i in node.values_out.iter_mut().flatten() {
+                if let Link::Export(i) = i {
+                    *i = rm[i];
+                }
+            }
+        }
+        let mut i = 0;
+        self.graph.pins.get_mut(&PinType::OutValue).unwrap().retain(|_| active[i].tap(|_| i += 1));
     }
 
     pub fn eliminate_solos(&mut self) -> bool {
-        let mut queue: VecDeque<NodeRef> = self.graph.get_nodes().into();
+        let mut queue: VecDeque<NodeRef> = self.graph.graph.get_nodes().into();
         let mut set: HashSet<NodeRef> = queue.iter().copied().collect();
         let mut result = false;
         while let Some(node) = queue.pop_front() {
             if !set.remove(&node) {
                 unreachable!()
             }
-            let neighbors = self.graph.get_node(node).get_neighbors();
+            let neighbors = self.graph.graph.get_node(node).get_neighbors();
             if self.eliminate_solo(node).is_some() {
                 continue;
             }
@@ -124,9 +185,9 @@ impl<'a> Optimizer<'a> {
     }
 
     pub fn eliminate_if(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id == NODE_IF.id && n.values_in[0].link.is_none() {
-            let n = self.graph.remove(node);
+            let n = self.graph.graph.remove(node);
             let value = n.values_in[0].default.as_ref().unwrap().downcast_ref::<ValueBool>().unwrap().0;
             self.relink_controls(&n.controls_in[0], &n.controls_out[1 - value as usize]);
             None
@@ -136,16 +197,16 @@ impl<'a> Optimizer<'a> {
     }
 
     pub fn eliminate_set_local(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id == NodeId::SetLocal {
             let Link::Connection(source) = n.values_in[0].link.unwrap() else {
                 return Some(());
             };
-            let source = self.graph.get_node(source.node());
+            let source = self.graph.graph.get_node(source.node());
             if !source.values_out[1].is_empty() {
                 return Some(());
             }
-            let n = self.graph.remove(node);
+            let n = self.graph.graph.remove(node);
             self.relink_controls(&n.controls_in[0], &n.controls_out[0]);
             None
         } else {
@@ -154,12 +215,10 @@ impl<'a> Optimizer<'a> {
     }
 
     pub fn eliminate_local(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id == NodeId::Local && n.values_out[0].is_empty() {
-            if !self.reset_values(&n.values_out[1].clone(), n.values_in[0].clone()) {
-                return Some(());
-            }
-            self.graph.remove(node);
+            let n = self.graph.graph.remove(node);
+            self.reset_values(&n.values_out[1], n.values_in[0].clone());
             None
         } else {
             Some(())
@@ -167,9 +226,9 @@ impl<'a> Optimizer<'a> {
     }
 
     pub fn eliminate_calc(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if is_calc(&n.kind) && n.values_out.iter().all(|x| x.is_empty()) {
-            self.graph.remove(node);
+            self.graph.graph.remove(node);
             None
         } else {
             Some(())
@@ -177,14 +236,14 @@ impl<'a> Optimizer<'a> {
     }
 
     pub fn eliminate_unnecessary_local_setter(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id != NodeId::SetLocal {
             return Some(());
         }
         let Link::Connection(Connection(local, _)) = n.values_in[0].link.unwrap() else {
             return Some(());
         };
-        let n_local = self.graph.get_node(local);
+        let n_local = self.graph.graph.get_node(local);
         if n_local.values_out[0].len() != 1 || n_local.values_out[1].len() != 1 {
             return Some(());
         }
@@ -198,7 +257,7 @@ impl<'a> Optimizer<'a> {
                     return Some(());
                 }
             };
-            let next_node = self.graph.get_node(next_node);
+            let next_node = self.graph.graph.get_node(next_node);
             if is_calc(&next_node.kind) {
                 match next_node.values_out.iter().flatten().collect::<Vec<_>>().as_slice() {
                     [it] => next = **it,
@@ -211,14 +270,14 @@ impl<'a> Optimizer<'a> {
                 return Some(());
             }
         }
-        let n = self.graph.remove(node);
+        let n = self.graph.graph.remove(node);
         self.relink_controls(&n.controls_in[0], &n.controls_out[0]);
         self.reset_value(Connection(local, 0).into(), n.values_in[1].clone());
         None
     }
 
     pub fn eliminate_assemble(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id != NodeId::Assemble {
             return Some(());
         }
@@ -228,7 +287,7 @@ impl<'a> Optimizer<'a> {
         let Some(Link::Connection(from)) = n.values_in[0].link else {
             return Some(());
         };
-        let from_node = self.graph.get_node(from.0);
+        let from_node = self.graph.graph.get_node(from.0);
         if from_node.kind.id != NodeId::Destructure || !from_node.kind.values_in_types[0].as_ref().unwrap().is_instance(&n.kind.values_out_types[0]) {
             return Some(());
         }
@@ -238,25 +297,25 @@ impl<'a> Optimizer<'a> {
             }
         }
         let from = from_node.values_in[0].clone();
-        let n = self.graph.remove(node);
+        let n = self.graph.graph.remove(node);
         self.reset_values(&n.values_out[0], from);
         None
     }
 
     pub fn eliminate_destructure(&mut self, node: NodeRef) -> Option<()> {
-        let n = self.graph.get_node(node);
+        let n = self.graph.graph.get_node(node);
         if n.kind.id != NodeId::Destructure {
             return Some(());
         }
         let Some(Link::Connection(from)) = n.values_in[0].link else {
             return Some(());
         };
-        let from = self.graph.get_node(from.0);
+        let from = self.graph.graph.get_node(from.0);
         if from.kind.id != NodeId::Assemble {
             return Some(());
         }
         let from = from.values_in.clone();
-        let n = self.graph.remove(node);
+        let n = self.graph.graph.remove(node);
         for (i, x) in n.values_out.iter().enumerate() {
             self.reset_values(x, from[i].clone());
         }
@@ -271,59 +330,37 @@ impl<'a> Optimizer<'a> {
         }
     }
 
-    pub fn reset_values(&mut self, to: &Vec<Link>, value: ValueIn) -> bool {
-        for t in to {
-            if !self.preset_value(*t, value.clone()) {
-                return false;
-            }
-        }
+    pub fn reset_values(&mut self, to: &Vec<Link>, value: ValueIn) {
         for t in to {
             self.reset_value(*t, value.clone());
         }
-        true
     }
 
     pub fn relink_control(&mut self, from: Link, to: Link) {
         match from {
             Link::Connection(from) => match to {
-                Link::Connection(to) => self.graph.connect_control(from, to),
-                Link::Export(to) => self.graph.export_control_out(from, to),
+                Link::Connection(to) => self.graph.graph.connect_control(from, to),
+                Link::Export(to) => self.graph.graph.export_control_out(from, to),
             },
             Link::Export(from) => match to {
-                Link::Connection(to) => self.graph.export_control_in(to, from),
-                Link::Export(to) => self.proxies.push((from, to)),
-            }
-        }
-    }
-
-    pub fn preset_value(&self, to: Link, value: ValueIn) -> bool {
-        match to {
-            Link::Connection(_) => true,
-            Link::Export(_) => if let Some(from) = value.link {
-                match from {
-                    Link::Connection(_) =>
-                        true,
-                    Link::Export(_) =>
-                        false,
-                }
-            } else {
-                false
+                Link::Connection(to) => self.graph.graph.export_control_in(to, from),
+                Link::Export(_) => self.decl.control = false,
             }
         }
     }
 
     pub fn reset_value(&mut self, to: Link, value: ValueIn) {
         match to {
-            Link::Connection(to) => self.graph.set_value_in(to, value),
+            Link::Connection(to) => self.graph.graph.set_value_in(to, value),
             Link::Export(to) => if let Some(from) = value.link {
                 match from {
                     Link::Connection(from) =>
-                        self.graph.export_value_out(from, to),
+                        self.graph.graph.export_value_out(from, to),
                     Link::Export(from) =>
-                        panic!("provide arg to {from}"),
+                        self.decl.proxies_out[to] = Some(Either::Left(from)),
                 }
             } else {
-                panic!("provide default");
+                self.decl.proxies_out[to] = Some(Either::Right(value.default.unwrap()));
             }
         }
     }
