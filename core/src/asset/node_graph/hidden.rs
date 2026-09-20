@@ -2,12 +2,17 @@
 //!
 //! 人工设计:相机/震屏/名牌/GM 等隐藏功能节点。
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
-use crate::asset::node_graph::NodeKind;
-use crate::asset::value::{
-    ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList, ValueFloat,
-    ValueGuid, ValueInt, ValueIntList, ValueString,
-};
+use tap::Tap;
+use crate::asset::generated::identifier;
+use crate::asset::generated::node_instance::DependencyDeclaration;
+use crate::asset::generated::type_definition::StructReference;
+use crate::asset::Identifier;
+use crate::asset::node_graph::{NodeGraph, NodeKind, PinType};
+use crate::asset::node_graph::decl::{decl_pins_value_out, DeclPin, NodeDecl};
+use crate::asset::structure::ValueStruct;
+use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValueString};
 
 /// 激活实体相机(ID 262)
 pub static NODE_ACTIVATE_ENTITY_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {
@@ -65,9 +70,47 @@ pub static NODE_GET_NATIVE_VALUE: LazyLock<NodeKind> = LazyLock::new(|| {
 });
 
 /// 原生值变化(ID 428)
-pub static NODE_ON_NATIVE_VALUE_CHANGE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::trigger(428, vec![ValueEntity::def(), ValueGuid::def(), ValueString::def(), ValueInt::def(), ValueInt::def(), ValueBool::def()])
-});
+pub fn node_on_native_custom_value_change(graph: &mut NodeGraph, kind: &AnyValue) -> NodeKind {
+    // TODO: for other type
+    let mut result = NodeKind::trigger(428, vec![ValueEntity::def(), ValueGuid::def(), ValueString::def(), kind.clone(), kind.clone(), ValueBool::def()]);
+    let kind = kind.downcast_ref::<ValueStruct>().unwrap();
+    let decl = DependencyDeclaration {
+        identity: Identifier {
+            source: identifier::Source::SystemDefined as i32,
+            category: identifier::Category::ServerBasic as i32,
+            kind: identifier::AssetKind::SysCallStub as i32,
+            guid: 0,
+            runtime_id: 428,
+        }.into(),
+        type1: 174,
+        unknown1: 1,
+        st: StructReference {
+            schema_id: kind.get_struct_id(),
+        }.into(),
+    };
+    graph.embedded.entry(decl).or_insert_with(|| NodeDecl {
+        name: "".to_string(),
+        description: "".to_string(),
+        pins: HashMap::new().tap_mut(|pins| {
+            pins.insert(PinType::OutControl, vec![DeclPin {
+                name: "".to_string(),
+                kind: None,
+                meta: None,
+            }]);
+            pins.insert(PinType::OutValue, decl_pins_value_out(&result.values_out_types));
+        }),
+        implementation: Default::default(),
+        template_root: Default::default(),
+        template_sub: Default::default(),
+        references: vec![],
+    });
+    result.kernel_id = 0;
+    result.using_struct = Some(decl.into());
+    result.selectors_out[3] = 21.into();
+    result.selectors_out[4] = 21.into();
+    result.references = vec![kind.st.root];
+    result
+}
 
 /// GM 调用(ID 100000)
 pub static NODE_ON_GM_CALL: LazyLock<NodeKind> = LazyLock::new(|| {

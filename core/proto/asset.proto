@@ -515,6 +515,7 @@ message NodeGraphData {
   repeated GraphVariable blackboard = 6;
 
   // --- 子系统特定参数 ---
+  repeated Embedded embedded = 7;
 
   // 入口索引：对应“入口节点”或“外部触发槽位”的索引
   // TODO: 是否 repeated ?
@@ -522,6 +523,16 @@ message NodeGraphData {
 
   // 轮询/判定频率 (仅用于过滤器)：定义该图逻辑被重新计算的时间间隔 (无效)
   optional float evaluation_interval = 101;
+
+  message Embedded {
+    message Unknown1 {
+      int32 unknown1 = 1; // 1 or 25
+    }
+    NodeInstance.DependencyDeclaration  decl      = 1;
+    Unknown1                            unknown1  = 2;
+    NodeInterface                       inter     = 3;
+    NodeGraphData                       data      = 4;
+  }
 }
 
 // 复合节点接口定义 (对外签名)
@@ -776,12 +787,13 @@ message NodeInstance {
   optional int32 signal_version = 9;
 
   message DependencyDeclaration {
-    // TODO
-    Identifier identity = 1;
-    // int32           type1    = 2;
+    Identifier                      identity  = 1;
+    int32                           type1     = 2; // ?
+    int32                           unknown1  = 3;
+    TypeDefinition.StructReference  st        = 100;
   }
   // 结构体依赖声明
-  repeated DependencyDeclaration using_structs = 10;
+  optional DependencyDeclaration using_struct = 10;
 }
 
 // 引脚签名 (Meta Tag)

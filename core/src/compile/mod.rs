@@ -5,7 +5,7 @@ use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use crate::compile::func::{CompilingFn, FnDecl};
 use crate::compile::optimize::Optimizer;
-use crate::compile::place::{CompiledLocal, CompilingLocals, LocalRef, LocalKind};
+use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
 use proc_macro2::TokenStream;
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
@@ -271,6 +271,7 @@ impl<'tcx> Compiler<'tcx> {
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<(AssetRef<CompositeNodeGraph>, FnDecl)> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.symbol_name(func).to_string()));
+
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map

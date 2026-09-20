@@ -12,6 +12,14 @@ pub struct DeclPin {
     pub meta: Option<pin_signature::Kind>,
 }
 
+pub fn decl_pins_value_out(kinds: &Vec<AnyValue>) -> Vec<DeclPin> {
+    kinds.iter().map(|kind| DeclPin {
+        name: "".to_string(),
+        kind: kind.clone().into(),
+        meta: None,
+    }).collect()
+}
+
 pub struct NodeDecl {
     pub name: String,
     pub description: String,
@@ -22,18 +30,8 @@ pub struct NodeDecl {
     pub references: Vec<Identifier>,
 }
 
-impl Asset for NodeDecl {
-    type RefData = NodeKind;
-
-    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
-        let id = bundle.alloc(identifier::Category::NodeDecl, identifier::AssetKind::Basic);
-        let id_sig = Identifier {
-            source: identifier::Source::SystemDefined as i32,
-            category: identifier::Category::ServerBasic as i32,
-            kind: identifier::AssetKind::GeneratedStub as i32,
-            guid: 0,
-            runtime_id: id.guid,
-        };
+impl NodeDecl {
+    pub fn encode(&self, id: Option<node_interface::Signature>) -> NodeInterface {
         let mut persistent_uid = 0;
         let mut encode_pin = |kind: Option<PinType>, index: i32, pin: &DeclPin| {
             PinInterface {
@@ -61,50 +59,66 @@ impl Asset for NodeDecl {
             }.tap(|_| persistent_uid += 1)
         };
         let def = Default::default();
+        NodeInterface {
+            id,
+            inflows: self.pins.get(&PinType::InControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::InControl.into(), i as i32, pin)).collect(),
+            outflows: self.pins.get(&PinType::OutControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutControl.into(), i as i32, pin)).collect(),
+            inputs: vec![].tap_mut(|inputs| {
+                let mut i = 0;
+                for pin in self.pins.get(&PinType::InValue).unwrap_or(&def).iter() {
+                    inputs.push(encode_pin(pin.kind.is_some().then_some(PinType::InValue), i, pin));
+                    if pin.kind.is_some() {
+                        i += 1;
+                    }
+                }
+            }),
+            outputs: self.pins.get(&PinType::OutValue).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutValue.into(), i as i32, pin)).collect(),
+            meta_pins: vec![], // TODO
+            r#impl: self.implementation.clone().into(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            template_root: self.template_root as i32,
+            template_sub: self.template_sub as i32,
+        }
+    }
+}
+
+impl Asset for NodeDecl {
+    type RefData = NodeKind;
+
+    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
+        let id = bundle.alloc(identifier::Category::NodeDecl, identifier::AssetKind::Basic);
+        let id_sig = Identifier {
+            source: identifier::Source::SystemDefined as i32,
+            category: identifier::Category::ServerBasic as i32,
+            kind: identifier::AssetKind::GeneratedStub as i32,
+            guid: 0,
+            runtime_id: id.guid,
+        };
         bundle.push(AssetData {
             id: id.into(),
             name: self.name.clone(),
             r#type: asset_data::Type::CompositeNodeDecl as i32,
             payload: asset_data::Payload::InterfaceData(NodeInterfaceContainer {
                 inner: node_interface_container::InnerWrapper {
-                    interface: NodeInterface {
-                        id: node_interface::Signature {
-                            shell_ref: id_sig.into(),
-                            kernel_ref: id_sig.into(),
-                            graph_ref: self.references.first().filter(|x| x.category == identifier::Category::ServerNodeGraph as i32).map(|x| Identifier {
-                                source: identifier::Source::UserDefined as i32,
-                                category: identifier::Category::ServerBasic as i32,
-                                kind: identifier::AssetKind::CompositeGraph as i32,
-                                guid: 0,
-                                runtime_id: x.guid,
-                            }).unwrap_or(Identifier {
-                                source: 0,
-                                category: 0,
-                                kind: 0,
-                                guid: 0,
-                                runtime_id: 0,
-                            }).into(),
-                            signal_version: None,
-                        }.into(),
-                        inflows: self.pins.get(&PinType::InControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::InControl.into(), i as i32, pin)).collect(),
-                        outflows: self.pins.get(&PinType::OutControl).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutControl.into(), i as i32, pin)).collect(),
-                        inputs: vec![].tap_mut(|inputs| {
-                            let mut i = 0;
-                            for pin in self.pins.get(&PinType::InValue).unwrap_or(&def).iter() {
-                                inputs.push(encode_pin(pin.kind.is_some().then_some(PinType::InValue), i, pin));
-                                if pin.kind.is_some() {
-                                    i += 1;
-                                }
-                            }
-                        }),
-                        outputs: self.pins.get(&PinType::OutValue).unwrap_or(&def).iter().enumerate().map(|(i, pin)| encode_pin(PinType::OutValue.into(), i as i32, pin)).collect(),
-                        meta_pins: vec![], // TODO
-                        r#impl: self.implementation.clone().into(),
-                        name: self.name.clone(),
-                        description: self.description.clone(),
-                        template_root: self.template_root as i32,
-                        template_sub: self.template_sub as i32,
-                    }.into(),
+                    interface: self.encode(node_interface::Signature {
+                        shell_ref: id_sig.into(),
+                        kernel_ref: id_sig.into(),
+                        graph_ref: self.references.first().filter(|x| x.category == identifier::Category::ServerNodeGraph as i32).map(|x| Identifier {
+                            source: identifier::Source::UserDefined as i32,
+                            category: identifier::Category::ServerBasic as i32,
+                            kind: identifier::AssetKind::CompositeGraph as i32,
+                            guid: 0,
+                            runtime_id: x.guid,
+                        }).unwrap_or(Identifier {
+                            source: 0,
+                            category: 0,
+                            kind: 0,
+                            guid: 0,
+                            runtime_id: 0,
+                        }).into(),
+                        signal_version: None,
+                    }.into()).into(),
                 }.into(),
             }).into(),
             references: self.references,

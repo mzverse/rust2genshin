@@ -38,7 +38,7 @@ pub enum Side {
 }
 
 pub struct AssetRef<T: Asset + ?Sized> {
-    root: Identifier,
+    pub root: Identifier,
     data: T::RefData,
 }
 impl<T: Asset> AssetRef<T> {
