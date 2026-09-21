@@ -1,5 +1,5 @@
 use super::value::{AnyValue, Value};
-use crate::asset::generated::{AssetData, ClientTypeId, GraphVariable, Identifier, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, ServerTypeId, TypedValue, asset_data, identifier, node_graph_container, node_graph_data, pin_signature, typed_value};
+use crate::asset::generated::{asset_data, identifier, node_graph_container, node_graph_data, pin_signature, type_definition, typed_value, AssetData, ClientTypeId, GraphVariable, Identifier, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, ServerTypeId, TypedValue, TypeDefinition, DynamicTypeMetadata, dynamic_type_metadata};
 use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use slab::Slab;
 use std::collections::{HashMap, HashSet};
@@ -20,8 +20,10 @@ use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::node_instance::DependencyDeclaration;
 use crate::asset::generated::structure_definition_data::var_def::value::Val;
 use crate::asset::generated::type_definition::server_type::Schema;
+use crate::asset::generated::type_definition::TypeDetail;
 pub(crate) use crate::asset::node_graph::composite::CompositeNodeGraph;
 use crate::asset::node_graph::decl::NodeDecl;
+use crate::asset::structure::ValueStruct;
 
 #[derive(Copy, Clone)]
 pub enum NodeGraphKind {
@@ -100,6 +102,8 @@ pub struct NodeKind {
     pub selectors_in: Vec<Option<i32>>,
     pub selectors_out: Vec<Option<i32>>,
 
+    pub imps_out: Vec<type_definition::server_type::Implementation>,
+
     pub references: Vec<Identifier>,
 
     pub using_struct: Option<Box<DependencyDeclaration>>,
@@ -132,6 +136,7 @@ impl NodeKind {
             controls_out_num,
             selectors_in: vec![None; values_in_types.len()],
             selectors_out: vec![None; values_out_types.len()],
+            imps_out: vec![type_definition::server_type::Implementation::Primitive; values_out_types.len()],
             values_in_types,
             values_out_types,
             references: vec![],
@@ -427,7 +432,7 @@ impl NodeGraph {
                                         persistent_pin_uid: None,
                                     })
                                 }
-                                let handle_value = |k1, k2, i, kernel, kind: &AnyValue, s, def: &Option<_>, link: &Vec<_>| {
+                                let handle_value = |k1, k2, i, kernel, kind: &AnyValue, s, def: &Option<_>, link: &Vec<_>, imp| {
                                     let sig = PinSignature {
                                         kind: k1 as i32,
                                         index: i,
@@ -436,7 +441,27 @@ impl NodeGraph {
                                     PinData {
                                         shell_sig: sig.into(),
                                         kernel_sig: sig.tap_mut(|sig| sig.index = kernel).into(),
-                                        value: ValueSelected::encode(def.clone().unwrap_or_else(|| kind.clone()), def.is_some(), s, side),
+                                        value: ValueSelected::encode(def.clone().unwrap_or_else(|| kind.clone()), def.is_some(), s, side).tap_mut(|it|
+                                            if let Some(TypedValue { storage: Some(typed_value::Storage::ValPoly(it)) , .. }) = it {
+                                                if imp == type_definition::server_type::Implementation::Struct {
+                                                    it.extra_meta = DynamicTypeMetadata {
+                                                        version: 1,
+                                                        config: dynamic_type_metadata::Config {
+                                                            inner: dynamic_type_metadata::config::Inner {
+                                                                container_style: typed_value::WidgetType::StructBlock as i32,
+                                                                item_style: None,
+                                                                schema_binding: dynamic_type_metadata::config::inner::SchemaBinding::TargetStructId(type_definition::StructReference {
+                                                                    schema_id: kind.downcast_ref::<ValueStruct>().unwrap().get_struct_id(),
+                                                                }).into(),
+                                                            }.into(),
+                                                        }.into(),
+                                                    }.into();
+                                                }
+                                                if let PolymorphicValue { actual_value: Some(it), .. } = it.as_mut()
+                                                        && let TypedValue { r#type: Some(TypeDefinition { type_detail: Some(TypeDetail::ServerSide(type_definition::ServerType { r#impl, .. })), .. }), .. } = it.as_mut() {
+                                                    *r#impl = imp as i32;
+                                                }
+                                            }),
                                         r#type: Some(kind.get_type_id(side)),
                                         connection: link.iter().copied().filter_map(Link::connection).map(|Connection(target, j)| {
                                             let sig_tar = PinSignature {
@@ -458,7 +483,7 @@ impl NodeGraph {
                                     let Some(s) = n.kind.selectors_out[i] else {
                                         continue;
                                     };
-                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), &None, x));
+                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), &None, x, n.kind.imps_out[i]));
                                 }
                                 let mut kernel = 0;
                                 for (i, x) in n.values_in.iter().enumerate() {
@@ -466,7 +491,7 @@ impl NodeGraph {
                                         continue;
                                     };
                                     if !x.is_unset() {
-                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.selectors_in[i], &x.default, &x.link.iter().copied().collect()));
+                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.selectors_in[i], &x.default, &x.link.iter().copied().collect(), type_definition::server_type::Implementation::Primitive));
                                     }
                                     kernel += 1;
                                 }
@@ -483,7 +508,7 @@ impl NodeGraph {
                         blackboard: vec![],
                         embedded: self.embedded.into_iter().map(|(decl, v)| node_graph_data::Embedded {
                             decl: decl.into(),
-                            unknown1: node_graph_data::embedded::Unknown1 { unknown1: 25 }.into(), // TODO
+                            unknown1: node_graph_data::embedded::Unknown1 { unknown1: 1 }.into(), // maybe 25?
                             inter: v.encode(None).into(),
                             data: None,
                         }).collect(),
@@ -586,8 +611,8 @@ impl ValueSelected {
     }
 }
 impl Value for ValueSelected {
-    fn get_widget_type(&self) -> typed_value::WidgetType {
-        typed_value::WidgetType::TypeSelector
+    fn get_widget_type(&self) -> Option<typed_value::WidgetType> {
+        typed_value::WidgetType::TypeSelector.into()
     }
 
     fn get_server_type(&self) -> ServerTypeId {

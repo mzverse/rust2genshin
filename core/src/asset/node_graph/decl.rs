@@ -43,7 +43,7 @@ impl NodeDecl {
                     source_ref: None,
                 }),
                 r#type: pin.kind.as_ref().map(|x| pin_interface::TypeInfo {
-                    ui_class: Some(x.get_widget_type() as i32),
+                    ui_class: x.get_widget_type().map(|x| x as i32),
                     var_type_shell: Some(x.get_server_type() as i32),
                     var_type_kernel: Some(x.get_server_type() as i32),
                     placeholder: None,

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use tap::Tap;
-use crate::asset::generated::identifier;
+use crate::asset::generated::{identifier, type_definition};
 use crate::asset::generated::node_instance::DependencyDeclaration;
 use crate::asset::generated::type_definition::StructReference;
 use crate::asset::Identifier;
@@ -108,6 +108,8 @@ pub fn node_on_native_custom_value_change(graph: &mut NodeGraph, kind: &AnyValue
     result.using_struct = Some(decl.into());
     result.selectors_out[3] = 21.into();
     result.selectors_out[4] = 21.into();
+    result.imps_out[3] = type_definition::server_type::Implementation::Struct;
+    result.imps_out[4] = type_definition::server_type::Implementation::Struct;
     result.references = vec![kind.st.root];
     result
 }

@@ -1,6 +1,5 @@
 use crate::asset::Side;
 use crate::asset::generated::structure_definition_data::var_def::Subtype;
-use crate::asset::generated::type_definition::TypeDetail;
 use crate::asset::generated::{pin_interface, structure_definition_data, type_definition, typed_value, vec3f, ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, TypeDefinition, TypedValue, Vec3f};
 use crate::asset::structure::ValueStruct;
 use anyhow::{Result, anyhow};
@@ -8,6 +7,7 @@ use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
 use crate::asset::generated::structure_definition_data::var_def::value::{Dict, Val};
+use crate::asset::generated::typed_value::WidgetType;
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -19,14 +19,14 @@ pub trait CloneValue {
     fn clone(&self) -> AnyValue;
 }
 pub trait Value: Any + CloneValue + Debug + Send + Sync {
-    fn encode_type(&self, side: Side) -> TypeDetail {
+    fn encode_type(&self, side: Side) -> type_definition::TypeDetail {
         match side {
-            Side::Server => TypeDetail::ServerSide(type_definition::ServerType {
+            Side::Server => type_definition::TypeDetail::ServerSide(type_definition::ServerType {
                 type_tag: self.get_server_type() as i32,
-                r#impl: 0,
+                r#impl: type_definition::server_type::Implementation::Primitive as i32,
                 schema: self.encode_schema(),
             }),
-            Side::Client => TypeDetail::ClientSide(type_definition::ClientType {
+            Side::Client => type_definition::TypeDetail::ClientSide(type_definition::ClientType {
                 type_tag: self.get_client_type() as i32,
             }),
         }
@@ -34,7 +34,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
 
     fn encode_typed(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
-            widget: self.get_widget_type() as i32,
+            widget: self.get_widget_type().unwrap_or(WidgetType::Unknown) as i32,
             is_set,
             r#type: TypeDefinition {
                 backend: match side {
@@ -51,7 +51,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
     /// 展示控件类型:按服务端类型分发(参考导出里
     /// int→NUMBER_INPUT / string→TEXT_INPUT / float→DECIMAL_INPUT 等,
     /// 编辑器靠它决定如何渲染变量值,UNKNOWN 会显示为空)。
-    fn get_widget_type(&self) -> typed_value::WidgetType {
+    fn get_widget_type(&self) -> Option<typed_value::WidgetType> {
         use typed_value::WidgetType::*;
         match self.get_server_type() {
             ServerTypeId::SInt => NumberInput,
@@ -59,7 +59,6 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
             ServerTypeId::SString => TextInput,
             ServerTypeId::SBoolean | ServerTypeId::SEnumItem => EnumPicker,
             ServerTypeId::SGuid
-            | ServerTypeId::SEntity
             | ServerTypeId::SFaction
             | ServerTypeId::SConfig
             | ServerTypeId::SPrefab
@@ -80,8 +79,8 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
             | ServerTypeId::SStructList => ListGroup,
             ServerTypeId::SStruct => StructBlock,
             ServerTypeId::SDict => MapGroup,
-            _ => Unknown,
-        }
+            _ => return None,
+        }.into()
     }
 
     fn get_server_type(&self) -> ServerTypeId;
@@ -839,11 +838,6 @@ impl Value for ValueDict {
             unknown1: 1,
         }).into()
     }
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
-        matches!(value.downcast_ref::<ValueDict>(), Ok(value)
-            if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
-    }
-
     fn encode_subtype(&self) -> Option<Subtype> {
         Subtype {
             is_set: true,
@@ -866,6 +860,11 @@ impl Value for ValueDict {
             value_type: self.value_type.get_server_type() as i32,
             value_type_id: self.value_type.downcast_ref::<ValueStruct>().ok().map(ValueStruct::get_struct_id),
         })
+    }
+
+    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
+        matches!(value.downcast_ref::<ValueDict>(), Ok(value)
+            if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
     }
 }
 
