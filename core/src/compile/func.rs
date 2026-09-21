@@ -1,20 +1,19 @@
-use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
-use std::iter;
-use either::Either;
 use super::*;
 use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
+use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
+use crate::compile::optimize::node_ir_assemble;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
-use rustc_abi::{FieldIdx, Size};
+use either::Either;
+use rustc_abi::Size;
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
-use crate::compile::optimize::node_ir_assemble;
 
 pub struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
@@ -22,7 +21,7 @@ pub struct CompilingFn<'tcx, 'a> {
     pub compiler: &'a mut Compiler<'tcx>,
     pub graph: &'a mut CompositeNodeGraph,
     pub body: &'a Body<'tcx>,
-    pub locals: &'a IndexVec<Local, CompiledLocal<LocalRef>>,
+    pub locals: &'a IndexVec<Local, CompiledLocal<LocalRef<'tcx>>>,
 }
 impl<'tcx> WithTcx<'tcx> for CompilingFn<'tcx, '_> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -80,7 +79,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
 
     pub fn compile_assign(&mut self, place: Place<'tcx>, span: Span, value: ValueIn) -> Result<Block> {
         let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
-        Ok(self.compile_place(place, span)?.setter(&mut self.graph.graph, &kind, value))
+        Ok(self.compile_place(place, span)?.setter(self.compiler, &mut self.graph.graph, &kind, value))
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -149,7 +148,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.span_err(span, "Reborrow from raw ptr is still unsupported")
             },
             Rvalue::Ref(_region, k, place) => match k {
-                BorrowKind::Mut { .. } => if let CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter })) = self.compile_place(*place, span)? {
+                BorrowKind::Mut { .. } => if let CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter, .. })) = self.compile_place(*place, span)? {
                     let result = self.graph.graph.insert(node_ir_assemble(&self.compiler.compile_ty(span, ty)?).into());
                     self.graph.graph.set_value_in(Connection(result, 0), ValueIn::link(setter));
                     self.graph.graph.set_value_in(Connection(result, 1), ValueIn::link(getter));
@@ -161,7 +160,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             },
             Rvalue::RawPtr(_, p) => {
                 let Some(ProjectionElem::Deref) = p.projection.last() else {
-                    return self.span_err(span, format!("RawPtr rvalue is unsupported: {p:?}"))?;
+                    return self.span_err(span, format!("RawPtr rvalue is still unsupported: {p:?}"))?;
                 };
                 return self.compile_assign_rvalue(place, &Rvalue::Use(Operand::Copy(Place { local: p.local, projection: self.tcx.mk_place_elems(&p.projection[0..p.projection.len() - 1]) }), WithRetag::No), span);
             },
@@ -183,26 +182,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     ValueIn::link(Connection(node, 0).into())
                 }
             }
-            Rvalue::Aggregate(kind, fields) if matches!(**kind, AggregateKind::Tuple) => {
-                let elem_tys: &[Ty<'tcx>] = match ty.kind() {
-                    TyKind::Tuple(tys) => tys,
-                    _ => return self.span_err(span, format!("Aggregate(Tuple) with non-tuple type: {:?}", ty)),
-                };
-                let mut combined_block = Block::nop(&mut self.graph.graph);
-                for (field_idx, field_operand) in fields.iter().enumerate() {
-                    let field_ty = elem_tys[field_idx];
-                    let sub_place = Place {
-                        local: place.local,
-                        projection: self.tcx.mk_place_elems(&place.projection.iter().chain(iter::once(ProjectionElem::Field(
-                            FieldIdx::from_usize(field_idx),
-                            field_ty,
-                        ))).collect::<Vec<_>>()),
-                    };
-                    let value = self.compile_operand(field_operand, span)?;
-                    let block = self.compile_assign(sub_place, span, value)?;
-                    combined_block.extend(&mut self.graph.graph, block);
+            Rvalue::Aggregate(kind, fields) if !matches!(**kind, AggregateKind::Array(..)) => {
+                let node = self.graph.graph.insert(node_ir_assemble(&self.compiler.compile_ty(span, ty)?).into());
+                for (i, x) in fields.iter().enumerate() {
+                    let v = self.compile_operand(x, span)?;
+                    self.graph.graph.set_value_in(Connection(node, i), v);
                 }
-                return Ok(combined_block);
+                ValueIn::link(Connection(node, 0).into())
             }
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)

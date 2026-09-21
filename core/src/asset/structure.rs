@@ -14,6 +14,7 @@ use crate::asset::node_graph::{NodeKind, PinType};
 use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault};
 use crate::asset::{Asset, AssetBundle, AssetRef, Side};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, RwLock};
 use tap::Tap;
 
@@ -167,10 +168,15 @@ impl Value for ValueStruct {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StructureRef {
     fields: Vec<AnyValue>,
     decls: Arc<RwLock<HashMap<StructureNodeDecl, AssetRef<NodeDecl>>>>,
+}
+impl Debug for StructureRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        "".fmt(f)
+    }
 }
 impl Asset for StructureDefinition {
     type RefData = StructureRef;

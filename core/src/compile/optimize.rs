@@ -1,16 +1,20 @@
-use crate::asset::Side;
 use crate::asset::generated::structure_definition_data::var_def::value::Val;
 use crate::asset::generated::typed_value::Storage;
 use crate::asset::generated::{ClientTypeId, ServerTypeId};
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::execution::node_set_local;
+use crate::asset::node_graph::hidden::node_on_native_custom_value_change;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, NodeId, NodeKind, NodeRef, PinType, ValueIn};
-use crate::asset::structure::{ValueStruct, node_assemble_struct, node_destructure_struct};
+use crate::asset::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct, ValueStruct};
 use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueLocalVarRef};
+use crate::asset::Side;
+use crate::compile::Compiler;
 use crate::compile::func::FnDecl;
-use std::collections::{HashMap, HashSet, VecDeque};
 use either::Either;
+use rustc_middle::ty::Ty;
+use rustc_span::DUMMY_SP;
+use std::collections::{HashMap, HashSet, VecDeque};
 use tap::Tap;
 
 pub struct Optimizer<'a> {
@@ -59,12 +63,20 @@ impl Value for ValueIrMut {
     }
 }
 
-pub fn node_ir_local(kind: &AnyValue) -> NodeKind {
-    NodeKind::full(NodeId::Local, 0, 0, 0, vec![kind.clone().into()], vec![ValueLocalVarRef::def(), kind.clone()])
+fn ir_local_ref<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue, ty: Ty<'tcx>) -> AnyValue {
+    if node_local(kind).is_some() {
+        ValueLocalVarRef::def()
+    } else {
+        compiler.compile_ty(DUMMY_SP, Ty::new_tup(compiler.tcx, &[ty])).unwrap()
+    }
 }
 
-pub fn node_ir_set_local(kind: &AnyValue) -> NodeKind {
-    NodeKind::full(NodeId::SetLocal, 0, 1, 1, vec![ValueLocalVarRef::def().into(), kind.clone().into()], vec![])
+pub fn node_ir_local<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue, ty: Ty<'tcx>) -> NodeKind {
+    NodeKind::full(NodeId::Local, 0, 0, 0, vec![kind.clone().into()], vec![ir_local_ref(compiler, kind, ty), kind.clone()])
+}
+
+pub fn node_ir_set_local<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue, ty: Ty<'tcx>) -> NodeKind {
+    NodeKind::full(NodeId::SetLocal, 0, 1, 1, vec![ir_local_ref(compiler, kind, ty).into(), kind.clone().into()], vec![])
 }
 
 pub fn node_ir_assemble(kind: &AnyValue) -> NodeKind {
@@ -88,13 +100,42 @@ impl<'a> Optimizer<'a> {
 
     pub fn lower(&mut self) {
         self.optimize();
-        for (_, node) in self.graph.graph.nodes.iter_mut() {
-            node.kind = match node.kind.id {
+        for x in self.graph.graph.get_nodes() {
+            let kind = &mut self.graph.graph.get_node_mut(x).kind;
+            *kind = match kind.id {
                 NodeId::Low { .. } => continue,
-                NodeId::Local => node_local(node.kind.values_in_types[0].as_ref().unwrap()),
-                NodeId::SetLocal => node_set_local(node.kind.values_in_types[1].as_ref().unwrap()),
-                NodeId::Assemble => node_assemble_struct(&node.kind.values_out_types[0].downcast_ref::<ValueStruct>().expect("low").st),
-                NodeId::Destructure => node_destructure_struct(&node.kind.values_in_types[0].as_ref().unwrap().downcast_ref::<ValueStruct>().expect("low").st),
+                NodeId::Local => {
+                    if let Ok(kind) = kind.values_out_types[0].downcast_ref::<ValueStruct>() {
+                        let kind = kind.clone();
+                        let n = node_on_native_custom_value_change(&mut self.graph.graph, &kind.clone().into());
+                        let n = self.graph.graph.insert(n.into());
+                        let n_getter = self.graph.graph.insert(node_destructure_struct(&kind.st).into());
+                        self.graph.graph.connect_value(Connection(n, 3), Connection(n_getter, 0));
+                        let n0 = self.graph.graph.remove(x);
+                        self.reset_values(&n0.values_out[0], ValueIn::link(Connection(n, 3).into()));
+                        self.reset_values(&n0.values_out[1], ValueIn::link(Connection(n_getter, 0).into()));
+                        continue;
+                    } else {
+                        node_local(&kind.values_out_types[1]).unwrap()
+                    }
+                },
+                NodeId::SetLocal => {
+                    if let Ok(kind) = kind.values_in_types[0].as_ref().unwrap().downcast_ref::<ValueStruct>() {
+                        let kind = kind.clone();
+                        let n = self.graph.graph.insert(node_modify_struct(&kind.st).into());
+                        let n0 = self.graph.graph.remove(x);
+                        self.relink_controls(&n0.controls_in[0], &[Connection(n, 0).into()]);
+                        self.relink_controls(&[Connection(n, 0).into()], &n0.controls_out[0]);
+                        self.graph.graph.set_value_in(Connection(n, 0), n0.values_in[0].clone());
+                        self.graph.graph.set_value_in(Connection(n, 2), n0.values_in[1].clone());
+                        self.graph.graph.set_value_in(Connection(n, 3), ValueIn::value(ValueBool(true).into()));
+                        continue;
+                    } else {
+                        node_set_local(kind.values_in_types[1].as_ref().unwrap())
+                    }
+                },
+                NodeId::Assemble => node_assemble_struct(&kind.values_out_types[0].downcast_ref::<ValueStruct>().expect("low").st),
+                NodeId::Destructure => node_destructure_struct(&kind.values_in_types[0].as_ref().unwrap().downcast_ref::<ValueStruct>().expect("low").st),
                 NodeId::Modify => todo!(),
             };
         }
@@ -336,6 +377,7 @@ impl<'a> Optimizer<'a> {
         }
     }
 
+    // FIXME: orders
     pub fn relink_control(&mut self, from: Link, to: Link) {
         match from {
             Link::Connection(from) => match to {

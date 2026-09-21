@@ -17,6 +17,7 @@ pub use asset_bundle_data::Mode as GameMode;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter, Write};
+use std::hash::{Hash, Hasher};
 use generated::*;
 use prost::Message;
 use std::path::Path;
@@ -75,6 +76,11 @@ impl<T: Asset> PartialEq for AssetRef<T> {
 }
 impl<T: Asset> Eq for AssetRef<T> {
 }
+impl<T: Asset> Hash for AssetRef<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.root.hash(state);
+    }
+}
 
 pub trait Asset {
     type RefData: Sized;
@@ -104,6 +110,10 @@ impl AssetBundle {
             assets: Default::default(),
             primary: Default::default(),
         }
+    }
+    
+    pub fn get(&self, key: Identifier) -> Option<&AssetData> {
+        self.assets.iter().find(|x| x.id == Some(key))
     }
 
     pub fn alloc(&mut self, cat: identifier::Category, kind: identifier::AssetKind) -> Identifier {

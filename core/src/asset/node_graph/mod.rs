@@ -279,7 +279,7 @@ impl NodeGraph {
         &self.nodes[key.into()]
     }
 
-    fn get_node_mut(&mut self, key: NodeRef) -> &mut Node {
+    pub fn get_node_mut(&mut self, key: NodeRef) -> &mut Node {
         &mut self.nodes[key.into()]
     }
 
