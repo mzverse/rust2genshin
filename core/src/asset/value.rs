@@ -7,7 +7,6 @@ use downcast::{Any, downcast};
 use std::any::TypeId;
 use std::fmt::Debug;
 use crate::asset::generated::structure_definition_data::var_def::value::{Dict, Val};
-use crate::asset::generated::typed_value::WidgetType;
 
 pub type AnyValue = Box<dyn Value>;
 impl<T: Value> From<T> for AnyValue {
@@ -34,7 +33,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
 
     fn encode_typed(&self, is_set: bool, side: Side) -> TypedValue {
         TypedValue {
-            widget: self.get_widget_type().unwrap_or(WidgetType::Unknown) as i32,
+            widget: self.get_widget_type().unwrap_or(typed_value::WidgetType::Unknown) as i32,
             is_set,
             r#type: TypeDefinition {
                 backend: match side {

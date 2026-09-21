@@ -1,8 +1,7 @@
 use crate::asset::node_graph::control::NODE_IF;
-use crate::asset::node_graph::hidden::node_on_native_custom_value_change;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
-use crate::asset::structure::{StructureDefinition, ValueStruct};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueGuid};
+use crate::asset::structure::StructureDefinition;
+use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use crate::compile::func::{CompilingFn, FnDecl};
 use crate::compile::optimize::Optimizer;
@@ -21,7 +20,7 @@ use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{EarlyBinder, Instance, Ty, TyCtxt, TypingEnv};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
-use rustc_span::{DUMMY_SP, ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
+use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -272,11 +271,6 @@ impl<'tcx> Compiler<'tcx> {
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<(AssetRef<CompositeNodeGraph>, FnDecl)> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
         let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.symbol_name(func).to_string()));
-
-        let kind = self.compile_ty(DUMMY_SP, self.tcx.types.unit)?.downcast::<ValueStruct>().unwrap();
-        let node = node_on_native_custom_value_change(&mut graph.graph, &(kind as AnyValue));
-        graph.graph.insert(node.into());
-
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map

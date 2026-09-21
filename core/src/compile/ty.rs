@@ -5,7 +5,6 @@ use crate::compile::optimize::ValueIrMut;
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_middle::infer::canonical::ir::GenericArgKind;
-use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{AdtDef, GenericArg, GenericArgsRef, List, Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 
@@ -24,10 +23,11 @@ impl<'tcx> Compiler<'tcx> {
 
     fn mangle_adt(def: AdtDef, s: GenericArgsRef) -> String {
         let result = format!("{def:?}");
+        let s = s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).collect::<Vec<_>>();
         if s.is_empty() {
             result
         } else {
-            format!("{}<{}>", result, s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).map(|x| match x {
+            format!("{}<{}>", result, s.into_iter().map(|x| match x {
                 GenericArgKind::Type(t) => Self::mangle_ty(t),
                 GenericArgKind::Const(c) => format!("{c:?}"),
                 _ => unreachable!(),
