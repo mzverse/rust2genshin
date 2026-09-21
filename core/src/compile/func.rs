@@ -14,6 +14,7 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, Con
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
+use crate::compile::native::compile_native_call;
 
 pub struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
@@ -78,7 +79,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     pub fn compile_assign(&mut self, place: Place<'tcx>, span: Span, value: ValueIn) -> Result<Block> {
-        let kind = self.compiler.compile_ty(self.body.local_decls[place.local].source_info.span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
+        let kind = self.compiler.compile_ty(span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
         Ok(self.compile_place(place, span)?.setter(self.compiler, &mut self.graph.graph, &kind, value))
     }
 
@@ -392,11 +393,23 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         })
     }
 
+    pub fn compile_call0(graph: &mut NodeGraph, node: NodeRef, decl: &FnDecl, args: &[ValueIn]) -> Block {
+        let block = if decl.control {
+            Block::singleton(node, 0)
+        } else {
+            Block::nop(graph)
+        };
+        for (i, &j) in decl.proxies_in.iter().enumerate() {
+            graph.set_value_in(Connection(node, i), args[j].clone());
+        }
+        block
+    }
+
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
         let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
         let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
         let ret: Option<AnyValue> = if sig.output().is_never() { None } else { Some(self.compiler.compile_ty(span, sig.output())?) };
-        let (node_kind, decl) = if let Some(native) = self.compile_native_call(span, func, params.clone(), ret.clone()) {
+        let (node_kind, decl) = if let Some(native) = compile_native_call(self.tcx, span, func, params.clone(), ret.clone()) {
             let native = native?;
             let decl = FnDecl {
                 control: match (native.controls_in_num, native.controls_out_num) {
@@ -415,13 +428,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             (node_composite(node), decl.clone())
         };
         let node = self.graph.graph.insert(Node::new(node_kind.clone()));
-        let mut block = if decl.control {
-            Block::singleton(node, 0)
-        } else {
-            Block::nop(&mut self.graph.graph)
-        };
         let args = args.iter().map(|&Spanned { node: ref a, span }| self.compile_operand(a, span)).collect::<Result<Vec<_>>>()?.into_iter().enumerate()
             .flat_map(|(i, x)| decl.params[i].destructure_all(&mut self.graph.graph, &params[i], x)).collect::<Vec<_>>();
+        let mut block = Self::compile_call0(&mut self.graph.graph, node, &decl, &args);
         if let Some(ret) = ret {
             let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut decl.proxies_out.iter().enumerate().map(
                 |(i, j)| match j {
@@ -431,9 +440,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }));
             let b = self.compile_assign(destination, span, value)?;
             block.extend(&mut self.graph.graph, b);
-        }
-        for (i, j) in decl.proxies_in.into_iter().enumerate() {
-            self.graph.graph.set_value_in(Connection(node, i), args[j].clone());
         }
         Ok(block)
     }

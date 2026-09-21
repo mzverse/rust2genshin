@@ -30,8 +30,10 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 4. 在重命名后的demo的`lib.rs`中编写自己的节点图（Rust代码）
 5. 构建demo
     ```shell
-   cargo +nightly run -p build-demo
-   ```
+    cargo run -p build-demo
+    ```
+    > [!WARNING]
+    > 若改了`demo`的模块名，需同时修改`build-demo`的代码
 6. 构建结果是`target/rust2genshin_demo.gia`
 
 ## Code
@@ -60,21 +62,29 @@ pub fn my_composite() {
 - 运算溢出
 
     为性能起见，`i32`的四则运算默认自动溢出，即原生的运算节点
+
 - 整数除法
 
     - 除数为`0`时触发错误并得到`0`
     - `i32::MIN / -1`等于`0`
-- 元组
 
-    元组的行为是完全展开（包括嵌套）
+- 扁平化局部变量
+
+    在局部变量（包括参数和返回值）中
+
+    元组和事件在编译后会（递归）展开
     
     以支持多个输出（返回值）
+
 - 内部可变性
     
     不支持`Cell`等内部可变性
+
+    将来可能会支持`RcRefCell`和`RcUnsafeCell`
+
 - 可变借用
     
-    只能对变量本身取可变借用，而不能对成员
+    只能对局部变量本身取可变借用，而不能对成员
 
 # Todo List
 

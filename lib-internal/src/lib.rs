@@ -41,8 +41,18 @@ pub fn native_exec(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn event_listener(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
     tag(input)
+}
+
+#[proc_macro_attribute]
+pub fn event_listener(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(tag(input));
+    quote! {
+        #[allow(unused_attributes)]
+        #[unsafe(no_mangle)]
+        #item
+    }.into()
 }
 
 fn tag(input: TokenStream) -> TokenStream {

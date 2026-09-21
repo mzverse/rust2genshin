@@ -1,12 +1,12 @@
 use crate::asset::node_graph::control::NODE_IF;
-use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeRef};
+use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeKind, NodeRef, ValueIn};
 use crate::asset::structure::StructureDefinition;
 use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use crate::compile::func::{CompilingFn, FnDecl};
 use crate::compile::optimize::Optimizer;
 use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
 use rustc_hir::intravisit::Visitor;
@@ -18,13 +18,15 @@ use rustc_middle::mir;
 use rustc_middle::mir::{BasicBlock, Body, Local, RETURN_PLACE};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{EarlyBinder, Instance, Ty, TyCtxt, TypingEnv};
+use rustc_middle::ty::{EarlyBinder, Instance, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
-use rustc_span::{ErrorGuaranteed, ExpnKind, Ident, MacroKind, Span};
+use rustc_span::{ErrorGuaranteed, ExpnKind, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+use syn::{LitInt, Meta, MetaList};
+use crate::asset::node_graph::composite::node_composite;
 
 pub mod func;
 pub mod native;
@@ -225,27 +227,52 @@ impl<'tcx> Compiler<'tcx> {
             out: Vec::new(),
         };
         self.tcx.hir_walk_toplevel_module(&mut c);
+        let mut main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
         for x in c.out {
-            self.touch_fn(Instance::mono(self.tcx, x.to_def_id()))?;
-            if let Some(_it) = get_expn_macro_attr(self.tcx, x.default_span(self.tcx)) {
-
-                // TODO: manage entrypoint (event_handler)
+            let func = Instance::mono(self.tcx, x.to_def_id());
+            _ = self.touch_fn(func)?;
+            if let Some(attr) = get_expn_macro_attr(self.tcx, x.default_span(self.tcx)) {
+                #[allow(clippy::single_match)]
+                match attr.meta.path().get_ident().map(Ident::to_string).unwrap_or_default().as_str() {
+                    "event_listener" => {
+                        let event = self.monomorphize(func, self.tcx.instance_mir(func.def).local_decls.get(Local::arg(0)).unwrap().ty);
+                        let TyKind::Adt(d, a) = event.kind() else {
+                            panic!();
+                        };
+                        let def = d.did().default_span(self.tcx);
+                        let expn = def.ctxt().outer_expn().expn_data().call_site;
+                        if let Some(attr) = get_expn_macro_attr(self.tcx, def) {
+                            match attr.meta {
+                                Meta::List(MetaList { path, tokens, .. }) => {
+                                    if let Some(ident) = path.get_ident() {
+                                        match ident.to_string().as_str() {
+                                            "event" => {
+                                                let id = match syn::parse2::<LitInt>(tokens) {
+                                                    Ok(id) => id,
+                                                    Err(e) => return self.span_err(expn, e.to_string()),
+                                                };
+                                                let id = match id.base10_parse::<i64>() {
+                                                    Ok(x) => x,
+                                                    Err(e) => return self.span_err(expn, e.to_string()),
+                                                };
+                                                let node = main.graph.insert(NodeKind::trigger(id, d.non_enum_variant().fields.iter().map(|f| self.compile_ty(f.did.default_span(self.tcx), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, a)))).collect::<Result<Vec<_>>>()?).into());
+                                                let (r, decl) = self.touch_fn(func)?;
+                                                let com = main.graph.insert(node_composite(r).into());
+                                                let block = CompilingFn::compile_call0(&mut main.graph, com, decl, &(0..d.non_enum_variant().fields.len()).map(|x| ValueIn::link(Connection(node, x).into())).collect::<Vec<_>>());
+                                                main.graph.connect_control(Connection(node, 0), block.begin);
+                                            }
+                                            _ => (),
+                                        }
+                                    }
+                                }
+                                _ => (),
+                            }
+                        }
+                    }
+                    _ => (),
+                }
             }
         }
-        let main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
-        // for (i, _) in &self.assets.assets {
-        //     main.insert(
-        //         NodeComposite {
-        //             id: AssetBundle::ID_BEGIN + i as i64,
-        //             controls_in: 0,
-        //             controls_out: vec![],
-        //             values_in: vec![],
-        //             values_out: vec![],
-        //         }
-        //         .into(),
-        //     );
-        // }
-        // TODO
         if !main.graph.is_empty() {
             let main = main.apply(&mut self.assets);
             self.assets.set_primary(&main);
@@ -290,7 +317,7 @@ impl<'tcx> Compiler<'tcx> {
         let mut params = vec![];
         for i in 0..args.len() {
             let decl = body.local_decls.get(Local::arg(i)).unwrap();
-            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, args.get(i).unwrap().as_ref().map(Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()), decl.source_info.span)?;
+            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, args.get(i).unwrap().as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()), decl.source_info.span)?;
             locals.push(r);
             params.push(k);
         }

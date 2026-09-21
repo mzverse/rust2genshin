@@ -15,6 +15,7 @@ pub mod list;
 pub mod dict;
 pub mod boxed;
 pub mod player;
+pub mod event;
 
 pub use rust2genshin_lib_internal::event_listener;
 

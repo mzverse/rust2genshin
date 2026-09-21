@@ -5,6 +5,7 @@ use crate::asset::node_graph::{Connection, Link, NodeGraph, NodeKind, NodeRef, P
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use std::collections::BTreeMap;
 
+#[derive(Clone, Debug)]
 pub struct RefData {
     pub id: Identifier,
     pub node: NodeKind,

@@ -1,4 +1,4 @@
-use super::Result;
+use super::{Result, get_expn_macro_attr};
 use crate::asset::Side;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, Node, NodeGraph, NodeRef, ValueIn};
 use crate::asset::structure::{ValueStruct, node_modify_struct};
@@ -10,7 +10,8 @@ use rustc_abi::FieldIdx;
 use rustc_ast::Mutability;
 use rustc_index::IndexVec;
 use rustc_middle::mir::{Place, PlaceTy};
-use rustc_middle::ty::{Ty, TyKind};
+use rustc_middle::query::QueryKey;
+use rustc_middle::ty::{Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 use std::borrow::Cow;
 use tap::Tap;
@@ -66,6 +67,30 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                 }
                 (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))
             },
+            TyKind::Adt(d, a) if let Some(r) = {
+                let def = d.did().default_span(self.compiler.tcx);
+                if let Some(attr) = get_expn_macro_attr(self.compiler.tcx, def) {
+                    if let Some(ident) = attr.meta.path().get_ident() {
+                        match ident.to_string().as_str() {
+                            "event" => {
+                                let mut fsk = IndexVec::new();
+                                let mut fs = IndexVec::new();
+                                for f in d.non_enum_variant().fields.iter() {
+                                    let (k, r) = self.solve_local(self.compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.compiler.tcx, a)), k, format!("{name}.{}", f.name), span)?;
+                                    fsk.push(k);
+                                    fs.push(r);
+                                }
+                                (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs)).into()
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } => r,
             TyKind::Ref(r, e, Mutability::Mut) => {
                 let tcx = self.compiler.tcx;
                 self.solve_local(Ty::new_tup(tcx, &[Ty::new_imm_ref(tcx, *r, tcx.types.never), *e]), k, name, span)?
