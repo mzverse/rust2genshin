@@ -4,17 +4,18 @@ use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITW
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
+use crate::compile::native::compile_native_call;
 use crate::compile::optimize::node_ir_assemble;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use either::Either;
 use rustc_abi::Size;
+use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
-use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv};
+use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
-use crate::compile::native::compile_native_call;
 
 pub struct CompilingFn<'tcx, 'a> {
     pub tcx: TyCtxt<'tcx>,
@@ -206,7 +207,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                let src_kind = self.compiler.compile_ty(span, p.ty(&self.body.local_decls, self.tcx).ty)?;
+                let src_kind = self.compiler.compile_ty(span, self.mono(p.ty(&self.body.local_decls, self.tcx).ty))?;
                 self.compile_place(*p, span)?.getter(&mut self.graph.graph, &src_kind)
             }
 
@@ -214,67 +215,70 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let ty = co.ty();
                 let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
                 ValueIn::value(match &ty.kind() {
-                        TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
-                        TyKind::Int(t) => match t {
-                            IntTy::I32 |
-                            IntTy::Isize => ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into(),
-                            IntTy::I8 |
-                            IntTy::I16 |
-                            IntTy::I64 |
-                            IntTy::I128 => return self.span_err(co.span, format!("Unsupported const: {:?}", co.const_)),
-                        },
-                        TyKind::Float(t) => match t {
-                            FloatTy::F32 => ValueFloat(f32::from_bits(v.try_to_scalar_int().unwrap().to_bits(Size::from_bits(32)) as u32)).into(),
-                            FloatTy::F16 |
-                            FloatTy::F64 |
-                            FloatTy::F128 => return self.span_err(co.span, format!("Unsupported const: {:?}", co.const_)),
-                        },
-                        TyKind::Adt(d, a) => {
-                            if d.did().krate != self.compiler.lib {
-                                return self.span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
-                            } else {
-                                match self.tcx.def_path_str(d.did()).as_str() {
-                                    "rust2genshin_lib::Guid" => ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into(),
-                                    _ => panic!("adt: {d:?} {a:?}"),
-                                }
+                    TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
+                    TyKind::Int(t) => match t {
+                        IntTy::I32 |
+                        IntTy::Isize => ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into(),
+                        IntTy::I8 |
+                        IntTy::I16 |
+                        IntTy::I64 |
+                        IntTy::I128 => return self.span_err(co.span, format!("Unsupported const int: {:?}", co.const_)),
+                    },
+                    TyKind::Float(t) => match t {
+                        FloatTy::F32 => ValueFloat(f32::from_bits(v.try_to_scalar_int().unwrap().to_bits(Size::from_bits(32)) as u32)).into(),
+                        FloatTy::F16 |
+                        FloatTy::F64 |
+                        FloatTy::F128 => return self.span_err(co.span, format!("Unsupported const float: {:?}", co.const_)),
+                    },
+                    TyKind::Adt(d, a) => {
+                        if d.did().krate != self.compiler.lib {
+                            return self.span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
+                        } else {
+                            match self.tcx.def_path_str(d.did()).as_str() {
+                                "rust2genshin_lib::Guid" => ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into(),
+                                _ => panic!("adt: {d:?} {a:?}"),
                             }
-                        },
-                        TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
-                        TyKind::Ref(_, e, _) => {
-                            if e.is_str() {
-                                let ConstValue::Slice { alloc_id, meta: len } = v else { panic!("{v:?}") };
-                                ValueString(match str::from_utf8(self.tcx.global_alloc(alloc_id).unwrap_memory().0.get_bytes_unchecked(AllocRange { start: Size::ZERO, size: Size::from_bytes(len) })) {
-                                    Ok(s) => s.to_string(),
-                                    Err(e) => return self.span_err(co.span, e.to_string()),
-                                }).into()
-                            } else {
-                                return self.span_err(co.span, format!("Unsupported const ref: {:?}", ty));
-                            }
-                        },
-                        TyKind::Slice(_) |
-                        TyKind::Foreign(_) |
-                        TyKind::Char |
-                        TyKind::Uint(_) |
-                        TyKind::Array(_, _) |
-                        TyKind::Pat(_, _) |
-                        TyKind::RawPtr(_, _) |
-                        TyKind::FnDef(_, _) |
-                        TyKind::FnPtr(_, _) |
-                        TyKind::UnsafeBinder(_) |
-                        TyKind::Dynamic(_, _) |
-                        TyKind::Closure(_, _) |
-                        TyKind::CoroutineClosure(_, _) |
-                        TyKind::Coroutine(_, _) |
-                        TyKind::CoroutineWitness(_, _) |
-                        TyKind::Never |
-                        TyKind::Tuple(_) |
-                        TyKind::Alias(_, _) |
-                        TyKind::Param(_) |
-                        TyKind::Bound(_, _) |
-                        TyKind::Placeholder(_) |
-                        TyKind::Infer(_) |
-                        TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?} = {:?}", ty, v)),
-                    })
+                        }
+                    },
+                    TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
+                    TyKind::Ref(_, e, _) => {
+                        if e.is_str() {
+                            let ConstValue::Slice { alloc_id, meta: len } = v else { panic!("{v:?}") };
+                            ValueString(match str::from_utf8(self.tcx.global_alloc(alloc_id).unwrap_memory().0.get_bytes_unchecked(AllocRange { start: Size::ZERO, size: Size::from_bytes(len) })) {
+                                Ok(s) => s.to_string(),
+                                Err(e) => return self.span_err(co.span, e.to_string()),
+                            }).into()
+                        } else {
+                            return self.span_err(co.span, format!("Unsupported const ref: {:?}", ty));
+                        }
+                    },
+                    TyKind::Tuple(ele) => {
+                        assert!(ele.is_empty());
+                        return Ok(ValueIn::default());
+                    },
+                    TyKind::Slice(_) |
+                    TyKind::Foreign(_) |
+                    TyKind::Char |
+                    TyKind::Uint(_) |
+                    TyKind::Array(_, _) |
+                    TyKind::Pat(_, _) |
+                    TyKind::RawPtr(_, _) |
+                    TyKind::FnDef(_, _) |
+                    TyKind::FnPtr(_, _) |
+                    TyKind::UnsafeBinder(_) |
+                    TyKind::Dynamic(_, _) |
+                    TyKind::Closure(_, _) |
+                    TyKind::CoroutineClosure(_, _) |
+                    TyKind::Coroutine(_, _) |
+                    TyKind::CoroutineWitness(_, _) |
+                    TyKind::Never |
+                    TyKind::Alias(_, _) |
+                    TyKind::Param(_) |
+                    TyKind::Bound(_, _) |
+                    TyKind::Placeholder(_) |
+                    TyKind::Infer(_) |
+                    TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?} = {:?}", ty, v)),
+                })
             }
             Operand::RuntimeChecks(_) => ValueIn::value(ValueBool(false).into()),
         })
@@ -371,8 +375,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             ConstValue::Scalar(_) |
                             ConstValue::Slice { .. } => return self.span_err(func.span, format!("Unsupported call const val: {:?}", val)),
                             ConstValue::ZeroSized => {
-                                match ty.kind() {
-                                    TyKind::FnDef(def_id, b) => Instance::try_resolve(self.tcx, TypingEnv::fully_monomorphized(), *def_id, self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), *b))?.unwrap(),
+                                match self.mono(ty).kind() {
+                                    TyKind::FnDef(def_id, b) =>
+                                        Instance::try_resolve(self.tcx, TypingEnv::fully_monomorphized(), *def_id, self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), *b))?.unwrap(),
                                     _ => return self.span_err(func.span, format!("Unsupported call const ty: {:?}", ty)),
                                 }
                             }
@@ -406,8 +411,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
-        let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)));
-        let params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
+        let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), match self.tcx.def_kind(func.def_id()) {
+            DefKind::Closure => self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), Unnormalized::new(func.args.as_closure().sig())),
+            _ => self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)),
+        });
+        let mut params: Vec<AnyValue> = sig.inputs().iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
+        if matches!(self.tcx.def_kind(func.def_id()), DefKind::Closure) {
+            params.insert(0, self.compiler.compile_ty(span, self.mono(Ty::new_closure(self.tcx, func.def_id(), func.args)))?);
+        }
         let ret: Option<AnyValue> = if sig.output().is_never() { None } else { Some(self.compiler.compile_ty(span, sig.output())?) };
         let (node_kind, decl) = if let Some(native) = compile_native_call(self.tcx, span, func, params.clone(), ret.clone()) {
             let native = native?;

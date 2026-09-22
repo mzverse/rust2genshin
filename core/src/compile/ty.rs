@@ -4,32 +4,76 @@ use crate::asset::{Asset, AssetRef};
 use crate::compile::optimize::ValueIrMut;
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
-use rustc_middle::infer::canonical::ir::GenericArgKind;
-use rustc_middle::ty::{AdtDef, GenericArg, GenericArgsRef, List, Ty, TyKind, TypingEnv};
+use rustc_middle::infer::canonical::ir::{GenericArgKind, Unnormalized};
+use rustc_middle::mir::Mutability;
+use rustc_middle::ty;
+use rustc_middle::ty::print::with_no_trimmed_paths;
+use rustc_middle::ty::{AdtDef, Const, GenericArg, GenericArgsRef, Instance, List, Ty, TyKind, TypeVisitableExt, TypingEnv};
 use rustc_span::Span;
+use rustc_span::def_id::DefId;
 
 impl<'tcx> Compiler<'tcx> {
     fn mangle_ty(ty: Ty) -> String {
+        assert!(!ty.has_param());
         match ty.kind() {
             TyKind::Tuple(tys) => Self::mangle_tuple(tys),
+            TyKind::Adt(d, a) => Self::mangle_adt(d.did(), a),
+            TyKind::Closure(d, a) => Self::mangle_adt(*d, a),
             TyKind::Str => "String".into(),
+            TyKind::Ref(_, e, Mutability::Not) => format!("&{}", Self::mangle_ty(*e)),
+            TyKind::Ref(_, e, Mutability::Mut) => format!("&mut {}", Self::mangle_ty(*e)),
+            TyKind::Bound(..) | TyKind::UnsafeBinder(..) | TyKind::Param(..) => panic!(),
+            TyKind::Infer(..) => panic!(),
+            TyKind::Foreign(..) => panic!(),
+            TyKind::Placeholder(..) => panic!(),
+            TyKind::Pat(..) => panic!(),
+            TyKind::Alias(..) => panic!(),
+            TyKind::Error(..) => panic!(),
+            TyKind::FnDef(..) => panic!(),
+            TyKind::FnPtr(b, _) => {
+                let s = b.skip_binder();
+                let result = format!("fn{}", Self::mangle_tuple(s.inputs()));
+                if s.output().is_unit() {
+                    result
+                } else {
+                    format!("{result}->{}", Self::mangle_ty(s.output()))
+                }
+            },
             other => format!("{:?}", other), // TODO
         }
     }
 
-    fn mangle_tuple(tys: &List<Ty>) -> String {
-        format!("({})", tys.iter().map(Self::mangle_ty).collect::<Vec<_>>().join(","))
+    fn mangle_const(c: Const) -> String {
+        c.to_string()
     }
 
-    fn mangle_adt(def: AdtDef, s: GenericArgsRef) -> String {
-        let result = format!("{def:?}");
+    fn mangle_tuple(tys: &[Ty]) -> String {
+        format!("({})", tys.iter().copied().map(Self::mangle_ty).collect::<Vec<_>>().join(","))
+    }
+
+    fn mangle_def(def: DefId) -> String {
+        ty::tls::with(|tcx| {
+            with_no_trimmed_paths!(tcx.def_path_str(def))
+        })
+    }
+
+    pub fn mangle_func(&self, func: Instance<'tcx>) -> String {
+        if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
+            self.tcx.symbol_name(func).to_string()
+        } else {
+            Self::mangle_adt(func.def_id(), func.args)
+        }
+    }
+
+    fn mangle_adt(def: DefId, s: GenericArgsRef) -> String {
+        let result = Self::mangle_def(def);
         let s = s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).collect::<Vec<_>>();
         if s.is_empty() {
             result
         } else {
             format!("{}<{}>", result, s.into_iter().map(|x| match x {
                 GenericArgKind::Type(t) => Self::mangle_ty(t),
-                GenericArgKind::Const(c) => format!("{c:?}"),
+                GenericArgKind::Const(c) => Self::mangle_const(c),
                 _ => unreachable!(),
             }).collect::<Vec<_>>().join(","))
         }
@@ -39,7 +83,7 @@ impl<'tcx> Compiler<'tcx> {
         if !def.is_struct() {
             todo!();
         }
-        let key = Self::mangle_adt(def, g);
+        let key = Self::mangle_adt(def.did(), g);
         if let Some(id) = self.structs.get(&key) {
             return Ok(id);
         }
@@ -49,6 +93,22 @@ impl<'tcx> Compiler<'tcx> {
             fields: def.non_enum_variant().fields.iter().map(|f| Ok(StructField {
                 name: f.name.to_string(),
                 value: self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, g)))?,
+            })).collect::<Result<_>>()?,
+        }.apply(&mut self.assets);
+        Ok(self.structs.entry(key).or_insert(id))
+    }
+
+    fn touch_closure(&mut self, def: DefId, g: GenericArgsRef<'tcx>, span: Span) -> Result<&AssetRef<StructureDefinition>> {
+        let key = Self::mangle_adt(def, g);
+        if let Some(id) = self.structs.get(&key) {
+            return Ok(id);
+        }
+        let id = StructureDefinition {
+            name: key.clone(),
+            version: 1,
+            fields: g.as_closure().upvar_tys().iter().enumerate().map(|(i, t)| Ok(StructField {
+                name: i.to_string(),
+                value: self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), Unnormalized::new(t)))?,
             })).collect::<Result<_>>()?,
         }.apply(&mut self.assets);
         Ok(self.structs.entry(key).or_insert(id))
@@ -81,6 +141,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
+        assert!(!ty.has_param());
         if let Some(n) = self.compile_native_ty(ty) {
             return n;
         }
@@ -123,7 +184,7 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
             TyKind::Tuple(tys) => ValueStruct::new(self.touch_tuple(span, tys)?.clone()).into(),
-            TyKind::Closure(_, _) => todo!(),
+            TyKind::Closure(d, a) => ValueStruct::new(self.touch_closure(*d, a, span)?.clone()).into(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
             | TyKind::CoroutineClosure(_, _)

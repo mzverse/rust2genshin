@@ -16,7 +16,7 @@ use rustc_span::Span;
 use std::borrow::Cow;
 use tap::Tap;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum CompiledLocal<T> {
     Singleton(T),
     Flat(IndexVec<FieldIdx, CompiledLocal<T>>),

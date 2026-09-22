@@ -1,3 +1,4 @@
+use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeKind, NodeRef, ValueIn};
 use crate::asset::structure::StructureDefinition;
@@ -9,9 +10,10 @@ use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef}
 use proc_macro2::{Ident, TokenStream};
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_hir as hir;
+use rustc_hir::def::DefKind;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::{ImplItem, intravisit};
-use rustc_index::{Idx, IndexVec};
+use rustc_index::IndexVec;
 use rustc_middle::hir::nested_filter;
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir;
@@ -26,7 +28,6 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use syn::{LitInt, Meta, MetaList};
-use crate::asset::node_graph::composite::node_composite;
 
 pub mod func;
 pub mod native;
@@ -229,6 +230,9 @@ impl<'tcx> Compiler<'tcx> {
         self.tcx.hir_walk_toplevel_module(&mut c);
         let mut main = MainNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string()));
         for x in c.out {
+            if !self.tcx.codegen_fn_attrs(x).contains_extern_indicator() {
+                continue;
+            }
             let func = Instance::mono(self.tcx, x.to_def_id());
             _ = self.touch_fn(func)?;
             if let Some(attr) = get_expn_macro_attr(self.tcx, x.default_span(self.tcx)) {
@@ -297,11 +301,12 @@ impl<'tcx> Compiler<'tcx> {
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<(AssetRef<CompositeNodeGraph>, FnDecl)> {
         // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {:?}", func));
-        let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.tcx.symbol_name(func).to_string()));
+        let is_closure = matches!(self.get_tcx().def_kind(func.def_id()), DefKind::Closure);
+        let mut graph = CompositeNodeGraph::new(NodeGraph::new(NodeGraphKind::ServerEntity, self.mangle_func(func)));
         let body = self.tcx.instance_mir(func.def);
         graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map
-        let args = self.tcx.fn_arg_idents(func.def_id());
+        let args = self.tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, x)| x.as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{i}"))).collect::<Vec<_>>();
         let mut compiling_locals = CompilingLocals {
             compiler: self,
             block: Block::nop(&mut graph.graph),
@@ -315,11 +320,26 @@ impl<'tcx> Compiler<'tcx> {
         let (ret, r) = compiling_locals.solve_local(if ret_decl.ty.is_never() { compiling_locals.compiler.tcx.types.unit } else { compiling_locals.compiler.monomorphize(func, ret_decl.ty) }, LocalKind::Ret, "".into(), ret_decl.source_info.span)?;
         locals.push(r);
         let mut params = vec![];
-        for i in 0..args.len() {
-            let decl = body.local_decls.get(Local::arg(i)).unwrap();
-            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, args.get(i).unwrap().as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{}", i.index() - 1).to_string()), decl.source_info.span)?;
+        if is_closure {
+            let arg0 = body.local_decls.get(Local::arg(0)).unwrap();
+            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, arg0.ty), LocalKind::Arg, "#closure".to_string(), arg0.source_info.span)?;
             locals.push(r);
             params.push(k);
+            let mut p1 = vec![];
+            for (i, name) in args.iter().enumerate() {
+                let decl = body.local_decls.get(Local::arg(1 + i)).unwrap();
+                let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, name.clone(), decl.source_info.span)?;
+                p1.push(k);
+                locals.push(r);
+            }
+            params.push(CompiledLocal::Flat(IndexVec::from_raw(p1)));
+        } else {
+            for (i, x) in args.iter().enumerate() {
+                let decl = body.local_decls.get(Local::arg(i)).unwrap();
+                let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, decl.ty), LocalKind::Arg, x.clone(), decl.source_info.span)?;
+                locals.push(r);
+                params.push(k);
+            }
         }
         let mut fn_decl = FnDecl {
             control: true,
@@ -328,7 +348,7 @@ impl<'tcx> Compiler<'tcx> {
             proxies_in: (0..compiling_locals.params).collect(),
             proxies_out: vec![None; compiling_locals.rets],
         };
-        for x in body.local_decls.iter().skip(1 + args.len()) { // other locals
+        for x in body.local_decls.iter().skip(1 + args.len() + is_closure as usize) { // other locals
             locals.push(compiling_locals.solve_local(compiling_locals.compiler.monomorphize(func, x.ty), LocalKind::Other, "".to_string(), x.source_info.span)?.1);
         }
         let CompilingLocals { mut block, .. } = compiling_locals;

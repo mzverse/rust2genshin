@@ -4,10 +4,20 @@
 
 ## Demo
 
-简单的求根公式：
+### 监听选项卡选中事件
 
 ```rust
-#[unsafe(no_mangle)]
+#[event_listener]
+pub fn on_tab_selected(event: TabSelectedEvent) {
+    log(event.guid); // 打印Guid
+    event.entity.delete(); // 删除本实体
+}
+```
+
+### 简单的求根公式
+
+```rust
+#[unsafe(no_mangle)] // 导出此函数为复合节点
 pub fn solve(a: f32, b: f32, c: f32) -> f32 {
     (- b + delta(a, b, c).sqrt()) / (2. * a)
 }
@@ -40,9 +50,19 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 
 ### 监听事件
 
-TODO
+在`pub fn`上添加属性`#[event_listener]`
 
-事件节点期望加入到主图中
+且唯一参数的是`event`，例如
+
+```rust
+#[event_listener]
+pub fn on_tab_selected(event: TabSelectedEvent) {
+    log(event.guid);
+    event.entity.delete();
+}
+```
+
+事件节点和调用会被加入到主图中
 
 ### 导出函数
 
@@ -88,22 +108,35 @@ pub fn my_composite() {
 
 # Todo List
 
-- cast
-- `struct`
-- events
+## 语言特性
+
 - `enum`
-- tuple
 - loops
-- `Box`
-- `async fn`
-- closure
+- `async fn`(coroutine)
+- 客户端节点图
+
+## 类型
+
+- native enum
+- `Faction`
+- `Config`
+- `Prefab`
+- `VarSnapshotRef`
+- `Vec3`
+- `Vec2`
+- `List<T>` & `[T]`
+- `Dict<K, V>`
+- `Box<T>`
 - unsigned int
 - `i64`
-- client node graph
+
+## 事件
+
+待完善
 
 ## 编译流程
 
-正确的流程应为分别编译每个crate，再link得到最终.gia
+正确的流程应为分别编译每个crate，再link得到最终.gia/.gil/.gis
 
 但.gia本身不支持link，所以我们现在先偷懒直接编译目标crate了
 
@@ -188,4 +221,3 @@ for(int i = begin; i <= end; i++)
 ## 运算
 
 - ‘模运算’节点实际上是**取余**而不是取模
-- 

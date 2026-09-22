@@ -11,11 +11,25 @@ use core::f32::consts::PI;
 use rust2genshin_lib::entity::Entity;
 use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
 
-#[event_listener]
-pub fn on_tab_selected(event: TabSelectedEvent) {
-    event.entity.delete();
+
+#[unsafe(no_mangle)]
+pub fn test_closure(i: i32) {
+    #[inline(never)]
+    fn f<T: FnOnce()>(t: T) {
+        t();
+    }
+    f(|| {
+        log(i);
+    });
 }
 
+
+// #[event_listener]
+// pub fn on_tab_selected(event: TabSelectedEvent) {
+//     log(event.guid);
+//     event.entity.delete();
+// }
+//
 // struct MyStruct(i32);
 // impl MyStruct {
 //     #[inline(never)]
