@@ -368,8 +368,11 @@ impl NodeGraph {
     }
 
     pub fn export_value_out(&mut self, inner: Connection, outer: usize) {
-        let node = &mut self.nodes[inner.node().into()];
-        node.values_out[inner.pin()].push(Link::Export(outer));
+        // TODO: optimize
+        for x in self.nodes.iter_mut().flat_map(|(_, x)| x.values_out.iter_mut()) {
+            x.retain(|x| *x != Link::Export(outer));
+        }
+        self.nodes[inner.node().into()].values_out[inner.pin()].push(Link::Export(outer));
     }
 
     fn apply(self, id: Identifier) -> AssetData {

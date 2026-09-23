@@ -284,36 +284,91 @@ impl<'a> Optimizer<'a> {
         let Link::Connection(Connection(local, _)) = n.values_in[0].link.unwrap() else {
             return Some(());
         };
+        if n.values_in[1].link == Some(Connection(local, 1).into()) {
+            let n = self.graph.graph.remove(node);
+            self.relink_controls(&n.controls_in[0], &n.controls_out[0]);
+            return None;
+        }
         let n_local = self.graph.graph.get_node(local);
-        if n_local.values_out[0].len() != 1 || n_local.values_out[1].len() != 1 {
+
+        const DEFAULT_MAX: usize = 1;
+        let max = if node_local(n.kind.values_in_types[1].as_ref().unwrap()).is_some() {
+            DEFAULT_MAX
+        } else {
+            usize::MAX
+        };
+
+        let mut setters = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(node);
+        while let Some(now) = queue.pop_front() {
+            for Connection(x, _) in self.graph.graph.get_node(now).values_in.iter().flat_map(|x| x.link).flat_map(|x| x.connection()) {
+                let n = self.graph.graph.get_node(x);
+                if n.kind.id == NodeId::Local {
+                    setters.extend(n.values_out[0].iter().flat_map(|x| x.connection()).map(|x| x.0));
+                } else if is_calc(&n.kind) {
+                    queue.push_back(x);
+                } else {
+                    setters.insert(x);
+                }
+            }
+        }
+        setters.remove(&node);
+
+        let ret = self.graph.graph.nodes.iter().filter(|(_i, x)| x.controls_out.iter().flatten().find(|x| matches!(x, Link::Export(..))).is_some()).map(|(i, _)| NodeRef::from(i)).collect::<Vec<_>>();
+        let usages = n_local.values_out[1].iter().copied().filter(|&x| {
+            let mut queue = VecDeque::new();
+            match x {
+                Link::Connection(Connection(x, _)) => {
+                    assert_ne!(x, node);
+                    queue.push_back(x)
+                },
+                Link::Export(_) => queue.extend(ret.clone()),
+            }
+            while let Some(now) = queue.pop_front() {
+                if now == node {
+                    continue;
+                } else if setters.contains(&now) {
+                    return false;
+                }
+                for &x in self.graph.graph.get_node(now).controls_in.iter().flatten() {
+                    let Link::Connection(Connection(x, _)) = x else {
+                        return false;
+                    };
+                    queue.push_back(x);
+                }
+            }
+            true
+        }).collect::<Vec<_>>();
+        if usages.len() > max {
             return Some(());
         }
-        let out = n_local.values_out[1][0];
-        let mut next = out;
-        loop {
-            let Link::Connection(Connection(next_node, _)) = next else {
-                if let [Link::Export(_)] = n.controls_out[0].as_slice() {
-                    break;
-                } else {
-                    return Some(());
-                }
+        assert!(!usages.contains(&Connection(node, 1).into()));
+        let res = usages.is_empty().then_some(());
+        self.reset_values(&usages, n.values_in[1].clone()); // maybe update?
+        let n_local = self.graph.graph.get_node(local);
+        for &x in n_local.values_out[1].iter() {
+            let Link::Connection(Connection(x, _)) = x else {
+                return res;
             };
-            let next_node = self.graph.graph.get_node(next_node);
-            if is_calc(&next_node.kind) {
-                match next_node.values_out.iter().flatten().collect::<Vec<_>>().as_slice() {
-                    [it] => next = **it,
-                    [] => break,
-                    _ => return Some(()),
+            let mut queue = VecDeque::new();
+            queue.push_back(x);
+            while let Some(now) = queue.pop_front() {
+                if now == node {
+                    return res;
+                } else if setters.contains(&now) {
+                    continue;
                 }
-            } else if let [x] = next_node.controls_in.iter().flatten().collect::<Vec<_>>().as_slice() && matches!(*x, Link::Connection(Connection(x, _)) if *x == node) {
-                break;
-            } else {
-                return Some(());
+                for &x in self.graph.graph.get_node(now).controls_in.iter().flatten() {
+                    let Link::Connection(Connection(x, _)) = x else {
+                        return res;
+                    };
+                    queue.push_back(x);
+                }
             }
         }
         let n = self.graph.graph.remove(node);
         self.relink_controls(&n.controls_in[0], &n.controls_out[0]);
-        self.reset_value(Connection(local, 0).into(), n.values_in[1].clone());
         None
     }
 
@@ -398,8 +453,13 @@ impl<'a> Optimizer<'a> {
                 match from {
                     Link::Connection(from) =>
                         self.graph.graph.export_value_out(from, to),
-                    Link::Export(from) =>
-                        self.decl.proxies_out[to] = Some(Either::Left(from)),
+                    Link::Export(from) => {
+                        // TODO: optimize
+                        for x in self.graph.graph.nodes.iter_mut().flat_map(|(_, x)| x.values_out.iter_mut()) {
+                            x.retain(|x| *x != Link::Export(to));
+                        }
+                        self.decl.proxies_out[to] = Some(Either::Left(from))
+                    },
                 }
             } else {
                 self.decl.proxies_out[to] = Some(Either::Right(value.default.unwrap()));

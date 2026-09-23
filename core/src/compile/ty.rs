@@ -12,6 +12,8 @@ use rustc_middle::ty::{AdtDef, Const, GenericArg, GenericArgsRef, Instance, List
 use rustc_span::Span;
 use rustc_span::def_id::DefId;
 
+pub type AdtKey = String;
+
 impl<'tcx> Compiler<'tcx> {
     fn mangle_ty(ty: Ty) -> String {
         assert!(!ty.has_param());
@@ -47,7 +49,7 @@ impl<'tcx> Compiler<'tcx> {
         c.to_string()
     }
 
-    fn mangle_tuple(tys: &[Ty]) -> String {
+    fn mangle_tuple(tys: &[Ty]) -> AdtKey {
         format!("({})", tys.iter().copied().map(Self::mangle_ty).collect::<Vec<_>>().join(","))
     }
 
@@ -65,7 +67,7 @@ impl<'tcx> Compiler<'tcx> {
         }
     }
 
-    fn mangle_adt(def: DefId, s: GenericArgsRef) -> String {
+    fn mangle_adt(def: DefId, s: GenericArgsRef) -> AdtKey {
         let result = Self::mangle_def(def);
         let s = s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).collect::<Vec<_>>();
         if s.is_empty() {

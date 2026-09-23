@@ -67,6 +67,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                 }
                 (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))
             },
+            TyKind::Closure(_d, a) => self.solve_local(Ty::new_tup(self.compiler.tcx, a.as_closure().upvar_tys()), k, name, span)?,
             TyKind::Adt(d, a) if let Some(r) = {
                 let def = d.did().default_span(self.compiler.tcx);
                 if let Some(attr) = get_expn_macro_attr(self.compiler.tcx, def) {
@@ -91,6 +92,9 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                     None
                 }
             } => r,
+            TyKind::Ref(_, e, Mutability::Not) if !e.is_never() => {
+                self.solve_local(*e, k, name, span)?
+            },
             TyKind::Ref(r, e, Mutability::Mut) => {
                 let tcx = self.compiler.tcx;
                 self.solve_local(Ty::new_tup(tcx, &[Ty::new_imm_ref(tcx, *r, tcx.types.never), *e]), k, name, span)?
