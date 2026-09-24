@@ -369,7 +369,9 @@ impl<'tcx> Compiler<'tcx> {
             }
             body.basic_blocks.iter_enumerated().map(|(k, v)| (k, compiling.compile_terminator(&blocks, v.terminator.as_ref().unwrap()))).collect::<Vec<_>>()
         } {
-            graph.graph.connect_control(blocks.get(k).unwrap().end, result?);
+            if let Some(result) = result? {
+                graph.graph.connect_control(blocks.get(k).unwrap().end, result);
+            }
         }
         block.extend(&mut graph.graph, blocks.get(mir::START_BLOCK).unwrap().clone());
         let mut optimizer = Optimizer {

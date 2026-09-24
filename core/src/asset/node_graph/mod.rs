@@ -108,6 +108,12 @@ pub struct NodeKind {
 
     pub using_struct: Option<Box<DependencyDeclaration>>,
 }
+impl PartialEq for NodeKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.kernel_id == other.kernel_id
+    }
+}
+impl Eq for NodeKind {}
 impl NodeKind {
     pub fn new(
         id: i64,

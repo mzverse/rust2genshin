@@ -1,16 +1,34 @@
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
+use rustc_abi::{Integer, IntegerType};
+use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
 use crate::compile::optimize::{ValueIrAdt, ValueIrMut};
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
+use rustc_attr_ir::LangItem;
 use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::print::with_no_trimmed_paths;
-use rustc_middle::ty::{Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt};
-use rustc_span::Span;
+use rustc_middle::ty::{AdtDef, AdtKind, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt};
+use rustc_span::{Span, DUMMY_SP};
 use rustc_span::def_id::DefId;
 
+
 impl<'tcx> Compiler<'tcx> {
+    pub fn get_default_some(&mut self, d: AdtDef<'tcx>, a: GenericArgsRef<'tcx>) -> Result<Option<AnyValue>> {
+        let opt = self.tcx.lang_items().get(LangItem::Option).unwrap();
+        if d.did() != opt {
+            return Ok(None);
+        }
+        let ele = a.type_at(0);
+        if ele.ty_adt_def().map(AdtDef::did) != Some(opt) {
+            let ele = self.compile_ty(DUMMY_SP, ele)?;
+            if ele.is::<ValueEntity>() {
+                return Ok(Some(ele));
+            }
+        }
+        Ok(None)
+    }
+
     fn mangle_ty(ty: Ty) -> String {
         assert!(!ty.has_param());
         match ty.kind() {
@@ -111,6 +129,15 @@ impl<'tcx> Compiler<'tcx> {
                     } else {
                         self.compile_ty(span, *e)?
                     }
+                }
+            },
+            TyKind::Adt(d, a) if d.adt_kind() == AdtKind::Enum => {
+                if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
+                    ValueInt::def()
+                } else if let Some(r) = self.get_default_some(*d, a)? {
+                    r
+                } else {
+                    todo!("{d:?} {a:?}")
                 }
             },
             TyKind::Adt(..) |

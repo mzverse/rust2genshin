@@ -41,6 +41,15 @@ pub fn native_exec(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+pub fn native_enum(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let item = proc_macro2::TokenStream::from(tag(input));
+    quote! {
+        #[repr(i32)]
+        #item
+    }.into()
+}
+
+#[proc_macro_attribute]
 pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
     tag(input)
 }

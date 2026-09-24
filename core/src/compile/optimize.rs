@@ -7,7 +7,7 @@ use crate::asset::node_graph::hidden::node_on_native_custom_value_change;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, NodeId, NodeKind, NodeRef, PinType, ValueIn};
 use crate::asset::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct, ValueStruct, StructureDefinition, StructField};
-use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueLocalVarRef};
+use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueInt, ValueLocalVarRef};
 use crate::asset::{Asset, Side};
 use crate::compile::Compiler;
 use crate::compile::func::FnDecl;
@@ -15,7 +15,9 @@ use either::Either;
 use rustc_middle::ty::{Ty, TyKind, TypingEnv};
 use rustc_span::DUMMY_SP;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::mem::swap;
 use tap::Tap;
+use crate::asset::node_graph::arithmetic::{node_cast, node_equal, NODE_NOT};
 
 pub struct Optimizer<'a> {
     pub graph: &'a mut CompositeNodeGraph,
@@ -58,7 +60,7 @@ impl Value for ValueIrAdt {
         if let Ok(value) = value.downcast_ref::<ValueIrAdt>() {
             self.0 == value.0
         } else {
-            value.is::<ValueStruct>() // lowered
+            value.is::<ValueStruct>() || value.is::<ValueInt>() // lowered
         }
     }
 }
@@ -119,7 +121,7 @@ pub fn struct_fields<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue) -> Ve
             other => panic!("{other:?}"),
         }.iter().enumerate().map(|(i, x)| StructField::new(i.to_string(), compiler.compile_ty(DUMMY_SP, x).unwrap())).collect()
     } else {
-        panic!();
+        panic!("{kind:?}");
     }
 }
 
@@ -153,7 +155,7 @@ impl<'a> Optimizer<'a> {
         for x in self.graph.graph.nodes.iter_mut().map(|(_, x)| &mut x.kind).flat_map(|x|
             x.values_in_types.iter_mut().flatten().chain(x.values_out_types.iter_mut())
         ) {
-            if let Ok(_) = x.downcast_ref::<ValueIrAdt>() {
+            if x.downcast_ref::<ValueIrAdt>().is_ok() {
                 *x = Self::touch_adt(compiler, x).into();
             }
         }
@@ -279,6 +281,8 @@ impl<'a> Optimizer<'a> {
         self.eliminate_unnecessary_local_setter(node)?;
         self.eliminate_assemble(node)?;
         self.eliminate_destructure(node)?;
+        self.eliminate_bool_eq_int(node)?;
+        self.eliminate_not_not(node)?;
         Some(())
     }
 
@@ -472,6 +476,57 @@ impl<'a> Optimizer<'a> {
         for (i, x) in n.values_out.iter().enumerate() {
             self.reset_values(x, from[i].clone());
         }
+        None
+    }
+
+    fn eliminate_bool_eq_int(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.graph.get_node(node);
+        if n.kind != node_equal(ValueInt::def()) {
+            return Some(());
+        }
+        let mut v1 = &n.values_in[0];
+        let mut v2 = &n.values_in[1];
+        if v1.link.is_none() {
+            swap(&mut v1, &mut v2);
+        }
+        if v2.link.is_some() {
+            return Some(());
+        }
+        let Some(Link::Connection(Connection(v1, _))) = v1.link else {
+            return Some(());
+        };
+        let n1 = self.graph.graph.get_node(v1);
+        if n1.kind != node_cast(ValueBool::def(), ValueInt::def()).unwrap() {
+            return Some(());
+        }
+        let from = n1.values_in[0].clone();
+        let to = n.values_out[0].clone();
+        let v = match v2.default.as_ref().map(|x| x.downcast_ref::<ValueInt>().unwrap().0).unwrap_or(0) {
+            0 => {
+                let node_not = self.graph.graph.insert(NODE_NOT.clone().into());
+                self.graph.graph.set_value_in(Connection(node_not, 0), from);
+                ValueIn::link(Connection(node_not, 0).into())
+            },
+            1 => from,
+            _ => ValueIn::value(ValueBool(false).into()),
+        };
+        self.reset_values(&to, v);
+        None
+    }
+
+    fn eliminate_not_not(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.graph.get_node(node);
+        if n.kind != *NODE_NOT {
+            return Some(());
+        }
+        let Some(Link::Connection(Connection(from, _))) = n.values_in[0].link else {
+            return Some(());
+        };
+        let from = self.graph.graph.get_node(from);
+        if from.kind != *NODE_NOT {
+            return Some(());
+        }
+        self.reset_values(&n.values_out[0].clone(), from.values_in[0].clone());
         None
     }
 

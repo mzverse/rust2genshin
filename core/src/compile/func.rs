@@ -3,16 +3,16 @@ use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueEnum, ValueFloat, ValueInt, ValueIntList, ValueString};
 use crate::compile::native::compile_native_call;
 use crate::compile::optimize::node_ir_assemble;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use either::Either;
-use rustc_abi::Size;
+use rustc_abi::{Integer, IntegerType, Size};
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
-use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
+use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
@@ -82,6 +82,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     pub fn compile_assign(&mut self, place: Place<'tcx>, span: Span, value: ValueIn) -> Result<Block> {
         let kind = self.compiler.compile_ty(span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
         Ok(self.compile_place(place, span)?.setter(self.compiler, &mut self.graph.graph, &kind, value))
+    }
+
+    pub fn place_ty(&self, place: Place<'tcx>) -> PlaceTy<'tcx> {
+        let r = place.ty(&self.body.local_decls, self.tcx);
+        PlaceTy {
+            ty: self.mono(r.ty),
+            ..r
+        }
     }
 
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
@@ -193,10 +201,26 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     self.graph.graph.set_value_in(Connection(node, i), v);
                 }
                 ValueIn::link(Connection(node, 0).into())
-            }
+            },
+            Rvalue::Discriminant(from) => {
+                let TyKind::Adt(d, a) = self.place_ty(*from).ty.kind() else { unreachable!() };
+                if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
+                    self.compile_operand(&Operand::Copy(*from), span)?
+                } else if let Some(kind) = self.compiler.get_default_some(*d, a)? {
+                    let node_eq = self.graph.graph.insert(node_equal(kind).into());
+                    let v = self.compile_operand(&Operand::Copy(*from), span)?;
+                    self.graph.graph.set_value_in(Connection(node_eq, 0), v);
+                    let node_not = self.graph.graph.insert(NODE_NOT.clone().into());
+                    self.graph.graph.connect_value(Connection(node_eq, 0), Connection(node_not, 0));
+                    let node_cast = self.graph.graph.insert(node_cast(ValueBool::def(), ValueInt::def()).unwrap().into());
+                    self.graph.graph.connect_value(Connection(node_not, 0), Connection(node_cast, 0));
+                    ValueIn::link(Connection(node_cast, 0).into())
+                } else {
+                    todo!()
+                }
+            },
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)
-            | Rvalue::Discriminant(_)
             | Rvalue::Aggregate(_, _) // non-Tuple AggregateKind still panics
             | Rvalue::CopyForDeref(_)
             | Rvalue::WrapUnsafeBinder(_, _)
@@ -206,21 +230,20 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
+        let kind = self.compiler.compile_ty(span, self.mono(op.ty(&self.body.local_decls, self.tcx)))?;
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                let src_kind = self.compiler.compile_ty(span, self.mono(p.ty(&self.body.local_decls, self.tcx).ty))?;
-                self.compile_place(*p, span)?.getter(self.compiler, &mut self.graph.graph, &src_kind)
+                self.compile_place(*p, span)?.getter(self.compiler, &mut self.graph.graph, &kind)
             }
-
             Operand::Constant(co) => {
                 let ty = co.ty();
                 let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
                 ValueIn::value(match &ty.kind() {
                     TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
                     TyKind::Int(t) => match t {
-                        IntTy::I32 |
-                        IntTy::Isize => ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into(),
+                        IntTy::I32 => ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into(),
+                        IntTy::Isize => ValueInt(v.try_to_scalar_int().unwrap().to_int(self.tcx.data_layout.pointer_size()) as i32).into(),
                         IntTy::I8 |
                         IntTy::I16 |
                         IntTy::I64 |
@@ -233,13 +256,18 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         FloatTy::F128 => return self.span_err(co.span, format!("Unsupported const float: {:?}", co.const_)),
                     },
                     TyKind::Adt(d, a) => {
-                        if d.did().krate != self.compiler.lib {
-                            return self.span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
+                        if kind.is::<ValueInt>() {
+                            ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into()
+                        } else if kind.is::<ValueGuid>() {
+                            ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into()
+                        } else if let Ok(ValueEnum { id, .. }) = kind.downcast_ref::<ValueEnum>() {
+                            ValueEnum {
+                                id: *id,
+                                index: v.try_to_scalar_int().unwrap().to_i32(),
+                            }.into()
                         } else {
-                            match self.tcx.def_path_str(d.did()).as_str() {
-                                "rust2genshin_lib::Guid" => ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into(),
-                                _ => panic!("adt: {d:?} {a:?}"),
-                            }
+                            self.tcx.dcx().span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
+                            panic!()
                         }
                     },
                     TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
@@ -255,10 +283,24 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         }
                     },
                     TyKind::Tuple(ele) => {
-                        if !ele.is_empty() {
-                            todo!();
-                        }
-                        return Ok(ValueIn::default());
+                        return Ok(match ele.len() {
+                            0 => ValueIn::default(),
+                            1 => {
+                                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
+                                let v = self.compile_operand(&Operand::Constant(ConstOperand {
+                                    span,
+                                    user_ty: None,
+                                    const_: Const::Val(v, ele[0]),
+                                }.into()), span)?;
+                                self.graph.graph.set_value_in(Connection(node, 0), v);
+                                ValueIn::link(Connection(node, 0).into())
+                            }
+                            _ => {
+                                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
+                                todo!();
+                                ValueIn::link(Connection(node, 0).into())
+                            },
+                        })
                     },
                     TyKind::Slice(_) |
                     TyKind::Foreign(_) |
@@ -288,11 +330,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         })
     }
 
-    pub(crate) fn compile_terminator(
+    pub fn compile_terminator(
         &mut self,
         blocks: &IndexVec<BasicBlock, Block>,
         terminator: &Terminator<'tcx>,
-    ) -> Result<Connection> {
+    ) -> Result<Option<Connection>> {
         Ok(match &terminator.kind {
             TerminatorKind::Return => Block::nop(&mut self.graph.graph).pipe(|block| {
                 self.graph.graph.export_control_out(block.end, 0);
@@ -342,12 +384,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.graph.graph.set_value_in(Connection(node, 0), value);
                 Connection(node, 0)
             },
+            TerminatorKind::Unreachable => return Ok(None), // TODO
             TerminatorKind::Drop { .. } => todo!(),
             other => return self.span_err(
                 terminator.source_info.span,
                 format!("Unsupported terminator: {}", other.name()),
             ),
-        })
+        }.into())
     }
 
     fn find_fn(&self, operand: &Operand<'tcx>) -> Result<Instance<'tcx>> {

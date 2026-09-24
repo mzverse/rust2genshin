@@ -7,7 +7,8 @@ use crate::compile::optimize::{node_ir_assemble, node_ir_destructure, node_ir_lo
 use crate::compile::{Block, Compiler};
 use rustc_abi::FieldIdx;
 use rustc_ast::Mutability;
-use rustc_index::IndexVec;
+use rustc_attr_ir::LangItem;
+use rustc_index::{Idx, IndexVec};
 use rustc_middle::mir::{Place, PlaceTy};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Ty, TyKind, TypingEnv};
@@ -266,9 +267,16 @@ impl<'tcx> CompilingFn<'tcx, '_> {
             use rustc_middle::mir::ProjectionElem::*;
             match x {
                 Field(i, _) => {
-                    match result {
-                        CompiledPlace::Local(CompiledLocal::Flat(v)) => result = CompiledPlace::Local(v.into_iter().nth(i.index()).unwrap()),
-                        other => result = CompiledPlace::Field(other.into(), self.compiler.compile_ty(span, ty.ty)?, i),
+                    match ty.ty.kind() {
+                        TyKind::Adt(d, a) if self.compiler.get_default_some(*d, a)?.is_some() => {
+                            assert_eq!(d.variant(ty.variant_index.unwrap()).def_id, self.tcx.lang_items().get(LangItem::OptionSome).unwrap());
+                            assert_eq!(i, FieldIdx::new(0));
+                            // do nothing
+                        }
+                        _ => match result {
+                            CompiledPlace::Local(CompiledLocal::Flat(v)) => result = CompiledPlace::Local(v.into_iter().nth(i.index()).unwrap()),
+                            other => result = CompiledPlace::Field(other.into(), self.compiler.compile_ty(span, ty.ty)?, i),
+                        }
                     }
                 },
                 Deref => if ty.ty.ref_mutability().unwrap() == Mutability::Mut { // TODO: raw ptr
@@ -278,6 +286,23 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                     self.graph.graph.set_value_in(Connection(de, 0), getter);
                     result = CompiledPlace::Local(CompiledLocal::Singleton(LocalRef::node(ty.ty, de)));
                 }, // else nop
+                Downcast(_, id) => {
+                    match ty.ty.kind() {
+                        TyKind::Adt(d, a) =>
+                            if self.compiler.get_default_some(*d, a)?.is_some() {
+                                if d.variant(id).def_id == self.tcx.lang_items().get(LangItem::OptionSome).unwrap() {
+                                    // do nothing
+                                } else {
+                                    unreachable!()
+                                }
+                            } else {
+                                todo!()
+                            },
+                        TyKind::CoroutineClosure(_, _) => todo!(),
+                        TyKind::Coroutine(_, _) => todo!(),
+                        _ => unreachable!(),
+                    }
+                }
                 other => todo!("{other:?}")
             }
             ty = ty.projection_ty(self.tcx, x);

@@ -83,6 +83,9 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
     }
 
     fn get_server_type(&self) -> ServerTypeId;
+    fn get_server_shell_type(&self) -> i32 {
+        self.get_server_type() as i32
+    }
     fn get_client_type(&self) -> ClientTypeId;
     fn get_type_id(&self, side: Side) -> i32 {
         match side {
@@ -152,7 +155,7 @@ impl<T: ValueClone> CloneValue for T {
 pub struct ValueBool(pub bool);
 impl ValueBool {
     pub fn encode(&self) -> Enum {
-        Enum { value: self.0 as i64 }
+        Enum { value: self.0 as i32 }
     }
 }
 impl Value for ValueBool {
@@ -339,17 +342,20 @@ impl Value for ValueEntity {
 #[derive(Clone, Debug)]
 #[derive(Default)]
 pub struct ValueEnum {
-    pub id: i64,
-    pub index: i64,
+    pub id: i32,
+    pub index: i32,
 }
 impl ValueEnum {
-    pub fn new(id: i64, index: i64) -> Self {
+    pub fn new(id: i32, index: i32) -> Self {
         Self { id, index }
     }
 }
 impl Value for ValueEnum {
     fn get_server_type(&self) -> ServerTypeId {
         ServerTypeId::SEnumItem
+    }
+    fn get_server_shell_type(&self) -> i32 {
+        10000 + self.id // FIXME: use on pin interface (node decl)
     }
     fn get_client_type(&self) -> ClientTypeId {
         ClientTypeId::CEnumItem
@@ -362,7 +368,7 @@ impl Value for ValueEnum {
     }
 
     fn encode_field_value(&self) -> Val {
-        todo!()
+        panic!()
     }
 
     fn is_instance(&self, value: &AnyValue) -> bool {

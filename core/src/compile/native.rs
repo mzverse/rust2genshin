@@ -2,7 +2,7 @@ use super::{Compiler, Result};
 use crate::asset::node_graph::NodeKind;
 use crate::asset::node_graph::arithmetic::{node_cast, node_divide, node_power};
 use crate::asset::node_graph::execution::NODE_LOG;
-use crate::asset::value::{AnyValue, ValueDefault, ValueEntity, ValueGuid, ValueInt, ValueString};
+use crate::asset::value::{AnyValue, ValueDefault, ValueEntity, ValueEnum, ValueGuid, ValueInt, ValueString};
 use crate::compile::{WithTcx, get_expn_macro_attr};
 use rustc_attr_ir::LangItem;
 use rustc_middle::query::QueryKey;
@@ -29,7 +29,14 @@ impl<'tcx> Compiler<'tcx> {
                                     "Entity" => ValueEntity::def(),
                                     _ => return self.span_err(expn, format!("Unknown intrinsic {}", id)).into(),
                                 }).into()
-                            }
+                            },
+                            "native_enum" => {
+                                let id = match syn::parse2::<LitInt>(tokens).and_then(|x| x.base10_parse::<i32>()) {
+                                    Ok(id) => id,
+                                    Err(e) => return self.span_err(expn, e.to_string()).into(),
+                                };
+                                Ok(ValueEnum::new(id, 0).into()).into()
+                            },
                             _ => None,
                         }
                     },
@@ -71,12 +78,8 @@ pub fn compile_native_call(tcx: TyCtxt, span: Span, func: Instance, params: Vec<
                 },
                 ident if ident == "native_calc" || ident == "native_exec" => {
                     let control = ident == "native_exec";
-                    let id = match syn::parse2::<LitInt>(tokens) {
+                    let id = match syn::parse2::<LitInt>(tokens).and_then(|x| x.base10_parse::<i64>()) {
                         Ok(id) => id,
-                        Err(e) => return Err(tcx.dcx().span_err(expn, e.to_string())).into(),
-                    };
-                    let id = match id.base10_parse::<i64>() {
-                        Ok(x) => x,
                         Err(e) => return Err(tcx.dcx().span_err(expn, e.to_string())).into(),
                     };
                     Ok(NodeKind::new(

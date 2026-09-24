@@ -144,6 +144,7 @@ pub fn my_composite() {
 # 不被支持的特性
 
 - `i8`, `i16`：请使用`i32`
+- `#[repr(u32)]`等，请使用`#[repr(i32)]`
 - 递归调用：请改写为循环，或改用`async fn`然后`await`
 - trait object（`dyn`）：虚表开销过大，可能不予支持
 

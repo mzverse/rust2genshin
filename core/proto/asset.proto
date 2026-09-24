@@ -411,7 +411,7 @@ message Flt { float value = 1; }
 
 message Str { string value = 1; }
 
-message Enum { int64 value = 1; }
+message Enum { int32 value = 1; }
 
 message Vec3f {
   message Value {
@@ -638,7 +638,7 @@ message PinInterface {
       MapType  map_type       = 105;
     }
 
-    message EnumId { int64 val = 1; }
+    message EnumId { int32 val = 1; }
     message ListType {
       TypeInfo item_type = 1;
     }
