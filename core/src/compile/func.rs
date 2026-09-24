@@ -151,7 +151,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             },
             Rvalue::Ref(_region, k, place) => match k {
                 BorrowKind::Mut { .. } => if let CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter, .. })) = self.compile_place(*place, span)? {
-                    let result = self.graph.graph.insert(node_ir_assemble(&self.compiler.compile_ty(span, ty)?).into());
+                    let kind = self.compiler.compile_ty(span, ty)?;
+                    let result = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
                     self.graph.graph.set_value_in(Connection(result, 0), ValueIn::link(setter));
                     self.graph.graph.set_value_in(Connection(result, 1), ValueIn::link(getter));
                     ValueIn::link(Connection(result, 0).into())
@@ -185,7 +186,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             }
             Rvalue::Aggregate(kind, fields) if !matches!(**kind, AggregateKind::Array(..)) => {
-                let node = self.graph.graph.insert(node_ir_assemble(&self.compiler.compile_ty(span, ty)?).into());
+                let kind = self.compiler.compile_ty(span, ty)?;
+                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
                 for (i, x) in fields.iter().enumerate() {
                     let v = self.compile_operand(x, span)?;
                     self.graph.graph.set_value_in(Connection(node, i), v);
@@ -208,7 +210,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Operand::Copy(p) |
             Operand::Move(p) => {
                 let src_kind = self.compiler.compile_ty(span, self.mono(p.ty(&self.body.local_decls, self.tcx).ty))?;
-                self.compile_place(*p, span)?.getter(&mut self.graph.graph, &src_kind)
+                self.compile_place(*p, span)?.getter(self.compiler, &mut self.graph.graph, &src_kind)
             }
 
             Operand::Constant(co) => {
@@ -253,7 +255,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         }
                     },
                     TyKind::Tuple(ele) => {
-                        assert!(ele.is_empty());
+                        if !ele.is_empty() {
+                            todo!();
+                        }
                         return Ok(ValueIn::default());
                     },
                     TyKind::Slice(_) |
@@ -440,10 +444,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         };
         let node = self.graph.graph.insert(Node::new(node_kind.clone()));
         let args = args.iter().map(|&Spanned { node: ref a, span }| self.compile_operand(a, span)).collect::<Result<Vec<_>>>()?.into_iter().enumerate()
-            .flat_map(|(i, x)| decl.params[i].destructure_all(&mut self.graph.graph, &params[i], x)).collect::<Vec<_>>();
+            .flat_map(|(i, x)| decl.params[i].destructure_all(self.compiler, &mut self.graph.graph, &params[i], x)).collect::<Vec<_>>();
         let mut block = Self::compile_call0(&mut self.graph.graph, node, &decl, &args);
         if let Some(ret) = ret {
-            let value = decl.ret.assemble_all(&mut self.graph.graph, &ret, &mut decl.proxies_out.iter().enumerate().map(
+            let value = decl.ret.assemble_all(self.compiler, &mut self.graph.graph, &ret, &mut decl.proxies_out.iter().enumerate().map(
                 |(i, j)| match j {
                     Some(Either::Left(j)) => args[*j].clone(),
                     Some(Either::Right(j)) => ValueIn::value(j.clone()),

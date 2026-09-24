@@ -39,6 +39,9 @@ pub struct StructField {
 }
 
 impl StructField {
+    pub fn new(name: String, value: AnyValue) -> Self {
+        Self { name, value }
+    }
     /// 字段 → proto `VarDef`(对齐真实导出的 wire 格式):
     ///   typedef1 = { type, subType {} }(空 subType,无 val)
     ///   typedef3 = { type, subType { type, xxxx_id {} }, val }

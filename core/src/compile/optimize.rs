@@ -6,13 +6,13 @@ use crate::asset::node_graph::execution::node_set_local;
 use crate::asset::node_graph::hidden::node_on_native_custom_value_change;
 use crate::asset::node_graph::query::node_local;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, NodeId, NodeKind, NodeRef, PinType, ValueIn};
-use crate::asset::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct, ValueStruct};
+use crate::asset::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct, ValueStruct, StructureDefinition, StructField};
 use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault, ValueLocalVarRef};
-use crate::asset::Side;
+use crate::asset::{Asset, Side};
 use crate::compile::Compiler;
 use crate::compile::func::FnDecl;
 use either::Either;
-use rustc_middle::ty::Ty;
+use rustc_middle::ty::{Ty, TyKind, TypingEnv};
 use rustc_span::DUMMY_SP;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tap::Tap;
@@ -26,10 +26,10 @@ pub struct Optimizer<'a> {
 pub struct ValueIrNever;
 impl Value for ValueIrNever {
     fn get_server_type(&self) -> ServerTypeId {
-        panic!()
+        ServerTypeId::ServerUnknown
     }
     fn get_client_type(&self) -> ClientTypeId {
-        panic!()
+        ClientTypeId::ClientUnknown
     }
     fn encode_storage(&self, _side: Side) -> Option<Storage> {
         panic!()
@@ -39,14 +39,38 @@ impl Value for ValueIrNever {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ValueIrAdt(pub String);
+impl Value for ValueIrAdt {
+    fn get_server_type(&self) -> ServerTypeId {
+        ServerTypeId::ServerUnknown
+    }
+    fn get_client_type(&self) -> ClientTypeId {
+        ClientTypeId::ClientUnknown
+    }
+    fn encode_storage(&self, _side: Side) -> Option<Storage> {
+        panic!()
+    }
+    fn encode_field_value(&self) -> Val {
+        panic!()
+    }
+    fn is_instance(&self, value: &AnyValue) -> bool {
+        if let Ok(value) = value.downcast_ref::<ValueIrAdt>() {
+            self.0 == value.0
+        } else {
+            value.is::<ValueStruct>() // lowered
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ValueIrMut(pub AnyValue);
 impl Value for ValueIrMut {
     fn get_server_type(&self) -> ServerTypeId {
-        panic!()
+        ServerTypeId::ServerUnknown
     }
     fn get_client_type(&self) -> ClientTypeId {
-        panic!()
+        ClientTypeId::ClientUnknown
     }
     fn encode_storage(&self, _side: Side) -> Option<Storage> {
         panic!()
@@ -79,27 +103,60 @@ pub fn node_ir_set_local<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue, t
     NodeKind::full(NodeId::SetLocal, 0, 1, 1, vec![ir_local_ref(compiler, kind, ty).into(), kind.clone().into()], vec![])
 }
 
-pub fn node_ir_assemble(kind: &AnyValue) -> NodeKind {
+pub fn struct_fields<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue) -> Vec<StructField> {
     if let Ok(kind) = kind.downcast_ref::<ValueIrMut>() {
-        NodeKind::full(NodeId::Assemble, 0, 0, 0, vec![ValueLocalVarRef::def().into(), kind.0.clone().into()], vec![kind.clone().into()])
+        vec![StructField::new(0.to_string(), ValueLocalVarRef::def()), StructField::new(1.to_string(), kind.0.clone())]
+    } else if let Ok(kind) = kind.downcast_ref::<ValueIrAdt>() {
+        match compiler.interned_adts.get(&kind.0).unwrap().kind() {
+            TyKind::Adt(d, a) => {
+                if !d.is_struct() {
+                    todo!();
+                }
+                return d.non_enum_variant().fields.iter().map(|x| StructField::new(x.name.to_string(), compiler.compile_ty(DUMMY_SP, compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(compiler.tcx, a))).unwrap())).collect();
+            }
+            TyKind::Closure(_d, a) => a.as_closure().upvar_tys(),
+            TyKind::Tuple(es) => es,
+            other => panic!("{other:?}"),
+        }.iter().enumerate().map(|(i, x)| StructField::new(i.to_string(), compiler.compile_ty(DUMMY_SP, x).unwrap())).collect()
     } else {
-        node_assemble_struct(&kind.downcast_ref::<ValueStruct>().unwrap().st).tap_mut(|x| x.id = NodeId::Assemble)
+        panic!();
     }
 }
 
-pub fn node_ir_destructure(kind: &AnyValue) -> NodeKind {
-    if let Ok(kind) = kind.downcast_ref::<ValueIrMut>() {
-        NodeKind::full(NodeId::Destructure, 0, 0, 0, vec![Some(kind.clone().into())], vec![ValueLocalVarRef::def(), kind.0.clone()])
-    } else {
-        node_destructure_struct(&kind.downcast_ref::<ValueStruct>().unwrap().st).tap_mut(|x| x.id = NodeId::Destructure)
-    }
+pub fn node_ir_assemble<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue) -> NodeKind {
+    NodeKind::full(NodeId::Assemble, 0, 0, 0, struct_fields(compiler, kind).into_iter().map(|StructField { value, .. }| Some(value)).collect(), vec![kind.clone()])
+}
+
+pub fn node_ir_destructure<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue) -> NodeKind {
+    NodeKind::full(NodeId::Destructure, 0, 0, 0, vec![kind.clone().into()], struct_fields(compiler, kind).into_iter().map(|StructField { value, .. }| value).collect())
 }
 
 impl<'a> Optimizer<'a> {
     #![allow(clippy::result_large_err)]
 
-    pub fn lower(&mut self) {
+    pub fn touch_adt(compiler: &mut Compiler, kind: &AnyValue) -> ValueStruct {
+        let name = kind.downcast_ref::<ValueIrAdt>().unwrap().0.to_string();
+        if let Some(r) = compiler.compiled_adts.get(&name) {
+            return ValueStruct::new(r.clone());
+        }
+        let id = StructureDefinition {
+            name: name.clone(),
+            version: 1,
+            fields: struct_fields(compiler, kind),
+        }.apply(&mut compiler.assets);
+        compiler.compiled_adts.insert(name, id.clone());
+        ValueStruct::new(id)
+    }
+
+    pub fn lower(&mut self, compiler: &mut Compiler) {
         self.optimize();
+        for x in self.graph.graph.nodes.iter_mut().map(|(_, x)| &mut x.kind).flat_map(|x|
+            x.values_in_types.iter_mut().flatten().chain(x.values_out_types.iter_mut())
+        ) {
+            if let Ok(_) = x.downcast_ref::<ValueIrAdt>() {
+                *x = Self::touch_adt(compiler, x).into();
+            }
+        }
         for x in self.graph.graph.get_nodes() {
             let kind = &mut self.graph.graph.get_node_mut(x).kind;
             *kind = match kind.id {

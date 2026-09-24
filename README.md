@@ -42,8 +42,7 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
     ```shell
     cargo run -p build-demo
     ```
-    > [!WARNING]
-    > 若改了`demo`的模块名，需同时修改`build-demo`的代码
+    若改了`demo`的模块名，需同时修改`build-demo`的代码
 6. 构建结果是`target/rust2genshin_demo.gia`
 
 ## Code
@@ -52,7 +51,7 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 
 在`pub fn`上添加属性`#[event_listener]`
 
-且唯一参数的是`event`，例如
+且唯一参数是`event`，例如
 
 ```rust
 #[event_listener]

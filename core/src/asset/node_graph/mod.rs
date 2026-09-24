@@ -325,7 +325,8 @@ impl NodeGraph {
         }
         let (from_node, to_node) = self.nodes.get2_mut(from.node().into(), to.node().into()).unwrap();
         if let Some(kind) = &to_node.kind.values_in_types[to.pin()] {
-            assert!(kind.is_instance(&from_node.kind.values_out_types[from.pin()]), "Type error: {:?} and {:?}", from_node.kind.values_out_types[from.pin()], kind);
+            let kind1 = &from_node.kind.values_out_types[from.pin()];
+            assert!(kind.is_instance(kind1) || kind1.is_instance(kind), "Type error: {:?} and {:?}", kind1, kind);
         }
         from_node.values_out[from.pin()].push(to.into());
         to_node.values_in[to.pin()].link = Some(from.into());

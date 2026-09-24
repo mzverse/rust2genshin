@@ -1,18 +1,14 @@
-use crate::asset::structure::{StructField, StructureDefinition, ValueStruct};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
-use crate::asset::{Asset, AssetRef};
-use crate::compile::optimize::ValueIrMut;
+use crate::compile::optimize::{ValueIrAdt, ValueIrMut};
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
-use rustc_middle::infer::canonical::ir::{GenericArgKind, Unnormalized};
+use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::print::with_no_trimmed_paths;
-use rustc_middle::ty::{AdtDef, Const, GenericArg, GenericArgsRef, Instance, List, Ty, TyKind, TypeVisitableExt, TypingEnv};
+use rustc_middle::ty::{Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt};
 use rustc_span::Span;
 use rustc_span::def_id::DefId;
-
-pub type AdtKey = String;
 
 impl<'tcx> Compiler<'tcx> {
     fn mangle_ty(ty: Ty) -> String {
@@ -49,7 +45,7 @@ impl<'tcx> Compiler<'tcx> {
         c.to_string()
     }
 
-    fn mangle_tuple(tys: &[Ty]) -> AdtKey {
+    fn mangle_tuple(tys: &[Ty]) -> String {
         format!("({})", tys.iter().copied().map(Self::mangle_ty).collect::<Vec<_>>().join(","))
     }
 
@@ -67,7 +63,7 @@ impl<'tcx> Compiler<'tcx> {
         }
     }
 
-    fn mangle_adt(def: DefId, s: GenericArgsRef) -> AdtKey {
+    fn mangle_adt(def: DefId, s: GenericArgsRef) -> String {
         let result = Self::mangle_def(def);
         let s = s.iter().map(GenericArg::kind).filter(|x| !matches!(x, GenericArgKind::Lifetime(..))).collect::<Vec<_>>();
         if s.is_empty() {
@@ -79,67 +75,6 @@ impl<'tcx> Compiler<'tcx> {
                 _ => unreachable!(),
             }).collect::<Vec<_>>().join(","))
         }
-    }
-
-    fn touch_adt(&mut self, def: AdtDef<'tcx>, g: GenericArgsRef<'tcx>, span: Span) -> Result<&AssetRef<StructureDefinition>> {
-        if !def.is_struct() {
-            todo!();
-        }
-        let key = Self::mangle_adt(def.did(), g);
-        if let Some(id) = self.structs.get(&key) {
-            return Ok(id);
-        }
-        let id = StructureDefinition {
-            name: key.clone(),
-            version: 1,
-            fields: def.non_enum_variant().fields.iter().map(|f| Ok(StructField {
-                name: f.name.to_string(),
-                value: self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, g)))?,
-            })).collect::<Result<_>>()?,
-        }.apply(&mut self.assets);
-        Ok(self.structs.entry(key).or_insert(id))
-    }
-
-    fn touch_closure(&mut self, def: DefId, g: GenericArgsRef<'tcx>, span: Span) -> Result<&AssetRef<StructureDefinition>> {
-        let key = Self::mangle_adt(def, g);
-        if let Some(id) = self.structs.get(&key) {
-            return Ok(id);
-        }
-        let id = StructureDefinition {
-            name: key.clone(),
-            version: 1,
-            fields: g.as_closure().upvar_tys().iter().enumerate().map(|(i, t)| Ok(StructField {
-                name: i.to_string(),
-                value: self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), Unnormalized::new(t)))?,
-            })).collect::<Result<_>>()?,
-        }.apply(&mut self.assets);
-        Ok(self.structs.entry(key).or_insert(id))
-    }
-
-    fn touch_tuple(&mut self, span: Span, tys: &List<Ty<'tcx>>) -> Result<&AssetRef<StructureDefinition>> {
-        let key = Self::mangle_tuple(tys);
-        if let Some(id) = self.structs.get(&key) {
-            return Ok(id);
-        }
-        // Build the StructureDefinition and insert it as an asset.
-        use crate::asset::structure::{StructField, StructureDefinition};
-        // Resolve element types first (recursively interns nested tuples).
-        let elem_kinds: Vec<AnyValue> = tys.iter()
-            .map(|t| self.compile_ty(span, t))
-            .collect::<Result<_>>()?;
-        let fields: Vec<StructField> = elem_kinds.iter().enumerate()
-            .map(|(i, k)| StructField {
-                name: format!("{i}"),
-                value: k.clone(),
-            })
-            .collect();
-        let def = StructureDefinition {
-            name: key.clone(),
-            version: 1,
-            fields,
-        };
-        let id = def.apply(&mut self.assets);
-        Ok(self.structs.entry(key).or_insert(id))
     }
 
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<AnyValue> {
@@ -178,15 +113,19 @@ impl<'tcx> Compiler<'tcx> {
                     }
                 }
             },
-            TyKind::Adt(d, a) => ValueStruct::new(self.touch_adt(*d, a, span)?.clone()).into(),
+            TyKind::Adt(..) |
+            TyKind::Tuple(..) |
+            TyKind::Closure(..) => {
+                let key = Self::mangle_ty(ty);
+                self.interned_adts.insert(key.clone(), ty);
+                ValueIrAdt(key).into()
+            },
             TyKind::Foreign(_) => todo!(),
             TyKind::Array(_, _) => todo!(),
             TyKind::Pat(_, _) => todo!(),
             TyKind::Slice(_) => todo!(),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
-            TyKind::Tuple(tys) => ValueStruct::new(self.touch_tuple(span, tys)?.clone()).into(),
-            TyKind::Closure(d, a) => ValueStruct::new(self.touch_closure(*d, a, span)?.clone()).into(),
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
             | TyKind::CoroutineClosure(_, _)

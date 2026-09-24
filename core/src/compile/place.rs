@@ -1,10 +1,9 @@
 use super::{Result, get_expn_macro_attr};
-use crate::asset::Side;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, Link, Node, NodeGraph, NodeRef, ValueIn};
-use crate::asset::structure::{ValueStruct, node_modify_struct};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueLocalVarRef};
+use crate::asset::structure::{StructField, node_modify_struct};
+use crate::asset::value::{AnyValue, ValueBool};
 use crate::compile::func::CompilingFn;
-use crate::compile::optimize::{ValueIrMut, node_ir_assemble, node_ir_destructure, node_ir_local, node_ir_set_local};
+use crate::compile::optimize::{node_ir_assemble, node_ir_destructure, node_ir_local, node_ir_set_local, struct_fields};
 use crate::compile::{Block, Compiler};
 use rustc_abi::FieldIdx;
 use rustc_ast::Mutability;
@@ -13,7 +12,6 @@ use rustc_middle::mir::{Place, PlaceTy};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Ty, TyKind, TypingEnv};
 use rustc_span::Span;
-use std::borrow::Cow;
 use tap::Tap;
 
 #[derive(Clone, Debug)]
@@ -102,9 +100,9 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
             _ => {
                 let kind = self.compiler.compile_ty(span, ty)?;
                 let local = self.graph.graph.insert(Node::new(node_ir_local(self.compiler, &kind, ty)));
-                if kind.encode_storage(Side::Server).is_some() {
-                    self.graph.graph.set_default(Connection(local, 0), kind.clone());
-                }
+                // if kind.encode_storage(Side::Server).is_some() {
+                //     self.graph.graph.set_default(Connection(local, 0), kind.clone());
+                // }
                 let r = CompiledLocal::Singleton(LocalRef::node(ty, local).tap(|l| {
                     match k {
                         LocalKind::Ret => {
@@ -114,7 +112,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                         }
                         LocalKind::Arg => {
                             self.graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InValue).unwrap().push(name);
-                            let block = l.setter(&mut self.compiler, &mut self.graph.graph, &kind, ValueIn::link(Link::Export(self.params)));
+                            let block = l.setter(self.compiler, &mut self.graph.graph, &kind, ValueIn::link(Link::Export(self.params)));
                             self.block.extend(&mut self.graph.graph, block);
                             self.params += 1;
                         }
@@ -127,77 +125,73 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
     }
 }
 
-pub trait LocalAssembleCtx<T> {
+pub trait LocalAssembleCtx<'tcx, T> {
     fn leaf(&mut self, content: &T) -> ValueIn;
-    fn dfs(&mut self, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn;
+    fn dfs(&mut self, compiler: &mut Compiler, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn;
 }
 
-pub trait LocalDestructureCtx<T> {
-    fn leaf(&mut self, graph: &mut NodeGraph, kind: &AnyValue, content: &T, value: ValueIn);
-    fn dfs(&mut self, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn);
+pub trait LocalDestructureCtx<'tcx, T> {
+    fn leaf(&mut self, compiler: &mut Compiler<'tcx>, graph: &mut NodeGraph, kind: &AnyValue, content: &T, value: ValueIn);
+    fn dfs(&mut self, compiler: &mut Compiler<'tcx>, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn);
 }
 
 impl<T> CompiledLocal<T> {
-    fn get_fields(kind: &AnyValue) -> Cow<'_, [AnyValue]> {
-        if let Ok(kind) = kind.downcast_ref::<ValueIrMut>() {
-            Cow::Owned(vec![ValueLocalVarRef::def(), kind.0.clone()])
-        } else {
-            Cow::Borrowed(&kind.downcast_ref::<ValueStruct>().unwrap().fields)
-        }
+    fn get_fields(compiler: &mut Compiler, kind: &AnyValue) -> Vec<AnyValue> {
+        struct_fields(compiler, kind).into_iter().map(|StructField { value, .. }| value).collect()
     }
 
-    pub fn assemble(&self, graph: &mut NodeGraph, kind: &AnyValue, ctx: &mut impl LocalAssembleCtx<T>) -> ValueIn {
+    pub fn assemble<'tcx>(&self, compiler: &mut Compiler, graph: &mut NodeGraph, kind: &AnyValue, ctx: &mut impl LocalAssembleCtx<'tcx, T>) -> ValueIn {
         match self {
             CompiledLocal::Singleton(v) => ctx.leaf(v),
             CompiledLocal::Flat(elements) => {
-                let node_ref = graph.insert(node_ir_assemble(kind).into());
-                let fields = Self::get_fields(kind);
+                let node_ref = graph.insert(node_ir_assemble(compiler, kind).into());
+                let fields = Self::get_fields(compiler, kind);
                 for (i, x) in elements.iter().enumerate() {
-                    let v = ctx.dfs(x, graph, &fields[i]);
+                    let v = ctx.dfs(compiler, x, graph, &fields[i]);
                     graph.set_value_in(Connection(node_ref, i), v);
                 }
                 ValueIn::link(Connection(node_ref, 0).into())
             }
         }
     }
-    pub fn assemble_all<I: Iterator<Item = ValueIn>>(&self, graph: &mut NodeGraph, kind: &AnyValue, values: &mut I) -> ValueIn {
+    pub fn assemble_all<I: Iterator<Item = ValueIn>>(&self, compiler: &mut Compiler, graph: &mut NodeGraph, kind: &AnyValue, values: &mut I) -> ValueIn {
         struct Ctx<'a, I: Iterator<Item = ValueIn>>(&'a mut I);
-        impl<T, I: Iterator<Item = ValueIn>> LocalAssembleCtx<T> for Ctx<'_, I> {
+        impl<'tcx, T, I: Iterator<Item = ValueIn>> LocalAssembleCtx<'tcx, T> for Ctx<'_, I> {
             fn leaf(&mut self, _content: &T) -> ValueIn {
                 self.0.next().unwrap()
             }
-            fn dfs(&mut self, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
-                local.assemble_all(graph, kind, self.0)
+            fn dfs(&mut self, compiler: &mut Compiler, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
+                local.assemble_all(compiler, graph, kind, self.0)
             }
         }
-        self.assemble(graph, kind, &mut Ctx(values))
+        self.assemble(compiler, graph, kind, &mut Ctx(values))
     }
 
-    pub fn destructure(&self, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn, ctx: &mut impl LocalDestructureCtx<T>) {
+    pub fn destructure<'tcx>(&self, compiler: &mut Compiler<'tcx>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn, ctx: &mut impl LocalDestructureCtx<'tcx, T>) {
         match self {
-            CompiledLocal::Singleton(v) => ctx.leaf(graph, kind, v, value),
+            CompiledLocal::Singleton(v) => ctx.leaf(compiler, graph, kind, v, value),
             CompiledLocal::Flat(elements) => {
-                let node_ref = graph.insert(node_ir_destructure(kind).into());
-                let fields = Self::get_fields(kind);
+                let node_ref = graph.insert(node_ir_destructure(compiler, kind).into());
+                let fields = Self::get_fields(compiler, kind);
                 graph.set_value_in(Connection(node_ref, 0), value);
                 for (i, field) in elements.iter().enumerate() {
-                    ctx.dfs(field, graph, &fields[i], ValueIn::link(Connection(node_ref, i).into()));
+                    ctx.dfs(compiler, field, graph, &fields[i], ValueIn::link(Connection(node_ref, i).into()));
                 }
             }
         }
     }
-    pub fn destructure_all(&self, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) -> Vec<ValueIn> {
+    pub fn destructure_all(&self, compiler: &mut Compiler, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) -> Vec<ValueIn> {
         struct Ctx(Vec<ValueIn>);
-        impl<T> LocalDestructureCtx<T> for Ctx {
-            fn leaf(&mut self, _graph: &mut NodeGraph, _kind: &AnyValue, _content: &T, value: ValueIn) {
+        impl<T> LocalDestructureCtx<'_, T> for Ctx {
+            fn leaf(&mut self, _compiler: &mut Compiler, _graph: &mut NodeGraph, _kind: &AnyValue, _content: &T, value: ValueIn) {
                 self.0.push(value);
             }
-            fn dfs(&mut self, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) {
-                self.0.extend(local.destructure_all(graph, kind, value));
+            fn dfs(&mut self, compiler: &mut Compiler, local: &CompiledLocal<T>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) {
+                self.0.extend(local.destructure_all(compiler, graph, kind, value));
             }
         }
         let mut result = Ctx(vec![]);
-        self.destructure(graph, kind, value, &mut result);
+        self.destructure(compiler, graph, kind, value, &mut result);
         result.0
     }
 }
@@ -213,23 +207,23 @@ impl<'tcx> LocalRef<'tcx> {
 }
 
 impl<'tcx> CompiledPlace<'tcx> {
-    pub fn getter(&self, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
+    pub fn getter(&self, compiler: &mut Compiler, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
         match self {
             CompiledPlace::Local(local) => {
                 struct Ctx;
-                impl<'tcx> LocalAssembleCtx<LocalRef<'tcx>> for Ctx {
+                impl<'tcx> LocalAssembleCtx<'tcx, LocalRef<'tcx>> for Ctx {
                     fn leaf(&mut self, content: &LocalRef<'tcx>) -> ValueIn {
                         ValueIn::link(content.getter)
                     }
-                    fn dfs(&mut self, local: &CompiledLocal<LocalRef<'tcx>>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
-                        local.assemble(graph, kind, self)
+                    fn dfs(&mut self, compiler: &mut Compiler, local: &CompiledLocal<LocalRef<'tcx>>, graph: &mut NodeGraph, kind: &AnyValue) -> ValueIn {
+                        local.assemble(compiler, graph, kind, self)
                     }
                 }
-                Ctx.dfs(local, graph, kind)
+                Ctx.dfs(compiler, local, graph, kind)
             },
             CompiledPlace::Field(owner, owner_kind, ele) => {
-                let node = graph.insert(node_ir_destructure(owner_kind).into());
-                let v = owner.getter(graph, owner_kind);
+                let node = graph.insert(node_ir_destructure(compiler, owner_kind).into());
+                let v = owner.getter(compiler, graph, owner_kind);
                 graph.set_value_in(Connection(node, 0), v);
                 ValueIn::link(Connection(node, ele.index()).into())
             },
@@ -239,22 +233,22 @@ impl<'tcx> CompiledPlace<'tcx> {
     pub fn setter(&self, compiler: &mut Compiler<'tcx>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) -> Block {
         match self {
             CompiledPlace::Local(local) => {
-                struct Ctx<'a, 'tcx>(&'a mut Compiler<'tcx>, Block);
-                impl<'tcx> LocalDestructureCtx<LocalRef<'tcx>> for Ctx<'_, 'tcx> {
-                    fn leaf(&mut self, graph: &mut NodeGraph, kind: &AnyValue, content: &LocalRef<'tcx>, value: ValueIn) {
-                        let block = content.setter(self.0, graph, kind, value);
-                        self.1.extend(graph, block)
+                struct Ctx(Block);
+                impl<'tcx> LocalDestructureCtx<'tcx, LocalRef<'tcx>> for Ctx {
+                    fn leaf(&mut self, compiler: &mut Compiler<'tcx>, graph: &mut NodeGraph, kind: &AnyValue, content: &LocalRef<'tcx>, value: ValueIn) {
+                        let block = content.setter(compiler, graph, kind, value);
+                        self.0.extend(graph, block)
                     }
 
-                    fn dfs(&mut self, local: &CompiledLocal<LocalRef<'tcx>>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) {
-                        local.destructure(graph, kind, value, self)
+                    fn dfs(&mut self, compiler: &mut Compiler<'tcx>, local: &CompiledLocal<LocalRef<'tcx>>, graph: &mut NodeGraph, kind: &AnyValue, value: ValueIn) {
+                        local.destructure(compiler, graph, kind, value, self)
                     }
                 }
-                Ctx(compiler, Block::nop(graph)).tap_mut(|result| result.dfs(local, graph, kind, value)).1
+                Ctx(Block::nop(graph)).tap_mut(|result| result.dfs(compiler, local, graph, kind, value)).0
             },
             CompiledPlace::Field(owner, owner_kind, ele) => {
                 let node = graph.insert(node_modify_struct(owner_kind.downcast_ref().unwrap()).into());
-                let v = owner.getter(graph, owner_kind);
+                let v = owner.getter(compiler, graph, owner_kind);
                 graph.set_value_in(Connection(node, 0), v);
                 graph.set_value_in(Connection(node, 2 + ele.index() * 2), value);
                 graph.set_value_in(Connection(node, 3 + ele.index() * 2), ValueIn::value(ValueBool(true).into()));
@@ -279,8 +273,8 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                 },
                 Deref => if ty.ty.ref_mutability().unwrap() == Mutability::Mut { // TODO: raw ptr
                     let kind = self.compiler.compile_ty(span, ty.ty)?;
-                    let de = self.graph.graph.insert(node_ir_destructure(&kind).into());
-                    let getter = result.getter(&mut self.graph.graph, &kind);
+                    let de = self.graph.graph.insert(node_ir_destructure(self.compiler, &kind).into());
+                    let getter = result.getter(self.compiler, &mut self.graph.graph, &kind);
                     self.graph.graph.set_value_in(Connection(de, 0), getter);
                     result = CompiledPlace::Local(CompiledLocal::Singleton(LocalRef::node(ty.ty, de)));
                 }, // else nop

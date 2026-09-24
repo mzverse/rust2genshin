@@ -98,8 +98,8 @@ pub fn compile(tcx: TyCtxt<'_>) -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub(crate) begin: Connection,
-    pub(crate) end: Connection,
+    pub begin: Connection,
+    pub end: Connection,
 }
 impl Block {
     pub fn singleton(node: NodeRef, out: usize) -> Self {
@@ -122,7 +122,7 @@ impl Block {
     }
 }
 
-pub(crate) trait WithTcx<'tcx> {
+pub trait WithTcx<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx>;
 
     #[allow(dead_code)]
@@ -163,7 +163,8 @@ pub struct Compiler<'tcx> {
     assets: AssetBundle,
     compiling: HashSet<Instance<'tcx>>,
     compiled: HashMap<Instance<'tcx>, (AssetRef<CompositeNodeGraph>, FnDecl)>,
-    structs: HashMap<String, AssetRef<StructureDefinition>>,
+    pub interned_adts: HashMap<String, Ty<'tcx>>,
+    pub compiled_adts: HashMap<String, AssetRef<StructureDefinition>>,
 }
 impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     fn get_tcx(&self) -> TyCtxt<'tcx> {
@@ -171,7 +172,6 @@ impl<'tcx> WithTcx<'tcx> for Compiler<'tcx> {
     }
 }
 impl<'tcx> Compiler<'tcx> {
-
     fn new(tcx: TyCtxt<'tcx>) -> Result<Self> {
         let mut lib = None;
         for x in tcx.crates(()) {
@@ -186,9 +186,10 @@ impl<'tcx> Compiler<'tcx> {
         Ok(Self {
             tcx, lib,
             assets: AssetBundle::new(crate::asset::GameMode::Overlimit),
-            compiling: HashSet::new(),
-            compiled: HashMap::new(),
-            structs: HashMap::new(),
+            compiling: Default::default(),
+            compiled: Default::default(),
+            interned_adts: Default::default(),
+            compiled_adts: Default::default(),
         })
     }
     fn save(self, out_dir: &Path) {
@@ -375,7 +376,7 @@ impl<'tcx> Compiler<'tcx> {
             graph: &mut graph,
             decl: &mut fn_decl,
         };
-        optimizer.lower();
+        optimizer.lower(self);
         if fn_decl.control {
             graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::InControl).unwrap().push("".into());
             graph.pins.get_mut(&crate::asset::generated::pin_signature::Kind::OutControl).unwrap().push("".into());

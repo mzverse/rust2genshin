@@ -12,19 +12,19 @@ use rust2genshin_lib::entity::Entity;
 use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
 
 
-// #[unsafe(no_mangle)]
-// pub fn test_closure(i: i32) {
-//     #[inline(never)]
-//     fn f<T: FnOnce(&mut i32)>(t: T) {
-//         let mut i = 0;
-//         t(&mut i);
-//         log(i);
-//     }
-//     f(|j| {
-//         *j = 114;
-//         log(i);
-//     });
-// }
+#[unsafe(no_mangle)]
+pub fn test_closure(i: i32) {
+    #[inline(never)]
+    fn f<T: FnOnce(&mut i32)>(t: T) {
+        let mut i = 0;
+        t(&mut i);
+        log(i);
+    }
+    f(|j| {
+        *j = 114;
+        log(i);
+    });
+}
 
 #[event_listener]
 pub fn on_tab_selected(event: TabSelectedEvent) {
