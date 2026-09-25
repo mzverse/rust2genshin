@@ -8,9 +8,10 @@ use crate::compile::native::compile_native_call;
 use crate::compile::optimize::node_ir_assemble;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use either::Either;
-use rustc_abi::{Integer, IntegerType, Size};
+use rustc_abi::{FieldIdx, Integer, IntegerType, Size};
+use rustc_attr_ir::LangItem;
 use rustc_hir::def::DefKind;
-use rustc_index::IndexVec;
+use rustc_index::{Idx, IndexVec};
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
@@ -37,7 +38,7 @@ pub struct FnDecl {
     pub params: Vec<CompiledLocal<()>>,
     pub ret: CompiledLocal<()>,
     pub proxies_in: Vec<usize>,
-    pub proxies_out: Vec<Option<Either<usize, AnyValue>>>,
+    pub proxies_out: Vec<Option<Either<usize, Option<AnyValue>>>>,
 }
 
 impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
@@ -194,19 +195,32 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             }
             Rvalue::Aggregate(kind, fields) if !matches!(**kind, AggregateKind::Array(..)) => {
-                let kind = self.compiler.compile_ty(span, ty)?;
-                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
-                for (i, x) in fields.iter().enumerate() {
-                    let v = self.compile_operand(x, span)?;
-                    self.graph.graph.set_value_in(Connection(node, i), v);
+                match ty.kind() {
+                    TyKind::Adt(d, a) if d.is_enum() => {
+                        if self.compiler.get_default_some(*d, a)?.is_some() {
+                            self.compile_operand(&fields[FieldIdx::new(0)], span)?
+                        } else {
+                            todo!()
+                        }
+                    },
+                    _ => {
+                        let kind = self.compiler.compile_ty(span, ty)?;
+                        let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
+                        for (i, x) in fields.iter().enumerate() {
+                            let v = self.compile_operand(x, span)?;
+                            self.graph.graph.set_value_in(Connection(node, i), v);
+                        }
+                        ValueIn::link(Connection(node, 0).into())
+                    }
                 }
-                ValueIn::link(Connection(node, 0).into())
             },
             Rvalue::Discriminant(from) => {
                 let TyKind::Adt(d, a) = self.place_ty(*from).ty.kind() else { unreachable!() };
                 if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
                     self.compile_operand(&Operand::Copy(*from), span)?
                 } else if let Some(kind) = self.compiler.get_default_some(*d, a)? {
+                    assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val, 0);
+                    assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionSome).unwrap())).val, 1);
                     let node_eq = self.graph.graph.insert(node_equal(kind).into());
                     let v = self.compile_operand(&Operand::Copy(*from), span)?;
                     self.graph.graph.set_value_in(Connection(node_eq, 0), v);
@@ -265,6 +279,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                                 id: *id,
                                 index: v.try_to_scalar_int().unwrap().to_i32(),
                             }.into()
+                        } else if let Some(r) = self.compiler.get_default_some(*d, a)? {
+                            assert_eq!(v.try_to_bits(self.tcx.data_layout.pointer_size()).unwrap(), 0);
+                            return Ok(ValueIn::default());
                         } else {
                             self.tcx.dcx().span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
                             panic!()
@@ -493,7 +510,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             let value = decl.ret.assemble_all(self.compiler, &mut self.graph.graph, &ret, &mut decl.proxies_out.iter().enumerate().map(
                 |(i, j)| match j {
                     Some(Either::Left(j)) => args[*j].clone(),
-                    Some(Either::Right(j)) => ValueIn::value(j.clone()),
+                    Some(Either::Right(j)) => j.clone().map(ValueIn::value).unwrap_or_else(ValueIn::default),
                     None => ValueIn::link(Connection(node, i).into()),
                 }));
             let b = self.compile_assign(destination, span, value)?;

@@ -34,6 +34,11 @@ pub fn test_native_enum(event: CharacterDownEvent) {
     }
 }
 
+#[unsafe(no_mangle)]
+pub fn test_option(entity: Entity) -> Option<Entity> {
+    None
+}
+
 // #[unsafe(no_mangle)]
 // pub fn test_closure(i: i32) {
 //     #[inline(never)]

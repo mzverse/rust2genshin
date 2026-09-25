@@ -574,7 +574,11 @@ impl<'a> Optimizer<'a> {
                     },
                 }
             } else {
-                self.decl.proxies_out[to] = Some(Either::Right(value.default.unwrap()));
+                // TODO: optimize
+                for x in self.graph.graph.nodes.iter_mut().flat_map(|(_, x)| x.values_out.iter_mut()) {
+                    x.retain(|x| *x != Link::Export(to));
+                }
+                self.decl.proxies_out[to] = Some(Either::Right(value.default));
             }
         }
     }
