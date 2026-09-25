@@ -1,6 +1,6 @@
 use rustc_abi::{Integer, IntegerType};
 use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
-use crate::compile::optimize::{ValueIrAdt, ValueIrMut};
+use crate::compile::optimize::{ValueIrAdt, ValueIrMut, ValueIrNever};
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_attr_ir::LangItem;
@@ -15,12 +15,12 @@ use rustc_span::def_id::DefId;
 
 impl<'tcx> Compiler<'tcx> {
     pub fn get_default_some(&mut self, d: AdtDef<'tcx>, a: GenericArgsRef<'tcx>) -> Result<Option<AnyValue>> {
-        let opt = self.tcx.lang_items().get(LangItem::Option).unwrap();
-        if d.did() != opt {
+        let opt = self.tcx.lang_items().get(LangItem::Option);
+        if Some(d.did()) != opt {
             return Ok(None);
         }
         let ele = a.type_at(0);
-        if ele.ty_adt_def().map(AdtDef::did) != Some(opt) {
+        if ele.ty_adt_def().map(AdtDef::did) != opt {
             let ele = self.compile_ty(DUMMY_SP, ele)?;
             if ele.is::<ValueEntity>() {
                 return Ok(Some(ele));
@@ -147,6 +147,7 @@ impl<'tcx> Compiler<'tcx> {
                 self.interned_adts.insert(key.clone(), ty);
                 ValueIrAdt(key).into()
             },
+            TyKind::Never => ValueIrNever::def(),
             TyKind::Foreign(_) => todo!(),
             TyKind::Array(_, _) => todo!(),
             TyKind::Pat(_, _) => todo!(),
@@ -158,7 +159,6 @@ impl<'tcx> Compiler<'tcx> {
             | TyKind::CoroutineClosure(_, _)
             | TyKind::Coroutine(_, _)
             | TyKind::CoroutineWitness(_, _)
-            | TyKind::Never
             | TyKind::Param(_)
             | TyKind::Bound(_, _)
             | TyKind::Placeholder(_)

@@ -56,3 +56,6 @@ impl ToString for Guid {
     #[native("to_string")]
     fn to_string(&self) -> String;
 }
+
+#[native("enum_eq")]
+pub unsafe fn native_enum_eq<T>(a: T, b: T) -> bool;

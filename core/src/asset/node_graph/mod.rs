@@ -83,6 +83,7 @@ pub enum NodeId {
         kind: identifier::AssetKind,
         id: i64,
     },
+    Unreachable,
     Local,
     SetLocal,
     Assemble,

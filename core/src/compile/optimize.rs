@@ -89,6 +89,10 @@ impl Value for ValueIrMut {
     }
 }
 
+pub fn node_ir_unreachable() -> NodeKind {
+    NodeKind::full(NodeId::Unreachable, 0, 1, 0, vec![], vec![])
+}
+
 fn ir_local_ref<'tcx>(compiler: &mut Compiler<'tcx>, kind: &AnyValue, ty: Ty<'tcx>) -> AnyValue {
     if node_local(kind).is_some() {
         ValueLocalVarRef::def()
@@ -162,6 +166,10 @@ impl<'a> Optimizer<'a> {
         for x in self.graph.graph.get_nodes() {
             let kind = &mut self.graph.graph.get_node_mut(x).kind;
             *kind = match kind.id {
+                NodeId::Unreachable => {
+                    self.graph.graph.remove(x);
+                    continue;
+                }
                 NodeId::Low { .. } => continue,
                 NodeId::Local => {
                     if let Ok(kind) = kind.values_out_types[0].downcast_ref::<ValueStruct>() {

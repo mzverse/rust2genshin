@@ -9,7 +9,7 @@ use rust2genshin_lib::math::*;
 
 use core::f32::consts::PI;
 use rust2genshin_lib::entity::Entity;
-use rust2genshin_lib::event::character::CharacterDownEvent;
+use rust2genshin_lib::event::character::{CharacterDownEvent, DownCause};
 use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
 
 #[unsafe(no_mangle)]
@@ -29,14 +29,14 @@ pub fn test_enum() {
 
 #[event_listener]
 pub fn test_native_enum(event: CharacterDownEvent) {
+    if event.cause != DownCause::Normal {
+        return;
+    }
     if let Some(e) = event.source {
         log(e);
+    } else {
+        unreachable!()
     }
-}
-
-#[unsafe(no_mangle)]
-pub fn test_option(entity: Entity) -> Option<Entity> {
-    None
 }
 
 // #[unsafe(no_mangle)]

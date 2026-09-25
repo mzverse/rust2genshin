@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use proc_macro::{Span, TokenStream};
 use quote::quote;
-use syn::{Block, ForeignItemFn, ItemFn, parse_macro_input};
+use syn::{parse_macro_input, Block, ForeignItemFn, ItemEnum, ItemFn};
 
 #[proc_macro_attribute]
 pub fn native(_args: TokenStream, input: TokenStream) -> TokenStream {
@@ -42,10 +42,21 @@ pub fn native_exec(args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn native_enum(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let item = proc_macro2::TokenStream::from(tag(input));
+    let input = tag(input);
+    let item = parse_macro_input!(input as ItemEnum);
+    let ident = item.ident.clone();
     quote! {
         #[repr(i32)]
+        #[derive(Clone, Copy, Eq)]
         #item
+        impl ::core::cmp::PartialEq for #ident {
+            #[inline(always)]
+            fn eq(&self, other: &Self) -> bool {
+                unsafe {
+                    crate::native_enum_eq(*self, *other)
+                }
+            }
+        }
     }.into()
 }
 

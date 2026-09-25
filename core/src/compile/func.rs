@@ -5,7 +5,7 @@ use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
 use crate::asset::value::{AnyValue, ValueBool, ValueEnum, ValueFloat, ValueInt, ValueIntList, ValueString};
 use crate::compile::native::compile_native_call;
-use crate::compile::optimize::node_ir_assemble;
+use crate::compile::optimize::{node_ir_assemble, node_ir_unreachable};
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use either::Either;
 use rustc_abi::{FieldIdx, Integer, IntegerType, Size};
@@ -280,8 +280,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                                 index: v.try_to_scalar_int().unwrap().to_i32(),
                             }.into()
                         } else if let Some(r) = self.compiler.get_default_some(*d, a)? {
-                            assert_eq!(v.try_to_bits(self.tcx.data_layout.pointer_size()).unwrap(), 0);
-                            return Ok(ValueIn::default());
+                            assert_eq!(v.try_to_bits(self.tcx.data_layout.pointer_size()).unwrap(), d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val);
+                            return Ok(ValueIn::value(r));
                         } else {
                             self.tcx.dcx().span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
                             panic!()
@@ -351,7 +351,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         &mut self,
         blocks: &IndexVec<BasicBlock, Block>,
         terminator: &Terminator<'tcx>,
-    ) -> Result<Option<Connection>> {
+    ) -> Result<Connection> {
         Ok(match &terminator.kind {
             TerminatorKind::Return => Block::nop(&mut self.graph.graph).pipe(|block| {
                 self.graph.graph.export_control_out(block.end, 0);
@@ -387,7 +387,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     node
                 } else {
                     if targets.all_targets().len() > 10 { // limited by Genshin Impact
-                        return self.span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
+                        self.get_tcx().dcx().span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
+                        todo!();
                     }
                     let node = self.graph.graph.insert(Node::new(node_switch(ValueInt::def(), targets.all_values().len())));
                     self.graph.graph.set_default(Connection(node, 1), ValueIntList(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32()).collect()).into());
@@ -401,13 +402,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.graph.graph.set_value_in(Connection(node, 0), value);
                 Connection(node, 0)
             },
-            TerminatorKind::Unreachable => return Ok(None), // TODO
+            TerminatorKind::Unreachable => Connection(self.graph.graph.insert(node_ir_unreachable().into()), 0), // TODO
             TerminatorKind::Drop { .. } => todo!(),
             other => return self.span_err(
                 terminator.source_info.span,
                 format!("Unsupported terminator: {}", other.name()),
             ),
-        }.into())
+        })
     }
 
     fn find_fn(&self, operand: &Operand<'tcx>) -> Result<Instance<'tcx>> {

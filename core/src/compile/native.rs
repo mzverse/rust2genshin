@@ -1,6 +1,6 @@
 use super::{Compiler, Result};
 use crate::asset::node_graph::NodeKind;
-use crate::asset::node_graph::arithmetic::{node_cast, node_divide, node_power};
+use crate::asset::node_graph::arithmetic::{node_cast, node_divide, node_enum_equal, node_power};
 use crate::asset::node_graph::execution::NODE_LOG;
 use crate::asset::value::{AnyValue, ValueDefault, ValueEntity, ValueEnum, ValueGuid, ValueInt, ValueString};
 use crate::compile::{WithTcx, get_expn_macro_attr};
@@ -50,7 +50,7 @@ impl<'tcx> Compiler<'tcx> {
 
 pub fn compile_native_call(tcx: TyCtxt, span: Span, func: Instance, params: Vec<AnyValue>, ret: Option<AnyValue>) -> Option<Result<NodeKind>> {
     if Some(func.def_id()) == tcx.lang_items().get(LangItem::Panic) {
-        tcx.dcx().span_warn(span, "Ignored panic");
+        tcx.dcx().span_note(span, "Ignored panic");
         return Ok(NODE_LOG.clone()).into();
     }
     if let InstanceKind::Intrinsic(def_id) = func.def {
@@ -69,12 +69,13 @@ pub fn compile_native_call(tcx: TyCtxt, span: Span, func: Instance, params: Vec<
                         Ok(id) => id.value(),
                         Err(e) => return Err(tcx.dcx().span_err(expn, e.to_string())).into(),
                     };
-                    match id.as_str() {
-                        "divide" => Ok(node_divide(ValueInt::def())).into(),
-                        "power" => Ok(node_power(params[0].clone())).into(),
-                        "to_string" => Ok(node_cast(params[0].clone(), ValueString::def()).unwrap()).into(),
-                        _ => Err(tcx.dcx().span_err(expn, format!("Unknown intrinsic {}", id))).into(),
-                    }
+                    Ok(match id.as_str() {
+                        "divide" => node_divide(ValueInt::def()),
+                        "power" => node_power(params[0].clone()),
+                        "to_string" => node_cast(params[0].clone(), ValueString::def()).unwrap(),
+                        "enum_eq" => node_enum_equal(params[0].downcast_ref().unwrap()),
+                        _ => return Err(tcx.dcx().span_err(expn, format!("Unknown intrinsic {}", id))).into(),
+                    }).into()
                 },
                 ident if ident == "native_calc" || ident == "native_exec" => {
                     let control = ident == "native_exec";

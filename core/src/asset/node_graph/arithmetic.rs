@@ -7,10 +7,7 @@
 
 use crate::asset::generated::ServerTypeId;
 use crate::asset::node_graph::NodeKind;
-use crate::asset::value::{
-    AnyValue, ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum, ValueFloat,
-    ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueVec3,
-};
+use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueDefault, ValueDict, ValueEntity, ValueEnum, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString, ValueVec3};
 use std::sync::LazyLock;
 
 // ========================================================================
@@ -405,9 +402,20 @@ pub fn node_equal(ty: AnyValue) -> NodeKind {
 }
 
 /// 枚举相等(ID 475)
-pub static NODE_ENUM_EQUAL: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(475, vec![ValueEnum::def(), ValueEnum::def()], ValueBool::def())
-});
+pub fn node_enum_equal(kind: &ValueEnum) -> NodeKind {
+    let mut result = NodeKind::expr(475, vec![kind.clone().into(), kind.clone().into()], ValueBool::def());
+    let (selected, kernel) = match kind.id {
+        id @ 2..31 => (id - 1, id as i64 + 474),
+        id @ 31..40 => (id - 1, id as i64 + 3320),
+        id @ 42..44 => (id - 2, id as i64 + 734),
+        200043 => (39, 759),
+        _ => panic!(),
+    };
+    result.kernel_id = kernel;
+    result.selectors_in[0] = selected.into();
+    result.selectors_in[1] = selected.into();
+    result
+}
 
 /// 小于(ID 230,泛型变体):shell 固定 230,kernel 随类型(Int→230、Flt→235);输出 Bol。
 pub fn node_less_than(ty: AnyValue) -> NodeKind {
