@@ -22,3 +22,4 @@ extern crate rustc_target;
 extern crate rustc_ast;
 extern crate rustc_data_structures;
 extern crate rustc_ty_utils;
+extern crate rustc_apfloat;

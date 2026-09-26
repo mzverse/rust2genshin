@@ -8,46 +8,22 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use core::f32::consts::PI;
+use core::hint::black_box;
 use rust2genshin_lib::entity::Entity;
 use rust2genshin_lib::event::character::{CharacterDownEvent, DownCause};
 use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
 
+
 #[unsafe(no_mangle)]
-pub fn test_enum() {
-    #[repr(i32)]
-    #[allow(dead_code)]
-    enum En {
-        First,
-        Second,
-    }
-    #[inline(never)]
-    fn f(e: En) {
-        log(e as i32);
-    }
-    f(En::Second);
+pub fn test_niche() {
+    log(if let Some(x) = black_box(Some(guid!(114514))) { x } else { unreachable!() });
 }
-
-#[event_listener]
-pub fn test_native_enum(event: CharacterDownEvent) {
-    if event.cause != DownCause::Normal {
-        return;
-    }
-    if let Some(e) = event.source {
-        log(e);
-    } else {
-        unreachable!()
-    }
-}
-
-#[event_listener]
-pub fn test_player(event: CharacterDownEvent) {
-    if let Some(player) = event.character.owner_player() {
-        player.defeat();
-    } else {
-        unreachable!();
-    }
-}
-
+// #[event_listener]
+// pub fn test_hidden(event: TabSelectedEvent) {
+//     log(event.guid);
+//     log(event.hidden_guid);
+// }
+//
 // #[unsafe(no_mangle)]
 // pub fn test_closure(i: i32) {
 //     #[inline(never)]

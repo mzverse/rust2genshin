@@ -1,3 +1,4 @@
+use rustc_middle::mir::interpret::Scalar;
 use super::{Compiler, Result};
 use crate::asset::node_graph::NodeKind;
 use crate::asset::node_graph::arithmetic::{node_cast, node_divide, node_enum_equal, node_power};
@@ -7,6 +8,27 @@ use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Instance, Ty, TyCtxt, TyKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
+
+pub fn native_const(kind: &AnyValue, get_scalar: impl FnOnce() -> Scalar) -> Option<AnyValue> {
+    Some(if kind.is::<ValueInt>() {
+        ValueInt(get_scalar().to_i32().unwrap()).into()
+    } else if kind.is::<ValueGuid>() {
+        ValueGuid(get_scalar().to_i64().unwrap()).into()
+    } else if kind.is::<ValueFaction>() {
+        ValueFaction(get_scalar().to_i64().unwrap()).into()
+    } else if kind.is::<ValueConfig>() {
+        ValueConfig(get_scalar().to_i64().unwrap()).into()
+    } else if kind.is::<ValuePrefab>() {
+        ValuePrefab(get_scalar().to_i64().unwrap()).into()
+    } else if let Ok(ValueEnum { id, .. }) = kind.downcast_ref::<ValueEnum>() {
+        ValueEnum {
+            id: *id,
+            index: get_scalar().to_i32().unwrap(),
+        }.into()
+    } else {
+        return None;
+    })
+}
 
 impl<'tcx> Compiler<'tcx> {
     pub fn compile_native_ty(&self, ty: Ty<'tcx>) -> Option<Result<AnyValue>> {

@@ -17,7 +17,7 @@ pub enum SettlementStatus {
 }
 
 #[native_enum(15)]
-pub enum EntityType {
+pub enum EntityKind {
     Stage = 1401,
     Object = 1402,
     Player = 1403,

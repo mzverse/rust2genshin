@@ -1,16 +1,8 @@
 use rust2genshin_lib_internal::event;
 use crate::entity::Entity;
 use crate::{Faction, Guid, String};
-use crate::event::character::EntityType;
-
-#[event(36)]
-pub struct VariableChangeEvent {
-    pub entity: Entity,
-    pub guid: Guid,
-    pub name: String,
-    pub old: i32,
-    pub new: i32,
-}
+use crate::event::character::EntityKind;
+use crate::math::Vec3;
 
 #[event(67)]
 pub struct PresetStatusChangeEvent {
@@ -78,8 +70,8 @@ pub struct ReachWaypointEvent {
 pub struct FactionChangeEvent {
     pub entity: Entity,
     pub guid: Guid,
-    pub old_camp: Faction,
-    pub new_camp: Faction,
+    pub old: Faction,
+    pub new: Faction,
 }
 
 #[event(289)]
@@ -90,16 +82,24 @@ pub struct TeleportCompleteEvent {
 
 #[event(307)]
 pub struct TabSelectedEvent {
-    pub source_entity: Entity,
-    pub source_guid: Guid,
-    pub tab_id: i32,
-    pub selector_entity: Entity,
+    pub entity: Entity,
+    pub guid: Guid,
+    pub index: i32,
+    pub selector: Entity,
+    /// Always 0. Don't use it
     pub hidden_guid: Guid,
 }
 
-/// 指定类型的实体被销毁时触发
+/// 实体销毁时触发
 #[event(373)]
 pub struct EntityDestroyedEvent {
     pub entity: Entity,
-    pub entity_type: EntityType,
+    pub guid: Guid,
+    pub position: Vec3,
+    pub rotation: Vec3,
+    pub kind: EntityKind,
+    pub faction: Faction,
+    pub damage_source: Entity,
+    pub owner: Entity,
+    // TODO: custom_vars_snap: VarSnapshotRef (Vss 类型 API 尚未实现)
 }

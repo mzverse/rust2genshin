@@ -2,7 +2,7 @@ use crate::list::List;
 use crate::{Config, Faction, Guid, String, ToString};
 use rust2genshin_lib_internal::{native, native_calc, native_exec};
 use crate::player::Player;
-use crate::event::character::{CoordinateSystem, EntityType, FollowType};
+use crate::event::character::{CoordinateSystem, EntityKind, FollowType};
 use crate::math::Vec3;
 
 /// A Gc ref of an entity
@@ -159,7 +159,7 @@ impl Entity {
 
     /// 获取实体类型(stage/object/player/character/creation)
     #[native_calc(260)]
-    pub fn entity_type(self) -> EntityType;
+    pub fn entity_type(self) -> EntityKind;
 
     /// 前向向量
     #[native_calc(516)]
@@ -232,7 +232,7 @@ pub fn global_aggro_multiplier() -> f32;
 
 /// 阵营排行
 #[native_calc(655)]
-pub fn faction_rank(camp: Faction) -> i32;
+pub fn faction_rank(faction: Faction) -> i32;
 
 /// 按 GUID 切换跟随运动装置的目标
 #[native_exec(245)]

@@ -3,8 +3,8 @@ use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueEnum, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString};
-use crate::compile::native::compile_native_call;
+use crate::asset::value::{AnyValue, ValueBool, ValueFloat, ValueInt, ValueIntList, ValueString};
+use crate::compile::native::{compile_native_call, native_const};
 use crate::compile::optimize::{node_ir_assemble, node_ir_unreachable};
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use either::Either;
@@ -14,7 +14,7 @@ use rustc_hir::def::DefKind;
 use rustc_index::{Idx, IndexVec};
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
-use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
+use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv, Unnormalized};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
 
@@ -245,111 +245,117 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         self.compile_assign(place, span, value_in)
     }
 
+    fn compile_const(&mut self, ty: Ty<'tcx>, kind: AnyValue, v: ConstValue, span: Span) -> Result<ValueIn> {
+        let layout = self.tcx.layout_of(PseudoCanonicalInput {
+            typing_env: TypingEnv::fully_monomorphized(),
+            value: ty,
+        }).unwrap().layout;
+        let get_scalar = || match v {
+            ConstValue::Scalar(r) => r,
+            ConstValue::Indirect { alloc_id, offset } => {
+                let alloc = self.tcx.global_alloc(alloc_id).unwrap_memory().inner();
+                alloc.read_scalar(&self.tcx, AllocRange {
+                    start: offset,
+                    size: layout.size,
+                }, false).unwrap()
+            },
+            ConstValue::ZeroSized |
+            ConstValue::Slice { .. } => panic!(),
+        };
+        if let Some(r) = native_const(&kind, get_scalar) {
+            return Ok(ValueIn::value(r));
+        }
+        Ok(ValueIn::value(match ty.kind() {
+            TyKind::Bool => ValueBool(get_scalar().to_bool().unwrap()).into(),
+            TyKind::Int(t) => match t {
+                IntTy::I32 => ValueInt(get_scalar().to_i32().unwrap()).into(),
+                IntTy::Isize => ValueInt(get_scalar().to_int(self.tcx.data_layout.pointer_size()).unwrap() as i32).into(),
+                IntTy::I8 |
+                IntTy::I16 |
+                IntTy::I64 |
+                IntTy::I128 => return self.span_err(span, format!("Unsupported const int: {:?}", v)),
+            },
+            TyKind::Float(t) => match t {
+                FloatTy::F32 => ValueFloat(f32::from_bits(get_scalar().to_bits(Size::from_bits(32)).unwrap() as u32)).into(),
+                FloatTy::F16 |
+                FloatTy::F64 |
+                FloatTy::F128 => return self.span_err(span, format!("Unsupported const float: {:?}", v)),
+            },
+            TyKind::Str => panic!(),
+            TyKind::Ref(_, e, _) => {
+                if e.is_str() {
+                    ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into()
+                } else {
+                    return self.span_err(span, format!("Unsupported const ref: {:?}", ty));
+                }
+            },
+            TyKind::Adt(d, a) if let Some(r) = self.compiler.get_default_some(*d, a)? => {
+                assert_eq!(get_scalar().to_uint(self.tcx.data_layout.pointer_size()).unwrap(), d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val);
+                return Ok(ValueIn::value(r));
+            },
+            TyKind::Adt(d, a) if d.repr().transparent() =>
+                return self.compile_const(self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().single_field().ty(self.tcx, a)), kind, v, span),
+            TyKind::Adt(d, _a) if d.is_enum() && d.variants().len() > 1 =>
+                todo!("enum const is still unsupported"),
+            TyKind::Adt(..) | TyKind::Tuple(..) => {
+                let ele: Vec<_> = match ty.kind() {
+                    TyKind::Adt(d, a) => d.non_enum_variant().fields.iter().map(|x| self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(self.tcx, a))).collect(),
+                    TyKind::Tuple(ele) => ele.into_iter().collect(),
+                    _ => unreachable!(),
+                };
+                return Ok(match ele.len() {
+                    0 => ValueIn::default(),
+                    _ => {
+                        let ConstValue::Indirect { alloc_id, offset } = v else { panic!("{v:?}") };
+                        let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
+                        for (i, x) in ele.into_iter().enumerate() {
+                            let k = self.compiler.compile_ty(span, x)?;
+                            let v = self.compile_const(x, k, ConstValue::Indirect {
+                                alloc_id,
+                                offset: offset + layout.fields.offset(i),
+                            }, span)?;
+                            self.graph.graph.set_value_in(Connection(node, i), v);
+                        }
+                        ValueIn::link(Connection(node, 0).into())
+                    },
+                });
+            },
+            TyKind::Slice(_) |
+            TyKind::Foreign(_) |
+            TyKind::Char |
+            TyKind::Uint(_) |
+            TyKind::Array(_, _) |
+            TyKind::Pat(_, _) |
+            TyKind::RawPtr(_, _) |
+            TyKind::FnDef(_, _) |
+            TyKind::FnPtr(_, _) |
+            TyKind::UnsafeBinder(_) |
+            TyKind::Dynamic(_, _) |
+            TyKind::Closure(_, _) |
+            TyKind::CoroutineClosure(_, _) |
+            TyKind::Coroutine(_, _) |
+            TyKind::CoroutineWitness(_, _) |
+            TyKind::Never |
+            TyKind::Alias(_, _) |
+            TyKind::Param(_) |
+            TyKind::Bound(_, _) |
+            TyKind::Placeholder(_) |
+            TyKind::Infer(_) |
+            TyKind::Error(_) => return self.span_err(span, format!("Unsupported const: {:?} = {:?}", ty, v)),
+        }))
+    }
+
     fn compile_operand(&mut self, op: &Operand<'tcx>, span: Span) -> Result<ValueIn> {
-        let kind = self.compiler.compile_ty(span, self.mono(op.ty(&self.body.local_decls, self.tcx)))?;
+        let ty = self.mono(op.ty(&self.body.local_decls, self.tcx));
+        let kind = self.compiler.compile_ty(span, ty)?;
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
                 self.compile_place(*p, span)?.getter(self.compiler, &mut self.graph.graph, &kind)
             }
             Operand::Constant(co) => {
-                let ty = co.ty();
                 let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.get_tcx().dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
-                ValueIn::value(match &ty.kind() {
-                    TyKind::Bool => ValueBool(v.try_to_bool().unwrap()).into(),
-                    TyKind::Int(t) => match t {
-                        IntTy::I32 => ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into(),
-                        IntTy::Isize => ValueInt(v.try_to_scalar_int().unwrap().to_int(self.tcx.data_layout.pointer_size()) as i32).into(),
-                        IntTy::I8 |
-                        IntTy::I16 |
-                        IntTy::I64 |
-                        IntTy::I128 => return self.span_err(co.span, format!("Unsupported const int: {:?}", co.const_)),
-                    },
-                    TyKind::Float(t) => match t {
-                        FloatTy::F32 => ValueFloat(f32::from_bits(v.try_to_scalar_int().unwrap().to_bits(Size::from_bits(32)) as u32)).into(),
-                        FloatTy::F16 |
-                        FloatTy::F64 |
-                        FloatTy::F128 => return self.span_err(co.span, format!("Unsupported const float: {:?}", co.const_)),
-                    },
-                    TyKind::Adt(d, a) => {
-                        if kind.is::<ValueInt>() {
-                            ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into()
-                        } else if kind.is::<ValueGuid>() {
-                            ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into()
-                        } else if kind.is::<ValueFaction>() {
-                            ValueFaction(v.try_to_scalar_int().unwrap().to_i64()).into()
-                        } else if kind.is::<ValueConfig>() {
-                            ValueConfig(v.try_to_scalar_int().unwrap().to_i64()).into()
-                        } else if kind.is::<ValuePrefab>() {
-                            ValuePrefab(v.try_to_scalar_int().unwrap().to_i64()).into()
-                        } else if let Ok(ValueEnum { id, .. }) = kind.downcast_ref::<ValueEnum>() {
-                            ValueEnum {
-                                id: *id,
-                                index: v.try_to_scalar_int().unwrap().to_i32(),
-                            }.into()
-                        } else if let Some(r) = self.compiler.get_default_some(*d, a)? {
-                            assert_eq!(v.try_to_bits(self.tcx.data_layout.pointer_size()).unwrap(), d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val);
-                            return Ok(ValueIn::value(r));
-                        } else {
-                            self.tcx.dcx().span_err(span, format!("Adt Const is still unsupported: {d:?} {a:?}"));
-                            panic!()
-                        }
-                    },
-                    TyKind::Str => ValueString(str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string()).into(),
-                    TyKind::Ref(_, e, _) => {
-                        if e.is_str() {
-                            let ConstValue::Slice { alloc_id, meta: len } = v else { panic!("{v:?}") };
-                            ValueString(match str::from_utf8(self.tcx.global_alloc(alloc_id).unwrap_memory().0.get_bytes_unchecked(AllocRange { start: Size::ZERO, size: Size::from_bytes(len) })) {
-                                Ok(s) => s.to_string(),
-                                Err(e) => return self.span_err(co.span, e.to_string()),
-                            }).into()
-                        } else {
-                            return self.span_err(co.span, format!("Unsupported const ref: {:?}", ty));
-                        }
-                    },
-                    TyKind::Tuple(ele) => {
-                        return Ok(match ele.len() {
-                            0 => ValueIn::default(),
-                            1 => {
-                                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
-                                let v = self.compile_operand(&Operand::Constant(ConstOperand {
-                                    span,
-                                    user_ty: None,
-                                    const_: Const::Val(v, ele[0]),
-                                }.into()), span)?;
-                                self.graph.graph.set_value_in(Connection(node, 0), v);
-                                ValueIn::link(Connection(node, 0).into())
-                            }
-                            _ => {
-                                let node = self.graph.graph.insert(node_ir_assemble(self.compiler, &kind).into());
-                                todo!();
-                                ValueIn::link(Connection(node, 0).into())
-                            },
-                        })
-                    },
-                    TyKind::Slice(_) |
-                    TyKind::Foreign(_) |
-                    TyKind::Char |
-                    TyKind::Uint(_) |
-                    TyKind::Array(_, _) |
-                    TyKind::Pat(_, _) |
-                    TyKind::RawPtr(_, _) |
-                    TyKind::FnDef(_, _) |
-                    TyKind::FnPtr(_, _) |
-                    TyKind::UnsafeBinder(_) |
-                    TyKind::Dynamic(_, _) |
-                    TyKind::Closure(_, _) |
-                    TyKind::CoroutineClosure(_, _) |
-                    TyKind::Coroutine(_, _) |
-                    TyKind::CoroutineWitness(_, _) |
-                    TyKind::Never |
-                    TyKind::Alias(_, _) |
-                    TyKind::Param(_) |
-                    TyKind::Bound(_, _) |
-                    TyKind::Placeholder(_) |
-                    TyKind::Infer(_) |
-                    TyKind::Error(_) => return self.span_err(co.span, format!("Unsupported const: {:?} = {:?}", ty, v)),
-                })
+                self.compile_const(ty, kind, v, span)?
             }
             Operand::RuntimeChecks(_) => ValueIn::value(ValueBool(false).into()),
         })

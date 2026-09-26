@@ -17,6 +17,7 @@ pub mod boxed;
 pub mod player;
 pub mod event;
 
+use core::num::NonZero;
 pub use rust2genshin_lib_internal::event_listener;
 
 use rust2genshin_lib_internal::*;
@@ -50,14 +51,13 @@ pub fn log(s: impl ToString) {
 #[native("Guid")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Guid(i64);
+pub struct Guid(NonZero<i64>);
 impl Guid {
     //noinspection RsAssertEqual
     #[rustc_force_inline]
     #[rustc_comptime]
-    pub fn new(value: i64) -> Guid {
-        assert!(value != 0);
-        Guid(value)
+    pub fn new(value: i64) -> Self {
+        Self(NonZero::new(value).unwrap())
     }
 }
 
@@ -70,14 +70,13 @@ impl ToString for Guid {
 #[native("Faction")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Faction(i64);
+pub struct Faction(NonZero<i64>);
 impl Faction {
     //noinspection RsAssertEqual
     #[rustc_force_inline]
     #[rustc_comptime]
-    pub fn new(value: i64) -> Faction {
-        assert!(value != 0);
-        Faction(value)
+    pub fn new(value: i64) -> Self {
+        Self(NonZero::new(value).unwrap())
     }
 }
 
@@ -85,14 +84,13 @@ impl Faction {
 #[native("Config")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Config(i64);
+pub struct Config(NonZero<i64>);
 impl Config {
     //noinspection RsAssertEqual
     #[rustc_force_inline]
     #[rustc_comptime]
-    pub fn new(value: i64) -> Config {
-        assert!(value != 0);
-        Config(value)
+    pub fn new(value: i64) -> Self {
+        Self(NonZero::new(value).unwrap())
     }
 }
 
@@ -100,14 +98,13 @@ impl Config {
 #[native("Prefab")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Prefab(i64);
+pub struct Prefab(NonZero<i64>);
 impl Prefab {
     //noinspection RsAssertEqual
     #[rustc_force_inline]
     #[rustc_comptime]
-    pub fn new(value: i64) -> Prefab {
-        assert!(value != 0);
-        Prefab(value)
+    pub fn new(value: i64) -> Self {
+        Self(NonZero::new(value).unwrap())
     }
 }
 
