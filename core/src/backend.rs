@@ -17,6 +17,7 @@
 //! 其余 rustc crate 的符号通过该 dylib 解析(与 miri 同款做法);
 //! 运行时 rustc 进程已加载该 dll,加载本后端时会复用。
 
+use crate::compile;
 use rustc_codegen_ssa::back::archive::ArArchiveBuilderBuilder;
 use rustc_codegen_ssa::back::link::link_binary;
 use rustc_codegen_ssa::target_features::internal_target_features;
@@ -26,16 +27,25 @@ use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::OutputFilenames;
-use rustc_session::{EarlySession, IncrCompSession, Session};
+use rustc_session::{CodegenBackendInit, EarlySession, IncrCompSession, Session};
+use rustc_span::Symbol;
 use rustc_structures::CrateType;
 use std::any::Any;
-use crate::compile;
 
 pub struct R2gCodegenBackend;
 
 impl CodegenBackend for R2gCodegenBackend {
     fn name(&self) -> &'static str {
         "rust2genshin"
+    }
+
+    fn init(&mut self, _sess: &EarlySession) -> CodegenBackendInit {
+        CodegenBackendInit {
+            replaced_intrinsics: [
+                "black_box",
+            ].into_iter().map(Symbol::intern).collect(),
+            ..Default::default()
+        }
     }
 
     fn target_config(&self, sess: &EarlySession) -> TargetConfig {

@@ -39,6 +39,15 @@ pub fn test_native_enum(event: CharacterDownEvent) {
     }
 }
 
+#[event_listener]
+pub fn test_player(event: CharacterDownEvent) {
+    if let Some(player) = event.character.owner_player() {
+        player.defeat();
+    } else {
+        unreachable!();
+    }
+}
+
 // #[unsafe(no_mangle)]
 // pub fn test_closure(i: i32) {
 //     #[inline(never)]
@@ -122,7 +131,7 @@ pub fn test_native_enum(event: CharacterDownEvent) {
 // }
 //
 // #[unsafe(no_mangle)]
-// pub fn test_guid(id: Guid) -> Entity {
+// pub fn test_guid(id: Guid) -> Option<Entity> {
 //     Entity::get(id)
 // }
 //

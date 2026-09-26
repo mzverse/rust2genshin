@@ -50,12 +50,98 @@ pub fn log(s: impl ToString) {
 #[native("Guid")]
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Guid(pub i64);
+pub struct Guid(i64);
+impl Guid {
+    //noinspection RsAssertEqual
+    #[rustc_force_inline]
+    #[rustc_comptime]
+    pub fn new(value: i64) -> Guid {
+        assert!(value != 0);
+        Guid(value)
+    }
+}
 
 impl ToString for Guid {
     #[native("to_string")]
     fn to_string(&self) -> String;
 }
 
+/// 阵营
+#[native("Faction")]
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Faction(i64);
+impl Faction {
+    //noinspection RsAssertEqual
+    #[rustc_force_inline]
+    #[rustc_comptime]
+    pub fn new(value: i64) -> Faction {
+        assert!(value != 0);
+        Faction(value)
+    }
+}
+
+/// 配置ID
+#[native("Config")]
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Config(i64);
+impl Config {
+    //noinspection RsAssertEqual
+    #[rustc_force_inline]
+    #[rustc_comptime]
+    pub fn new(value: i64) -> Config {
+        assert!(value != 0);
+        Config(value)
+    }
+}
+
+/// 元件ID
+#[native("Prefab")]
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Prefab(i64);
+impl Prefab {
+    //noinspection RsAssertEqual
+    #[rustc_force_inline]
+    #[rustc_comptime]
+    pub fn new(value: i64) -> Prefab {
+        assert!(value != 0);
+        Prefab(value)
+    }
+}
+
 #[native("enum_eq")]
 pub unsafe fn native_enum_eq<T>(a: T, b: T) -> bool;
+
+/// 编译期构造 `Guid`。`#[rustc_comptime]` 保证参数必须是 const 表达式。
+#[macro_export]
+macro_rules! guid {
+    ($id:expr) => {
+        const { $crate::Guid::new($id) }
+    };
+}
+
+/// 编译期构造 `Faction`,语义同 `guid!`。
+#[macro_export]
+macro_rules! faction {
+    ($id:expr) => {
+        const { $crate::Faction::new($id) }
+    };
+}
+
+/// 编译期构造 `Config`,语义同 `guid!`。
+#[macro_export]
+macro_rules! config {
+    ($id:expr) => {
+        const { $crate::Config::new($id) }
+    };
+}
+
+/// 编译期构造 `Prefab`,语义同 `guid!`。
+#[macro_export]
+macro_rules! prefab {
+    ($id:expr) => {
+        const { $crate::Prefab::new($id) }
+    };
+}

@@ -166,11 +166,11 @@ impl<'a> Optimizer<'a> {
         for x in self.graph.graph.get_nodes() {
             let kind = &mut self.graph.graph.get_node_mut(x).kind;
             *kind = match kind.id {
+                NodeId::Native { .. } => continue,
                 NodeId::Unreachable => {
                     self.graph.graph.remove(x);
                     continue;
                 }
-                NodeId::Low { .. } => continue,
                 NodeId::Local => {
                     if let Ok(kind) = kind.values_out_types[0].downcast_ref::<ValueStruct>() {
                         let kind = kind.clone();

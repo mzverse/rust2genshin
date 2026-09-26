@@ -2,7 +2,7 @@ use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::NODE_IF;
 use crate::asset::node_graph::{CompositeNodeGraph, Connection, MainNodeGraph, Node, NodeGraph, NodeGraphKind, NodeKind, NodeRef, ValueIn};
 use crate::asset::structure::StructureDefinition;
-use crate::asset::value::{ValueBool, ValueDefault, ValueGuid};
+use crate::asset::value::{ValueBool, ValueDefault};
 use crate::asset::{Asset, AssetBundle, AssetRef};
 use crate::compile::func::{CompilingFn, FnDecl};
 use crate::compile::optimize::Optimizer;

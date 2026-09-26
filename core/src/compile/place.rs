@@ -268,6 +268,10 @@ impl<'tcx> CompilingFn<'tcx, '_> {
             match x {
                 Field(i, _) => {
                     match ty.ty.kind() {
+                        TyKind::Adt(d, _a) if d.repr().transparent() => {
+                            assert_eq!(i, FieldIdx::new(0));
+                            // do nothing
+                        }
                         TyKind::Adt(d, a) if self.compiler.get_default_some(*d, a)?.is_some() => {
                             assert_eq!(d.variant(ty.variant_index.unwrap()).def_id, self.tcx.lang_items().get(LangItem::OptionSome).unwrap());
                             assert_eq!(i, FieldIdx::new(0));

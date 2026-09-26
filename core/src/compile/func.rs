@@ -3,7 +3,7 @@ use crate::asset::node_graph::ValueIn;
 use crate::asset::node_graph::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_MODULO, NODE_NOT, NODE_OR, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::asset::node_graph::composite::node_composite;
 use crate::asset::node_graph::control::node_switch;
-use crate::asset::value::{AnyValue, ValueBool, ValueEnum, ValueFloat, ValueInt, ValueIntList, ValueString};
+use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueEnum, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValuePrefab, ValueString};
 use crate::compile::native::compile_native_call;
 use crate::compile::optimize::{node_ir_assemble, node_ir_unreachable};
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
@@ -14,7 +14,7 @@ use rustc_hir::def::DefKind;
 use rustc_index::{Idx, IndexVec};
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
-use rustc_middle::ty::{FloatTy, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
+use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, ScalarInt, TyKind, TypingEnv, Unnormalized};
 use rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
 use tap::Pipe;
 
@@ -196,6 +196,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             }
             Rvalue::Aggregate(kind, fields) if !matches!(**kind, AggregateKind::Array(..)) => {
                 match ty.kind() {
+                    TyKind::Adt(d, _a) if d.repr().transparent() =>
+                        self.compile_operand(&fields[FieldIdx::new(0)], span)?,
                     TyKind::Adt(d, a) if d.is_enum() => {
                         if self.compiler.get_default_some(*d, a)?.is_some() {
                             self.compile_operand(&fields[FieldIdx::new(0)], span)?
@@ -274,6 +276,12 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                             ValueInt(v.try_to_scalar_int().unwrap().to_i32()).into()
                         } else if kind.is::<ValueGuid>() {
                             ValueGuid(v.try_to_scalar_int().unwrap().to_i64()).into()
+                        } else if kind.is::<ValueFaction>() {
+                            ValueFaction(v.try_to_scalar_int().unwrap().to_i64()).into()
+                        } else if kind.is::<ValueConfig>() {
+                            ValueConfig(v.try_to_scalar_int().unwrap().to_i64()).into()
+                        } else if kind.is::<ValuePrefab>() {
+                            ValuePrefab(v.try_to_scalar_int().unwrap().to_i64()).into()
                         } else if let Ok(ValueEnum { id, .. }) = kind.downcast_ref::<ValueEnum>() {
                             ValueEnum {
                                 id: *id,
@@ -476,6 +484,17 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: &[Spanned<Operand<'tcx>>], destination: Place<'tcx>) -> Result<Block> {
+        if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
+            self.tcx.dcx().span_note(span, "Ignored panic");
+            return Ok(Block::nop(&mut self.graph.graph));
+        }
+        if let InstanceKind::Intrinsic(def_id) = func.def {
+            return match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
+                "black_box" => // only blocked mir, FIXME
+                    self.compile_assign_rvalue(destination, &Rvalue::Use(args[0].node.clone(), WithRetag::No), span),
+                other => todo!("intrinsic: {other}"),
+            };
+        }
         let sig = self.tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), match self.tcx.def_kind(func.def_id()) {
             DefKind::Closure => self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), Unnormalized::new(func.args.as_closure().sig())),
             _ => self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), self.tcx.fn_sig(func.def_id()).instantiate(self.tcx, func.args)),

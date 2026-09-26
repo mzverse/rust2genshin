@@ -139,7 +139,7 @@ pub fn node_decl(
     values_in_types: Vec<Option<AnyValue>>,
     values_out_types: Vec<AnyValue>,
 ) -> NodeKind {
-    let mut result = NodeKind::full(NodeId::Low {
+    let mut result = NodeKind::full(NodeId::Native {
         kind: identifier::AssetKind::GeneratedStub,
         id,
     }, id, controls_in_num, controls_out_num, values_in_types, values_out_types);

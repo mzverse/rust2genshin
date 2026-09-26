@@ -30,7 +30,7 @@ This spec clears those markers without touching logic. The user's full remaining
 
 - `lib/src/entity.rs:60-64` — three entity methods (IDs 245, 668, 250) plus a "modify model color/material" comment. API surface additions that need engine doc lookup; not polish.
 - `lib/src/math.rs:5` — `Vec3` ops. API design question; needs user decisions on what to add.
-- `lib/src/player.rs:4` — `// TODO: rename` on `get_player_id_by_guid`. Needs a name decision.
+- `lib/src/player.rs:4` — `// TODO: rename` on `guid_to_id`. Needs a name decision.
 
 **Out of scope — kept as-is (TODOs reference Tier 2 features):**
 

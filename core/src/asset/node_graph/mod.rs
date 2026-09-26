@@ -79,7 +79,7 @@ impl From<Connection> for Link {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum NodeId {
-    Low {
+    Native {
         kind: identifier::AssetKind,
         id: i64,
     },
@@ -123,7 +123,7 @@ impl NodeKind {
         values_in_types: Vec<AnyValue>,
         values_out_types: Vec<AnyValue>,
     ) -> Self {
-        Self::full(NodeId::Low {
+        Self::full(NodeId::Native {
             id,
             kind: identifier::AssetKind::SysCallStub,
         }, id, controls_in_num, controls_out_num,values_in_types.into_iter().map(Some).collect(), values_out_types)
@@ -164,7 +164,7 @@ impl NodeKind {
     }
 
     fn encode_shell(&self) -> Identifier {
-        let NodeId::Low { id, kind, .. } = self.id else {
+        let NodeId::Native { id, kind, .. } = self.id else {
             panic!("{:?}", self.id);
         };
         Identifier {

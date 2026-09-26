@@ -60,9 +60,7 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
             ServerTypeId::SGuid
             | ServerTypeId::SFaction
             | ServerTypeId::SConfig
-            | ServerTypeId::SPrefab
-            | ServerTypeId::SLocalVarRef
-            | ServerTypeId::SVarSnapshotRef => IdInput,
+            | ServerTypeId::SPrefab => IdInput,
             ServerTypeId::SVector => VectorGroup,
             ServerTypeId::SGuidList
             | ServerTypeId::SIntList

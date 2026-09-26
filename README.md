@@ -1,6 +1,10 @@
-# Usage
+# 简介
 
-目前仅支持服务器节点图
+**非官方**的 `rustc` codegen 后端:把目标 crate 的 Rust 代码编译成原神的节点图资产文件 `.gia`。
+
+目前仅支持服务器节点图。
+
+# Usage
 
 ## Demo
 
@@ -76,6 +80,34 @@ pub fn my_composite() {
 > [!IMPORTANT]
 > 主图始终导出（如果存在），未导出或未被导出资产引用的资产无法被导入
 
+### 句柄类型
+
+`Guid` / `Faction` / `Config` / `Prefab` 是"指向游戏数据的引用"类型，**只能在编译期构造**。用对应的 `xxx!` 宏：
+
+```rust
+let g = guid!(42);         // 编译期生成 Guid(42)
+let f = faction!(1);       // Faction
+let c = config!(100);      // Config
+let p = prefab!(7);        // Prefab
+```
+
+宏参数必须是 const 表达式 —— 字面量、`const` 绑定、算术常量都行。运行期变量会被编译器拒掉，因为 `Guid::new` 等标了 `#[rustc_comptime]`（不是 `const fn`），**不在 const 上下文调用直接编译失败**：
+
+```rust
+let id = compute_id();              // 运行期变量
+let g = guid!(id);                  // 编译错：id 不是 const 表达式
+let g = Guid::new(42);              // 编译错：comptime fn 只允许 const 上下文
+let _ = some_guid.0;                // 编译错：字段私有
+some_guid.0 = 99;                   // 编译错：字段私有
+```
+
+等价写法（宏只是把 `const { Xxx::new(x) }` 藏起来）：
+
+```rust
+const G: Guid = Guid::new(42);      // 顶层 const
+let g = const { Guid::new(42) };    // 内联 const 块
+```
+
 # 兼容性
 
 - 运算溢出
@@ -116,10 +148,6 @@ pub fn my_composite() {
 
 ## 类型
 
-- native enum
-- `Faction`
-- `Config`
-- `Prefab`
 - `VarSnapshotRef`
 - `Vec3`
 - `Vec2`
@@ -128,6 +156,16 @@ pub fn my_composite() {
 - `Box<T>`
 - unsigned int
 - `i64`
+
+## 原生节点
+
+待完善
+
+## 原生枚举
+
+暂不支持`match`
+
+待完善
 
 ## 事件
 

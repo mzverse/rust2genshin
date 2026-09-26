@@ -1,14 +1,15 @@
-use rustc_abi::{Integer, IntegerType};
-use crate::asset::value::{AnyValue, ValueBool, ValueDefault, ValueEntity, ValueFloat, ValueInt, ValueLocalVarRef, ValueString};
+use rustc_abi::{FieldIdx, Integer, IntegerType};
+use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueFaction, ValueFloat, ValueGuid, ValueInt, ValueLocalVarRef, ValuePrefab, ValueString};
 use crate::compile::optimize::{ValueIrAdt, ValueIrMut, ValueIrNever};
 use crate::compile::{Compiler, Result, WithTcx};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_attr_ir::LangItem;
+use rustc_index::Idx;
 use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::print::with_no_trimmed_paths;
-use rustc_middle::ty::{AdtDef, AdtKind, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt};
+use rustc_middle::ty::{AdtDef, AdtKind, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt, TypingEnv};
 use rustc_span::{Span, DUMMY_SP};
 use rustc_span::def_id::DefId;
 
@@ -22,7 +23,7 @@ impl<'tcx> Compiler<'tcx> {
         let ele = a.type_at(0);
         if ele.ty_adt_def().map(AdtDef::did) != opt {
             let ele = self.compile_ty(DUMMY_SP, ele)?;
-            if ele.is::<ValueEntity>() {
+            if ele.is::<ValueGuid>() || ele.is::<ValueEntity>() || ele.is::<ValuePrefab>() || ele.is::<ValueConfig>() || ele.is::<ValueFaction>() {
                 return Ok(Some(ele));
             }
         }
@@ -131,6 +132,8 @@ impl<'tcx> Compiler<'tcx> {
                     }
                 }
             },
+            TyKind::Adt(d, a) if d.repr().transparent() =>
+                self.compile_ty(span, self.get_tcx().normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.tcx, a)))?,
             TyKind::Adt(d, a) if d.adt_kind() == AdtKind::Enum => {
                 if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
                     ValueInt::def()
