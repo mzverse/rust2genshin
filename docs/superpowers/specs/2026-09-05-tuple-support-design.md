@@ -30,7 +30,7 @@ The user explicitly chose "Full tuple support (struct-mapped)" — addressing co
 **Out of scope (deferred to other sub-projects):**
 
 - **Pattern destructuring** `let (a, b) = tup` — relies on `Place.projection[Field(i)]`, which is in scope; the destructuring MIR form is `Rvalue::Aggregate` (covered) and field reads (covered).
-- **Tuple equality `(a, b) == (c, d)`** — requires a tuple-equal node which doesn't exist in `node_graph`. Defer until a tuple-equal node is identified or a composite workaround is designed.
+- **Tuple equality `(a, b) == (c, d)`** — requires a tuple-equal node which doesn't exist in `node`. Defer until a tuple-equal node is identified or a composite workaround is designed.
 - **Tuple element assignment `tup.0 = 42`** — relies on field projection in `compile_assign`, which becomes possible after this spec. May need STRUCT_MODIFY (id 300004 in `execution.rs:1000`) rather than STRUCT_SPLIT for writes; defer the design.
 - **Nested tuples containing references or unsupported types** — already rejected by `compile_ty` for the inner types.
 - **Tuples as generic arguments** — generic support is a separate Tier 2 feature.
@@ -47,7 +47,7 @@ Add a field to `Compiler<'tcx>` (in `core/src/compile/mod.rs`):
 tuple_schemas: HashMap<TupleKey, i64>,
 ```
 
-`TupleKey` is a `Hash`-able wrapper around the canonicalized tuple MIR type. Using a key derived from `(usize /* arity */, Vec<AnyValue /* element types' debug IDs */>)` is simple and avoids deep MIR types in the cache. The `AnyValue` debug-print string (via `format!("{:?}", value)`) is a stable-enough identifier for hashing purposes (any two equal `AnyValue`s produce the same debug string).
+`TupleKey` is a `Hash`-able wrapper around the canonicalized tuple MIR type. Using a key derived from `(usize /* arity */, Vec<AnyValue /* element types' debug IDs */>)` is simple and avoids deep MIR types in the cache. The `NativeKind` debug-print string (via `format!("{:?}", value)`) is a stable-enough identifier for hashing purposes (any two equal `NativeKind`s produce the same debug string).
 
 `touch_tuple` lives on `Compiler<'tcx>`:
 
@@ -272,7 +272,7 @@ The existing `is_instance` on `ValueStruct` already handles struct_id equality (
 
 There is no automated test harness for the backend. Verification is build-and-inspect.
 
-Add 4 demo functions to `demo/src/lib.rs` to exercise tuple support:
+Add 4 demo functions to `../../../demo` to exercise tuple support:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -319,7 +319,7 @@ Expected:
 
 - **Recursive `touch_tuple`.** The function calls `compile_ty` on each element type, which may recursively call `touch_tuple` for nested tuples. The cache prevents infinite recursion; verify with the nested tuple demo (`nested_tuple_first`).
 
-- **`AnyValue` debug-string for the cache key.** Using `format!("{:?}", k)` for the key relies on `Debug` being stable across builds. Since `AnyValue` is a `Box<dyn Value>` and each `Value` impl has a fixed `Debug`, this should be stable. **Mitigation:** if two genuinely equal tuples produce different keys (unlikely), they'll generate duplicate struct defs but won't cause incorrect output.
+- **`NativeKind` debug-string for the cache key.** Using `format!("{:?}", k)` for the key relies on `Debug` being stable across builds. Since `NativeKind` is a `Box<dyn Value>` and each `INativeValue` impl has a fixed `Debug`, this should be stable. **Mitigation:** if two genuinely equal tuples produce different keys (unlikely), they'll generate duplicate struct defs but won't cause incorrect output.
 
 - **`Place.projection` chaining beyond single Field.** The first-cut implementation only supports single-Field projections. Nested field access like `t.0.1` produces MIR with chained projections `[Field(0), Field(1)]`. The simple `compile_assign_field` will reject this with `span_err`. **Mitigation:** the `nested_tuple_first` demo uses `t.0.0` which is a single projection chain of length 2 — this MUST be supported in the first cut. The implementation must handle a chain of Field projections, inserting one STRUCT_SPLIT per field.
 

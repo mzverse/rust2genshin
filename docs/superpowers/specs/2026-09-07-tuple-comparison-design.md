@@ -16,7 +16,7 @@ The original design proposed a backend-side approach: branch `BinOp::Eq`/`Ne` in
 
 ## Context
 
-The original spec (now historical, see "Implementation pivot" above) was written assuming `BinOp::Eq` fires for tuple types. It does not — see the explanation above. The remaining sections of this doc describe the original design; the macro-based approach that actually shipped is fully described in the `tuple_eq!` doc comment in `lib/src/lib.rs` (lines 49–65) and in the commit message for `813640a`.
+The original spec (now historical, see "Implementation pivot" above) was written assuming `BinOp::Eq` fires for tuple types. It does not — see the explanation above. The remaining sections of this doc describe the original design; the macro-based approach that actually shipped is fully described in the `tuple_eq!` doc comment in `../../../lib` (lines 49–65) and in the commit message for `813640a`.
 
 The `Flat::getter` and `Flat::setter` work landed in commit `979a6c8 fix(core): correct STRUCT_ASSEMBLY/SPLIT pin layout in Flat::getter/setter`. The pin layout for STRUCT_SPLIT (300003) is now: pin 0 in = struct value (polymorphic), pins 0..N out = per-field values, with `selectors_in/out` properly resized.
 
@@ -26,8 +26,8 @@ The demo file already has `make_tuple`, `tuple_first`, `tuple_second`, `nested_t
 
 **In scope (shipped):**
 
-1. A `tuple_eq!` macro in `rust2genshin-lib` (`lib/src/lib.rs`) that expands 2-tuple comparison into field-wise scalar `==` chained with `&&`.
-2. Two demo functions in `demo/src/lib.rs` exercising the macro: `tuple_eq` (flat `(i32, f32)`) and `nested_tuple_eq` (`((i32, f32), bool)`).
+1. A `tuple_eq!` macro in `rust2genshin-lib` (`../../../lib`) that expands 2-tuple comparison into field-wise scalar `==` chained with `&&`.
+2. Two demo functions in `../../../demo` exercising the macro: `tuple_eq` (flat `(i32, f32)`) and `nested_tuple_eq` (`((i32, f32), bool)`).
 3. Extracted `insert_struct_split` helper in `core/src/compile/func.rs` and migrated `LocalVar::Flat::setter` to use it.
 
 **Out of scope:**
@@ -40,7 +40,7 @@ The demo file already has `make_tuple`, `tuple_first`, `tuple_second`, `nested_t
 ## Limitations
 
 - The macro is fixed-arity at 2 fields. Calling `tuple_eq!` on a 3-tuple compiles but silently compares only fields `.0` and `.1`, producing a wrong answer. A variadic form or explicit `tuple_eq3!` / `tuple_eq4!` macros would fix this; deferred until needed.
-- The macro is a 2-tuple helper. For nested tuples like `((A, B), C)`, the user recurses at the source level: `tuple_eq!(p.0, q.0) && p.1 == q.1`. This works as long as the recursion bottoms out at scalar fields (no tuple-in-tuple-in-tuple with no intermediate scalar) — matches the existing `demo/src/lib.rs` style.
+- The macro is a 2-tuple helper. For nested tuples like `((A, B), C)`, the user recurses at the source level: `tuple_eq!(p.0, q.0) && p.1 == q.1`. This works as long as the recursion bottoms out at scalar fields (no tuple-in-tuple-in-tuple with no intermediate scalar) — matches the existing `../../../demo` style.
 - Tuple `==` syntax (`p == q`) still panics at codegen. The backend doesn't model rustc's trait-dispatch lowering. Out of scope; future work would need to intercept the `<(A, B) as PartialEq>::eq` call in `compile_call`.
 
 ## Scope
@@ -51,7 +51,7 @@ The demo file already has `make_tuple`, `tuple_first`, `tuple_second`, `nested_t
 2. New helper `compare_tuple_values(graph, lhs, rhs, &ValueStruct) -> ValueIn` that recursively splits both operands and combines per-field equality via NODE_AND.
 3. New helper `insert_struct_split(graph, &ValueStruct, value) -> NodeRef` that builds a properly-pinned STRUCT_SPLIT node — extracted from `Flat::setter` and reused by `compare_tuple_values`.
 4. `Flat::setter` refactored to call `insert_struct_split` — keeps the pin-layout construction in one place.
-5. Add 2 demo functions to `demo/src/lib.rs`: `tuple_eq` (flat) and `nested_tuple_eq` (nested).
+5. Add 2 demo functions to `../../../demo`: `tuple_eq` (flat) and `nested_tuple_eq` (nested).
 
 **Out of scope:**
 
@@ -103,7 +103,7 @@ The shipped approach has three parts: a macro in the lib, demo functions using t
 
 #### Part A — `tuple_eq!` macro in `rust2genshin-lib`
 
-Add to `lib/src/lib.rs`:
+Add to `../../../lib`:
 
 ```rust
 /// Compare two 2-tuples by field, returning a bool.
@@ -129,7 +129,7 @@ The `$a` and `$b` are parenthesized to avoid parser ambiguity when callers pass 
 
 #### Part B — Demo functions
 
-Append to `demo/src/lib.rs`:
+Append to `../../../demo`:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -156,9 +156,9 @@ This change shipped alongside tuple comparison for maintainability reasons but i
 - `core/src/compile/func.rs`:
   - New `insert_struct_split` helper (Part C, commit `a743400`).
   - `LocalVar::Flat::setter` refactored to call `insert_struct_split` (Part C, commit `b297412`).
-- `lib/src/lib.rs`:
+- `../../../lib`:
   - New `tuple_eq!` macro (Part A, commit `813640a`).
-- `demo/src/lib.rs`:
+- `../../../demo`:
   - Two new demo functions (Part B, commit `a777c50`).
 
 ### Unchanged

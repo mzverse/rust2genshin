@@ -16,7 +16,7 @@
 
 **Modified:**
 - `core/src/compile/func.rs` — `LocalVar::Flat::getter`, `LocalVar::Flat::setter`, `compile_operand`.
-- `demo/src/lib.rs` — append 4 demo functions.
+- `../../../demo` — append 4 demo functions.
 
 **Unchanged:**
 - `core/src/asset/node_graph/arithmetic.rs` — `NODE_ASSEMBLE_STRUCT` and `NODE_SPLIT_STRUCT` already exist.
@@ -279,15 +279,15 @@ cd F:/rust2genshin && git add core/src/compile/func.rs && git commit -m "feat(co
 ## Task 4: Add demo functions and verify end-to-end
 
 **Files:**
-- Modify: `demo/src/lib.rs` — append 4 demo functions.
+- Modify: `../../../demo` — append 4 demo functions.
 
 - [ ] **Step 1: Read current end of demo file**
 
-Open `demo/src/lib.rs`. The file should end with the existing `nested_tuple_first` function.
+Open `../../../demo`. The file should end with the existing `nested_tuple_first` function.
 
 - [ ] **Step 2: Append the 4 demo functions**
 
-Add at the end of `demo/src/lib.rs`:
+Add at the end of `../../../demo`:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -337,7 +337,7 @@ Expected: pipeline completes; `target/rust2genshin_demo.gia` exists.
 
 If the pipeline fails, the most likely causes are:
 - STRUCT_ASSEMBLY/STRUCT_SPLIT wire format mismatch (selector or input/output types) — investigate by adding `eprintln!` debugging.
-- `set_value_in` on input pin 0 of STRUCT_SPLIT not accepting the struct value — may need `set_default` or `connect_value` instead.
+- `set_value_in` on input pin 0 of STRUCT_SPLIT not accepting the struct value — may need `set_default` or `link_value` instead.
 
 - [ ] **Step 4: Run unit tests**
 

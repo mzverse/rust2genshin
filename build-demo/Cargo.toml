@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+new_string_template = "1"
+serde_json = "1"
 
 [lints]
 workspace = true

@@ -90,7 +90,7 @@ let _ = self.span_err::<()>(span, format!("Unsupported type: {:?}", ty.kind()));
 panic!("Unsupported type: {:?}", ty.kind());
 ```
 
-The result section of `compile_ty` is `Ok(...)`, so the surrounding match arm must still produce an `AnyValue`. The two lines above intentionally panic after the diagnostic, so they never fall through. Do not add a return value.
+The result section of `compile_ty` is `Ok(...)`, so the surrounding match arm must still produce an `NativeKind`. The two lines above intentionally panic after the diagnostic, so they never fall through. Do not add a return value.
 
 - [ ] **Step 3: Build to confirm it compiles**
 

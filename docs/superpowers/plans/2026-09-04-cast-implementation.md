@@ -19,7 +19,7 @@
 
 **Modified:**
 - `core/src/compile/func.rs` — add `cast_supported` helper + `Rvalue::Cast` arm in `compile_assign_rvalue`
-- `demo/src/lib.rs` — add 4 demo functions exercising each supported cast (kernel IDs 180, 181, 185, 187)
+- `../../../demo` — add 4 demo functions exercising each supported cast (kernel IDs 180, 181, 185, 187)
 
 **Unchanged:**
 - `core/src/asset/node_graph/arithmetic.rs` — `node_cast` reused as-is
@@ -32,7 +32,7 @@
 ## Task 1: Add demo functions exercising each cast
 
 **Files:**
-- Modify: `demo/src/lib.rs`
+- Modify: `../../../demo`
 
 This task adds the test cases. Until Task 3 implements the cast arm, these functions will cause the build to fail with the existing `cast is unimplemented` panic — that failure is the "test fails" step in TDD adapted to a build-driven test harness.
 
@@ -76,7 +76,7 @@ Each function exercises a different kernel of `node_cast`:
 - [ ] **Step 3: Run build to confirm it currently fails on cast**
 
 Run: `cd F:/rust2genshin && cargo +nightly run -p build-demo 2>&1 | tail -50`
-Expected: Build fails with a `cast is unimplemented` panic (the existing `todo!()` in `Rvalue::Cast`). The `demo/src/lib.rs` additions are in place; the failure is the negative test case.
+Expected: Build fails with a `cast is unimplemented` panic (the existing `todo!()` in `Rvalue::Cast`). The `../../../demo` additions are in place; the failure is the negative test case.
 
 - [ ] **Step 4: Commit the demo additions (failing state)**
 
@@ -191,13 +191,13 @@ Rvalue::Repeat(_, _)
 Notes:
 - The `op.ty(&self.body.local_decls, self.tcx)` and `op.span(&self.body.local_decls)` calls follow the exact pattern used by other arms in `compile_assign_rvalue` (see `Rvalue::BinaryOp` which uses `v.0.ty(&self.body.local_decls, self.tcx)` at line 71).
 - `target_ty` is `Ty<'tcx>`, passed directly to `compile_ty` (which takes `Ty`).
-- `from_ty == to_ty` uses `AnyValue`'s `PartialEq` impl — if this fails in practice, drop the fast path and let the slow path handle identity casts (correctness preserved, just a no-op conversion node inserted).
+- `from_ty == to_ty` uses `NativeKind`'s `PartialEq` impl — if this fails in practice, drop the fast path and let the slow path handle identity casts (correctness preserved, just a no-op conversion node inserted).
 - If the build fails to compile due to `op.ty` or `op.span` not existing on `Operand<'tcx>` in this nightly, look at how `compile_operand` (line 150+) extracts the type and follow that pattern instead.
 
 - [ ] **Step 3: Run the full build pipeline**
 
 Run: `cd F:/rust2genshin && cargo +nightly run -p build-demo 2>&1 | tail -60`
-Expected: Build succeeds. The four cast functions in `demo/src/lib.rs` compile through to the backend without panicking.
+Expected: Build succeeds. The four cast functions in `../../../demo` compile through to the backend without panicking.
 
 - [ ] **Step 4: Verify `.gia` is produced**
 
@@ -249,14 +249,14 @@ Count the occurrences of each kernel ID:
 protoc --decode_raw < /tmp/payload.pb | grep -E '^\s*[0-9]+ (180|181|185|187)$' | sort | uniq -c
 ```
 
-Expected: At least one occurrence of each of 180, 181, 185, 187. The exact count depends on whether other functions in `demo/src/lib.rs` also generate conversion nodes (e.g., `delta` or `solve` don't, but if any future demo function uses casts, the count goes up).
+Expected: At least one occurrence of each of 180, 181, 185, 187. The exact count depends on whether other functions in `../../../demo` also generate conversion nodes (e.g., `delta` or `solve` don't, but if any future demo function uses casts, the count goes up).
 
 ---
 
 ## Task 5: Verify the negative case (unsupported cast emits span_err)
 
 **Files:**
-- Modify: `demo/src/lib.rs` (temporary), then revert
+- Modify: `../../../demo` (temporary), then revert
 
 - [ ] **Step 1: Add a temporary function with an unsupported cast**
 
@@ -286,7 +286,7 @@ Either outcome is acceptable. What matters is that the build does NOT panic with
 
 - [ ] **Step 3: Revert the temporary addition**
 
-Remove the `cast_bad` function from `demo/src/lib.rs`. Confirm the file's tail matches what it was after Task 1.
+Remove the `cast_bad` function from `../../../demo`. Confirm the file's tail matches what it was after Task 1.
 
 - [ ] **Step 4: Run build again to confirm clean state**
 
@@ -328,7 +328,7 @@ Update the task tracker to mark Tasks 1-6 complete.
 ## Notes for the implementer
 
 - **TDD is adapted to a build-driven test harness** because the project has no unit test framework. The "test" is the demo crate compiling successfully. The failing test in Task 1 is the current `cast is unimplemented` panic.
-- **`AnyValue` equality** in Task 3 fast path: `from_ty == to_ty` works if `AnyValue` implements `PartialEq`. If it doesn't, drop the fast path (Task 3 code becomes strictly the slow path + unsupported branch); correctness is unaffected.
+- **`NativeKind` equality** in Task 3 fast path: `from_ty == to_ty` works if `NativeKind` implements `PartialEq`. If it doesn't, drop the fast path (Task 3 code becomes strictly the slow path + unsupported branch); correctness is unaffected.
 - **API drift** in Task 3: `op.ty(...)` and `op.span(...)` API surface on `Operand<'tcx>` may differ across rustc nightlies. If compilation fails, look at how `compile_operand` (line 150+) extracts these and mirror that pattern.
 - **`compile_ty` rejection vs cast arm**: types that `compile_ty` doesn't accept (e.g. `*const u8`, `u64`) produce errors in the type-resolution arm *before* the cast logic runs. This is the expected behavior — the user sees the type error, not a cast error. The negative test in Task 5 may fire on either layer; both are correct.
 - **No automated tests**: the project has none today. If the engineer wants to add a `cargo test` harness, that's a separate spec and out of scope here.

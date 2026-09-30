@@ -26,7 +26,7 @@ Tasks 1 and 2 from the original plan (`insert_struct_split` extraction + `Flat::
 
 **Modified:**
 - `core/src/compile/func.rs` — add `insert_struct_split` and `compare_tuple_values` helpers; refactor `LocalVar::Flat::setter`; branch `BinOp::Eq`/`Ne` arm in `compile_assign_rvalue`.
-- `demo/src/lib.rs` — append 2 demo functions.
+- `../../../demo` — append 2 demo functions.
 
 **Unchanged:**
 - `core/src/asset/node_graph/arithmetic.rs` — `NODE_SPLIT_STRUCT`, `NODE_AND`, `node_equal` already exist.
@@ -437,15 +437,15 @@ EOF
 ## Task 5: Add demo functions
 
 **Files:**
-- Modify: `demo/src/lib.rs` — append 2 demo functions at the end.
+- Modify: `../../../demo` — append 2 demo functions at the end.
 
 - [ ] **Step 1: Locate the end of the demo file**
 
-Open `demo/src/lib.rs`. The file ends with `nested_update` (around line 120). Append after it.
+Open `../../../demo`. The file ends with `nested_update` (around line 120). Append after it.
 
 - [ ] **Step 2: Add `tuple_eq` and `nested_tuple_eq`**
 
-Append the following to the end of `demo/src/lib.rs`:
+Append the following to the end of `../../../demo`:
 
 ```rust
 

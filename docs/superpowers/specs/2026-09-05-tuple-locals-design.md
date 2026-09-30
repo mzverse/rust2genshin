@@ -265,7 +265,7 @@ if !is_unit(body.return_ty()) {
 
 ### Change 8 — re-add the 4 tuple demo functions
 
-In `demo/src/lib.rs`, append:
+In `../../../demo`, append:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -358,7 +358,7 @@ These previously panicked at runtime due to the now-resolved tuple-local limitat
 
 There is no automated test harness for the backend. Verification is build-and-inspect:
 
-1. The 4 demo functions above are added to `demo/src/lib.rs`.
+1. The 4 demo functions above are added to `../../../demo`.
 2. Run `cargo +nightly run -p build-demo` — expect success.
 3. Inspect `target/rust2genshin_demo.gia`:
    - The new composite node for `make_tuple` has 2 InValue pins (`a`, `b` — both scalar) and 2 OutValue pins (`result.field_0`, `result.field_1`).

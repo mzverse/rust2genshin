@@ -118,7 +118,7 @@ tools/               (被 .gitignore) Python 调试工具,详见 tools/README.md
 
 ## 关键概念
 
-- **AnyValue**:每个节点图类型一个 struct 实现 `Value` trait(`get_server_type` / `get_client_type` / `encode_storage` / `encode_field_value`)。新类型只需写一个 + 注册。`downcast` crate 提供运行时类型查询。
+- **AnyValue**:每个节点图类型一个 struct 实现 `INativeValue` trait (`get_server_id` / `get_client_type` / `encode_storage` / `encode_field_value`)。新类型只需写一个 + 注册。`downcast` crate 提供运行时类型查询。
 - **NodeKind / Node / Connection / Link**:节点图基础类型。`NodeRef` 序列化为 `id + 1`(见 `NODE_ID_BEGIN`)。
 - **CompiledLocal<LocalRef>** / **CompilingLocals**:把 MIR 的 `Place` 投影(元组字段、struct 字段、引用解引)递归展平成节点图局部变量节点,这是为什么闭包参数变成 `#closure + args` 的双层。
 - **FnDecl**:函数对外签名 —— 控制入参、`params` / `ret` 的扁平列表、`proxies_in` / `proxies_out`(用于参数转发与多返回值)。
@@ -127,18 +127,18 @@ tools/               (被 .gitignore) Python 调试工具,详见 tools/README.md
 
 ## 添加新节点类型(常见改动)
 
-1. 在 `core/src/asset/value.rs` 加一个 `ValueXxx` + `AnyValue` impl。
+1. 在 `core/src/asset/value.rs` 加一个 `ValueXxx` + `NativeKind` impl。
 2. 在 `core/src/asset/node_graph/<domain>.rs` 用 `NodeKind::new/expr/func/procedure/trigger` 声明 `static NODE_X: LazyLock<NodeKind>`。
 3. 若需要调用该节点,在 `core/src/compile/func.rs` 的 Rvalue/MIR 翻译处加分支。
 
 ## 添加新原生调用
 
-`lib-internal/src/lib.rs` 提供属性宏。新原生类型在 `native.rs::compile_native_ty` 加分支,新原生调用在 `native.rs::compile_native_call` 加分支。`#[event_listener]` 会自动给函数加 `#[unsafe(no_mangle)]` + 重写 span(call_site),所以编译路径靠 `get_expn_macro_attr` 从 span 取宏参数。
+`lib-internal` 提供属性宏。新原生类型在 `native.rs::compile_native_ty` 加分支,新原生调用在 `native.rs::compile_native_call` 加分支。`#[event_listener]` 会自动给函数加 `#[unsafe(no_mangle)]` + 重写 span(call_site),所以编译路径靠 `get_expn_macro_attr` 从 span 取宏参数。
 
 ## 调试技巧
 
 - 后端通过 `tcx.dcx().warn/err` 输出诊断;`-Coverflow-checks=off` 已去掉默认溢出检查告警。
-- `core/src/asset/mod.rs::AssetBundle::save` 内容不变不写盘(mtime 保留),保证 cargo 增量缓存不抖动;`demo/build.rs` 显式 `cargo:rerun-if-changed` 后端 cdylib 与 `.gia`。
+- `core/src/asset/mod.rs::AssetBundle::save` 内容不变不写盘 (mtime 保留),保证 cargo 增量缓存不抖动;`demo` 显式 `cargo:rerun-if-changed` 后端 cdylib 与 `.gia`。
 - Python 工具(`tools/gia2txt.py`)输出数字键(`2: 123`)代表 proto 未声明字段 —— 用 `tools/dev/wire_tree.py` 识别类型,`tools/check_unknown.py` 统计覆盖度。
 - 节点 ID 编号来自外部节点编辑器包(`tools/node_data/nodes.json`);`arithmetic.rs` 里的 `/// ID N` 注释对齐它。
 

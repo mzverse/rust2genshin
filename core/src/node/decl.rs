@@ -1,18 +1,19 @@
 use crate::asset::generated::{AssetData, NodeInterface, NodeInterfaceContainer, PinInterface, PinSignature, asset_data, identifier, node_interface, node_interface_container, pin_interface, pin_signature};
-use crate::asset::node_graph::{NodeId, NodeKind, PinType};
-use crate::asset::value::AnyValue;
-use crate::asset::{Asset, AssetBundle, AssetRef, Identifier};
+use crate::asset::value::NativeKind;
+use crate::asset::{AssetBundle, Identifier};
+use crate::node::{NativeNodeId, NodeKind, PinType};
 use std::collections::HashMap;
 use std::ops::Deref;
 use tap::Tap;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct DeclPin {
     pub name: String,
-    pub kind: Option<AnyValue>,
+    pub kind: Option<NativeKind>,
     pub meta: Option<pin_signature::Kind>,
 }
 
-pub fn decl_pins_value_out(kinds: &Vec<AnyValue>) -> Vec<DeclPin> {
+pub fn decl_pins_value_out(kinds: &[NativeKind]) -> Vec<DeclPin> {
     kinds.iter().map(|kind| DeclPin {
         name: "".to_string(),
         kind: kind.clone().into(),
@@ -20,6 +21,7 @@ pub fn decl_pins_value_out(kinds: &Vec<AnyValue>) -> Vec<DeclPin> {
     }).collect()
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct NodeDecl {
     pub name: String,
     pub description: String,
@@ -45,7 +47,7 @@ impl NodeDecl {
                 r#type: pin.kind.as_ref().map(|x| pin_interface::TypeInfo {
                     ui_class: x.get_widget_type().map(|x| x as i32),
                     var_type_shell: Some(x.get_server_shell_type()),
-                    var_type_kernel: Some(x.get_server_type() as i32),
+                    var_type_kernel: Some(x.get_server_id() as i32),
                     placeholder: None,
                     display_state: None,
                     detail: x.encode_type_detail(),
@@ -83,10 +85,8 @@ impl NodeDecl {
     }
 }
 
-impl Asset for NodeDecl {
-    type RefData = NodeKind;
-
-    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
+impl NodeDecl {
+    pub fn apply(self, bundle: &mut AssetBundle) -> (Identifier, NodeKind) {
         let id = bundle.alloc(identifier::Category::NodeDecl, identifier::AssetKind::Basic);
         let id_sig = Identifier {
             source: identifier::Source::SystemDefined as i32,
@@ -110,45 +110,43 @@ impl Asset for NodeDecl {
                             kind: identifier::AssetKind::CompositeGraph as i32,
                             guid: 0,
                             runtime_id: x.guid,
-                        }).unwrap_or(Identifier {
-                            source: 0,
-                            category: 0,
-                            kind: 0,
-                            guid: 0,
-                            runtime_id: 0,
-                        }).into(),
+                        }).unwrap_or_default().into(),
                         signal_version: None,
                     }.into()).into(),
                 }.into(),
             }).into(),
             references: self.references,
         });
-        AssetRef::new(id, node_decl(id.guid,
-                                    self.pins.get(&PinType::InControl).map(Vec::len).unwrap_or(0),
-                                    self.pins.get(&PinType::OutControl).map(Vec::len).unwrap_or(0),
-                                    self.pins.get(&PinType::InValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.as_ref().cloned()).collect(),
-                                    self.pins.get(&PinType::OutValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.clone().unwrap()).collect(),
+        (id, node_declared(
+            id,
+            self.pins.get(&PinType::InControl).map(Vec::len).unwrap_or(0),
+            self.pins.get(&PinType::OutControl).map(Vec::len).unwrap_or(0),
+            self.pins.get(&PinType::InValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.as_ref().cloned()).collect(),
+            self.pins.get(&PinType::OutValue).map(Deref::deref).map(<[_]>::iter).unwrap_or_default().map(|x| x.kind.clone().unwrap()).collect(),
         ))
     }
 }
 
-pub fn node_decl(
-    id: i64,
+pub fn node_declared(
+    id: Identifier,
     controls_in_num: usize,
     controls_out_num: usize,
-    values_in_types: Vec<Option<AnyValue>>,
-    values_out_types: Vec<AnyValue>,
+    values_in_types: Vec<Option<NativeKind>>,
+    values_out_types: Vec<NativeKind>,
 ) -> NodeKind {
-    let mut result = NodeKind::full(NodeId::Native {
+    // let AssetData {
+    //     payload: Some(
+    //         asset_data::Payload::InterfaceData(
+    //             NodeInterfaceContainer {
+    //                 inner: Some(
+    //                     node_interface_container::InnerWrapper {
+    //                         interface: Some(node_interface), ..
+    //                     }), ..
+    //             })), ..
+    // } = assets.get(id).unwrap() else { panic!() };
+    NodeKind::new(NativeNodeId {
         kind: identifier::AssetKind::GeneratedStub,
-        id,
-    }, id, controls_in_num, controls_out_num, values_in_types, values_out_types);
-    result.references = vec![Identifier {
-        source: 0,
-        category: identifier::Category::NodeDecl as i32,
-        kind: 0,
-        guid: id,
-        runtime_id: 0,
-    }];
-    result
+        id: id.guid,
+        kernel: id.guid,
+    }, controls_in_num, controls_out_num, values_in_types, values_out_types).tap_mut(|node| node.references = vec![id])
 }

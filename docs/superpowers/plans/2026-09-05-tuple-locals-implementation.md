@@ -18,7 +18,7 @@
 - `core/src/compile/mod.rs` — `compile_fn`: locals representation + flatten loop + composite pin generation.
 - `core/src/compile/func.rs` — `compile_operand`, `compile_assign`, `Rvalue::Aggregate` arm, add `local_node`, remove `compile_operand_projection`.
 - `core/src/compile/mod.rs` — `CompilingFn` struct: add `local_ranges` field.
-- `demo/src/lib.rs` — re-add 4 tuple demo functions.
+- `../../../demo` — re-add 4 tuple demo functions.
 
 **Unchanged:**
 - `core/src/asset/value.rs` — `ValueStruct` already correct.
@@ -591,15 +591,15 @@ cd F:/rust2genshin && git add core/src/compile/func.rs core/src/compile/mod.rs &
 ## Task 7: Re-add the 4 tuple demo functions and verify the demo pipeline
 
 **Files:**
-- Modify: `demo/src/lib.rs` — append 4 tuple demo functions.
+- Modify: `../../../demo` — append 4 tuple demo functions.
 
 - [ ] **Step 1: Read current end of demo file**
 
-Open `demo/src/lib.rs`. The file should end with `cast_i32_to_bool` (the last cast function).
+Open `../../../demo`. The file should end with `cast_i32_to_bool` (the last cast function).
 
 - [ ] **Step 2: Append the 4 tuple demo functions**
 
-Add at the end of `demo/src/lib.rs`:
+Add at the end of `../../../demo`:
 
 ```rust
 #[unsafe(no_mangle)]

@@ -8,18 +8,15 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/rust2genshin.rs"));
 }
 
-pub mod node_graph;
 pub mod value;
 pub mod structure;
 
 pub use generated::Identifier;
 pub use asset_bundle_data::Mode as GameMode;
 
-use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter, Write};
-use std::hash::{Hash, Hasher};
 use generated::*;
 use prost::Message;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tap::Tap;
 
@@ -38,61 +35,10 @@ pub enum Side {
     Client,
 }
 
-pub struct AssetRef<T: Asset + ?Sized> {
-    pub root: Identifier,
-    data: T::RefData,
-}
-impl<T: Asset> AssetRef<T> {
-    pub fn new(root: Identifier, extra: T::RefData) -> Self {
-        Self {
-            root,
-            data: extra,
-        }
-    }
-}
-impl<T: Asset> Clone for AssetRef<T>
-where
-    T::RefData: Clone,
-{
-    fn clone(&self) -> Self {
-        Self::new(self.root, self.data.clone())
-    }
-}
-impl<T: Asset> Debug for AssetRef<T>
-where
-    T::RefData: Debug,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.root.fmt(f)?;
-        f.write_char(' ')?;
-        self.data.fmt(f)?;
-        Ok(())
-    }
-}
-impl<T: Asset> PartialEq for AssetRef<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.root == other.root
-    }
-}
-impl<T: Asset> Eq for AssetRef<T> {
-}
-impl<T: Asset> Hash for AssetRef<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.root.hash(state);
-    }
-}
-
-pub trait Asset {
-    type RefData: Sized;
-
-    #[must_use]
-    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self>;
-}
-
 pub struct AssetBundle {
     pub mode: GameMode,
     pub allocators: HashMap<identifier::Category, i64>,
-    pub assets: Vec<AssetData>,
+    pub assets: HashMap<Identifier, AssetData>,
     pub primary: HashSet<Identifier>,
 }
 
@@ -113,7 +59,7 @@ impl AssetBundle {
     }
     
     pub fn get(&self, key: Identifier) -> Option<&AssetData> {
-        self.assets.iter().find(|x| x.id == Some(key))
+        self.assets.get(&key)
     }
 
     pub fn alloc(&mut self, cat: identifier::Category, kind: identifier::AssetKind) -> Identifier {
@@ -128,18 +74,18 @@ impl AssetBundle {
     }
 
     pub fn push(&mut self, asset: AssetData) {
-        self.assets.push(asset);
+        self.assets.insert(asset.id.unwrap(), asset);
     }
 
-    pub fn set_primary(&mut self, r: &AssetRef<impl Asset + ?Sized>) {
-        self.primary.insert(r.root);
+    pub fn set_primary(&mut self, id: Identifier) {
+        self.primary.insert(id);
     }
 
     pub fn encode(self) -> AssetBundleData {
         let mut primary = Vec::new();
         let mut dependencies = Vec::new();
-        for asset in self.assets {
-            if self.primary.contains(&asset.id.unwrap()) {
+        for (id, asset) in self.assets {
+            if self.primary.contains(&id) {
                 primary.push(asset);
             } else {
                 dependencies.push(asset);

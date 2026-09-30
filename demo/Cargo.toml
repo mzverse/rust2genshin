@@ -8,6 +8,9 @@ rust-version.workspace = true
 #repository.workspace = true
 #version.workspace = true
 
+[lib]
+crate-type = ["dylib"]
+
 [lints]
 workspace = true
 

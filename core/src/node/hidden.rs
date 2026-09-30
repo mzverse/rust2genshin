@@ -2,78 +2,79 @@
 //!
 //! 人工设计:相机/震屏/名牌/GM 等隐藏功能节点。
 
+use crate::asset::Identifier;
+use crate::asset::generated::node_instance::DependencyDeclaration;
+use crate::asset::generated::type_definition::StructReference;
+use crate::asset::generated::{identifier, type_definition};
+use crate::node::decl::{DeclPin, NodeDecl, decl_pins_value_out};
+use crate::node::{NodeGraph, NodeKind, PinType};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use tap::Tap;
-use crate::asset::generated::{identifier, type_definition};
-use crate::asset::generated::node_instance::DependencyDeclaration;
-use crate::asset::generated::type_definition::StructReference;
-use crate::asset::Identifier;
-use crate::asset::node_graph::{NodeGraph, NodeKind, PinType};
-use crate::asset::node_graph::decl::{decl_pins_value_out, DeclPin, NodeDecl};
-use crate::asset::structure::ValueStruct;
-use crate::asset::value::{AnyValue, ValueBool, ValueConfig, ValueDefault, ValueEntity, ValueEntityList, ValueFloat, ValueGuid, ValueInt, ValueIntList, ValueString};
+use crate::asset::value::NativeKind::{self, *};
 
 /// 激活实体相机(ID 262)
 pub static NODE_ACTIVATE_ENTITY_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(262, vec![ValueEntityList::def(), ValueEntity::def()])
+    NodeKind::procedure(262, vec![List(Entity.into()), Entity])
 });
 
 /// 关闭实体相机(ID 263)
 pub static NODE_DISABLE_ENTITY_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(263, vec![ValueEntityList::def()])
+    NodeKind::procedure(263, vec![List(Entity.into())])
 });
 
 /// 激活聚焦相机(ID 264)
 pub static NODE_ACTIVATE_FOCUS_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(264, vec![ValueEntityList::def(), ValueEntity::def()])
+    NodeKind::procedure(264, vec![List(Entity.into()), Entity])
 });
 
 /// 关闭聚焦相机(ID 265)
 pub static NODE_DISABLE_FOCUS_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(265, vec![ValueEntityList::def()])
+    NodeKind::procedure(265, vec![List(Entity.into())])
 });
 
 /// 屏幕震动(ID 266)
 pub static NODE_PLAY_SCREEN_SHAKE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(266, vec![ValueEntityList::def(), ValueFloat::def(), ValueFloat::def(), ValueFloat::def()])
+    NodeKind::procedure(266, vec![List(Entity.into()), Float, Float, Float])
 });
 
 /// 设置干扰器状态(ID 366)
 pub static NODE_SET_DISRUPTOR_STATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(366, vec![ValueEntity::def(), ValueEntity::def(), ValueBool::def()])
+    NodeKind::procedure(366, vec![Entity, Entity, Bool])
 });
 
 /// 设置原生值(ID 445)
 pub static NODE_SET_NATIVE_VALUE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(445, vec![ValueEntity::def(), ValueString::def(), ValueInt::def(), ValueBool::def(), ValueBool::def()])
+    NodeKind::procedure(445, vec![Entity, String, Int, Bool, Bool])
 });
 
 /// 添加名牌(ID 615)
 pub static NODE_ADD_NAMEPLATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(615, vec![ValueEntity::def(), ValueConfig::def()])
+    NodeKind::procedure(615, vec![Entity, Config])
 });
 
 /// 移除名牌(ID 616)
 pub static NODE_REMOVE_NAMEPLATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(616, vec![ValueEntity::def(), ValueConfig::def()])
+    NodeKind::procedure(616, vec![Entity, Config])
 });
 
 /// 更新排行榜(ID 678)
 pub static NODE_UPDATE_LEADERBOARD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(678, vec![ValueIntList::def(), ValueInt::def(), ValueInt::def()])
+    NodeKind::procedure(678, vec![List(Int.into()), Int, Int])
 });
 
 /// 读取原生值(ID 459):值查询,无 flow
 pub static NODE_GET_NATIVE_VALUE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(459, vec![ValueEntity::def(), ValueString::def(), ValueBool::def()], ValueInt::def())
+    NodeKind::expr(459, vec![Entity, String, Bool], Int)
 });
 
 /// 原生值变化(ID 428)
-pub fn node_on_native_custom_value_change(graph: &mut NodeGraph, kind: &AnyValue) -> NodeKind {
+pub fn node_on_native_custom_value_change<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, kind: &NativeKind) -> NodeKind {
     // TODO: for other type
-    let mut result = NodeKind::trigger(428, vec![ValueEntity::def(), ValueGuid::def(), ValueString::def(), kind.clone(), kind.clone(), ValueBool::def()]);
-    let kind = kind.downcast_ref::<ValueStruct>().unwrap();
+    let mut result = NodeKind::trigger(428, vec![Entity, Guid, String, kind.clone(), kind.clone(), Bool]);
+    let Struct(kind) = kind else {
+        todo!();
+    };
     let decl = DependencyDeclaration {
         identity: Identifier {
             source: identifier::Source::SystemDefined as i32,
@@ -85,7 +86,7 @@ pub fn node_on_native_custom_value_change(graph: &mut NodeGraph, kind: &AnyValue
         type1: 174,
         unknown1: 1,
         st: StructReference {
-            schema_id: kind.get_struct_id(),
+            schema_id: kind.id.guid,
         }.into(),
     };
     graph.embedded.entry(decl).or_insert_with(|| NodeDecl {
@@ -104,17 +105,17 @@ pub fn node_on_native_custom_value_change(graph: &mut NodeGraph, kind: &AnyValue
         template_sub: Default::default(),
         references: vec![],
     });
-    result.kernel_id = 0;
+    result.id.kernel = 0;
     result.using_struct = Some(decl.into());
     result.selectors_out[3] = 21.into();
     result.selectors_out[4] = 21.into();
     result.imps_out[3] = type_definition::server_type::Implementation::Struct;
     result.imps_out[4] = type_definition::server_type::Implementation::Struct;
-    result.references = vec![kind.st.root];
+    result.references = vec![kind.id];
     result
 }
 
 /// GM 调用(ID 100000)
 pub static NODE_ON_GM_CALL: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::trigger(100000, vec![ValueEntity::def(), ValueGuid::def(), ValueInt::def(), ValueInt::def(), ValueString::def(), ValueString::def()])
+    NodeKind::trigger(100000, vec![Entity, Guid, Int, Int, String, String])
 });

@@ -28,7 +28,7 @@ This spec reuses those constants to implement `Flat::getter()` and `Flat::setter
 3. `LocalVar::Struct::getter()` and `LocalVar::Struct::setter()` — still `todo!()`. Out of scope for this sub-project.
 4. Update `compile_assign` to pass `graph` and `kind` to `getter()` / `setter()` (signature change for `getter`).
 5. Update `compile_operand` to call `getter(graph, kind)` (returns `ValueIn` instead of `Connection`).
-6. Add 4 demo functions to `demo/src/lib.rs` exercising whole-tuple moves and field writes.
+6. Add 4 demo functions to `../../../demo` exercising whole-tuple moves and field writes.
 
 **Out of scope:**
 
@@ -173,7 +173,7 @@ This already takes `self.graph` and `kind`. The signature of `Basic::setter` is 
 
 ### Change 5 — Add 4 demo functions
 
-In `demo/src/lib.rs`, append:
+In `../../../demo`, append:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -269,7 +269,7 @@ These exercise:
 
 There is no automated test harness for the backend. Verification is build-and-inspect:
 
-1. The 4 demo functions above are added to `demo/src/lib.rs`.
+1. The 4 demo functions above are added to `../../../demo`.
 2. Run `cargo +nightly run -p build-demo` — expect success.
 3. Inspect `target/rust2genshin_demo.gia`: each new composite node has a `result.field_0` and `result.field_1` (since the demo functions all return `(i32, f32)`).
 4. `cargo +nightly test -p rust2genshin` — 5/5 pass.

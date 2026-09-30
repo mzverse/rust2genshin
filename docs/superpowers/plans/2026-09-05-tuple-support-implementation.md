@@ -17,7 +17,7 @@
 **Modified:**
 - `core/src/compile/mod.rs` — add `tuple_schemas: HashMap<TupleKey, i64>` to `Compiler`; add `TupleKey` newtype; add `touch_tuple` method; replace the `TyKind::Tuple(tys) => todo!()` arm in `compile_ty`.
 - `core/src/compile/func.rs` — add `Rvalue::Aggregate(AggregateKind::Tuple, _)` arm; update `compile_assign` and `compile_operand` to handle `ProjectionElem::Field` chains.
-- `demo/src/lib.rs` — add 4 demo functions exercising tuple construction, field access, and nested tuples.
+- `../../../demo` — add 4 demo functions exercising tuple construction, field access, and nested tuples.
 
 **Unchanged:**
 - `core/proto/asset.proto` — `SStruct` already exists.
@@ -147,7 +147,7 @@ cd F:/rust2genshin && cargo +nightly build -p rust2genshin
 
 Expected: build succeeds.
 
-If you see "cannot find type `AnyValue` in this scope" — the import for `AnyValue` is missing in `compile/mod.rs`. Add `use crate::asset::value::AnyValue;` near the top of the file.
+If you see "cannot find type `NativeKind` in this scope" — the import for `NativeKind` is missing in `compile/mod.rs`. Add `use crate::asset::value::AnyValue;` near the top of the file.
 
 If you see "no method named `compile_ty` found" — `compile_ty` is defined later in the file. Move the `touch_tuple` method definition to **after** the `compile_ty` definition (Rust doesn't care about method order, but the impl block methods can reference each other freely; the issue is usually a missing import or wrong method signature).
 
@@ -191,7 +191,7 @@ TyKind::Tuple(tys) => {
 }
 ```
 
-(Adjust to import `ValueBool` and `ValueStruct` at the top of the file if not already imported.)
+(Adjust to import `NativeBool` and `ValueStruct` at the top of the file if not already imported.)
 
 - [ ] **Step 3: Build to verify**
 
@@ -332,7 +332,7 @@ fn compile_assign(&mut self, place: Place, value: ValueIn) -> Result<Block> {
 
 The write path now produces a clear `span_err` instead of `todo!()` panicking.
 
-- [ ] **Step 5: Add `AnyValue` import if needed**
+- [ ] **Step 5: Add `NativeKind` import if needed**
 
 In `core/src/compile/func.rs`, ensure the import block (lines 1-16) includes:
 
@@ -449,15 +449,15 @@ cd F:/rust2genshin && git add core/src/compile/func.rs && git commit -m "feat(co
 ## Task 5: Add demo functions exercising tuples
 
 **Files:**
-- Modify: `demo/src/lib.rs` — append 4 demo functions.
+- Modify: `../../../demo` — append 4 demo functions.
 
 - [ ] **Step 1: Read the current end of the demo file**
 
-Open `demo/src/lib.rs`. Note the current contents (the cast functions end at the file's last line `cast_i32_to_bool`).
+Open `../../../demo`. Note the current contents (the cast functions end at the file's last line `cast_i32_to_bool`).
 
 - [ ] **Step 2: Append tuple demo functions**
 
-Add at the end of `demo/src/lib.rs`:
+Add at the end of `../../../demo`:
 
 ```rust
 #[unsafe(no_mangle)]

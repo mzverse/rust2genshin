@@ -15,12 +15,12 @@
 ## File Structure
 
 **Modified (potentially, by phase):**
-- Phase 1: any file with auto-fixable lints (most of `core/src/asset/`, parts of `core/src/compile/`, `lib/src/`, `demo/`)
+- Phase 1: any file with auto-fixable lints (most of `core/src/asset/`, parts of `core/src/compile/`, `../../../lib`, `../../../demo`)
 - Phase 2: `core/src/compile/native.rs`
 - Phase 3: `core/src/asset/node_graph/*.rs` (file TBD — find via clippy output)
-- Phase 4: `lib/src/math.rs`
-- Phase 5: `core/src/compile/compile2.rs`, `core/src/compile/optimize.rs`, `core/src/compile/func.rs`, `core/src/asset/value.rs`, `core/src/parser.rs`, plus any others clippy flags
-- Phase 6: root `Cargo.toml`, `core/Cargo.toml`, `demo/Cargo.toml`
+- Phase 4: `../../../lib`
+- Phase 5: `core/src/compile/compile2.rs`, `../../../core/src/compile/ir.rs`, `core/src/compile/func.rs`, `core/src/asset/value.rs`, `core/src/parser.rs`, plus any others clippy flags
+- Phase 6: root `Cargo.toml`, `core/Cargo.toml`, `../../../demo`
 - Phase 7: no file changes
 
 **Unchanged:** the protobuf output, `core/proto/asset.proto`, behavior of node generation.
@@ -199,8 +199,8 @@ cd F:/rust2genshin && git add core/src/asset/node_graph/ && git commit -m "refac
 ## Task 4: Phase 4 — Add `# Safety` sections to `unsafe trait I32` and `F32`
 
 **Files:**
-- Modify: `lib/src/math.rs:19` (I32 trait)
-- Modify: `lib/src/math.rs:24` (F32 trait)
+- Modify: `../../../lib` (I32 trait)
+- Modify: `../../../lib` (F32 trait)
 
 - [ ] **Step 1: Open the file and locate both traits**
 
@@ -303,7 +303,7 @@ cd F:/rust2genshin && git add lib/src/math.rs && git commit -m "docs(lib): add S
 
 **Files:**
 - Modify: `core/src/compile/compile2.rs` — ~20 unused vars, prefix with `_`
-- Modify: `core/src/compile/optimize.rs` — `from`, `to` → `_from`, `_to`
+- Modify: `../../../core/src/compile/ir.rs` — `from`, `to` → `_from`, `_to`
 - Modify: `core/src/compile/func.rs` — remove unused imports `std::panic::catch_unwind`, `downcast::Downcast`
 - Modify: `core/src/asset/value.rs` — `x` → `_x` (line 427)
 - Modify: `core/src/parser.rs` — `tcx` → `_tcx` (line 113)
@@ -329,7 +329,7 @@ If a function has multiple unused parameters, prefix each:
 fn codegen(_sess: &Session, _cgcx: &CodegenCx<Self>, ...) { ... }
 ```
 
-- [ ] **Step 3: Prefix unused variables in `core/src/compile/optimize.rs` with `_`**
+- [ ] **Step 3: Prefix unused variables in `../../../core/src/compile/ir.rs` with `_`**
 
 Open `F:/rust2genshin/core/src/compile/optimize.rs`. Apply the same prefix-with-`_` treatment for any unused variables.
 
@@ -378,7 +378,7 @@ cd F:/rust2genshin && git add core/src/compile/compile2.rs core/src/compile/opti
 **Files:**
 - Modify: root `Cargo.toml` (workspace deps)
 - Modify: `core/Cargo.toml`
-- Modify: `demo/Cargo.toml`
+- Modify: `../../../demo`
 
 - [ ] **Step 1: Verify each dep is truly unused**
 
@@ -397,7 +397,7 @@ Open `F:/rust2genshin/Cargo.toml`. In the `[workspace.dependencies]` section, de
 
 Open `F:/rust2genshin/core/Cargo.toml`. Find `[dependencies]` section and delete the line `id-pool = "0"`.
 
-- [ ] **Step 4: Remove `rand` from `demo/Cargo.toml`**
+- [ ] **Step 4: Remove `rand` from `../../../demo`**
 
 Open `F:/rust2genshin/demo/Cargo.toml`. Find `[dependencies]` section and delete the line `rand = "0.10.2"`.
 

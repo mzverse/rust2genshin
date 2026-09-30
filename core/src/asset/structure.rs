@@ -3,53 +3,76 @@
 //! 分层设计:NodeGraph(深度封装,INode 节点,连线单向)→ RawNodeGraph(proto 的
 //! 简单封装,包含全部信息)→ proto。`RawNodeGraph::encode` 把图编码为资产。
 
+use crate::asset::AssetBundle;
 use crate::asset::generated::asset_data::Payload;
-use crate::asset::generated::identifier::{AssetKind, Category};
 use crate::asset::generated::structure_definition_data::var_def::Subtype;
-use crate::asset::generated::structure_definition_data::var_def::value::{StructVal, Val, struct_val};
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
-use crate::asset::node_graph::decl::{DeclPin, NodeDecl};
-use crate::asset::node_graph::{NodeKind, PinType};
-use crate::asset::value::{AnyValue, Value, ValueBool, ValueDefault};
-use crate::asset::{Asset, AssetBundle, AssetRef, Side};
+use crate::asset::value::{NativeKind, NativeValue};
+use crate::node::decl::{node_declared, DeclPin, NodeDecl};
+use crate::node::{NodeKind, PinType};
 use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, RwLock};
+use std::fmt::Debug;
 use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
-pub fn node_assemble_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.read().unwrap().get(&StructureNodeDecl::AssembleServer).unwrap().data.clone()
+pub fn node_assemble_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
+    let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructAssembly);
+    node_declared(id, 0, 0, st.fields.iter().cloned().map(Some).collect(), vec![NativeKind::Struct(st.clone())])
 }
 
-pub fn node_destructure_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.read().unwrap().get(&StructureNodeDecl::DestructureServer).unwrap().data.clone()
+pub fn node_destructure_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
+    let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructSplit);
+    node_declared(id, 0, 0, vec![NativeKind::Struct(st.clone()).into()], st.fields.to_vec())
 }
 
-pub fn node_modify_struct(st: &AssetRef<StructureDefinition>) -> NodeKind {
-    st.data.decls.read().unwrap().get(&StructureNodeDecl::Modify).unwrap().data.clone()
+pub fn node_modify_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
+    let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructModify);
+    let mut params = vec![NativeKind::Struct(st.clone()).into()];
+    params.push(None);
+    for x in &st.fields {
+        params.push(x.clone().into());
+        params.push(NativeKind::Bool.into());
+    }
+    node_declared(id, 1, 1, params, vec![])
 }
 
-/// 结构体的一个字段(对标 GIA `StructDecl.fields[]`)
+pub fn get_struct_node_id(assets: &AssetBundle, st: Identifier, imp: node_interface::implementation::Category) -> Identifier {
+    for &x in &assets.get(st).unwrap().references {
+        let node = assets.get(x).unwrap();
+        if node.id.unwrap().kind != identifier::AssetKind::Basic as i32
+            || node.id.unwrap().category != identifier::Category::NodeDecl as i32 {
+            continue;
+        }
+        let Payload::InterfaceData(payload) = node.payload.as_ref().unwrap() else { panic!() };
+        if payload.inner.as_ref().unwrap()
+            .interface.as_ref().unwrap()
+            .r#impl.as_ref().unwrap()
+            .category == imp as i32 {
+            return x;
+        }
+    }
+    panic!();
+}
+
 pub struct StructField {
     pub name: String,
-    /// 字段值(类型由 AnyValue 自身携带,不另存 type id)
-    pub value: AnyValue,
+    pub kind: NativeKind,
+    pub default: Option<Box<dyn NativeValue>>,
 }
 
 impl StructField {
-    pub fn new(name: String, value: AnyValue) -> Self {
-        Self { name, value }
+    pub fn new(name: String, kind: NativeKind, default: Option<Box<dyn NativeValue>>) -> Self {
+        Self { name, kind, default }
     }
     /// 字段 → proto `VarDef`(对齐真实导出的 wire 格式):
     ///   typedef1 = { type, subType {} }(空 subType,无 val)
     ///   typedef3 = { type, subType { type, xxxx_id {} }, val }
     fn encode_var_def(&self, index: i32) -> structure_definition_data::VarDef {
-        let ty = self.value.get_server_type();
+        let ty = self.kind.get_server_id();
         let kind = structure_definition_data::var_def::Kind {
             primary: ty as i32,
-            sub: self.value.encode_subtype().or(Subtype {
+            sub: self.kind.encode_subtype().or_else(|| Subtype {
                 is_set: false,
                 struct_id: 0,
                 key: None,
@@ -63,12 +86,12 @@ impl StructField {
             var_name: self.name.clone(),
             var_type: ty as i32,
             var_index: index,
-            def: if self.value.encode_storage(Side::Server).is_some() { sd_var_def::Value {
+            def: self.default.as_ref().map(|x| sd_var_def::Value {
                 r#type: ty as i32,
                 kind: kind.into(),
                 name: None,
-                val: self.value.encode_field_value().into(),
-            }.into() } else { None },
+                val: self.kind.encode_field_value(x.as_ref()).into(),
+            }),
         }
     }
 }
@@ -96,140 +119,75 @@ impl StructureDefinition {
     }
 }
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
-pub enum StructureNodeDecl {
-    AssembleServer,
-    DestructureServer,
-    Modify, // server only
-}
-
-// ---------- 结构体值(SStruct=25,仅服务器) ----------
-
-/// 结构体值(SStruct=25;客户端不支持 Struct)。
-/// `struct_id` 指向 StructureDefinition 的 schema_id;`fields` 为字段值,
-/// 按结构体定义顺序排列。
-#[derive(Clone, Debug)]
-pub struct ValueStruct {
-    pub st: AssetRef<StructureDefinition>,
-    pub fields: Vec<AnyValue>,
-}
-impl ValueStruct {
-    pub fn new(r: AssetRef<StructureDefinition>) -> Self {
-        Self {
-            fields: r.clone().data.fields.clone(),
-            st: r,
-        }
-    }
-    pub fn get_struct_id(&self) -> i64 {
-        self.st.root.guid
-    }
-}
-impl Value for ValueStruct {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SStruct
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValStruct(StructStorage {
-            field: self.fields.iter().map(|f| f.encode_typed(true, side)).collect(),
-        }).into()
-    }
-    fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
-        Some(type_definition::server_type::Schema::StructRef(type_definition::StructReference {
-            schema_id: self.st.root.guid,
-        }))
-    }
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        Some(pin_interface::type_info::Detail::StructId(pin_interface::type_info::StructId { val: self.get_struct_id() }),)
-    }
-
-    fn encode_subtype(&self) -> Option<Subtype> {
-        Subtype {
-            is_set: true,
-            struct_id: self.get_struct_id(),
-            key: None,
-            value: None,
-            value_id: None,
-        }.into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::Structure(StructVal {
-            fields: vec![],
-            struct_id: self.get_struct_id(),
-            id: struct_val::Id {
-                kind: ServerTypeId::SVarSnapshotRef as i32,
-                id: 0x40000001, // TODO
-            }.into(),
-        })
-    }
-
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
-        matches!(value.downcast_ref::<ValueStruct>(), Ok(value) if value.st == self.st)
+pub fn id_struct(id: i64) -> Identifier {
+    Identifier {
+        source: 0,
+        category: identifier::Category::Default as i32,
+        kind: identifier::AssetKind::Structure as i32,
+        guid: id,
+        runtime_id: 0,
     }
 }
 
-#[derive(Clone)]
-pub struct StructureRef {
-    fields: Vec<AnyValue>,
-    decls: Arc<RwLock<HashMap<StructureNodeDecl, AssetRef<NodeDecl>>>>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StructRef {
+    pub id: Identifier,
+    pub fields: Vec<NativeKind>,
 }
-impl Debug for StructureRef {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        "".fmt(f)
+impl StructRef {
+    pub fn to_kind(&self) -> NativeKind {
+        NativeKind::Struct(self.clone())
     }
 }
-impl Asset for StructureDefinition {
-    type RefData = StructureRef;
-
-    fn apply(self, bundle: &mut AssetBundle) -> AssetRef<Self> {
-        let result = AssetRef::new(bundle.alloc(Category::Default, AssetKind::Structure), StructureRef {
-            fields: self.fields.iter().map(|x| x.value.clone()).collect(),
-            decls: Arc::new(RwLock::new(Default::default())),
-        });
-        for (k, name, imp, pins) in [
-            (StructureNodeDecl::AssembleServer, "Assemble Struct Server", node_interface::Implementation {
+impl StructureDefinition {
+    pub fn apply(self, bundle: &mut AssetBundle) -> StructRef {
+        let result = StructRef {
+            id: bundle.alloc(identifier::Category::Default, identifier::AssetKind::Structure),
+            fields: self.fields.iter().map(|x| x.kind.clone()).collect(),
+        };
+        let mut references = Vec::new();
+        for (name, imp, pins) in [
+            ("Assemble Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructAssembly as i32,
-                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+                template: node_interface::implementation::Template::AssembleStruct(node_interface::implementation::Id { id: result.id.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
                 pins.insert(PinType::InValue, self.fields.iter().map(|x| DeclPin {
                     name: x.name.clone(),
-                    kind: x.value.clone().into(),
+                    kind: x.kind.clone().into(),
                     meta: None,
                 }).collect::<Vec<_>>());
                 pins.insert(PinType::OutValue, vec![DeclPin {
                     name: self.name.clone(),
-                    kind: Some(ValueStruct::new(result.clone()).into()),
+                    kind: result.to_kind().into(),
                     meta: pin_signature::Kind::StructRef.into(),
                 }]);
             })),
-            (StructureNodeDecl::DestructureServer, "Destructure Struct Server", node_interface::Implementation {
+            ("Destructure Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructSplit as i32,
-                template: node_interface::implementation::Template::SplitStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+                template: node_interface::implementation::Template::SplitStruct(node_interface::implementation::Id { id: result.id.guid }).into(),
             }, HashMap::default().tap_mut(|pins| {
                 pins.insert(PinType::InValue, vec![DeclPin {
                     name: self.name.clone(),
-                    kind: Some(ValueStruct::new(result.clone()).into()),
+                    kind: result.to_kind().into(),
                     meta: pin_signature::Kind::StructRef.into(),
                 }]);
                 pins.insert(PinType::OutValue, self.fields.iter().map(|x| DeclPin {
                     name: x.name.clone(),
-                    kind: Some(x.value.clone()),
+                    kind: Some(x.kind.clone()),
                     meta: None,
                 }).collect::<Vec<_>>());
             })),
-            (StructureNodeDecl::Modify, "Modify Struct", node_interface::Implementation {
+            ("Modify Struct", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructModify as i32,
-                template: node_interface::implementation::Template::ModifyStruct(node_interface::implementation::Id { id: result.root.guid }).into(),
+                template: node_interface::implementation::Template::ModifyStruct(node_interface::implementation::Id { id: result.id.guid }).into(),
             }, HashMap::default().tap_mut(|pins| { // TODO
                 pins.insert(PinType::InControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
                 pins.insert(PinType::OutControl, vec![DeclPin { name: "".to_string(), kind: None, meta: None }]);
                 pins.insert(PinType::InValue, vec![].tap_mut(|pins| {
                     pins.push(DeclPin {
                         name: self.name.clone(),
-                        kind: Some(ValueStruct::new(result.clone()).into()),
+                        kind: Some(result.to_kind()),
                         meta: pin_signature::Kind::StructRef.into(),
                     });
                     pins.push(DeclPin {
@@ -240,33 +198,34 @@ impl Asset for StructureDefinition {
                     for field in &self.fields {
                         pins.push(DeclPin {
                             name: format!(".{}", field.name),
-                            kind: field.value.clone().into(),
+                            kind: field.kind.clone().into(),
                             meta: pin_signature::Kind::StructKeySet.into(),
                         });
                         pins.push(DeclPin {
                             name: format!("modify({})", field.name),
-                            kind: ValueBool::def().into(),
+                            kind: NativeKind::Bool.into(),
                             meta: pin_signature::Kind::StructKeyMod.into(),
                         });
                     }
                 }));
             })),
         ] {
-            result.data.decls.write().unwrap().insert(k, NodeDecl {
+            let (id, _node) = NodeDecl {
                 name: name.to_string(),
                 description: "".to_string(),
                 pins,
                 implementation: imp,
                 template_root: node_interface::TemplateRoot::Struct,
                 template_sub: node_interface::TemplateSub::StructSub,
-                references: vec![result.root],
-            }.apply(bundle));
+                references: vec![result.id],
+            }.apply(bundle);
+            references.push(id);
         }
         // Field.index 对齐 structVersion(真实导出中二者相等)
-        let field = self.encode_fields(result.root.guid, self.version);
+        let field = self.encode_fields(result.id.guid, self.version);
         bundle.push(AssetData {
-            id: result.root.into(),
-            references: result.data.decls.read().unwrap().values().map(|x| x.root).collect(),
+            id: result.id.into(),
+            references,
             name: "".to_string(),
             r#type: asset_data::Type::Structure as i32,
             payload: Some(Payload::StructData(StructureDefinitionContainer {

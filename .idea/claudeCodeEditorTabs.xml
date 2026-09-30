@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ClaudeCodeEditorTabs">
+    <option name="activeSessionId" value="session-panel" />
+    <option name="openSessionIds">
+      <list>
+        <option value="session-panel" />
+      </list>
+    </option>
+    <option name="sessionPaths">
+      <map>
+        <entry key="session-panel" value="/sessions/d464ccea-b59d-425e-87a3-8816fe34da4d" />
+      </map>
+    </option>
+    <option name="sessionTitles">
+      <map>
+        <entry key="session-panel" value="init" />
+      </map>
+    </option>
+  </component>
+</project>

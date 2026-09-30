@@ -13,17 +13,25 @@ use rust2genshin_lib::entity::Entity;
 use rust2genshin_lib::event::character::{CharacterDownEvent, DownCause};
 use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
 
+struct MyStruct(i32);
+
+#[unsafe(no_mangle)]
+pub fn test_modify(v: &mut MyStruct, e: i32) {
+    *v = MyStruct(e);
+}
 
 #[unsafe(no_mangle)]
 pub fn test_niche() {
     log(if let Some(x) = black_box(Some(guid!(114514))) { x } else { unreachable!() });
 }
+
+
 // #[event_listener]
 // pub fn test_hidden(event: TabSelectedEvent) {
 //     log(event.guid);
 //     log(event.hidden_guid);
 // }
-//
+
 // #[unsafe(no_mangle)]
 // pub fn test_closure(i: i32) {
 //     #[inline(never)]
@@ -37,13 +45,13 @@ pub fn test_niche() {
 //         log(i);
 //     });
 // }
-//
+
 // #[event_listener]
 // pub fn on_tab_selected(event: TabSelectedEvent) {
 //     log(event.guid);
 //     event.entity.delete();
 // }
-//
+
 // struct MyStruct(i32);
 // impl MyStruct {
 //     #[inline(never)]

@@ -1,40 +1,226 @@
+use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, structure_definition_data, type_definition, typed_value, vec3f};
+use crate::asset::structure::StructRef;
 use crate::asset::Side;
-use crate::asset::generated::structure_definition_data::var_def::Subtype;
-use crate::asset::generated::{pin_interface, structure_definition_data, type_definition, typed_value, vec3f, ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, TypeDefinition, TypedValue, Vec3f};
-use crate::asset::structure::ValueStruct;
-use anyhow::{Result, anyhow};
 use downcast::{Any, downcast};
-use std::any::TypeId;
-use std::fmt::Debug;
-use crate::asset::generated::structure_definition_data::var_def::value::{Dict, Val};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{Debug, Display, Formatter};
+use std::hash::Hash;
 
-pub type AnyValue = Box<dyn Value>;
-impl<T: Value> From<T> for AnyValue {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum NativeKind {
+    Bool,
+    Int,
+    Float,
+    String,
+    Vec3,
+    Guid,
+    Faction,
+    Config,
+    Prefab,
+    Entity,
+    Enum(i32),
+    LocalVarRef,
+    VarSnapshotRef,
+    List(Box<NativeKind>),
+    Dict {
+        key: Box<NativeKind>,
+        value: Box<NativeKind>,
+    },
+    Struct(StructRef),
+}
+impl NativeKind {
+    pub fn dict(key: Self, value: Self) -> Self {
+        Self::Dict {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+impl Display for NativeKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NativeKind::Enum(id) => write!(f, "Enum<{id}>"),
+            NativeKind::List(ele) => write!(f, "List<{ele}>"),
+            NativeKind::Dict { key, value } => write!(f, "Dict<{key},{value}>"),
+            NativeKind::Struct(r) => panic!("{r:?}"),
+            _ => Debug::fmt(self, f),
+        }
+    }
+}
+
+#[typetag::serde]
+pub trait NativeValue: Any + value_super::NativeValueSuper + Debug {
+}
+downcast!(dyn NativeValue);
+
+impl<T: NativeValue> From<T> for Box<dyn NativeValue> {
     fn from(value: T) -> Self {
         Box::new(value)
     }
 }
-pub trait CloneValue {
-    fn clone(&self) -> AnyValue;
+
+mod value_super {
+    use super::*;
+
+    pub trait NativeValueSuper {
+        fn clone(&self) -> Box<dyn NativeValue>;
+        fn eq(&self, other: &dyn NativeValue) -> bool;
+        fn partial_cmp(&self, other: &dyn NativeValue) -> Option<Ordering>;
+    }
+    impl<T: NativeValue + Clone + PartialOrd> NativeValueSuper for T {
+        fn clone(&self) -> Box<dyn NativeValue> {
+            Clone::clone(self).into()
+        }
+
+        fn eq(&self, other: &dyn NativeValue) -> bool {
+            if let Ok(other) = other.downcast_ref::<Self>() {
+                PartialEq::eq(self, other)
+            } else {
+                false
+            }
+        }
+
+        fn partial_cmp(&self, other: &dyn NativeValue) -> Option<Ordering> {
+            if let Ok(other) = other.downcast_ref::<Self>() {
+                PartialOrd::partial_cmp(self, other)
+            } else {
+                None
+            }
+        }
+    }
+    impl Clone for Box<dyn NativeValue> {
+        fn clone(&self) -> Self {
+            self.as_ref().clone()
+        }
+    }
+    impl PartialEq for dyn NativeValue {
+        fn eq(&self, other: &Self) -> bool {
+            self.eq(other)
+        }
+    }
+    impl Eq for dyn NativeValue {}
+    #[allow(clippy::non_canonical_partial_ord_impl)]
+    impl PartialOrd for dyn NativeValue {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            self.partial_cmp(other)
+        }
+    }
+    impl Ord for dyn NativeValue {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.partial_cmp(other).unwrap()
+        }
+    }
 }
-pub trait Value: Any + CloneValue + Debug + Send + Sync {
-    fn encode_type(&self, side: Side) -> type_definition::TypeDetail {
+
+type StructValue = Vec<Box<dyn NativeValue>>;
+
+impl NativeKind {
+    // pub fn decode_server_id(id: ServerTypeId) -> Option<Self> {
+    //     use NativeKind::*;
+    //     use ServerTypeId::*;
+    //     match id {
+    //         ServerUnknown => panic!(),
+    //         SEntity => Entity,
+    //         SGuid => Guid,
+    //         SInt => Int,
+    //         SBoolean => Bool,
+    //         SFloat => Float,
+    //         SString => String,
+    //         SVector => Vec3,
+    //         SGuidList => List(Guid.into()),
+    //         SIntList => List(Int.into()),
+    //         SBooleanList => List(Bool.into()),
+    //         SFloatList => List(Float.into()),
+    //         SStringList => List(String.into()),
+    //         SEntityList => List(Entity.into()),
+    //         SVectorList => List(Vec3.into()),
+    //         SFaction => Faction,
+    //         SConfig => Config,
+    //         SPrefab => Prefab,
+    //         SConfigList => List(Config.into()),
+    //         SPrefabList => List(Prefab.into()),
+    //         SFactionList => List(Faction.into()),
+    //         SLocalVarRef => LocalVarRef,
+    //         SVarSnapshotRef => VarSnapshotRef,
+    //         SEnumItem |
+    //         SEnumList |
+    //         SStruct |
+    //         SStructList |
+    //         SDict => return None,
+    //     }.into()
+    // }
+    //
+    // pub fn decode_server_id_with_st(id: ServerTypeId, st: Option<i64>) -> Self {
+    //     if let Some(result) = Self::decode_server_id(id) {
+    //         return result;
+    //     };
+    //     assert_eq!(id, ServerTypeId::SStruct);
+    //     NativeKind::Struct(id_struct(st.unwrap()))
+    // }
+    //
+    // pub fn decode_type_info(info: pin_interface::TypeInfo) -> Self {
+    //     let pin_interface::TypeInfo {
+    //         var_type_kernel, detail, ..
+    //     } = info;
+    //     Self::decode_type_detail(var_type_kernel.unwrap().try_into().unwrap(), detail)
+    // }
+    //
+    // pub fn decode_type_detail(id: ServerTypeId, detail: Option<pin_interface::type_info::Detail>) -> Self {
+    //     if let Some(result) = Self::decode_server_id(id) {
+    //         return result;
+    //     };
+    //     use NativeKind::*;
+    //     use ServerTypeId::*;
+    //     use pin_interface::type_info::Detail;
+    //     #[allow(unreachable_patterns)]
+    //     match detail.unwrap() {
+    //         Detail::EnumId(result) => {
+    //             assert_eq!(id, SEnumItem);
+    //             Enum(result.val)
+    //         }
+    //         Detail::ListItemType(ele) => {
+    //             let result = Self::decode_type_info(*ele.item_type.unwrap());
+    //             match id {
+    //                 SEnumList => assert_matches!(result, Enum(_)),
+    //                 SStructList => assert_matches!(result, Struct(_)),
+    //                 _ => panic!(),
+    //             }
+    //             List(result.into())
+    //         },
+    //         Detail::StructId(result) => {
+    //             assert_eq!(id, SStruct);
+    //             Struct(id_struct(result.val))
+    //         }
+    //         Detail::MapType(ele) => {
+    //             assert_eq!(id, SDict);
+    //             Dict {
+    //                 key: Self::decode_server_id(ele.key.try_into().unwrap()).unwrap().into(),
+    //                 value: Self::decode_server_id_with_st(ele.value.try_into().unwrap(), ele.value_id).into(),
+    //             }
+    //         }
+    //         _ => todo!(),
+    //     }
+    // }
+
+    pub fn encode_type(&self, side: Side) -> type_definition::TypeDetail {
         match side {
             Side::Server => type_definition::TypeDetail::ServerSide(type_definition::ServerType {
-                type_tag: self.get_server_type() as i32,
+                type_tag: self.get_server_id() as i32,
                 r#impl: type_definition::server_type::Implementation::Primitive as i32,
                 schema: self.encode_schema(),
             }),
             Side::Client => type_definition::TypeDetail::ClientSide(type_definition::ClientType {
-                type_tag: self.get_client_type() as i32,
+                type_tag: self.get_client_id() as i32,
             }),
         }
     }
 
-    fn encode_typed(&self, is_set: bool, side: Side) -> TypedValue {
+    pub fn encode_typed_value(&self, side: Side, value: Option<&dyn NativeValue>) -> TypedValue {
         TypedValue {
             widget: self.get_widget_type().unwrap_or(typed_value::WidgetType::Unknown) as i32,
-            is_set,
+            is_set: value.is_some(),
             r#type: TypeDefinition {
                 backend: match side {
                     Side::Server => type_definition::Backend::Server as i32,
@@ -43,16 +229,16 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
                 type_detail: self.encode_type(side).into(),
             }.into(),
             tracker: None,
-            storage: if is_set { self.encode_storage(side) } else { None },
+            storage: value.map(|x| self.encode_storage(side, x)),
         }
     }
 
     /// 展示控件类型:按服务端类型分发(参考导出里
     /// int→NUMBER_INPUT / string→TEXT_INPUT / float→DECIMAL_INPUT 等,
     /// 编辑器靠它决定如何渲染变量值,UNKNOWN 会显示为空)。
-    fn get_widget_type(&self) -> Option<typed_value::WidgetType> {
+    pub fn get_widget_type(&self) -> Option<typed_value::WidgetType> {
         use typed_value::WidgetType::*;
-        match self.get_server_type() {
+        match self.get_server_id() {
             ServerTypeId::SInt => NumberInput,
             ServerTypeId::SFloat => DecimalInput,
             ServerTypeId::SString => TextInput,
@@ -80,849 +266,362 @@ pub trait Value: Any + CloneValue + Debug + Send + Sync {
         }.into()
     }
 
-    fn get_server_type(&self) -> ServerTypeId;
-    fn get_server_shell_type(&self) -> i32 {
-        self.get_server_type() as i32
+    pub fn get_server_id(&self) -> ServerTypeId {
+        use NativeKind::*;
+        use ServerTypeId::*;
+        match self {
+            Bool => SBoolean,
+            Int => SInt,
+            Float => SFloat,
+            String => SString,
+            Vec3 => SVector,
+            Guid => SGuid,
+            Faction => SFaction,
+            Config => SConfig,
+            Prefab => SPrefab,
+            Entity => SEntity,
+            Enum(_) => SEnumItem,
+            LocalVarRef => SLocalVarRef,
+            VarSnapshotRef => SVarSnapshotRef,
+            List(ele) => match **ele {
+                Bool => SBooleanList,
+                Int => SIntList,
+                Float => SFloatList,
+                String => SStringList,
+                Vec3 => SVectorList,
+                Guid => SGuidList,
+                Faction => SFactionList,
+                Config => SConfigList,
+                Prefab => SPrefabList,
+                Entity => SEntityList,
+                Enum(_) => SEnumList,
+                LocalVarRef => panic!(),
+                VarSnapshotRef => panic!(),
+                List(_) => panic!(),
+                Dict { .. } => panic!(),
+                Struct { .. } => todo!(),
+            },
+            Dict { .. } => SDict,
+            Struct { .. } => SStruct,
+        }
     }
-    fn get_client_type(&self) -> ClientTypeId;
-    fn get_type_id(&self, side: Side) -> i32 {
+    fn get_client_id(&self) -> ClientTypeId {
+        use ClientTypeId::*;
+        use NativeKind::*;
+        match self {
+            Bool => CBoolean,
+            Int => CInt,
+            Float => CFloat,
+            String => CString,
+            Vec3 => CVector,
+            Guid => CGuid,
+            Faction => CFaction,
+            Config => CConfig,
+            Prefab => CPrefab,
+            Entity => CEntity,
+            Enum(_) => CEnumItem,
+            LocalVarRef => panic!(),
+            VarSnapshotRef => panic!(),
+            List(ele) => match **ele {
+                Bool => CBooleanList,
+                Int => CIntList,
+                Float => CFloatList,
+                String => CStringList,
+                Vec3 => CVectorList,
+                Guid => CGuidList,
+                Faction => panic!(),
+                Config => CConfigList,
+                Prefab => panic!(),
+                Entity => CEntityList,
+                Enum(_) => CEnumList,
+                LocalVarRef => panic!(),
+                VarSnapshotRef => panic!(),
+                List(_) => panic!(),
+                Dict { .. } => panic!(),
+                Struct { .. } => panic!(),
+            },
+            Dict { .. } => panic!(),
+            Struct { .. } => panic!(),
+        }
+    }
+    pub fn get_server_shell_type(&self) -> i32 {
+        use NativeKind::*;
+        match self {
+            Enum(id) => 10000 + *id,
+            _ => self.get_server_id() as i32,
+        }
+    }
+    pub fn get_type_id(&self, side: Side) -> i32 {
         match side {
-            Side::Server => self.get_server_type() as i32,
-            Side::Client => self.get_client_type() as i32,
+            Side::Server => self.get_server_id() as i32,
+            Side::Client => self.get_client_id() as i32,
         }
     }
 
-    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage>;
-
-    fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
-        None
+    fn default(&self) -> Option<Box<dyn NativeValue>> {
+        use NativeKind::*;
+        Some(match self {
+            Bool => bool::default().into(),
+            Int => i32::default().into(),
+            Float => f32::default().into(),
+            String => std::string::String::default().into(),
+            Vec3 => self::Vec3::default().into(),
+            Entity => return None,
+            Enum(_) => i32::default().into(),
+            Guid |
+            Faction |
+            Config |
+            Prefab => i64::default().into(),
+            LocalVarRef => return None,
+            VarSnapshotRef => return None,
+            List(_) => Vec::<Box<dyn NativeValue>>::default().into(),
+            Dict { .. } => BTreeMap::<Box<dyn NativeValue>, Box<dyn NativeValue>>::default().into(),
+            Struct { .. } => StructValue::default().into(),
+        })
     }
 
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> { // TODO: enum, List
-        None
+    fn encode_storage(&self, side: Side, value: &dyn NativeValue) -> typed_value::Storage {
+        use NativeKind::*;
+        use typed_value::Storage::*;
+        match self {
+            Bool => ValEnum(encode_bool(value)),
+            Int => ValInt(encode_int(value)),
+            Float => ValFloat(encode_float(value)),
+            String => ValString(encode_string(value)),
+            Vec3 => ValVector(encode_vec3(value)),
+            Entity => panic!(),
+            Enum(_) => ValEnum(encode_enum(value)),
+            Guid |
+            Faction |
+            Config |
+            Prefab => ValId(encode_id(value)),
+            LocalVarRef => panic!(),
+            VarSnapshotRef => panic!(),
+            List(ele) => ValList(encode_list(side, ele, value)),
+            Dict { key: k, value: v } => ValMap(encode_dict(side, k, v, value)),
+            Struct(st) => {
+                let value = value.downcast_ref::<StructValue>().unwrap();
+                ValStruct(StructStorage {
+                    field: st.fields.iter().enumerate().map(|(i, f)| f.encode_typed_value(side, Some(value[i].as_ref()))).collect(),
+                })
+            }
+        }
     }
 
-    fn encode_subtype(&self) -> Option<Subtype> { // TODO: enum, List
-        None
+    pub fn encode_field_value(&self, value: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
+        use NativeKind::*;
+        use structure_definition_data::var_def::value::Val::*;
+        match self {
+            Bool => BooleanVal(encode_bool(value)),
+            Int => IntVal(encode_int(value)),
+            Float => FloatVal(encode_float(value)),
+            String => StrVal(encode_string(value)),
+            Vec3 => Vec3Val(encode_vec3(value)),
+            Guid => GuidVal(encode_id(value)),
+            Entity => panic!(),
+            Enum(_) => todo!(),
+            Faction => todo!(),
+            Config => todo!(),
+            Prefab => todo!(),
+            LocalVarRef => panic!(),
+            VarSnapshotRef => panic!(),
+            List(_) => todo!(),
+            NativeKind::Dict { key: k, value: v } => encode_field_dict(k, v, value),
+            Struct(st) => {
+                use structure_definition_data::var_def::value::*;
+                let value = value.downcast_ref::<StructValue>().unwrap();
+                Structure(StructVal {
+                    fields: st.fields.iter().enumerate().map(|(i, x)| structure_definition_data::var_def::Value {
+                        r#type: x.get_type_id(Side::Server), // FIXME
+                        kind: None,
+                        name: None,
+                        val: x.encode_field_value(value[i].as_ref()).into(),
+                    }).collect(),
+                    struct_id: st.id.guid,
+                    id: struct_val::Id {
+                        kind: ServerTypeId::SVarSnapshotRef as i32, // ?
+                        id: 0x40000001, // FIXME
+                    }.into(),
+                })
+            },
+        }
     }
 
-    fn encode_field_value(&self) -> Val;
+    pub fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
+        use NativeKind::*;
+        use type_definition::server_type::Schema::*;
+        match self {
+            Dict { key, value } => MapBinding(type_definition::MapKeyValueBinding {
+                key_type: key.get_server_id() as i32,
+                value_type: value.get_server_id() as i32,
+                value_struct_id: match value.as_ref() {
+                    Struct(st) => st.id.guid.into(),
+                    _ => None,
+                },
+            }).into(),
+            Struct(st) => StructRef(type_definition::StructReference {
+                schema_id: st.id.guid,
+            }).into(),
+            _ => None,
+        }
+    }
 
-    fn is_instance(&self, value: &AnyValue) -> bool {
-        value.type_id() == TypeId::of::<Self>()
+    pub fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
+        use NativeKind::*;
+        use pin_interface::type_info;
+        use type_info::Detail::*;
+        match self {
+            Bool => EnumId(type_info::EnumId { val: 1 }).into(),
+            Dict { key, value } => MapType(type_info::MapType {
+                key: key.get_server_id() as i32,
+                value: value.get_server_id() as i32,
+                value_id: match value.as_ref() {
+                    Struct(st) => st.id.guid.into(),
+                    _ => None,
+                },
+                unknown: 1,
+                unknown1: 1,
+            }).into(),
+            Struct(st) => StructId(type_info::StructId { val: st.id.guid }).into(),
+            _ => None, // TODO: enum, List
+        }
+    }
+
+    pub fn encode_subtype(&self) -> Option<structure_definition_data::var_def::Subtype> { // TODO: enum, List
+        use NativeKind::*;
+        use structure_definition_data::var_def::Subtype;
+        match self {
+            Dict { key, value } => Subtype {
+                is_set: true,
+                struct_id: 0x41000001, // TODO
+                key: Some(key.get_server_id() as i32),
+                value: Some(value.get_server_id() as i32),
+                value_id: match value.as_ref() {
+                    Struct(st) => st.id.guid.into(),
+                    _ => None,
+                },
+            }.into(),
+            Struct(st) => Subtype {
+                is_set: true,
+                struct_id: st.id.guid,
+                key: None,
+                value: None,
+                value_id: None,
+            }.into(),
+            _ => None,
+        }
+    }
+
+    fn is_instance(&self, _value: &Self) -> bool {
+        true
     }
 }
 
-/// 用元素编码结果构造列表存储(ListStorage)
-fn list_storage(elements: Vec<TypedValue>) -> ListStorage {
-    ListStorage { element: elements }
+#[typetag::serde]
+impl NativeValue for bool {
 }
-impl ToOwned for dyn Value {
-    type Owned = AnyValue;
-    fn to_owned(&self) -> Self::Owned {
-        CloneValue::clone(self)
-    }
+#[typetag::serde]
+impl NativeValue for i32 {
 }
-impl Clone for AnyValue {
-    fn clone(&self) -> Self {
-        self.as_ref().to_owned()
-    }
+#[typetag::serde]
+impl NativeValue for f32 {
 }
-downcast!(dyn Value);
-
-pub trait ValueDefault: Value + Default {
-    fn def() -> AnyValue {
-        Self::default().into()
-    }
+#[typetag::serde]
+impl NativeValue for String {
 }
-impl<T: Default + Value> ValueDefault for T {
+#[typetag::serde]
+impl NativeValue for Vec3 {
 }
-
-trait ValueClone: Value + Clone {
+#[typetag::serde]
+impl NativeValue for i64 {
 }
-impl<T: Value + Clone> ValueClone for T {
+#[typetag::serde]
+impl NativeValue for Vec<Box<dyn NativeValue>> {
 }
-impl<T: ValueClone> CloneValue for T {
-    fn clone(&self) -> AnyValue {
-        Clone::clone(self).into()
-    }
+#[typetag::serde]
+impl NativeValue for BTreeMap<Box<dyn NativeValue>, Box<dyn NativeValue>> {
 }
 
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueBool(pub bool);
-impl ValueBool {
-    pub fn encode(&self) -> Enum {
-        Enum { value: self.0 as i32 }
-    }
-}
-impl Value for ValueBool {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SBoolean
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CBoolean
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValEnum(self.encode()).into()
-    }
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        pin_interface::type_info::Detail::EnumId(pin_interface::type_info::EnumId { val: 1 }).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::BooleanVal(self.encode())
-    }
-}
-
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueInt(pub i32);
-impl ValueInt {
-    pub fn encode(&self) -> Int {
-        Int { value: self.0 }
-    }
-}
-impl Value for ValueInt {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SInt
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CInt
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValInt(self.encode()).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::IntVal(self.encode())
-    }
-}
-
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueString(pub String);
-impl ValueString {
-    pub fn encode(&self) -> Str {
-        Str { value: self.0.clone() }
-    }
-}
-impl Value for ValueString {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SString
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CString
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValString(self.encode()).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::StrVal(self.encode())
-    }
-}
-
-// ========================================================================
-// 其余内置类型(排除 SStruct / SStructList)
-// ========================================================================
-
-// ---------- 标量 ----------
-
-/// 浮点数(SFloat=5 / CFloat=7)
-#[derive(Clone, Debug, Default)]
-pub struct ValueFloat(pub f32);
-impl ValueFloat {
-    fn encode(&self) -> Flt {
-        Flt { value: self.0 }
-    }
-}
-impl Value for ValueFloat {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SFloat
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CFloat
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValFloat(self.encode()).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::FloatVal(self.encode())
-    }
-}
-
-/// 三维向量(SVector=12 / CVector=11)
-#[derive(Clone, Debug, Default)]
-pub struct ValueVec3 {
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Clone, Copy, PartialOrd, Default)]
+pub struct Vec3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
-impl ValueVec3 {
-    fn encode(&self) -> Vec3f {
-        Vec3f {
-            value: vec3f::Value {
-                x: self.x,
-                y: self.y,
-                z: self.z,
-            }.into(),
-        }
-    }
-}
-impl Value for ValueVec3 {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SVector
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CVector
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValVector(self.encode()).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        Val::Vec3Val(self.encode())
-    }
+fn encode_bool(value: &dyn NativeValue) -> Enum {
+    Enum { value: *value.downcast_ref::<bool>().unwrap() as i32 }
 }
 
-/// 全局唯一 ID(SGuid=2 / CGuid=14)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueGuid(pub i64);
-impl ValueGuid {
-    fn encode(&self) -> Id {
-        Id { value: self.0 }
-    }
+fn encode_int(value: &dyn NativeValue) -> Int {
+    Int { value: *value.downcast_ref::<i32>().unwrap() }
 }
-impl Value for ValueGuid {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SGuid
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CGuid
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(self.encode()).into()
-    }
 
-    fn encode_field_value(&self) -> Val {
-        Val::GuidVal(self.encode())
+fn encode_float(value: &dyn NativeValue) -> Flt {
+    Flt { value: *value.downcast_ref::<f32>().unwrap() }
+}
+
+fn encode_string(value: &dyn NativeValue) -> Str {
+    Str { value: value.downcast_ref::<String>().unwrap().clone() }
+}
+
+fn encode_vec3(value: &dyn NativeValue) -> Vec3f {
+    let value = value.downcast_ref::<Vec3>().unwrap();
+    Vec3f {
+        value: vec3f::Value {
+            x: value.x,
+            y: value.y,
+            z: value.z,
+        }.into(),
     }
 }
 
-/// 运行时实体对象(句柄)(SEntity=1 / CEntity=1)
-#[derive(Clone, Debug)]
-pub struct ValueEntity;
-impl Default for ValueEntity {
-    fn default() -> Self {
-        Self
-    }
-}
-impl Value for ValueEntity {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SEntity
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CEntity
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        None
-    }
-
-    fn encode_field_value(&self) -> Val {
-        panic!()
-    }
+fn encode_id(value: &dyn NativeValue) -> Id {
+    Id { value: *value.downcast_ref::<i64>().unwrap() }
 }
 
-/// 枚举项(SEnumItem=14 / CEnumItem=13)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueEnum {
-    pub id: i32,
-    pub index: i32,
-}
-impl ValueEnum {
-    pub fn new(id: i32, index: i32) -> Self {
-        Self { id, index }
-    }
-}
-impl Value for ValueEnum {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SEnumItem
-    }
-    fn get_server_shell_type(&self) -> i32 {
-        10000 + self.id // FIXME: use on pin interface (node decl)
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CEnumItem
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValEnum(Enum { value: self.index }).into()
-    }
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        pin_interface::type_info::Detail::EnumId(pin_interface::type_info::EnumId { val: self.id }).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        panic!()
-    }
-
-    fn is_instance(&self, value: &AnyValue) -> bool {
-        matches!(value.downcast_ref::<ValueEnum>(), Ok(value) if value.id == self.id)
-    }
+fn encode_enum(value: &dyn NativeValue) -> Enum {
+    Enum { value: *value.downcast_ref::<i32>().unwrap() }
 }
 
-/// 阵营/势力(SFaction=17 / CFaction=16)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueFaction(pub i64);
-impl Value for ValueFaction {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SFaction
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CFaction
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 }).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
+fn encode_list(side: Side, kind: &NativeKind, value: &dyn NativeValue) -> ListStorage {
+    ListStorage { element: value.downcast_ref::<Vec<Box<dyn NativeValue>>>().unwrap().iter()
+        .map(|x| kind.encode_typed_value(side, x.as_ref().into())).collect() }
 }
 
-/// 配置表引用(SConfig=20 / CConfig=18)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueConfig(pub i64);
-impl Value for ValueConfig {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SConfig
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CConfig
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 }).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 预制体引用(SPrefab=21 / CPrefab=19)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValuePrefab(pub i64);
-impl Value for ValuePrefab {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SPrefab
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CPrefab
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValId(Id { value: self.0 }).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-// ---------- 运行时引用(仅服务器,客户端无对应类型) ----------
-
-/// 局部变量引用(SLocalVarRef=16,运行时栈内存引用)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueLocalVarRef;
-impl Value for ValueLocalVarRef {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SLocalVarRef
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        None
-    }
-
-    fn encode_field_value(&self) -> Val {
-        panic!();
-    }
-}
-
-/// 变量快照引用(SVarSnapshotRef=28,实体删除时访问原始数据)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueVarSnapshotRef;
-impl Value for ValueVarSnapshotRef {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SVarSnapshotRef
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        None
-    }
-
-    fn encode_field_value(&self) -> Val {
-        panic!();
-    }
-}
-
-// ---------- 列表 ----------
-
-/// 实体列表(SEntityList=13 / CEntityList=2)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueEntityList(pub Vec<i64>);
-impl Value for ValueEntityList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SEntityList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CEntityList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|_x| {
-                let v = &ValueEntity;
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// GUID 列表(SGuidList=7 / CGuidList=15)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueGuidList(pub Vec<i64>);
-impl Value for ValueGuidList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SGuidList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CGuidList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueGuid(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 整数列表(SIntList=8 / CIntList=4)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueIntList(pub Vec<i32>);
-impl Value for ValueIntList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SIntList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CIntList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueInt(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-    fn encode_field_value(&self) -> Val {
-        Val::IntList(structure_definition_data::var_def::value::IntList {
-            items: self.0.clone(),
-        })
-    }
-}
-
-/// 布尔列表(SBooleanList=9 / CBooleanList=6)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueBoolList(pub Vec<bool>);
-impl Value for ValueBoolList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SBooleanList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CBooleanList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueBool(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 浮点列表(SFloatList=10 / CFloatList=8)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueFloatList(pub Vec<f32>);
-impl Value for ValueFloatList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SFloatList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CFloatList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueFloat(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 字符串列表(SStringList=11 / CStringList=10)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueStringList(pub Vec<String>);
-impl Value for ValueStringList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SStringList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CStringList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueString(x.clone());
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 向量列表(SVectorList=15 / CVectorList=12)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueVectorList(pub Vec<(f32, f32, f32)>);
-impl Value for ValueVectorList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SVectorList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CVectorList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0
-                .iter()
-                .map(|&(x, y, z)| {
-                    let v = &ValueVec3 { x, y, z };
-                    let side = Side::Server;
-                    v.encode_typed(true, side)
-                })
-                .collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 枚举列表(SEnumList=18 / CEnumList=17)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueEnumList(pub Vec<ValueEnum>);
-impl Value for ValueEnumList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SEnumList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CEnumList
-    }
-    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(self.0.iter().map(|x| x.encode_typed(true, side)).collect())).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 阵营列表(SFactionList=24;客户端无对应类型)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueFactionList(pub Vec<i64>);
-impl Value for ValueFactionList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SFactionList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueFaction(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 配置表列表(SConfigList=22 / CConfigList=20)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValueConfigList(pub Vec<i64>);
-impl Value for ValueConfigList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SConfigList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::CConfigList
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValueConfig(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-/// 预制体列表(SPrefabList=23;客户端无对应类型)
-#[derive(Clone, Debug)]
-#[derive(Default)]
-pub struct ValuePrefabList(pub Vec<i64>);
-impl Value for ValuePrefabList {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SPrefabList
-    }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, _side: Side) -> Option<typed_value::Storage> {
-        typed_value::Storage::ValList(list_storage(
-            self.0.iter().map(|x| {
-                let v = &ValuePrefab(*x);
-                let side = Side::Server;
-                v.encode_typed(true, side)
-            }).collect(),
-        )).into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        todo!()
-    }
-}
-
-// ---------- 字典(仅服务器,SDict=27) ----------
-
-/// 字典/哈希表(SDict=27;客户端不支持 Map)。
-/// 非泛型:键/值类型由各自 `AnyValue` 自身携带,不另存类型参数。
-#[derive(Clone, Debug)]
-pub struct ValueDict {
-    /// 键类型(空字典时仍需要,用于 schema 的 key_type)
-    pub key_type: AnyValue,
-    /// 值类型(用于 schema 的 value_type / value_struct_id)
-    pub value_type: AnyValue,
-    pub data: Vec<(AnyValue, AnyValue)>,
-}
-
-impl ValueDict {
-    /// `impl Into<AnyValue>`:具体 Value 类型和 AnyValue 都能直接传
-    pub fn new(key_type: impl Into<AnyValue>, value_type: impl Into<AnyValue>) -> Self {
-        Self {
-            key_type: key_type.into(),
-            value_type: value_type.into(),
-            data: Vec::new(),
-        }
-    }
-    pub fn infer(data: Vec<(AnyValue, AnyValue)>) -> Result<Self> {
-        if let Some(first) = data.first() {
-            Ok(Self {
-                key_type: CloneValue::clone(first.0.as_ref()),
-                value_type: CloneValue::clone(first.1.as_ref()),
-                data,
+fn encode_dict(side: Side, key: &NativeKind, value: &NativeKind, data: &dyn NativeValue) -> MapStorage {
+    MapStorage {
+        pairs: data.downcast_ref::<HashMap<Box<dyn NativeValue>, Box<dyn NativeValue>>>().unwrap().iter()
+            .map(|(k, v)| {
+                TypedValue {
+                    widget: typed_value::WidgetType::MapPairItem as i32,
+                    is_set: true,
+                    r#type: None,
+                    tracker: None,
+                    storage: Some(typed_value::Storage::ValPair(Box::new(MapPairStorage {
+                        key: Some(Box::new(key.encode_typed_value(side, k.as_ref().into()))),
+                        value: Some(Box::new(value.encode_typed_value(side, v.as_ref().into()))),
+                    }))),
+                }
             })
-        } else {
-            Err(anyhow!("Cannot infer type"))
-        }
+            .collect(),
     }
 }
 
-impl Value for ValueDict {
-    fn get_server_type(&self) -> ServerTypeId {
-        ServerTypeId::SDict
+fn encode_field_dict(key: &NativeKind, value: &NativeKind, data: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
+    let data = data.downcast_ref::<HashMap<Box<dyn NativeValue>, Box<dyn NativeValue>>>().unwrap();
+    if !data.is_empty() {
+        todo!();
     }
-    fn get_client_type(&self) -> ClientTypeId {
-        ClientTypeId::ClientUnknown
-    }
-    fn encode_storage(&self, side: Side) -> Option<typed_value::Storage> {
-        // MapStorage.pairs 是 TypedValue 列表,每个元素用 ValPair 包装键值对
-        typed_value::Storage::ValMap(MapStorage {
-            pairs: self
-                .data
-                .iter()
-                .map(|(k, v)| {
-                    TypedValue {
-                        widget: typed_value::WidgetType::MapPairItem as i32,
-                        is_set: true,
-                        r#type: None,
-                        tracker: None,
-                        storage: Some(typed_value::Storage::ValPair(Box::new(MapPairStorage {
-                            key: Some(Box::new(k.encode_typed(true, side))),
-                            value: Some(Box::new(v.encode_typed(true, side))),
-                        }))),
-                    }
-                })
-                .collect(),
-        }).into()
-    }
-    fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {
-        Some(type_definition::server_type::Schema::MapBinding(type_definition::MapKeyValueBinding {
-            key_type: self.key_type.get_server_type() as i32,
-            value_type: self.value_type.get_server_type() as i32,
-            value_struct_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
-        }))
-    }
-    fn encode_type_detail(&self) -> Option<pin_interface::type_info::Detail> {
-        pin_interface::type_info::Detail::MapType(pin_interface::type_info::MapType {
-            key: self.key_type.get_server_type() as i32,
-            value: self.value_type.get_server_type() as i32,
-            value_id: self.value_type.as_ref().downcast_ref::<ValueStruct>().ok().map(|x| x.st.root.guid),
-            unknown: 1,
-            unknown1: 1,
-        }).into()
-    }
-    fn encode_subtype(&self) -> Option<Subtype> {
-        Subtype {
-            is_set: true,
-            struct_id: 0x41000001, // TODO
-            key: (self.key_type.get_server_type() as i32).into(),
-            value: (self.value_type.get_server_type() as i32).into(),
-            value_id: self.value_type.downcast_ref::<ValueStruct>().ok().map(ValueStruct::get_struct_id),
-        }.into()
-    }
-
-    fn encode_field_value(&self) -> Val {
-        if !self.data.is_empty() {
-            todo!();
-        }
-        Val::Dict(Dict {
-            pairs: vec![],
-            keys: vec![],
-            values: vec![],
-            key_type: self.key_type.get_server_type() as i32,
-            value_type: self.value_type.get_server_type() as i32,
-            value_type_id: self.value_type.downcast_ref::<ValueStruct>().ok().map(ValueStruct::get_struct_id),
-        })
-    }
-
-    fn is_instance(&self, value: &Box<dyn Value>) -> bool {
-        matches!(value.downcast_ref::<ValueDict>(), Ok(value)
-            if self.key_type.is_instance(&value.key_type) && self.value_type.is_instance(&value.value_type))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scalar_types_encode_storage() {
-        assert_eq!(ValueFloat(1.5).get_server_type(), ServerTypeId::SFloat);
-        assert_eq!(ValueFloat(1.5).get_client_type(), ClientTypeId::CFloat);
-        let f = ValueFloat(1.5).encode_typed(true, Side::Server);
-        assert!(matches!(f.storage, Some(typed_value::Storage::ValFloat(_))));
-
-        let v = ValueVec3 { x: 1.0, y: 2.0, z: 3.0 }.encode_typed(true, Side::Server);
-        assert!(matches!(v.storage, Some(typed_value::Storage::ValVector(_))));
-
-        let g = ValueGuid(42).encode_typed(true, Side::Server);
-        assert!(matches!(g.storage, Some(typed_value::Storage::ValId(_))));
-    }
-
-    #[test]
-    fn list_types_encode() {
-        assert_eq!(ValueIntList(vec![]).get_server_type(), ServerTypeId::SIntList);
-        let l = ValueIntList(vec![1, 2, 3]).encode_typed(true, Side::Server);
-        let Some(typed_value::Storage::ValList(list)) = l.storage else {
-            panic!("not a list");
-        };
-        assert_eq!(list.element.len(), 3);
-        assert!(matches!(list.element[0].storage, Some(typed_value::Storage::ValInt(_))));
-
-        let sl = ValueStringList(vec!["a".to_string()]).encode_typed(true, Side::Server);
-        let Some(typed_value::Storage::ValList(sl_list)) = sl.storage else {
-            panic!("not a list");
-        };
-        assert!(matches!(sl_list.element[0].storage, Some(typed_value::Storage::ValString(_))));
-    }
-
-    #[test]
-    fn dict_encodes_pairs() {
-        assert_eq!(ValueDict::new(ValueString::default(), ValueString::default()).get_server_type(), ServerTypeId::SDict);
-        let d = ValueDict::infer(vec![(ValueString("k".to_string()).into(), ValueInt(1).into())])
-            .unwrap()
-            .encode_typed(true, Side::Server);
-        let Some(typed_value::Storage::ValMap(map)) = d.storage else {
-            panic!("not a map");
-        };
-        assert_eq!(map.pairs.len(), 1);
-        assert!(matches!(map.pairs[0].storage, Some(typed_value::Storage::ValPair(_))));
-    }
-
-    #[test]
-    fn server_only_types_use_client_unknown() {
-        assert_eq!(ValueFactionList(vec![]).get_client_type(), ClientTypeId::ClientUnknown);
-        assert_eq!(ValueDict::new(ValueString::default(), ValueString::default()).get_client_type(), ClientTypeId::ClientUnknown);
-        assert_eq!(ValueLocalVarRef.get_client_type(), ClientTypeId::ClientUnknown);
-    }
+    structure_definition_data::var_def::value::Val::Dict(structure_definition_data::var_def::value::Dict {
+        pairs: vec![],
+        keys: vec![],
+        values: vec![],
+        key_type: key.get_server_id() as i32,
+        value_type: value.get_server_id() as i32,
+        value_type_id: match value {
+            NativeKind::Struct(st) => st.id.guid.into(),
+            _ => None,
+        },
+    })
 }

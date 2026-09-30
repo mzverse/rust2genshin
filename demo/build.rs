@@ -35,8 +35,8 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target_dir = manifest_dir
         .parent()
-        .map(|p| p.join("target"))
-        .unwrap_or_else(|| PathBuf::from("target"));
+        .map(|p| p.join("../../target"))
+        .unwrap_or_else(|| PathBuf::from("../../target"));
 
     // Track every file under src/ — submodules are picked up via mod foo;
     // and any non-.rs file (e.g. a build-data file) should also retrigger.

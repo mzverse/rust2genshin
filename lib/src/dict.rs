@@ -1,9 +1,15 @@
 use crate::entity::Entity;
 use crate::{Guid, String};
 use core::marker::PhantomData;
+use rust2genshin_lib_internal::native;
 
-#[repr(C)]
-pub struct Dict<K: DictKey, V>(i32, PhantomData<(K, V)>);
+#[repr(transparent)]
+#[native("Dict")]
+pub struct Dict<K: DictKey, V>(&'static DictInternal, PhantomData<(K, V)>);
+
+unsafe extern "Rust" {
+    type DictInternal;
+}
 
 /// # Safety
 /// never impl this trait manually

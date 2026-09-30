@@ -1,0 +1,23 @@
+{
+  "arch": "sparc64",
+  "os": "server",
+  "data-layout": "e-m:e-p:32:32-i64:64-i128:128-n32:64-S128",
+  "target-pointer-width": 32,
+  "dynamic-linking": true,
+  "dll-prefix": "",
+  "dll-suffix": ".gia",
+  "eh-frame-header": false,
+  "emit-debug-gdb-scripts": false,
+  "exe-suffix": ".gia",
+  "linker": "./target/debug/rust2genshin-linker",
+  "default-codegen-backend": {backend},
+  "max-atomic-width": 64,
+  "metadata": {
+    "description": "Genshin Node Graph Server",
+    "host_tools": false,
+    "std": false,
+    "tier": 3
+  },
+  "panic-strategy": "abort",
+  "llvm-target": "genshin-unknown-server"
+}

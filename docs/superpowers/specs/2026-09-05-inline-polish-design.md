@@ -6,7 +6,7 @@
 
 ## Context
 
-The `rust2genshin` codebase has accumulated a handful of `// TODO` comments across `core/src/compile/` and `lib/src/`. Many of them are **stale markers** rather than outstanding work — the code was written speculatively, and the features behind the TODOs were implemented later (cast, Entity, Guid) but the comments were never removed. A few are comment-only placeholders where the code is correct but undocumented.
+The `rust2genshin` codebase has accumulated a handful of `// TODO` comments across `core/src/compile/` and `../../../lib`. Many of them are **stale markers** rather than outstanding work — the code was written speculatively, and the features behind the TODOs were implemented later (cast, Entity, Guid) but the comments were never removed. A few are comment-only placeholders where the code is correct but undocumented.
 
 This spec clears those markers without touching logic. The user's full remaining-todo list (`unsigned int`, `i64`, `tuple`, `struct`, `events`, `loops`, `Box`, `async`, `closure`, `client node graph`) is addressed by other sub-projects; this one is purely housekeeping.
 
@@ -20,17 +20,17 @@ This spec clears those markers without touching logic. The user's full remaining
 
 **Out of scope — kept as-is (TODOs reference unimplemented features):**
 
-- `lib/src/dict.rs:21` — `// TODO` references the unimplemented feature of extending `DictKey` to additional types (currently only `i32`/`String`/`Guid`/`Entity`).
-- `lib/src/list.rs:4` — `// TODO` on the placeholder `List<T>` struct references the unimplemented full list type / list methods.
+- `../../../lib` — `// TODO` references the unimplemented feature of extending `DictKey` to additional types (currently only `i32`/`String`/`Guid`/`Entity`).
+- `../../../lib` — `// TODO` on the placeholder `List<T>` struct references the unimplemented full list type / list methods.
 - `core/src/asset/node_graph/mod.rs:468-471` — four `// TODO` markers, each tied to a specific unimplemented feature: `attached_comment` (comments support), `context_declaration` (context scope), `signal_version` (events feature), `using_structs` (struct feature).
 - `core/src/asset/node_graph/composite.rs:97` — `// TODO: enum ...` on `encode_type_detail`. Tied to the enum support feature.
 - `core/src/asset/node_graph/composite.rs:139` — `meta_pins: vec![] // TODO`. Tied to polymorphic / meta-pin support (not yet exercised by the backend).
 
 **Out of scope — kept as-is (TODOs reference API surface / decisions):**
 
-- `lib/src/entity.rs:60-64` — three entity methods (IDs 245, 668, 250) plus a "modify model color/material" comment. API surface additions that need engine doc lookup; not polish.
-- `lib/src/math.rs:5` — `Vec3` ops. API design question; needs user decisions on what to add.
-- `lib/src/player.rs:4` — `// TODO: rename` on `guid_to_id`. Needs a name decision.
+- `../../../lib` — three entity methods (IDs 245, 668, 250) plus a "modify model color/material" comment. API surface additions that need engine doc lookup; not polish.
+- `../../../lib` — `Vec3` ops. API design question; needs user decisions on what to add.
+- `../../../lib` — `// TODO: rename` on `guid_to_id`. Needs a name decision.
 
 **Out of scope — kept as-is (TODOs reference Tier 2 features):**
 
@@ -95,7 +95,7 @@ Operand::Move(p) => {
 
 ### Removed from scope
 
-The originally-proposed edits 4 (`lib/src/dict.rs:21`), 5 (`lib/src/list.rs:4`), 6 (`core/src/asset/node_graph/mod.rs:468-471`) were dropped after brainstorming review: each `// TODO` referenced an unimplemented feature, so per the project's "keep TODOs on unimplemented features" rule, those markers stay in place. The originally-proposed edit 2 (`core/src/compile/mod.rs:265`, a commented-out debug `eprintln!`) was also dropped per user preference: do not remove commented-out debug statements; they stay as-is for future debugging.
+The originally-proposed edits 4 (`../../../lib`), 5 (`../../../lib`), 6 (`core/src/asset/node_graph/mod.rs:468-471`) were dropped after brainstorming review: each `// TODO` referenced an unimplemented feature, so per the project's "keep TODOs on unimplemented features" rule, those markers stay in place. The originally-proposed edit 2 (`core/src/compile/mod.rs:265`, a commented-out debug `eprintln!`) was also dropped per user preference: do not remove commented-out debug statements; they stay as-is for future debugging.
 
 ## Components
 

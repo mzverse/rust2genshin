@@ -1,10 +1,10 @@
 [workspace]
 members = [
     "core",
+    "build-demo",
     "lib",
     "lib-internal",
     "demo",
-    "build-demo",
 ]
 resolver = "2"
 
@@ -17,8 +17,9 @@ rust-version = "1.100.0"
 [workspace.dependencies]
 rust2genshin-lib = { path = "lib" }
 downcast = "0"
-anyhow = "1"
 tap = "1"
 either = "1"
+serde = "1"
+typetag = "0"
 
 [workspace.lints.rust]

@@ -66,25 +66,6 @@ impl ToString for bool {
 // 自由函数式数学 / 逻辑
 // ========================================================================
 
-/// 整数取模
-#[native_calc(208)]
-pub fn modulo(a: i32, b: i32) -> i32;
-
-/// 布尔与
-#[native_calc(226)]
-pub fn and(a: bool, b: bool) -> bool;
-
-/// 布尔或
-#[native_calc(227)]
-pub fn or(a: bool, b: bool) -> bool;
-
-/// 布尔异或
-#[native_calc(228)]
-pub fn xor(a: bool, b: bool) -> bool;
-
-/// 布尔非
-#[native_calc(229)]
-pub fn not(a: bool) -> bool;
 
 /// 圆周率
 #[native_calc(191)]
@@ -98,11 +79,11 @@ pub fn rad_to_deg(radians: f32) -> f32;
 #[native_calc(322)]
 pub fn deg_to_rad(degrees: f32) -> f32;
 
-/// 区间 [lower, upper] 内的随机整数
+/// 区间 \[lower, upper] 内的随机整数
 #[native_calc(257)]
 pub fn random_int(lower: i32, upper: i32) -> i32;
 
-/// 区间 [lower, upper) 内的随机浮点
+/// 区间 \[lower, upper) 内的随机浮点
 #[native_calc(7)]
 pub fn random_float(lower: f32, upper: f32) -> f32;
 

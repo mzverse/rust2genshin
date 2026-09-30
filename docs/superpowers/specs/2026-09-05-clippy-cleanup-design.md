@@ -6,7 +6,7 @@
 
 ## Context
 
-The workspace has accumulated 127 clippy warnings across `core/`, `lib/`, and `lib-internal/`. Most are mechanical (derivable `Default` impls, redundant `Some(x).ok()`, unused imports) and have machine-applicable fixes via `cargo clippy --fix`. A few require judgment: one `diverging_sub_expression` (where `todo!() as Result<_>` makes the cast unreachable), one `large_enum_variant` (suggesting boxing), two `missing_safety_doc` (on unsafe traits in `lib/src/math.rs`), and ~50 `unused_variable` warnings mostly in WIP files (`compile2.rs`, `optimize.rs`).
+The workspace has accumulated 127 clippy warnings across `core/`, `../../../lib`, and `../../../lib-internal`. Most are mechanical (derivable `Default` impls, redundant `Some(x).ok()`, unused imports) and have machine-applicable fixes via `cargo clippy --fix`. A few require judgment: one `diverging_sub_expression` (where `todo!() as Result<_>` makes the cast unreachable), one `large_enum_variant` (suggesting boxing), two `missing_safety_doc` (on unsafe traits in `../../../lib`), and ~50 `unused_variable` warnings mostly in WIP files (`compile2.rs`, `ir`).
 
 This is a **pure cleanup pass** — no behavior changes. The user's previous preference is to keep TODOs on unimplemented features and not remove commented debug code. We honor that by **prefixing** unused variables with `_` rather than deleting the lines (the WIP structure stays as-is), and by keeping any `// TODO` comments that aren't on the auto-fix path.
 
@@ -88,7 +88,7 @@ cd F:/rust2genshin && git add core/src/asset/node_graph/ && git commit -m "refac
 
 ### Phase 4 — Hand-fix `missing_safety_doc` for `unsafe trait I32` and `unsafe trait F32`
 
-Both traits are at `lib/src/math.rs`. The unsafe-trait pattern: each trait is implemented for one specific primitive type via proc-macro (`#[native_calc(N)]` attributes), and the safety invariant is that the proc-macro and the kernel IDs line up.
+Both traits are at `../../../lib`. The unsafe-trait pattern: each trait is implemented for one specific primitive type via proc-macro (`#[native_calc(N)]` attributes), and the safety invariant is that the proc-macro and the kernel IDs line up.
 
 Current:
 ```rust
@@ -154,7 +154,7 @@ For each unused variable flagged by clippy, rename to prefix with `_`. Specifica
 
 **`core/src/compile/compile2.rs`** (~20 vars): `sess`, `cgcx`, `shared_emitter`, `prof`, `tm_factory`, `exported_symbols_for_lto`, `each_linked_rlib_for_lto`, `modules`, `config`, `metadata`, `outputs`, `module_name`, `methods`, `cgu_name`, `cost`, `tcx`, `crate_info`, `ongoing_codegen`, `incr_comp_session`, `compiled_modules`, `target_features`, `opt_level`, `thin`, `method`, `crate_info`, etc.
 
-**`core/src/compile/optimize.rs`**: `from`, `to` (per `core/src/compile/optimize.rs:82:36`).
+**`../../../core/src/compile/ir.rs`**: `from`, `to` (per `core/src/compile/optimize.rs:82:36`).
 
 **Other non-WIP files** with unused vars:
 - `core/src/compile/func.rs:1:5` — unused import `std::panic::catch_unwind`
@@ -180,7 +180,7 @@ cd F:/rust2genshin && git add core/src/compile/compile2.rs core/src/compile/opti
 Remove five unused deps:
 - Root `Cargo.toml`: `slotmap`, `indexmap`, `enum_dispatch` (workspace deps)
 - `core/Cargo.toml`: `id-pool`
-- `demo/Cargo.toml`: `rand`
+- `../../../demo`: `rand`
 
 For each, simply delete the corresponding line. Before committing, verify cargo still builds (the dep may be transitively needed even if not directly used).
 
@@ -224,20 +224,20 @@ Expected: 5/5 pass.
 - `core/src/compile/func.rs` — unused imports + auto-fixes (Phases 1 & 5)
 - `core/src/compile/native.rs` — diverging_sub_expression fix (Phase 2)
 - `core/src/compile/compile2.rs` — unused variable `_` prefixing (Phase 5)
-- `core/src/compile/optimize.rs` — unused variable `_` prefixing (Phase 5)
+- `../../../core/src/compile/ir.rs` — unused variable `_` prefixing (Phase 5)
 - `core/src/compile/parser.rs` — unused variable (Phase 5)
 - `core/src/asset/value.rs` — derivable_impls + unused variable (Phases 1 & 5)
 - `core/src/asset/mod.rs` — collapsible_if (Phase 1)
 - `core/src/asset/node_graph/*.rs` — derivable_impls, needless_late_init, large_enum_variant (Phases 1 & 3)
 - `core/src/asset/node_graph/arithmetic.rs` — needless_late_init (Phase 1)
-- `lib/src/math.rs` — missing_safety_doc on `I32` and `F32` (Phase 4)
-- `lib/src/dict.rs`, `lib/src/list.rs`, `lib/src/player.rs` — possible auto-fixes (Phase 1)
-- `lib-internal/src/lib.rs` — possible auto-fixes (Phase 1)
-- `demo/build.rs` — unused import (Phase 1)
-- `demo/src/lib.rs` — possible auto-fixes (Phase 1)
+- `../../../lib` — missing_safety_doc on `I32` and `F32` (Phase 4)
+- `../../../lib`, `../../../lib`, `../../../lib` — possible auto-fixes (Phase 1)
+- `../../../lib-internal` — possible auto-fixes (Phase 1)
+- `../../../demo` — unused import (Phase 1)
+- `../../../demo` — possible auto-fixes (Phase 1)
 - `Cargo.toml` — remove unused workspace deps (Phase 6)
 - `core/Cargo.toml` — remove unused dep (Phase 6)
-- `demo/Cargo.toml` — remove unused dep (Phase 6)
+- `../../../demo` — remove unused dep (Phase 6)
 
 ### Unchanged
 - `.gia` output (verified by SHA-256 gate)
@@ -281,4 +281,4 @@ sha256sum target/rust2genshin_demo.gia                                          
 
 After this cleanup pass, the workspace has zero clippy warnings. Future code changes can use `cargo +nightly clippy --workspace --all-targets -- -D warnings` as a CI gate.
 
-The remaining TODOs (in `core/src/compile/mod.rs`, `core/src/asset/node_graph/mod.rs:468-471`, etc.) and the WIP files (`compile2.rs`, `optimize.rs`) remain in place — those are tracked in the inline-polish spec's "Out of scope" section and will become their own sub-projects.
+The remaining TODOs (in `core/src/compile/mod.rs`, `core/src/asset/node_graph/mod.rs:468-471`, etc.) and the WIP files (`compile2.rs`, `ir`) remain in place — those are tracked in the inline-polish spec's "Out of scope" section and will become their own sub-projects.

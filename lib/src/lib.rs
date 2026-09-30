@@ -22,6 +22,12 @@ pub use rust2genshin_lib_internal::event_listener;
 
 use rust2genshin_lib_internal::*;
 
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unreachable!()
+}
+
 pub type String = &'static str;
 pub trait ToString {
     fn to_string(&self) -> String;

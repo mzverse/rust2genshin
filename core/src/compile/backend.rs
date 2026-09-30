@@ -20,16 +20,15 @@
 use crate::compile;
 use rustc_codegen_ssa::back::archive::ArArchiveBuilderBuilder;
 use rustc_codegen_ssa::back::link::link_binary;
-use rustc_codegen_ssa::target_features::internal_target_features;
 use rustc_codegen_ssa::traits::CodegenBackend;
-use rustc_codegen_ssa::{CompiledModules, CrateInfo, TargetConfig};
+use rustc_codegen_ssa::{CompiledModules, CrateInfo};
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::OutputFilenames;
 use rustc_session::{CodegenBackendInit, EarlySession, IncrCompSession, Session};
 use rustc_span::Symbol;
-use rustc_structures::CrateType;
+use rustc_span::def_id::LOCAL_CRATE;
 use std::any::Any;
 
 pub struct R2gCodegenBackend;
@@ -48,40 +47,25 @@ impl CodegenBackend for R2gCodegenBackend {
         }
     }
 
-    fn target_config(&self, sess: &EarlySession) -> TargetConfig {
-        // 与 dummy 后端一致:把 ABI 必需特性填进 internal_target_features,
-        // 否则前端会警告 x87/sse2 等目标特性未启用
-        let abi_required_features = sess.target.abi_required_features();
-        let internal_target_features = internal_target_features::<0>(
-            sess,
-            |_feature| Default::default(),
-            |feature| abi_required_features.required.contains(&feature),
-        );
-        TargetConfig {
-            internal_target_features,
-            has_reliable_f16: true,
-            has_reliable_f16_math: true,
-            has_reliable_f128: true,
-            has_reliable_f128_math: true,
-        }
-    }
-
-    fn supported_crate_types(&self, _sess: &Session) -> Vec<CrateType> {
-        // 与 dummy 后端一致:只认 rlib/可执行;库类 crate cargo 会退化为 rlib,
-        // 可执行保留前端处理但会在 link 步报错(本后端不产机器码)。
-        vec![CrateType::Rlib, CrateType::Executable]
-    }
-
-    fn target_cpu(&self, _sess: &Session) -> String {
-        String::new()
+    fn target_cpu(&self, sess: &Session) -> String {
+        match sess.opts.cg.target_cpu {
+            Some(ref name) => name,
+            None => sess.target.cpu.as_ref(),
+        }.to_owned()
     }
 
     fn codegen_crate<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Box<dyn Any> {
         // 编译进程内的后端钩子:analysis 已完成,HIR 可用 → 导出 .gia + extern 方法列表。
         // (proc-macro / #[test] 过滤在 export 内部处理)
         // crate::export::maybe_export_crate(tcx, &cfg);
-        _ = compile::compile(tcx);
-        Box::new(CompiledModules { modules: vec![], allocator_module: None })
+        match tcx.crate_name(LOCAL_CRATE).as_str() {
+            "core" |
+            "compiler_builtins" =>
+                return Box::new(CompiledModules { modules: vec![], allocator_module: None }),
+            _ => (),
+        }
+        let module = compile::compile(tcx).ok();
+        Box::new(CompiledModules { modules: module.unwrap_or_default(), allocator_module: None })
     }
 
     fn join_codegen(
@@ -104,17 +88,15 @@ impl CodegenBackend for R2gCodegenBackend {
         outputs: &OutputFilenames,
     ) {
         // 非 rlib 且需要链接的 crate 类型(dummy 后端同款行为):给出明确报错
-        if let Some(&crate_type) =
-            crate_info.crate_types.iter().find(|&&crate_type| crate_type != CrateType::Rlib)
-            && outputs.outputs.should_link()
-        {
-            sess.dcx().fatal(format!(
-                "crate type {crate_type} not supported by the rust2genshin codegen backend \
-                 (it does not produce machine code)"
-            ));
-        }
-
-        sess.dcx().note("TODO: link"); // TODO
+        // if let Some(&crate_type) =
+        //     crate_info.crate_types.iter().find(|&&crate_type| crate_type != CrateType::Rlib)
+        //     && outputs.outputs.should_link()
+        // {
+        //     sess.dcx().fatal(format!(
+        //         "crate type {crate_type} not supported by the rust2genshin codegen backend \
+        //          (it does not produce machine code)"
+        //     ));
+        // }
         link_binary(
             sess,
             &ArArchiveBuilderBuilder,

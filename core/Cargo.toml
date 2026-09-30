@@ -6,22 +6,28 @@ edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "rust2genshin"
 path = "src/lib.rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "rust2genshin-linker"
+path = "src/linker.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-downcast = { workspace = true }
-anyhow = { workspace = true }
 tap = { workspace = true }
-either = { workspace = true }
+either = { workspace = true, features = ["serde"] }
+downcast = { workspace = true }
+serde = { workspace = true }
+typetag = { workspace = true }
+bincode = { version = "2", features = ["serde"] }
+ar = "0"
 prost = "0"
 syn = "3"
 proc-macro2 = "1"
-slab = "0"
+slab = { version = "0", features = ["serde"] }
 
 [build-dependencies]
 prost-build = "0"

@@ -2,12 +2,16 @@
   <dictionary name="project">
     <words>
       <w>Genshin</w>
+      <w>RUSTFLAGS</w>
       <w>apfloat</w>
       <w>comptime</w>
       <w>expn</w>
       <w>guid</w>
       <w>ipow</w>
       <w>isqrt</w>
+      <w>ogia</w>
+      <w>rlib</w>
+      <w>serde</w>
       <w>ushr</w>
     </words>
   </dictionary>

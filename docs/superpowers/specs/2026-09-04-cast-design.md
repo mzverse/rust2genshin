@@ -33,9 +33,9 @@ This spec adds the bridge: `Rvalue::Cast` → `node_cast` for the type pairs the
 
 Add one new arm to `compile_assign_rvalue` in `core/src/compile/func.rs`. The arm:
 
-1. Resolves the source `AnyValue` from the operand's MIR type.
-2. Resolves the target `AnyValue` from the cast's target MIR type.
-3. **Fast path:** if the two `AnyValue`s are equal, forward the operand directly to the destination place (no node inserted).
+1. Resolves the source `NativeKind` from the operand's MIR type.
+2. Resolves the target `NativeKind` from the cast's target MIR type.
+3. **Fast path:** if the two `NativeKind`s are equal, forward the operand directly to the destination place (no node inserted).
 4. **Slow path:** if the pair is in the supported list, insert `node_convert_type(from, to)`, connect the operand output to the node's single input, then wire the node output to the destination place.
 5. **Error:** otherwise emit a `span_err` naming both types and the `CastKind`.
 
@@ -124,7 +124,7 @@ Errors flow through the existing `Result` machinery in `compile_assign_rvalue`. 
 
 There is no automated test harness in the project today. Verification for this spec is build-and-inspect:
 
-**Positive cases** — extend `demo/src/lib.rs` with:
+**Positive cases** — extend `../../../demo` with:
 
 ```rust
 #[unsafe(no_mangle)]
@@ -168,7 +168,7 @@ Inspect the `.gia` with `protoc --decode_raw` or a hex dump; confirm:
 
 ## Risks
 
-- **Equality on `AnyValue`:** the fast path uses `from_ty == to_ty`. `AnyValue` derives or implements equality such that two `ValueInt::def()` instances compare equal; if not, the fast path could be skipped (no correctness regression, just an extra node inserted). Mitigation: confirm equality works in practice; otherwise remove the fast path and let the slow path handle it.
+- **Equality on `NativeKind`:** the fast path uses `from_ty == to_ty`. `NativeKind` derives or implements equality such that two `ValueInt::def()` instances compare equal; if not, the fast path could be skipped (no correctness regression, just an extra node inserted). Mitigation: confirm equality works in practice; otherwise remove the fast path and let the slow path handle it.
 - **Selectortype pin behavior:** `node_cast` uses `selectors_in` for the polymorphic input. `set_value_in` writes the default value (or a link); if a future change breaks polymorphism handling, the conversion node may emit wrong-type pins. Out of scope for this spec; flag if observed in testing.
 - **Future expansion:** when `unsigned int` and `i64` are added in later specs, the supported-pair list will grow. Keep `cast_supported` next to where the conversion node lives, or move it into `arithmetic.rs` as a `pub fn`.
 

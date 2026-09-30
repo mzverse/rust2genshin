@@ -121,9 +121,9 @@ impl Entity {
     #[native_calc(508)]
     pub fn has_status(self, config_id: Config) -> bool;
 
-    /// 仇恨值,无仇恨关系返回 `None`
+    /// 仇恨值
     #[native_calc(603)]
-    pub fn aggro_value(self, owner: Self) -> Option<i32>;
+    pub fn aggro_value(self, owner: Self) -> i32;
 
     /// 仇恨倍率
     #[native_calc(604)]
