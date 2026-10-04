@@ -8,9 +8,6 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/rust2genshin.rs"));
 }
 
-pub mod value;
-pub mod structure;
-
 pub use generated::Identifier;
 pub use asset_bundle_data::Mode as GameMode;
 

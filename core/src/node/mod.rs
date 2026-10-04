@@ -1,6 +1,6 @@
 use crate::asset::generated::{AssetData, DynamicTypeMetadata, GraphVariable, Identifier, InterfaceMapping, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, TypeDefinition, TypedValue, asset_data, dynamic_type_metadata, identifier, node_graph_container, node_graph_data, pin_signature, type_definition, typed_value};
-use crate::asset::value::{NativeKind, NativeValue};
 use crate::asset::{AssetBundle, Side};
+use crate::value::{NativeKind, NativeValue};
 use slab::Slab;
 use std::collections::{HashMap, HashSet};
 use tap::{Pipe, Tap};
@@ -14,6 +14,7 @@ pub mod query;
 pub mod trigger;
 pub mod composite;
 pub mod decl;
+pub mod layout;
 
 pub use pin_signature::Kind as PinType;
 use crate::asset::generated::asset_data::Payload;
@@ -171,6 +172,9 @@ impl NodeKind {
 pub struct Node<NodeId = NativeNodeId, Kind = NativeKind> {
     pub kind: NodeKind<NodeId, Kind>,
     pub links: Links,
+    /// 自动整理算出的坐标(左上角),默认 (0,0)。`.gia` 的 `x_pos` / `y_pos`
+    /// 就是从这里编码的;viewer 与 core 的布局共用 [`layout`](crate::node::layout::layout)。
+    pub position: (f32, f32),
 }
 #[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -189,6 +193,9 @@ impl Links {
             values_out: vec![Default::default(); kind.values_out_types.len()],
         }
     }
+    pub fn is_empty(&self) -> bool {
+        self.controls_out.iter().all(Vec::is_empty) && self.controls_in.iter().all(Vec::is_empty) && self.values_out.iter().all(Vec::is_empty) && self.values_in.iter().all(|x| x.link.is_none())
+    }
     #[must_use]
     pub fn get_neighbors(&self) -> HashSet<NodeRef> {
         self.controls_in.iter()
@@ -205,6 +212,7 @@ impl<NodeId, Kind> Node<NodeId, Kind> {
         Self {
             links: Links::new(&kind),
             kind,
+            position: (0., 0.),
         }
     }
 }
@@ -425,7 +433,7 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
     }
 
     pub fn unlink_value(&mut self, from: Link, to: Link) {
-        self.values_out_mut(from).retain(|x| *x != to);
+        self.values_out_mut(from).retain(|&x| x != to);
         self.value_in_mut(to).pipe(|x| if x.link == Some(from) { x.link = None; });
     }
 
@@ -437,27 +445,27 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
 
     pub fn remove(&mut self, key: NodeRef) -> NodeKind<NodeId, Kind> {
         let links = self.get_node(key).links.clone();
-        let this = LinkTarget::Node(key);
         for (i, x) in links.controls_out.into_iter().enumerate() {
             for to in x {
-                self.unlink_control(Link::new(this, i), to);
+                self.unlink_control(Link::node(key, i), to);
             }
         }
         for (i, x) in links.controls_in.into_iter().enumerate() {
             for from in x {
-                self.unlink_control(from, Link::new(this, i));
+                self.unlink_control(from, Link::node(key, i));
             }
         }
         for (i, x) in links.values_out.into_iter().enumerate() {
             for to in x {
-                self.unlink_value(Link::new(this, i), to);
+                self.unlink_value(Link::node(key, i), to);
             }
         }
         for (i, x) in links.values_in.into_iter().enumerate() {
             if let Some(from) = x.link {
-                self.unlink_value(from, Link::new(this, i));
+                self.unlink_value(from, Link::node(key, i));
             }
         }
+        assert!(self.get_node(key).links.is_empty());
         self.nodes.remove(key.into()).kind
     }
 
@@ -486,15 +494,54 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
     }
 
     pub fn relink_controls(&mut self, from: Link, to0: Link, to1: &[Link]) {
-        self.controls_out_mut(from).pipe(|from| *from = from.iter().flat_map(|x| if *x == to0 { to1.to_vec() } else { vec![*x] }).collect());
-        self.controls_in_mut(to0).retain(|x| *x != from);
-        for x in to1 {
-            self.controls_in_mut(*x).push(from);
+        let mut a = false;
+        self.controls_out_mut(from).pipe(|from| *from = from.iter().flat_map(|&x| if x == to0 {
+            assert!(!a);
+            a = true;
+            to1.to_vec()
+        } else { vec![x] }).collect());
+        if a {
+            self.controls_in_mut(to0).retain(|&x| x != from);
+            for x in to1 {
+                self.controls_in_mut(*x).push(from);
+            }
+        }
+    }
+
+    pub fn verify(&self) {
+        for (i, x) in &self.nodes {
+            for (j, y) in x.links.values_in.iter().enumerate() {
+                if let Some(z) = &y.link && let Some(w) = z.target.node() {
+                    assert!(self.get_node(w).links.values_out[z.index].contains(&Link::node(i.into(), j)));
+                }
+            }
+            for (j, y) in x.links.values_out.iter().enumerate() {
+                for z in y {
+                    if let Some(w) = z.target.node() {
+                        assert_eq!(self.get_node(w).links.values_in[z.index].link, Some(Link::node(i.into(), j)));
+                    }
+                }
+            }
+            for (j, y) in x.links.controls_in.iter().enumerate() {
+                for z in y {
+                    if let Some(w) = z.target.node() {
+                        assert!(self.get_node(w).links.controls_out[z.index].contains(&Link::node(i.into(), j)));
+                    }
+                }
+            }
+            for (j, y) in x.links.controls_out.iter().enumerate() {
+                for z in y {
+                    if let Some(w) = z.target.node() {
+                        assert!(self.get_node(w).links.controls_in[z.index].contains(&Link::node(i.into(), j)));
+                    }
+                }
+            }
         }
     }
 }
 impl NodeGraph {
     fn apply(self, id: Identifier) -> AssetData {
+        const POS_SCALA: f32 = 5.;
         let mut references = vec![];
         for (_, x) in &self.nodes {
             references.extend(x.kind.references.clone());
@@ -621,8 +668,8 @@ impl NodeGraph {
                                     kernel += 1;
                                 }
                             }),
-                            x_pos: 0.,
-                            y_pos: 0.,
+                            x_pos: n.position.0 * POS_SCALA,
+                            y_pos: n.position.1 * POS_SCALA,
                             attached_comment: None, // TODO
                             context_declaration: None, // TODO
                             signal_version: None, // TODO
@@ -639,7 +686,7 @@ impl NodeGraph {
                                         _ => panic!(),
                                     } {
                                         let LinkTarget::Node(target) = link.target else {
-                                            continue;
+                                            panic!();
                                         };
                                         let sig = |idx: usize| PinSignature {
                                             kind: kind as i32,
@@ -746,7 +793,7 @@ pub fn encode_selected(kind: &NativeKind, value: Option<&dyn NativeValue>, selec
     if let Some(selected) = selected {
         TypedValue {
             widget: typed_value::WidgetType::TypeSelector as i32,
-            is_set: value.is_some(),
+            is_set: true,
             r#type: TypeDefinition {
                 backend: match side {
                     Side::Server => type_definition::Backend::Server as i32,
@@ -755,11 +802,11 @@ pub fn encode_selected(kind: &NativeKind, value: Option<&dyn NativeValue>, selec
                 type_detail: kind.encode_type(side).into(),
             }.into(),
             tracker: None,
-            storage: value.map(|x| typed_value::Storage::ValPoly(PolymorphicValue {
+            storage: typed_value::Storage::ValPoly(PolymorphicValue {
                 chosen_type_index: selected,
-                actual_value: Some(kind.encode_typed_value(side, Some(x)).into()),
+                actual_value: Some(kind.encode_typed_value(side, value).into()),
                 extra_meta: None,
-            }.into())),
+            }.into()).into(),
         }
     } else {
         kind.encode_typed_value(side, value)

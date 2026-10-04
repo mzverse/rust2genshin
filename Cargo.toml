@@ -5,6 +5,20 @@ members = [
     "lib",
     "lib-internal",
     "demo",
+    "viewer",
+]
+# `viewer` 依赖 gpui,gpui 在 Linux 上要 X11/Wayland/字体等系统库,
+# 而 CI(`build.yml`)只装了 protobuf-compiler。把它排除出默认成员,
+# 不带 `-p` 的 `cargo build` / `cargo test` 就不会去编译它。
+# 当前 CI 只跑 `cargo run -p build-demo`(每次调用都带显式 `-p`),本来就绕开了;
+# 这一行是防将来 CI 改成 `cargo build` 或 `cargo test --workspace`。
+# 需要构建 viewer 时显式:`cargo build -p rust2genshin-viewer`。
+default-members = [
+    "core",
+    "build-demo",
+    "lib",
+    "lib-internal",
+    "demo",
 ]
 resolver = "2"
 

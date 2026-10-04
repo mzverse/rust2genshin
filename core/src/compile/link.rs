@@ -1,9 +1,9 @@
-use crate::asset::structure::StructRef;
 use crate::asset::{AssetBundle, GameMode, Identifier};
 use crate::compile::func::{FnDecl, NodeGraphIr};
 use crate::compile::ir::{AdtInfo, FnInfo, Optimizer};
 use crate::node::composite::CompositeNodeGraph;
 use crate::node::{MainNodeGraph, NodeKind};
+use crate::structure::StructRef;
 use std::collections::HashMap;
 use std::iter::Sum;
 use std::ops::AddAssign;
@@ -73,11 +73,13 @@ impl Linker {
                 self.assets.set_primary(id);
             }
         }
-        if let Some(main) = self.target.main.take() && !main.is_empty() {
-            let id = MainNodeGraph::new(Optimizer {
+        if let Some(main) = self.target.main.take() {
+            let mut graph = Optimizer {
                 graph: main,
                 decl: Default::default(),
-            }.lower(&mut self).0).apply(&mut self.assets);
+            }.lower(&mut self).0;
+            crate::node::layout::layout(&mut graph);
+            let id = MainNodeGraph::new(graph).apply(&mut self.assets);
             self.assets.set_primary(id);
         }
         if self.assets.primary.is_empty() {
@@ -93,12 +95,12 @@ impl Linker {
         if let Some(r) = self.functions.get(key) {
             return r;
         }
-        println!("Linking: {key}");
         let f = self.target.functions.remove(key).expect(key);
-        let (graph, decl) = Optimizer {
+        let (mut graph, decl) = Optimizer {
             graph: f.graph,
             decl: f.decl,
         }.lower(self);
+        crate::node::layout::layout(&mut graph);
         let (id, node) = CompositeNodeGraph::new(graph).tap_mut(|graph| graph.description = f.description).apply(&mut self.assets);
         self.functions.entry(key.to_string()).or_insert(CompiledFn { id, node, decl })
     }

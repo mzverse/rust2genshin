@@ -5,8 +5,8 @@
 //! 命名统一 `NODE_CLIENT_` + 尾部,避免与 Server 节点冲突。
 
 use crate::node::NodeKind;
+use crate::value::NativeKind::*;
 use std::sync::LazyLock;
-use crate::asset::value::NativeKind::*;
 
 // ========================================================================
 // 端口 / 图入口

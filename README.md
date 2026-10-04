@@ -47,7 +47,7 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
     cargo run -p build-demo
     ```
     若改了`demo`的模块名，需同时修改`build-demo`的代码
-6. 构建结果是`target/rust2genshin_demo.gia`
+6. 构建结果是`target/genshin-unknown-server/release/rust2genshin_demo.gia`
 
 ## Code
 
@@ -170,14 +170,6 @@ let g = const { Guid::new(42) };    // 内联 const 块
 ## 事件
 
 待完善
-
-## 编译流程
-
-正确的流程应为分别编译每个crate，再link得到最终.gia/.gil/.gis
-
-但.gia本身不支持link，所以我们现在先偷懒直接编译目标crate了
-
-后果就是无法获取依赖中的MIR
 
 # 不被支持的特性
 

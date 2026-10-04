@@ -2,8 +2,8 @@
 //!
 //! 人工设计,替换自动生成版本:引脚语义命名、动态结构用 Vec、类型准确。
 
-use crate::asset::value::NativeKind::{self, *};
 use crate::node::NodeKind;
+use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;
 // ========================================================================
 // 随机 / 数学常量
@@ -273,9 +273,9 @@ pub static NODE_GET_INPUT_TYPE: LazyLock<NodeKind> = LazyLock::new(|| {
 /// initial_value(idx0,R<T>) 输入;local_variable(idx0,Loc) 与 value(idx1,R<T>) 输出。
 /// 变体顺序(TSI 与 kernel 均按参考 data.json):Bol/Int/Str/Ety/Gid/Flt/Vec/
 /// L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
-pub fn node_local(ty: NativeKind) -> Option<NodeKind> {
-    let mut result = NodeKind::simple(18, 0, 0, vec![ty.clone()], vec![LocalVarRef, ty.clone()]);
-    let (selected, kernel) = match ty {
+pub fn node_local(kind: &NativeKind) -> Option<NodeKind> {
+    let mut result = NodeKind::simple(18, 0, 0, vec![kind.clone()], vec![LocalVarRef, kind.clone()]);
+    let (selected, kernel) = match kind {
         Bool => (0, 18),
         Int => (1, 20),
         String => (2, 2656),

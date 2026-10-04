@@ -1,7 +1,7 @@
-use rustc_abi::{FieldIdx, Integer, IntegerType};
-use crate::asset::value::NativeKind;
 use crate::compile::ir::{AdtInfo, FieldInfo, IrKind};
 use crate::compile::{Compiler, Result};
+use crate::value::NativeKind;
+use rustc_abi::{FieldIdx, Integer, IntegerType};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_attr_ir::LangItem;
 use rustc_index::Idx;
@@ -10,8 +10,8 @@ use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{AdtDef, AdtKind, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt, TypingEnv};
-use rustc_span::{Span, DUMMY_SP};
 use rustc_span::def_id::{DefId, LOCAL_CRATE};
+use rustc_span::{DUMMY_SP, Span};
 
 
 impl<'tcx> Compiler<'tcx> {

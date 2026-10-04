@@ -1,11 +1,11 @@
 use super::*;
-use crate::asset::value::{NativeKind, NativeValue};
 use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_unreachable};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::node::control::node_switch;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
+use crate::value::{NativeKind, NativeValue};
 use either::Either;
 use rustc_abi::{FieldIdx, Integer, IntegerType, Size};
 use rustc_attr_ir::LangItem;
@@ -447,8 +447,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             TerminatorKind::Unreachable => {
                 let node = self.graph.insert(node_ir_unreachable());
                 Link::node(node, 0)
-            } // TODO
-            TerminatorKind::Drop { place, target, .. } => {
+            },
+            TerminatorKind::Drop { place, target, drop, .. } => {
+                assert!(drop.is_none());
                 let arg = self.compile_rvalue(&Rvalue::Ref(self.tcx.lifetimes.re_erased, BorrowKind::Mut { kind: MutBorrowKind::Default }, *place), terminator.source_info.span)?;
                 let result = self.compile_call(terminator.source_info.span,
                                                Instance::resolve_drop_glue(self.tcx, self.mono(place.ty(&self.body.local_decls, self.tcx).ty)),
@@ -457,7 +458,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.graph.link_control(result.end, blocks.get(*target).unwrap().begin);
                 result.begin
             },
-            TerminatorKind::UnwindResume => Block::nop(self.graph).begin,
+            TerminatorKind::UnwindResume => panic!(),
             other => return self.helper().span_err(
                 terminator.source_info.span,
                 format!("Unsupported terminator: {}", other.name()),
@@ -543,9 +544,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 vec![ret],
             )
         };
-        let control = match node_kind.controls_in_num {
-            0 => false,
-            1 => true,
+        let control = match (node_kind.controls_in_num, node_kind.controls_out_num) {
+            (0, 0) => false,
+            (1, 1) => true,
             _ => panic!()
         };
         let node = self.graph.insert(node_kind.clone());

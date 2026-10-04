@@ -1,9 +1,9 @@
 use super::{Compiler, Result};
-use crate::asset::value::{NativeKind, NativeValue};
 use crate::compile::get_expn_macro_attr;
 use crate::compile::ir::IrKind;
 use crate::node::NodeKind;
 use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
+use crate::value::{NativeKind, NativeValue};
 use rustc_middle::mir::interpret::Scalar;
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{FnSig, Instance, Ty, TyKind};

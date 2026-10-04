@@ -8,10 +8,10 @@ use crate::asset::generated::type_definition::StructReference;
 use crate::asset::generated::{identifier, type_definition};
 use crate::node::decl::{DeclPin, NodeDecl, decl_pins_value_out};
 use crate::node::{NodeGraph, NodeKind, PinType};
+use crate::value::NativeKind::{self, *};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use tap::Tap;
-use crate::asset::value::NativeKind::{self, *};
 
 /// 激活实体相机(ID 262)
 pub static NODE_ACTIVATE_ENTITY_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {

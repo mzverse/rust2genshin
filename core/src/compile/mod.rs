@@ -1,6 +1,6 @@
 use crate::compile::func::{CompilingFn, FnDecl, NodeGraphIr, node_ir_native};
 use crate::compile::helper::Helper;
-use crate::compile::ir::{FnInfo, Optimizer};
+use crate::compile::ir::{node_ir_assemble, FnInfo, IrNodeId, Optimizer};
 use crate::compile::link::Target;
 use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
 use crate::node::control::NODE_IF;
@@ -22,7 +22,7 @@ use rustc_structures::CrateType;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use syn::{Meta, MetaList};
+use syn::{LitInt, Meta, MetaList};
 
 pub mod func;
 pub mod native;
@@ -165,41 +165,9 @@ impl<'tcx> Compiler<'tcx> {
         let mut writer = BufWriter::new(File::create(&path)?);
         bincode::serde::encode_into_std_write(&self.target, &mut writer, bincode::config::standard())?;
         Ok(path)
-        // let path = out_dir.join(format!(
-        //     "{}.gia",
-        //     self.tcx.crate_name(LOCAL_CRATE)
-        // ));
-        // self.assets.save(&path).expect("encode error");
     }
 
     fn run(&mut self) -> Result<()> {
-        // struct Collector<'tcx> {
-        //     tcx: TyCtxt<'tcx>,
-        //     out: Vec<LocalDefId>,
-        // }
-        // impl<'tcx> Visitor<'tcx> for Collector<'tcx> {
-        //     type NestedFilter = nested_filter::All;
-        //     fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
-        //         self.tcx
-        //     }
-        //     fn visit_item(&mut self, item: &'tcx hir::Item<'tcx>) {
-        //         if let hir::ItemKind::Fn { .. } = &item.kind {
-        //             self.out.push(item.owner_id.def_id);
-        //         }
-        //         intravisit::walk_item(self, item);
-        //     }
-        //     fn visit_impl_item(&mut self, ii: &'tcx ImplItem<'tcx>) -> Self::Result {
-        //         if let hir::ImplItemKind::Fn { .. } = &ii.kind {
-        //             self.out.push(ii.owner_id.def_id);
-        //         }
-        //         intravisit::walk_impl_item(self, ii);
-        //     }
-        // }
-        // let mut c = Collector {
-        //     tcx: self.tcx,
-        //     out: Vec::new(),
-        // };
-        // self.tcx.hir_walk_toplevel_module(&mut c);
         let mut main = NodeGraphIr::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string());
         let instance = self.tcx.exported_generic_symbols(LOCAL_CRATE).iter().chain(self.tcx.exported_non_generic_symbols(LOCAL_CRATE)).map(|(x, _)| match x {
             ExportedSymbol::NonGeneric(d) => Instance::mono(self.tcx, *d),
@@ -207,11 +175,6 @@ impl<'tcx> Compiler<'tcx> {
             _ => todo!("{x:?}"),
         }).collect::<Vec<_>>();
         for func in instance {
-            let sig = self.helper().fn_sig(func);
-            let params = self.helper().fn_params(func, sig).iter().map(|x| self.compile_ty(DUMMY_SP, *x)).collect::<Result<Vec<_>>>()?;
-            if self.compile_native_call(func.default_span(self.tcx), func, sig, &params)?.is_some() {
-                continue;
-            }
             _ = self.touch_fn(func)?;
             if let Some(attr) = get_expn_macro_attr(self.tcx, func.default_span(self.tcx)) {
                 #[allow(clippy::single_match)]
@@ -229,16 +192,26 @@ impl<'tcx> Compiler<'tcx> {
                                     if let Some(ident) = path.get_ident() {
                                         match ident.to_string().as_str() {
                                             "event" => {
-                                                todo!()
-                                                // let id = match syn::parse2::<LitInt>(tokens).and_then(|id| id.base10_parse::<i64>()) {
-                                                //     Ok(id) => id,
-                                                //     Err(e) => return self.helper().span_err(expn, e.to_string()),
-                                                // };
-                                                // let node = main.insert(node_ir_native(NodeKind::trigger(id, d.non_enum_variant().fields.iter().map(|f| Ok(self.compile_ty(f.did.default_span(self.tcx), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, a)))?.into_native().unwrap())).collect::<Result<Vec<_>>>()?)).into());
-                                                // let r = self.touch_fn(func)?;
-                                                // let com = main.insert(node_composite(r).into());
-                                                // let block = CompilingFn::compile_call0(&mut main, com, decl, &(0..d.non_enum_variant().fields.len()).map(|x| ValueIn::link(Connection(node, x).into())).collect::<Vec<_>>());
-                                                // main.connect_control(Connection(node, 0), block.begin);
+                                                let id = match syn::parse2::<LitInt>(tokens).and_then(|id| id.base10_parse::<i64>()) {
+                                                    Ok(id) => id,
+                                                    Err(e) => return self.helper().span_err(expn, e.to_string()),
+                                                };
+                                                let node = main.insert(node_ir_native(NodeKind::trigger(id, d.non_enum_variant().fields.iter().map(|f| Ok(self.compile_ty(f.did.default_span(self.tcx), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, a)))?.into_native().unwrap())).collect::<Result<Vec<_>>>()?)));
+                                                let event = self.compile_ty(DUMMY_SP, event)?;
+                                                let na = node_ir_assemble(&mut self.target, &event);
+                                                let com = main.insert(NodeKind::new(
+                                                    IrNodeId::Fn(self.touch_fn(func)?),
+                                                    1, 1,
+                                                    vec![event.into()],
+                                                    vec![self.compile_ty(DUMMY_SP, self.tcx.types.unit)?],
+                                                ));
+                                                let fields = na.values_in_types.len();
+                                                let na = main.insert(na);
+                                                for i in 0..fields {
+                                                    main.link_value(Link::node(node, i), Link::node(na, i));
+                                                }
+                                                main.link_value(Link::node(na, 0), Link::node(com, 0));
+                                                main.link_control(Link::node(node, 0), Link::node(com, 0));
                                             }
                                             _ => (),
                                         }
@@ -251,6 +224,9 @@ impl<'tcx> Compiler<'tcx> {
                     _ => (),
                 }
             }
+        }
+        if !main.is_empty() {
+            self.target.main = main.into();
         }
         Ok(())
     }
@@ -339,11 +315,11 @@ impl<'tcx> Compiler<'tcx> {
             graph.link_control(blocks.get(k).unwrap().end, result?);
         }
         block.extend(&mut graph, blocks.get(mir::START_BLOCK).unwrap().clone());
-        let mut optimizer = Optimizer {
+        let optimizer = Optimizer {
             graph,
             decl: fn_decl,
         };
-        optimizer.optimize();
+        // optimizer.optimize();
         optimizer.verify(self.helper())?;
         Ok(FnInfo {
             description: "".to_string(), // TODO

@@ -4,8 +4,8 @@
 //! 人工设计,统一用 `NodeType::trigger` 构建。
 
 use crate::node::NodeKind;
+use crate::value::NativeKind::*;
 use std::sync::LazyLock;
-use crate::asset::value::NativeKind::*;
 
 /// 变量变化(ID 36)
 pub static NODE_ON_VARIABLE_CHANGE: LazyLock<NodeKind> = LazyLock::new(|| {

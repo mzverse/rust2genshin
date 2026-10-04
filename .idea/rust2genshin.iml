@@ -9,6 +9,7 @@
       <sourceFolder url="file://$MODULE_DIR$/demo/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/lib-internal/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/lib/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/viewer/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/genshin/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

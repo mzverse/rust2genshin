@@ -24,6 +24,6 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         path: |
-          target/rust2genshin_demo.gia
+          target/genshin-unknown-server/release/rust2genshin_demo.gia
         archive: false
         if-no-files-found: error

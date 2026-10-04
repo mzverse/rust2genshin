@@ -1,7 +1,7 @@
 use crate::asset::generated::{AssetData, NodeInterface, NodeInterfaceContainer, PinInterface, PinSignature, asset_data, identifier, node_interface, node_interface_container, pin_interface, pin_signature};
-use crate::asset::value::NativeKind;
 use crate::asset::{AssetBundle, Identifier};
 use crate::node::{NativeNodeId, NodeKind, PinType};
+use crate::value::NativeKind;
 use std::collections::HashMap;
 use std::ops::Deref;
 use tap::Tap;

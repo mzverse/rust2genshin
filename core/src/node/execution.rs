@@ -3,8 +3,8 @@
 //! 人工设计:每个节点用 `NodeType::procedure`(无返回值)/ `NodeType::func`(单返回值)
 //! 或 `NodeType::new`(多输出)构建。1 个 flow 输入 + 值输入 + 1 个 flow 输出。
 
-use crate::asset::value::NativeKind::{self, *};
 use crate::node::NodeKind;
+use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;
 
 pub static NODE_LOG: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::procedure(1, vec![String]));
@@ -17,9 +17,9 @@ pub static NODE_LOG: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::procedure(1
 /// 变体顺序(TSI 与 kernel 均按参考 data.json,与 Get_Local 同序):
 /// Bol/Int/Str/Ety/Gid/Flt/Vec/L<Int>/L<Str>/L<Ety>/L<Gid>/L<Flt>/L<Vec>/L<Bol>/
 /// Cfg/Pfb/L<Cfg>/L<Pfb>/Fct/L<Fct>
-pub fn node_set_local(ty: &NativeKind) -> NodeKind {
-    let mut result = NodeKind::simple(19, 1, 1, vec![LocalVarRef, ty.clone()], vec![]);
-    let (selected, kernel) = match ty {
+pub fn node_set_local(kind: &NativeKind) -> NodeKind {
+    let mut result = NodeKind::simple(19, 1, 1, vec![LocalVarRef, kind.clone()], vec![]);
+    let (selected, kernel) = match kind {
         Bool => (0, 19),
         Int => (1, 21),
         String => (2, 2674),
@@ -43,7 +43,7 @@ pub fn node_set_local(ty: &NativeKind) -> NodeKind {
             Faction => (19, 2691),
             _ => panic!("Unsupported list element type: {ele:?}"),
         },
-        _ => panic!("Unsupported type: {ty:?}"),
+        _ => panic!("Unsupported type: {kind:?}"),
     };
     result.id.kernel = kernel;
     result.selectors_in[1] = selected.into();

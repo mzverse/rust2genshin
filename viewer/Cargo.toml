@@ -1,0 +1,24 @@
+[package]
+name = "rust2genshin-viewer"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rust2genshin_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ogia-viewer"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rust2genshin = { path = "../core" }
+gpui = "0.2.2"
+bincode = { version = "2", features = ["serde"] }
+ar = "0"
+serde = { workspace = true }

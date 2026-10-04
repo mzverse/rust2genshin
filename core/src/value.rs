@@ -1,6 +1,6 @@
-use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, structure_definition_data, type_definition, typed_value, vec3f};
-use crate::asset::structure::StructRef;
 use crate::asset::Side;
+use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, structure_definition_data, type_definition, typed_value, vec3f};
+use crate::structure::StructRef;
 use downcast::{Any, downcast};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -237,31 +237,22 @@ impl NativeKind {
     /// int→NUMBER_INPUT / string→TEXT_INPUT / float→DECIMAL_INPUT 等,
     /// 编辑器靠它决定如何渲染变量值,UNKNOWN 会显示为空)。
     pub fn get_widget_type(&self) -> Option<typed_value::WidgetType> {
+        use NativeKind::*;
         use typed_value::WidgetType::*;
-        match self.get_server_id() {
-            ServerTypeId::SInt => NumberInput,
-            ServerTypeId::SFloat => DecimalInput,
-            ServerTypeId::SString => TextInput,
-            ServerTypeId::SBoolean | ServerTypeId::SEnumItem => EnumPicker,
-            ServerTypeId::SGuid
-            | ServerTypeId::SFaction
-            | ServerTypeId::SConfig
-            | ServerTypeId::SPrefab => IdInput,
-            ServerTypeId::SVector => VectorGroup,
-            ServerTypeId::SGuidList
-            | ServerTypeId::SIntList
-            | ServerTypeId::SBooleanList
-            | ServerTypeId::SFloatList
-            | ServerTypeId::SStringList
-            | ServerTypeId::SEntityList
-            | ServerTypeId::SVectorList
-            | ServerTypeId::SEnumList
-            | ServerTypeId::SFactionList
-            | ServerTypeId::SConfigList
-            | ServerTypeId::SPrefabList
-            | ServerTypeId::SStructList => ListGroup,
-            ServerTypeId::SStruct => StructBlock,
-            ServerTypeId::SDict => MapGroup,
+        match self {
+            Int => NumberInput,
+            Float => DecimalInput,
+            String => TextInput,
+            Bool | Enum(..) => EnumPicker,
+            | Guid
+            | Faction
+            | Config
+            | Prefab
+            => IdInput,
+            Vec3 => VectorGroup,
+            List(..) => ListGroup,
+            Struct(..) => StructBlock,
+            Dict { .. } => MapGroup,
             _ => return None,
         }.into()
     }
@@ -358,7 +349,7 @@ impl NativeKind {
         }
     }
 
-    fn default(&self) -> Option<Box<dyn NativeValue>> {
+    pub fn default(&self) -> Option<Box<dyn NativeValue>> {
         use NativeKind::*;
         Some(match self {
             Bool => bool::default().into(),
@@ -376,7 +367,7 @@ impl NativeKind {
             VarSnapshotRef => return None,
             List(_) => Vec::<Box<dyn NativeValue>>::default().into(),
             Dict { .. } => BTreeMap::<Box<dyn NativeValue>, Box<dyn NativeValue>>::default().into(),
-            Struct { .. } => StructValue::default().into(),
+            Struct(r) => return r.fields.iter().map(|(_name, kind)| kind.default()).collect::<Option<StructValue>>().map(Into::into),
         })
     }
 
@@ -402,7 +393,7 @@ impl NativeKind {
             Struct(st) => {
                 let value = value.downcast_ref::<StructValue>().unwrap();
                 ValStruct(StructStorage {
-                    field: st.fields.iter().enumerate().map(|(i, f)| f.encode_typed_value(side, Some(value[i].as_ref()))).collect(),
+                    field: st.fields.iter().enumerate().map(|(i, (_name, kind))| kind.encode_typed_value(side, Some(value[i].as_ref()))).collect(),
                 })
             }
         }
@@ -431,11 +422,14 @@ impl NativeKind {
                 use structure_definition_data::var_def::value::*;
                 let value = value.downcast_ref::<StructValue>().unwrap();
                 Structure(StructVal {
-                    fields: st.fields.iter().enumerate().map(|(i, x)| structure_definition_data::var_def::Value {
-                        r#type: x.get_type_id(Side::Server), // FIXME
-                        kind: None,
-                        name: None,
-                        val: x.encode_field_value(value[i].as_ref()).into(),
+                    fields: st.fields.iter().enumerate().map(|(i, (name, kind))| structure_definition_data::var_def::Value {
+                        r#type: kind.get_type_id(Side::Server),
+                        kind: structure_definition_data::var_def::Kind {
+                            primary: kind.get_type_id(Side::Server),
+                            sub: kind.encode_subtype().unwrap_or_default().into(),
+                        }.into(),
+                        name: name.to_string().into(),
+                        val: kind.encode_field_value(value[i].as_ref()).into(),
                     }).collect(),
                     struct_id: st.id.guid,
                     id: struct_val::Id {

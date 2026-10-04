@@ -1,6 +1,6 @@
 use crate::node::NodeKind;
+use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;
-use crate::asset::value::NativeKind::{self, *};
 
 /// 条件分支(ID 2):condition(Bool) → 2 个流出分支(true/false)
 pub static NODE_IF: LazyLock<NodeKind> = LazyLock::new(|| {

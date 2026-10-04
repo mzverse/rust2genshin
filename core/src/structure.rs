@@ -5,12 +5,11 @@
 
 use crate::asset::AssetBundle;
 use crate::asset::generated::asset_data::Payload;
-use crate::asset::generated::structure_definition_data::var_def::Subtype;
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
-use crate::asset::value::{NativeKind, NativeValue};
-use crate::node::decl::{node_declared, DeclPin, NodeDecl};
+use crate::node::decl::{DeclPin, NodeDecl, node_declared};
 use crate::node::{NodeKind, PinType};
+use crate::value::{NativeKind, NativeValue};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use tap::Tap;
@@ -18,19 +17,19 @@ use tap::Tap;
 /// 拼装结构体: 字段值 → 结构体
 pub fn node_assemble_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
     let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructAssembly);
-    node_declared(id, 0, 0, st.fields.iter().cloned().map(Some).collect(), vec![NativeKind::Struct(st.clone())])
+    node_declared(id, 0, 0, st.fields.iter().map(|x| x.1.clone()).map(Some).collect(), vec![NativeKind::Struct(st.clone())])
 }
 
 pub fn node_destructure_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
     let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructSplit);
-    node_declared(id, 0, 0, vec![NativeKind::Struct(st.clone()).into()], st.fields.to_vec())
+    node_declared(id, 0, 0, vec![NativeKind::Struct(st.clone()).into()], st.fields.iter().map(|x| x.1.clone()).collect())
 }
 
 pub fn node_modify_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
     let id = get_struct_node_id(assets, st.id, node_interface::implementation::Category::StructModify);
     let mut params = vec![NativeKind::Struct(st.clone()).into()];
     params.push(None);
-    for x in &st.fields {
+    for (_, x) in &st.fields {
         params.push(x.clone().into());
         params.push(NativeKind::Bool.into());
     }
@@ -72,13 +71,7 @@ impl StructField {
         let ty = self.kind.get_server_id();
         let kind = structure_definition_data::var_def::Kind {
             primary: ty as i32,
-            sub: self.kind.encode_subtype().or_else(|| Subtype {
-                is_set: false,
-                struct_id: 0,
-                key: None,
-                value: None,
-                value_id: None,
-            }.into()),
+            sub: self.kind.encode_subtype().unwrap_or_default().into(),
         };
         structure_definition_data::VarDef {
             kind: kind.into(),
@@ -86,12 +79,12 @@ impl StructField {
             var_name: self.name.clone(),
             var_type: ty as i32,
             var_index: index,
-            def: self.default.as_ref().map(|x| sd_var_def::Value {
+            def: sd_var_def::Value {
                 r#type: ty as i32,
                 kind: kind.into(),
                 name: None,
-                val: self.kind.encode_field_value(x.as_ref()).into(),
-            }),
+                val: self.kind.encode_field_value(self.kind.default().unwrap().as_ref()).into(),
+            }.into(),
         }
     }
 }
@@ -133,7 +126,7 @@ pub fn id_struct(id: i64) -> Identifier {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StructRef {
     pub id: Identifier,
-    pub fields: Vec<NativeKind>,
+    pub fields: Vec<(String, NativeKind)>,
 }
 impl StructRef {
     pub fn to_kind(&self) -> NativeKind {
@@ -144,7 +137,7 @@ impl StructureDefinition {
     pub fn apply(self, bundle: &mut AssetBundle) -> StructRef {
         let result = StructRef {
             id: bundle.alloc(identifier::Category::Default, identifier::AssetKind::Structure),
-            fields: self.fields.iter().map(|x| x.kind.clone()).collect(),
+            fields: self.fields.iter().map(|x| (x.name.clone(), x.kind.clone())).collect(),
         };
         let mut references = Vec::new();
         for (name, imp, pins) in [

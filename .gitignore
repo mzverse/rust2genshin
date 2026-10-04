@@ -5,3 +5,6 @@
 .cargo/config.toml
 /tools/
 /rustc-ice-*
+
+# viewer 的合成夹具是生成物,用 `cargo run -p rust2genshin-viewer -- --emit-fixture <路径>` 重新产出
+viewer/fixtures/
