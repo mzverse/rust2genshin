@@ -175,6 +175,11 @@ impl<'tcx> Compiler<'tcx> {
             _ => todo!("{x:?}"),
         }).collect::<Vec<_>>();
         for func in instance {
+            let sig = self.helper().fn_sig(func);
+            let params = self.helper().fn_params(func, sig).iter().map(|x| self.compile_ty(DUMMY_SP, *x)).collect::<Result<Vec<_>>>()?;
+            if self.compile_native_call(func.default_span(self.tcx), func, sig, &params)?.is_some() {
+                continue;
+            }
             _ = self.touch_fn(func)?;
             if let Some(attr) = get_expn_macro_attr(self.tcx, func.default_span(self.tcx)) {
                 #[allow(clippy::single_match)]

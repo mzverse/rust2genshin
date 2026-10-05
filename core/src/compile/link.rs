@@ -95,6 +95,7 @@ impl Linker {
         if let Some(r) = self.functions.get(key) {
             return r;
         }
+        // eprintln!("Linking: {key}");
         let f = self.target.functions.remove(key).expect(key);
         let (mut graph, decl) = Optimizer {
             graph: f.graph,

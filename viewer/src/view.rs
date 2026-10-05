@@ -124,6 +124,7 @@ fn node_color(kind: &IrNodeId) -> gpui::Rgba {
             let h = (n.id.wrapping_mul(0x9E37_79B1) as u32) as f32 / u32::MAX as f32;
             hsla(h, 0.45, 0.55, 1.0).into()
         }
+        _ => rgba(0xb03434ff),
     }
 }
 

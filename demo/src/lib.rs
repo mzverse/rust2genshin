@@ -154,7 +154,7 @@ pub fn update_field(p: (i32, f32), v: i32) -> (i32, f32) {
 
 #[unsafe(no_mangle)]
 pub fn nested_update(p: ((i32, f32), bool), n: i32) -> ((i32, f32), bool) {
-    let mut pair = p;
+    let mut pair = black_box(p);
     pair.0.0 = n;
     pair
 }

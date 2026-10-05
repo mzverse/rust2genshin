@@ -35,6 +35,7 @@ pub enum IrNodeId {
     Assemble,
     Destructure,
     Modify,
+    BlackBox,
 }
 impl IrNodeId {
     pub fn as_native(&self) -> Option<&NativeNodeId> {
@@ -49,6 +50,10 @@ impl IrNodeId {
             _ => None,
         }
     }
+}
+
+pub fn node_ir_black_box(kind: &IrKind) -> NodeKindIr {
+    NodeKind::new(IrNodeId::BlackBox, 0, 0, vec![kind.clone().into()], vec![kind.clone()])
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -249,9 +254,6 @@ impl Optimizer {
         }
         self.optimize();
         self.graph.verify();
-        for x in self.graph.kinds_mut() {
-            *x = IrKind::Native(x.lower(linker));
-        }
         for x in self.graph.get_nodes() {
             let kind = &mut self.graph.get_node_mut(x).kind;
             *kind = node_ir_native(match kind.id {
@@ -261,7 +263,7 @@ impl Optimizer {
                     continue;
                 }
                 IrNodeId::Local => {
-                    if let NativeKind::Struct(kind) = kind.values_out_types[0].as_native().unwrap() {
+                    if let NativeKind::Struct(kind) = kind.values_out_types[0].lower(linker) {
                         let kind = kind.clone();
                         let n = node_on_native_custom_value_change(&mut self.graph, &kind.to_kind());
                         let n = self.graph.insert(node_ir_native(n));
@@ -274,11 +276,11 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        node_local(&kind.values_out_types[1].as_native().cloned().unwrap()).unwrap()
+                        node_local(&kind.values_out_types[1].lower(linker)).unwrap()
                     }
                 },
                 IrNodeId::SetLocal => {
-                    if let NativeKind::Struct(kind) = kind.values_in_types[0].as_ref().unwrap().as_native().unwrap() {
+                    if let NativeKind::Struct(kind) = kind.values_in_types[0].as_ref().unwrap().lower(linker) {
                         let kind = kind.clone();
                         let n = self.graph.insert(node_ir_native(node_modify_struct(&linker.assets, &kind)));
                         let n0 = self.graph.get_node(x);
@@ -296,41 +298,29 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        node_set_local(kind.values_in_types[1].as_ref().unwrap().as_native().unwrap())
+                        node_set_local(&kind.values_in_types[1].as_ref().unwrap().lower(linker))
                     }
                 },
-                IrNodeId::Assemble => node_assemble_struct(&linker.assets, unwrap!(&kind.values_out_types[0].as_native().as_ref().unwrap(), NativeKind::Struct)),
-                IrNodeId::Destructure => node_destructure_struct(&linker.assets, unwrap!(&kind.values_in_types[0].as_ref().unwrap().as_native().as_ref().unwrap(), NativeKind::Struct)),
-                IrNodeId::Modify => node_modify_struct(&linker.assets, unwrap!(&kind.values_in_types[0].as_ref().unwrap().as_native().as_ref().unwrap(), NativeKind::Struct)),
+                IrNodeId::Assemble => {
+                    let k = kind.values_out_types[0].lower(linker);
+                    node_assemble_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
+                },
+                IrNodeId::Destructure => {
+                    let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
+                    node_destructure_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
+                },
+                IrNodeId::Modify => {
+                    let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
+                    node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
+                },
                 IrNodeId::Fn(_) => unreachable!(),
+                IrNodeId::BlackBox => {
+                    let n = self.graph.get_node(x);
+                    self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
+                    self.graph.remove(x);
+                    continue;
+                }
             });
-        }
-        struct Lowerer;
-        impl Lower for Lowerer {
-            type NodeId0 = IrNodeId;
-            type Kind0 = IrKind;
-            type NodeId1 = NativeNodeId;
-            type Kind1 = NativeKind;
-
-            fn lower_node_id(&mut self, node_id: Self::NodeId0) -> Self::NodeId1 {
-                node_id.into_native().unwrap()
-            }
-
-            fn lower_kind(&mut self, kind: Self::Kind0) -> Self::Kind1 {
-                kind.into_native().unwrap()
-            }
-        }
-        (Lowerer.lower_graph(self.graph), self.decl)
-    }
-
-    /// 完整优化:消除规则跑到不动点 + 控制边界收尾(清空空的控制导出、
-    /// 压缩值导出的索引)。
-    ///
-    /// `pub` 给 viewer 的「一键优化」用 —— 它可以在同一张图上**反复点**。
-    /// 下面那条分支会把 `controls_in` 清空,所以判空要用 `first()` 兜底:
-    /// `[0]` 在第二次进来时越界(core 自己只在 `lower()` 里跑一次,碰不到)。
-    pub fn optimize(&mut self) {
-        while self.eliminate_solos() {
         }
 
         if self.graph.externals.controls_in.first() == Some(&vec![Link::export(0)])
@@ -385,6 +375,39 @@ impl Optimizer {
             if let Some(link) = x.link.as_mut() && link.target.is_export() {
                 x.link = None;
             }
+        }
+
+        // lower all kinds
+        for x in self.graph.kinds_mut() {
+            *x = IrKind::Native(x.lower(linker));
+        }
+
+        struct Lowerer;
+        impl Lower for Lowerer {
+            type NodeId0 = IrNodeId;
+            type Kind0 = IrKind;
+            type NodeId1 = NativeNodeId;
+            type Kind1 = NativeKind;
+
+            fn lower_node_id(&mut self, node_id: Self::NodeId0) -> Self::NodeId1 {
+                node_id.into_native().unwrap()
+            }
+
+            fn lower_kind(&mut self, kind: Self::Kind0) -> Self::Kind1 {
+                kind.into_native().unwrap()
+            }
+        }
+        (Lowerer.lower_graph(self.graph), self.decl)
+    }
+
+    /// 完整优化:消除规则跑到不动点 + 控制边界收尾(清空空的控制导出、
+    /// 压缩值导出的索引)。
+    ///
+    /// `pub` 给 viewer 的「一键优化」用 —— 它可以在同一张图上**反复点**。
+    /// 下面那条分支会把 `controls_in` 清空,所以判空要用 `first()` 兜底:
+    /// `[0]` 在第二次进来时越界(core 自己只在 `lower()` 里跑一次,碰不到)。
+    pub fn optimize(&mut self) {
+        while self.eliminate_solos() {
         }
     }
 
@@ -510,7 +533,7 @@ impl Optimizer {
         while let Some(now) = queue.pop_front() {
             for (x, i) in self.graph.get_node(now).links.values_in.iter().flat_map(|x| x.link).filter_map(|x| x.target.node().map(|y| (y, x.index))) {
                 let n = self.graph.get_node(x);
-                if is_random(&n.kind.id) {
+                if is_random(&n.kind.id) || n.kind.id == IrNodeId::BlackBox {
                     return Some(());
                 }
                 if n.kind.id == IrNodeId::Local && i == 1 {
@@ -523,15 +546,6 @@ impl Optimizer {
             }
         }
         assert!(setters.remove(&Link::node(node, 0)));
-        // //FIXME
-        // for &x in &setters {
-        //     let Link { target: LinkTarget::Node(x), index } = x else {
-        //         panic!();
-        //     };
-        //     if self.graph.get_node(x).kind.id != IrNodeId::SetLocal || index != 0 {
-        //         return Some(());
-        //     }
-        // }
 
         let ret = self.graph.externals.controls_in.iter().flatten().copied().collect::<Vec<_>>();
         let usages = n_local.links.values_out[1].iter().copied().filter(|&x| {
@@ -545,6 +559,9 @@ impl Optimizer {
                 if now_node == node {
                     continue;
                 } else if setters.contains(&now) {
+                    return false;
+                }
+                if self.graph.get_node(now_node).kind.id == IrNodeId::BlackBox {
                     return false;
                 }
                 let l = &self.graph.get_node(now_node).links;
@@ -583,6 +600,9 @@ impl Optimizer {
                     } else {
                         return res;
                     }
+                }
+                if self.graph.get_node(now_node).kind.id == IrNodeId::BlackBox {
+                    return res;
                 }
                 let l = &self.graph.get_node(now_node).links;
                 if let Some(l) = l.controls_in.first() {

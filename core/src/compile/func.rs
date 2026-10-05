@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_unreachable};
+use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -327,8 +327,15 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 };
                 return Ok(match ele.len() {
                     0 => ValueIn::default(),
+                    1 => {
+                        let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                        let k = self.compiler.compile_ty(span, ele[0])?;
+                        let v = self.compile_const(ele[0], k, v, span)?;
+                        self.graph.set_value_in(Link::node(node, 0), v);
+                        ValueIn::link(Link::node(node, 0))
+                    },
                     _ => {
-                        let ConstValue::Indirect { alloc_id, offset } = v else { todo!("{v:?}") };
+                        let ConstValue::Indirect { alloc_id, offset } = v else { panic!("{v:?}") };
                         let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
                         for (i, x) in ele.into_iter().enumerate() {
                             let k = self.compiler.compile_ty(span, x)?;
@@ -523,16 +530,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             self.tcx.dcx().span_note(span, "Ignored panic");
             return Ok(Block::nop(self.graph));
         }
-        if let InstanceKind::Intrinsic(def_id) = func.def {
-            return match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
-                "black_box" => // only blocked mir, FIXME
-                    self.compile_assign(destination.unwrap(), span, args[0].clone()),
-                other => todo!("intrinsic: {other}"),
-            };
-        }
         let sig = self.helper().fn_sig(func);
         let params: Vec<IrKind> = self.helper().fn_params(func, sig).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
-        let node_kind = if params.iter().all(|x| x.as_native().is_some())
+        let node_kind = if let InstanceKind::Intrinsic(def_id) = func.def {
+            match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
+                "black_box" => node_ir_black_box(&params[0]),
+                other => todo!("intrinsic: {other}"),
+            }
+        } else if params.iter().all(|x| x.as_native().is_some())
             && let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
             node_ir_native(native)
         } else {
