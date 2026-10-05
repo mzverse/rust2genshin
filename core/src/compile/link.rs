@@ -10,7 +10,7 @@ use std::ops::AddAssign;
 use std::path::PathBuf;
 use tap::Tap;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Target {
     pub main: Option<NodeGraphIr>,

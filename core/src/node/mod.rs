@@ -321,7 +321,7 @@ pub trait Lower {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct ExportDecl<Kind = NativeKind> {
     name: String,
     kind: Option<Kind>,
@@ -335,7 +335,7 @@ impl<Kind> ExportDecl<Kind> {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct NodeGraph<NodeId = NativeNodeId, Kind = NativeKind> {
     pub class: NodeGraphKind,
     pub name: String,

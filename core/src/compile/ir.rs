@@ -144,7 +144,7 @@ pub struct FieldInfo {
     pub name: String,
     pub kind: IrKind,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AdtInfo {
     fields: Vec<FieldInfo>,
 }
@@ -156,7 +156,7 @@ impl AdtInfo {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct FnInfo {
     pub description: String,
     pub graph: NodeGraphIr,

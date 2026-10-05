@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use tap::Tap;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct DeclPin {
     pub name: String,
     pub kind: Option<NativeKind>,
@@ -21,7 +21,7 @@ pub fn decl_pins_value_out(kinds: &[NativeKind]) -> Vec<DeclPin> {
     }).collect()
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct NodeDecl {
     pub name: String,
     pub description: String,

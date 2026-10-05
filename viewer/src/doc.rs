@@ -8,12 +8,13 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use gpui::{Point, Size, point};
+use rust2genshin::asset::generated::identifier;
 use rust2genshin::asset::GameMode;
 use rust2genshin::compile::func::{FnDecl, NodeGraphIr};
 use rust2genshin::compile::ir::{FnInfo, IrKind, IrNodeId, Optimizer};
 use rust2genshin::compile::link::{Linker, Target};
 use rust2genshin::node::layout::layout_with;
-use rust2genshin::node::{Link, LinkTarget, NodeKind, NodeRef, ValueIn};
+use rust2genshin::node::{Link, LinkTarget, NativeNodeId, NodeKind, NodeRef, ValueIn};
 
 /// 解析一个 .ogia 文件
 pub fn load_ogia(path: &Path) -> Result<Target, String> {
@@ -93,8 +94,9 @@ pub use rust2genshin::node::layout::{
 ///
 /// `IrNodeId` 没有 `Display` 但有 `Debug`,而 `Debug` 对**全部六个单元变体**
 /// (`Local` / `SetLocal` / `Unreachable` / `Assemble` / `Destructure` / `Modify`)
-/// 给出的正是想要的名字。所以只特判两个带载荷的变体:`Native` 要带上
-/// `kind` 和 `id`,`Fn` 直接用函数名。**不要**写八个分支各返回一段字符串常量。
+/// 给出的正是想要的名字。带载荷的变体里:`Fn` 直接用函数名,`Native` 走
+/// [`sys_call_label`](常用 sys call 给短名,其它回退到 `syscall#<id>`)。
+/// **不要**写八个分支各返回一段字符串常量。
 ///
 /// 类型标注一律用 `Debug` 而不是 `Display`:`impl Display for NativeKind`
 /// 在 `Struct` 上是 `panic!`(`core/src/value.rs`),而 viewer 的输入是用户
@@ -104,7 +106,7 @@ pub use rust2genshin::node::layout::{
 /// 不留在渲染层 —— 两边必须是同一个函数,不然算出来的宽对不上显示的字。
 pub fn label(kind: &IrNodeId, type_label: &str) -> String {
     let base = match kind {
-        IrNodeId::Native(x) => format!("{:?}#{}", x.kind, x.id),
+        IrNodeId::Native(x) => sys_call_label(x),
         IrNodeId::Fn(s) => s.clone(),
         other => format!("{other:?}"),
     };
@@ -112,6 +114,102 @@ pub fn label(kind: &IrNodeId, type_label: &str) -> String {
         base
     } else {
         format!("{base}<{type_label}>")
+    }
+}
+
+/// `IrNodeId::Native` 节点的显示名。常用 sys call(`SysCallStub` 那一组)给
+/// 短名(如 `log` / `if`),表里查不到就回退到 `syscall#<id>`,**别**用
+/// `SysCallStub#<id>` 那串没意义的资产类型前缀。其它 `AssetKind`(`GeneratedStub`
+/// 等 —— 用户声明的复合节点)保持 `{kind:?}#{id}`,那是它们的真实身份,不是
+/// 系统调用,viewer 不去给它起名。
+fn sys_call_label(x: &NativeNodeId) -> String {
+    if x.kind == identifier::AssetKind::SysCallStub {
+        match sys_call_name(x.id) {
+            Some(name) => name.to_string(),
+            None => format!("syscall#{}", x.id),
+        }
+    } else {
+        format!("{:?}#{}", x.kind, x.id)
+    }
+}
+
+/// 常用 sys call 节点的 id → 短名。id 与 `core/src/node/*.rs` 的
+/// `NodeKind::simple(id, ...)` 调用对齐 —— 想加新条目就照着那个 id 填。
+/// 走 `Some` 走短名、没命中走 `syscall#<id>`,**不要**把没把握的 id 也填进来
+/// 起一个猜的名字 —— 看图的人会被误导。
+fn sys_call_name(id: i64) -> Option<&'static str> {
+    match id {
+        1 => Some("log"), // NODE_LOG
+        2 => Some("if"), // NODE_IF
+        5 => Some("for"), // NODE_FOR_CLOSED
+        6 => Some("break"), // NODE_BREAK
+        22 => Some("set_var"), // NODE_SET_VARIABLE
+        66 => Some("set_status"), // NODE_SET_STATUS
+        69 => Some("destroy_entity"),
+        70 => Some("create_entity"),
+        77 => Some("settle"), // NODE_SETTLE
+        190 => Some("forward_event"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod sys_call_label_tests {
+    use super::*;
+    use rust2genshin::asset::generated::identifier;
+    use rust2genshin::node::NativeNodeId;
+
+    fn sys(id: i64) -> NativeNodeId {
+        NativeNodeId {
+            id,
+            kind: identifier::AssetKind::SysCallStub,
+            kernel: 0,
+        }
+    }
+
+    /// 命中的 id → 短名,不再带 `#<id>`。带类型标注的也照样挂 `<T>`。
+    #[test]
+    fn recognized_sys_calls_get_short_names() {
+        assert_eq!(label(&IrNodeId::Native(sys(1)), ""), "log");
+        assert_eq!(label(&IrNodeId::Native(sys(2)), ""), "if");
+        assert_eq!(label(&IrNodeId::Native(sys(5)), ""), "for");
+        assert_eq!(label(&IrNodeId::Native(sys(77)), ""), "settle");
+        // 类型标注照样挂上去
+        assert_eq!(label(&IrNodeId::Native(sys(2)), "Bool"), "if<Bool>");
+    }
+
+    /// 没命中的 id → `syscall#<id>`,**不要**带 `SysCallStub#<id>` 前缀。
+    #[test]
+    fn unrecognized_sys_calls_fall_back_to_syscall_prefix() {
+        assert_eq!(label(&IrNodeId::Native(sys(411)), ""), "syscall#411");
+        assert_eq!(label(&IrNodeId::Native(sys(1928)), ""), "syscall#1928");
+        assert_eq!(label(&IrNodeId::Native(sys(411)), "Int"), "syscall#411<Int>");
+    }
+
+    /// 非 `SysCallStub` 的 Native(`GeneratedStub` —— 用户声明的复合节点)
+    /// 走原来的 `{kind:?}#{id}`,**不**被覆盖成 `syscall#<id>`。那是它们的
+    /// 真实身份,viewer 不去给它起名。
+    #[test]
+    fn non_syscall_native_keeps_kind_prefix() {
+        let composite = NativeNodeId {
+            id: 7,
+            kind: identifier::AssetKind::GeneratedStub,
+            kernel: 0,
+        };
+        assert_eq!(
+            label(&IrNodeId::Native(composite), ""),
+            "GeneratedStub#7"
+        );
+    }
+
+    /// `label` 同时是 [`node_width`] 的依据 —— 短名应当比兜底短
+    /// (回退路径会带 `#<id>`,撑宽节点)。
+    #[test]
+    fn short_name_does_not_force_widening() {
+        let short = label(&IrNodeId::Native(sys(2)), "");
+        let long = label(&IrNodeId::Native(sys(411)), "");
+        assert!(short.len() < long.len(), "{short:?} 应当比 {long:?} 短");
+        assert!(node_width(&short) <= NODE_W, "短名不应撑宽,实测 {}px", node_width(&short));
     }
 }
 
@@ -212,19 +310,29 @@ struct GraphOwner {
 ///
 /// 右栏的优化按钮要**直接改** `Target` 里的 `NodeGraphIr`(`Optimizer` 的消除
 /// 规则全在它上面),所以 `Target` 必须活着 —— 不能像以前那样 flatten 完就丢。
+///
+/// # `targets` 与 `linkers` 为什么要分开存
+///
+/// `Linker::touch_fn` / `Optimizer::link_node` 会从 `Linker.target` 里
+/// `remove` 函数,`Linker::link` 还会 `take` 走 main —— 它会**搬空**自己
+/// 那个 `target` 字段。viewer 真正要的图数据(展平、encode/decode、
+/// take/put)必须**走 `targets`**,**绝不**从 `linkers[i].target` 读。
+/// `linkers` 只在 `Optimizer::link_node` 需要它的时候摸一下,之后那一份
+/// 缓存就搁着不动(`AssetBundle`、已展开函数的 `CompiledFn` 都住里面,
+/// 重复 link 命中缓存)。`Linker::link()` / `save()` viewer 从不调,
+/// 所以 `Linker::output` 用空路径占位。
 pub struct Doc {
     /// main 第一,其余按函数名排序
     pub graphs: Vec<GraphEntry>,
     /// 与 `graphs` 同长。
     owners: Vec<GraphOwner>,
-    /// 每个 `.ogia` / `.rlib` 一份**链接器**。**只进不出**,`owners` 里的下标
-    /// 永远有效。
-    ///
-    /// 用 `Linker` 而不是裸 `Target`:`Optimizer::link_node` 需要它 ——
-    /// 展开过的函数(缓存)、结构体资产都攒在里面,重复 link 同一个函数
-    /// 命中缓存、不会重复展开。viewer 从不调 `Linker::link()` / `save()`,
-    /// 所以 `output` 用空路径占位。
-    targets: Vec<Linker>,
+    /// **唯一的图真值** —— 展平、encode、take/put、decode_into、relayout
+    /// 全部走这里。与 `linkers` 同长,下标对齐。
+    targets: Vec<Target>,
+    /// 每个 Target 配套的 Linker(创建时从 `targets` clone 一份过去,
+    /// 之后与 `targets` 状态分叉)。只供 `Optimizer::link_node` 摸 —
+    /// **不要从这里读图数据**。
+    linkers: Vec<Linker>,
 }
 
 impl Doc {
@@ -233,6 +341,7 @@ impl Doc {
             graphs: Vec::new(),
             owners: Vec::new(),
             targets: Vec::new(),
+            linkers: Vec::new(),
         }
     }
 
@@ -250,24 +359,31 @@ impl Doc {
         for f in t.functions.values_mut() {
             layout_graph(&mut f.graph);
         }
-        if let Some(main) = &t.main {
+        // 喂给 Linker 的是 **clone** —— `Linker::new` 会把传进去的 `Target`
+        // 抢走,`targets[k]` 必须留着,后面 `take` / `put` / `reflatten` 全
+        // 走它。Linker 那一份之后会随 `link_node` 状态分叉,与我们无关。
+        let linker_t = t.clone();
+        self.targets.push(t);
+        self.linkers
+            .push(Linker::new(GameMode::Beyond, linker_t, PathBuf::new()));
+        // 展平读 `targets[k]`,**不读** `linkers[k].target`(后者的状态不可信)。
+        if let Some(main) = &self.targets[target].main {
             self.graphs.push(flatten_one("main".to_string(), main));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Main,
             });
         }
-        let mut names: Vec<&String> = t.functions.keys().collect();
+        let mut names: Vec<&String> = self.targets[target].functions.keys().collect();
         names.sort();
         for name in names {
             self.graphs
-                .push(flatten_one(name.clone(), &t.functions[name].graph));
+                .push(flatten_one(name.clone(), &self.targets[target].functions[name].graph));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Fn(name.clone()),
             });
         }
-        self.targets.push(Linker::new(GameMode::Beyond, t, PathBuf::new()));
         (self.graphs.len() > first).then_some(first)
     }
 
@@ -281,7 +397,7 @@ impl Doc {
         let Some(owner) = self.owners.get(i).cloned() else {
             return false;
         };
-        let Some(t) = self.targets.get_mut(owner.target).map(|l| &mut l.target) else {
+        let Some(t) = self.targets.get_mut(owner.target) else {
             return false;
         };
         let g = match &owner.source {
@@ -304,7 +420,7 @@ impl Doc {
         let Some(owner) = self.owners.get(i).cloned() else {
             return false;
         };
-        let Some(t) = self.targets.get(owner.target).map(|l| &l.target) else {
+        let Some(t) = self.targets.get(owner.target) else {
             return false;
         };
         let g = match &owner.source {
@@ -343,7 +459,6 @@ impl Doc {
         let t = self
             .targets
             .get_mut(owner.target)
-            .map(|l| &mut l.target)
             .ok_or("Target 不存在")?;
         match owner.source {
             GraphSource::Main => t.main = Some(decode_bytes(bytes)?),
@@ -361,7 +476,7 @@ impl Doc {
     /// 搬出来期间 `Target` 里那张图是空的。
     pub fn take(&mut self, i: usize) -> Option<Optimizer> {
         let owner = self.owners.get(i).cloned()?;
-        let t = self.targets.get_mut(owner.target).map(|l| &mut l.target)?;
+        let t = self.targets.get_mut(owner.target)?;
         match owner.source {
             GraphSource::Main => {
                 let graph = t.main.take()?;
@@ -387,7 +502,7 @@ impl Doc {
         let Some(owner) = self.owners.get(i).cloned() else {
             return;
         };
-        let Some(t) = self.targets.get_mut(owner.target).map(|l| &mut l.target) else {
+        let Some(t) = self.targets.get_mut(owner.target) else {
             return;
         };
         match owner.source {
@@ -403,15 +518,16 @@ impl Doc {
 
     fn target_and_source(&self, i: usize) -> Option<(&Target, &GraphSource)> {
         let owner = self.owners.get(i)?;
-        let t = self.targets.get(owner.target).map(|l| &l.target)?;
+        let t = self.targets.get(owner.target)?;
         Some((t, &owner.source))
     }
 
     /// 第 `i` 张图所属的 `Linker` —— `Optimizer::link_node` 展开函数节点时要它
-    /// (已展开函数的缓存、结构体资产都在里面)。
+    /// (已展开函数的缓存、结构体资产都在里面)。**别**用它来读图数据,
+    /// 那份与 `targets[i]` 已经分叉了。
     pub fn linker_mut(&mut self, i: usize) -> Option<&mut Linker> {
         let owner = self.owners.get(i)?;
-        self.targets.get_mut(owner.target)
+        self.linkers.get_mut(owner.target)
     }
 }
 
@@ -446,10 +562,23 @@ fn type_label(kind: Option<&IrKind>) -> String {
 }
 
 /// 一个 IR 节点的类型标注(哪些节点有类型见 `flatten_one`)。
+///
+/// 哪些节点需要带 `<类型>`:
+/// - `Local`    — 值的**出口**类型(`values_out_types[1]`,0 号是 `LocalRef`)
+/// - `SetLocal` — 值的**入口**类型(`values_in_types[1]`,0 号是 `LocalRef`)
+/// - `Assemble`     — 组装出的结构体类型(`values_out_types[0]`,入参是字段)
+/// - `Destructure`  — 被解构的结构体类型(`values_in_types[0]`,出参是字段)
+/// - `Modify`       — 被修改的结构体类型(`values_in_types[0]`,后面跟字段 setter)
+///
+/// `type_label` 对 `IrKind::Adt(key)` 直接返回 `key` 本身,组装的图节点
+/// 不会显示成 `<Adt("MyStruct")>` 这种带壳的串 —— 节点宽 140,装不下。
 fn node_type_label(kind: &NodeKind<IrNodeId, IrKind>) -> String {
     match &kind.id {
         IrNodeId::Local => type_label(kind.values_out_types.get(1)),
         IrNodeId::SetLocal => type_label(kind.values_in_types.get(1).and_then(|k| k.as_ref())),
+        IrNodeId::Assemble => type_label(kind.values_out_types.get(0)),
+        IrNodeId::Destructure => type_label(kind.values_in_types.get(0).and_then(|k| k.as_ref())),
+        IrNodeId::Modify => type_label(kind.values_in_types.get(0).and_then(|k| k.as_ref())),
         _ => String::new(),
     }
 }
@@ -1092,6 +1221,69 @@ mod tests {
         assert_eq!(doc.graphs[0].nodes[0].type_label, "MyStruct");
     }
 
+    /// Assemble / Destructure / Modify 三个结构体节点的类型标注:
+    /// - **Assemble**     取 `values_out_types[0]`(组装出的结构体)
+    /// - **Destructure**  取 `values_in_types[0]`(被拆的结构体)
+    /// - **Modify**       取 `values_in_types[0]`(被改的结构体)
+    ///
+    /// 整图节点宽 140px,只显示 `Adt` 的 key(`MyStruct`)就够,不能塞 `Adt("MyStruct")`。
+    /// 「读错 pin 取错类型」是这处最自然的错实现 —— `values_in_types[0]` 拿到
+    /// `MyStruct`,`values_out_types[0]` 在 Assemble 上**也是**`MyStruct`(输出),
+    /// 看起来都对;但 Destructure 那边 `values_in_types[0]` 是 struct、
+    /// `values_out_types[0]` 是**字段**(Int),跑反就拿到 `Int` 而不是 `MyStruct`。
+    #[test]
+    fn flatten_labels_the_three_struct_nodes_with_the_adt_key() {
+        use rust2genshin::compile::ir::{IrKind, IrNodeId};
+        use rust2genshin::node::{NodeGraphKind, NodeKind};
+        use rust2genshin::value::NativeKind;
+
+        let adt = IrKind::Adt("MyStruct".into());
+        // 字段随便给一个 —— 标的是 struct 类型,不是字段类型。
+        let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
+        // Assemble: 0 进 0 出,fields 进(struct out)
+        g.insert(NodeKind::new(
+            IrNodeId::Assemble,
+            0,
+            0,
+            vec![Some(IrKind::Native(NativeKind::Int))],
+            vec![adt.clone()],
+        ));
+        // Destructure: 0 进 0 出,struct 进(fields out)
+        g.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(adt.clone())],
+            vec![IrKind::Native(NativeKind::Int)],
+        ));
+        // Modify: 1 进 1 出,struct + key select + 字段 pairs
+        g.insert(NodeKind::new(
+            IrNodeId::Modify,
+            1,
+            1,
+            vec![
+                Some(adt.clone()),
+                None,
+                Some(IrKind::Native(NativeKind::Int)),
+                Some(IrKind::Native(NativeKind::Bool)),
+            ],
+            vec![],
+        ));
+
+        let mut t = Target::default();
+        t.functions.insert("f".into(), fn_info(g));
+        let doc = flatten(t);
+        let labels: Vec<&str> = doc.graphs[0]
+            .nodes
+            .iter()
+            .map(|n| n.type_label.as_str())
+            .collect();
+        // 三个都该是 `MyStruct`,不是 `Int`、不是 `Adt("MyStruct")`。
+        // (字段 Int 只能出现在 Destructure 的 `values_out_types[0]`,
+        //  跑反就拿到 `Int` —— 那是最自然的错实现。)
+        assert_eq!(labels, vec!["MyStruct", "MyStruct", "MyStruct"]);
+    }
+
     // ------------------------------------------------- 优化/撤销的存取通道
 
     /// 主图走的是 `Target::main` 那组分支(`take` / `put` / `encode` /
@@ -1156,6 +1348,69 @@ mod tests {
         assert!(doc.reflatten(1));
         assert!(doc.graphs[1].nodes.is_empty());
         assert_eq!(doc.graphs[0].nodes.len(), 1, "第 0 张不该被碰到");
+    }
+
+    /// `Linker::touch_fn` 会在 link 时把函数从 `linker.target.functions` 里
+    /// `remove` 走 —— 这是**它自己**的副本,我们的 `Doc::targets` 必须不被牵连。
+    /// 跑过 `link_fn_node` 之后,`take` / `encode` / `reflatten` 仍要能从
+    /// `Doc::targets` 里拿回被 link 那个函数的图(可写、可读、可重展平)。
+    /// **`take` 在那一份 `&linker.target` 上跑的实现**会在这里失败 —— `remove`
+    /// 之后 `get_mut("callee")` 拿不到,`take` 返回 `None`。
+    ///
+    /// 夹具用 `crate::doc::fixture::linkable_target()` —— `optimize.rs` 的
+    /// `link_expands_a_fn_node_in_place` 也用同一份,这样新约束("link 之后
+    /// callee 还能从 `Doc::targets` 拿回")和老约束("link 成功、Fn 节点变
+    /// 低层复合节点")共用一份图。
+    #[test]
+    fn doc_targets_survive_linker_touch_fn_remove() {
+        use crate::optimize::link_fn_node;
+
+        let t = crate::doc::fixture::linkable_target();
+        let mut doc = Doc::new();
+        doc.push_target(t);
+        let caller_i = doc
+            .graphs
+            .iter()
+            .position(|g| g.name == "caller")
+            .expect("caller 图存在");
+        let callee_i = doc
+            .graphs
+            .iter()
+            .position(|g| g.name == "callee")
+            .expect("callee 图存在");
+        let fnn_ref = doc.graphs[caller_i]
+            .nodes
+            .iter()
+            .find(|n| matches!(n.kind, IrNodeId::Fn(_)))
+            .expect("caller 里有 Fn 节点")
+            .node_ref;
+
+        // 触发 link_node —— 内部走 `linker.touch_fn("callee")`,把 callee 从
+        // **Linker 自己的** target.functions 移除。这一步**只**应消耗 Linker
+        // 副本,Doc::targets 里的 callee 必须原封不动。
+        let refs = doc.graphs[caller_i]
+            .nodes
+            .iter()
+            .map(|n| n.node_ref)
+            .collect::<Vec<_>>();
+        let pos = doc.graphs[caller_i]
+            .nodes
+            .iter()
+            .map(|n| n.position)
+            .collect::<Vec<_>>();
+        let r = link_fn_node(&mut doc, caller_i, &refs, &pos, fnn_ref);
+        assert!(r.undo.is_some(), "link 应当成功:{}", r.status);
+
+        // 现在该检验的核心不变量:Doc::targets 仍持有 callee,走 `take` / `encode`
+        // 都能拿到它(读 `&linker.target` 的实现在这里拿不到 —— `remove` 过了)。
+        let opt = doc.take(callee_i).expect("callee 仍要能从 Doc::targets 取出");
+        assert!(!opt.graph.is_empty(), "callee 图不能被 link 副作用吃掉");
+        doc.put(callee_i, opt);
+
+        let bytes = doc.encode(callee_i).expect("callee 仍要能编码");
+        assert!(!bytes.is_empty());
+
+        assert!(doc.reflatten(callee_i), "callee 仍要能重展平");
     }
 
     /// 图边界要精确到**哪个引脚**,不是只有节点级的 `entry` / `exit` ——
