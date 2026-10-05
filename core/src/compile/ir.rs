@@ -53,7 +53,7 @@ impl IrNodeId {
 }
 
 pub fn node_ir_black_box(kind: &IrKind) -> NodeKindIr {
-    NodeKind::new(IrNodeId::BlackBox, 0, 0, vec![kind.clone().into()], vec![kind.clone()])
+    NodeKind::new(IrNodeId::BlackBox, 1, 1, vec![kind.clone().into()], vec![kind.clone()])
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -317,6 +317,7 @@ impl Optimizer {
                 IrNodeId::BlackBox => {
                     let n = self.graph.get_node(x);
                     self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
+                    self.relink_controls(x, 0, 0);
                     self.graph.remove(x);
                     continue;
                 }
@@ -533,7 +534,7 @@ impl Optimizer {
         while let Some(now) = queue.pop_front() {
             for (x, i) in self.graph.get_node(now).links.values_in.iter().flat_map(|x| x.link).filter_map(|x| x.target.node().map(|y| (y, x.index))) {
                 let n = self.graph.get_node(x);
-                if is_random(&n.kind.id) || n.kind.id == IrNodeId::BlackBox {
+                if is_random(&n.kind.id) {
                     return Some(());
                 }
                 if n.kind.id == IrNodeId::Local && i == 1 {
@@ -559,9 +560,6 @@ impl Optimizer {
                 if now_node == node {
                     continue;
                 } else if setters.contains(&now) {
-                    return false;
-                }
-                if self.graph.get_node(now_node).kind.id == IrNodeId::BlackBox {
                     return false;
                 }
                 let l = &self.graph.get_node(now_node).links;
@@ -600,9 +598,6 @@ impl Optimizer {
                     } else {
                         return res;
                     }
-                }
-                if self.graph.get_node(now_node).kind.id == IrNodeId::BlackBox {
-                    return res;
                 }
                 let l = &self.graph.get_node(now_node).links;
                 if let Some(l) = l.controls_in.first() {
