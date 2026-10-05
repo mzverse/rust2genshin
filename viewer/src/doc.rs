@@ -8,6 +8,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use gpui::{Point, Size, point};
+use rust2genshin::asset::GameMode;
 use rust2genshin::compile::func::{FnDecl, NodeGraphIr};
 use rust2genshin::compile::ir::{FnInfo, IrKind, IrNodeId, Optimizer};
 use rust2genshin::compile::link::{Linker, Target};
@@ -266,7 +267,7 @@ impl Doc {
                 source: GraphSource::Fn(name.clone()),
             });
         }
-        self.targets.push(Linker::new(t, PathBuf::new()));
+        self.targets.push(Linker::new(GameMode::Beyond, t, PathBuf::new()));
         (self.graphs.len() > first).then_some(first)
     }
 

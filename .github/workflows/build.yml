@@ -19,11 +19,11 @@ jobs:
     - name: Setup Protoc
       run: sudo apt install protobuf-compiler
     - name: Build
-      run: cargo run -p build-demo
+      run: cargo run -p build-demo --bin beyond-server
     - name: Upload
       uses: actions/upload-artifact@v7
       with:
         path: |
-          target/genshin-unknown-server/release/rust2genshin_demo.gia
+          target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia
         archive: false
         if-no-files-found: error

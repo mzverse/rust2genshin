@@ -236,7 +236,7 @@ impl<'tcx> Compiler<'tcx> {
         if !self.tcx.is_mir_available(func.def_id()) || self.target.functions.contains_key(&mangle) {
             return Ok(mangle);
         }
-        self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {mangle}"));
+        // self.tcx.dcx().span_note(func.default_span(self.tcx), format!("Compiling fn: {mangle}"));
         let result = self.compile_fn(func)?;
         self.target.functions.insert(mangle.clone(), result);
         Ok(mangle)

@@ -53,11 +53,11 @@ pub struct Linker {
 }
 
 impl Linker {
-    pub fn new(target: Target, output: PathBuf) -> Self {
+    pub fn new(mode: GameMode, target: Target, output: PathBuf) -> Self {
         Self {
             target,
             output,
-            assets: AssetBundle::new(GameMode::Overlimit), // TODO
+            assets: AssetBundle::new(mode),
             adts: Default::default(),
             functions: Default::default(),
         }

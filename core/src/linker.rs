@@ -4,11 +4,13 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use bincode::de::read::Reader;
+use rust2genshin::asset::GameMode;
 use rust2genshin::compile::link::{Linker, Target};
 
 fn main() {
     let mut inputs = Vec::new();
     let mut output = None;
+    let mut gamemode = GameMode::Beyond;
     {
         let mut it = std::env::args();
         it.next(); // self
@@ -35,6 +37,13 @@ fn main() {
                         },
                         "shared" |
                         concat!("no", "default", "libs") => (),
+                        "gamemode" => {
+                            gamemode = match it.next().unwrap().as_str() {
+                                "beyond" => GameMode::Beyond,
+                                "classic" => GameMode::Classic,
+                                _ => panic!(),
+                            };
+                        }
                         _ => panic!("{arg}"),
                     }
                 }
@@ -66,5 +75,5 @@ fn main() {
             _ => target += handle_input(&path, BufReader::new(File::open(&path).unwrap())),
         }
     }
-    Linker::new(target, PathBuf::from(output.unwrap())).link();
+    Linker::new(gamemode, target, PathBuf::from(output.unwrap())).link();
 }

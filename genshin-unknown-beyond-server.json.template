@@ -10,6 +10,10 @@
   "emit-debug-gdb-scripts": false,
   "exe-suffix": ".gia",
   "linker": "./target/debug/rust2genshin-linker",
+  "linker-flavor": "gcc",
+  "pre-link-args": {
+    "gcc": ["-gamemode", "beyond"]
+  },
   "default-codegen-backend": {backend},
   "max-atomic-width": 64,
   "metadata": {
@@ -19,5 +23,5 @@
     "tier": 3
   },
   "panic-strategy": "abort",
-  "llvm-target": "genshin-unknown-server"
+  "llvm-target": "genshin-unknown-beyond-server"
 }

@@ -44,10 +44,10 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 4. 在重命名后的demo的`lib.rs`中编写自己的节点图（Rust代码）
 5. 构建demo
     ```shell
-    cargo run -p build-demo
+    cargo run -p build-demo --bin beyond-server
     ```
     若改了`demo`的模块名，需同时修改`build-demo`的代码
-6. 构建结果是`target/genshin-unknown-server/release/rust2genshin_demo.gia`
+6. 构建结果是`target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia`
 
 ## Code
 

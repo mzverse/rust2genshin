@@ -18,8 +18,8 @@ message AssetBundleData {
   string                    engine_version   = 5; // 引擎版本 (6.3.0)
 
   enum Mode {
-    OVERLIMIT = 0; // 超限模式
-    CLASSIC   = 1; // 经典模式
+    BEYOND  = 0; // 超限模式
+    CLASSIC = 1; // 经典模式
   }
 }
 

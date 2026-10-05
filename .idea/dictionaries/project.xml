@@ -6,6 +6,7 @@
       <w>apfloat</w>
       <w>comptime</w>
       <w>expn</w>
+      <w>gamemode</w>
       <w>guid</w>
       <w>ipow</w>
       <w>isqrt</w>
