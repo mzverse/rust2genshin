@@ -6,7 +6,7 @@
 #![feature(extern_types)]
 #![feature(rustc_attrs)]
 #![feature(reborrow)]
-
+#![feature(decl_macro)]
 #![allow(internal_features)]
 
 pub mod entity;
@@ -16,6 +16,7 @@ pub mod dict;
 pub mod boxed;
 pub mod player;
 pub mod event;
+pub mod asynchronous;
 
 use core::num::NonZero;
 pub use rust2genshin_lib_internal::event_listener;

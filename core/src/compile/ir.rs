@@ -120,9 +120,7 @@ impl IrKind {
                     NativeKind::LocalVarRef
                 } else {
                     let key = self.to_string();
-                    linker.target.adts.entry(key.clone()).or_insert_with(|| AdtInfo {
-                        fields: vec![FieldInfo::new("value".into(), kind.as_ref().clone())],
-                    });
+                    linker.target.adts.entry(key.clone()).or_insert_with(|| AdtInfo::new(vec![FieldInfo::new("value".into(), kind.as_ref().clone())]));
                     IrKind::Adt(key).lower(linker)
                 }
             }
@@ -151,12 +149,14 @@ pub struct FieldInfo {
 }
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct AdtInfo {
-    fields: Vec<FieldInfo>,
+    pub fields: Vec<FieldInfo>,
+    pub variants: Vec<Vec<usize>>,
 }
 impl AdtInfo {
     pub fn new(fields: Vec<FieldInfo>) -> Self {
         Self {
             fields,
+            variants: vec![],
         }
     }
 }

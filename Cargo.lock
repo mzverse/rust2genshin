@@ -1449,7 +1449,7 @@ version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b35532432acc8b19ceed096e35dfa088d3ea037fe4f3c085f1f97f33b4d02"
 dependencies = [
- "lazy_static",
+ "lazy_static 1.5.1",
  "libc",
  "winapi",
  "wio",
@@ -2917,6 +2917,12 @@ dependencies = [
 
 [[package]]
 name = "lazy_static"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76f033c7ad61445c5b347c7382dd1237847eb1bce590fe50365dcb33d546be73"
+
+[[package]]
+name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
@@ -3291,7 +3297,7 @@ version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c50f1853334c9e52f86afb63aa2fbfd45e17535ce7fc976105e7636c94e975eb"
 dependencies = [
- "lazy_static",
+ "lazy_static 1.5.1",
  "regex",
 ]
 
@@ -3392,7 +3398,7 @@ version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7"
 dependencies = [
- "lazy_static",
+ "lazy_static 1.5.1",
  "libm",
  "num-integer",
  "num-iter",
@@ -3681,6 +3687,15 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "panic-context"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cd16df334aa7a44216298d7af74ea4b0a204a5cd4264eefeaa6871e8c871567"
+dependencies = [
+ "lazy_static 0.2.11",
 ]
 
 [[package]]
@@ -4536,6 +4551,7 @@ dependencies = [
  "bincode",
  "downcast",
  "either",
+ "panic-context",
  "proc-macro2",
  "prost",
  "prost-build",
@@ -4567,6 +4583,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+ "zyn",
 ]
 
 [[package]]
@@ -7148,7 +7165,7 @@ dependencies = [
  "dwrote",
  "float-ord",
  "freetype-sys",
- "lazy_static",
+ "lazy_static 1.5.1",
  "libc",
  "log",
  "pathfinder_geometry",
@@ -7420,4 +7437,34 @@ dependencies = [
  "serde",
  "syn 3.0.4",
  "winnow 1.0.4",
+]
+
+[[package]]
+name = "zyn"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed4cc63a0258eef63faf98127747922c45d2770ab9f918602d90307bddc469fe"
+dependencies = [
+ "zyn-core",
+ "zyn-derive",
+]
+
+[[package]]
+name = "zyn-core"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "552fd5767f6237d861274b24c74dcba5135dd02483c2c9e94ebf773dd8580979"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "zyn-derive"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a948da9db2c8273346a62e650afd5b133ba4e8d1dc4eb1bed1e3c0de24d00243"
+dependencies = [
+ "zyn-core",
 ]

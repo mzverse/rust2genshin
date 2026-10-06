@@ -2,8 +2,9 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use proc_macro::{Span, TokenStream};
-use quote::quote;
-use syn::{parse_macro_input, Block, ForeignItemFn, ItemEnum, ItemFn};
+use quote::{quote, ToTokens};
+use syn::{parse_macro_input, Block, ForeignItemFn, ItemEnum, ItemFn, ReturnType, Type, Token};
+use zyn::zyn;
 
 #[proc_macro_attribute]
 pub fn native(_args: TokenStream, input: TokenStream) -> TokenStream {
@@ -80,4 +81,40 @@ fn tag(input: TokenStream) -> TokenStream {
         x.set_span(Span::call_site());
         x
     }).collect()
+}
+
+#[proc_macro_attribute]
+pub fn asynchronous(args: TokenStream, input: TokenStream) -> TokenStream {
+    let is_static = if args.is_empty() {
+        false
+    } else if syn::parse::<Token![static]>(args).is_ok() {
+        true
+    } else {
+        panic!();
+    };
+    let ItemFn {
+        attrs, vis, mut sig, block
+    } = parse_macro_input!(input as ItemFn);
+    assert!(sig.asyncness.is_none());
+    let output = match sig.output {
+        ReturnType::Default => {
+            let x = quote! { () }.into();
+            parse_macro_input!(x as Type)
+        },
+        ReturnType::Type(_, x) => *x,
+    };
+    let output = zyn! {
+        impl ::core::ops::Coroutine<Yield = f32, Return = {{ output }}> + @if (is_static) {  } @else { Unpin }
+    }.to_token_stream().into();
+    sig.output = ReturnType::Type(Default::default(), parse_macro_input!(output as Type).into());
+    let st = <Token![static]>::default();
+    zyn! {
+        @for (x in attrs) { {{x}} }
+        {{ vis }}
+        {{ sig }} {
+            #[coroutine]
+            @if (is_static) { {{st}} } ||
+            {{ block }}
+        }
+    }.into_token_stream().into()
 }

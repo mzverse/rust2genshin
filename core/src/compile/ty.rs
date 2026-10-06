@@ -1,7 +1,7 @@
 use crate::compile::ir::{AdtInfo, FieldInfo, IrKind};
 use crate::compile::{Compiler, Result};
 use crate::value::NativeKind;
-use rustc_abi::{FieldIdx, Integer, IntegerType};
+use rustc_abi::{FIRST_VARIANT, FieldIdx, Integer, IntegerType};
 use rustc_ast::{FloatTy, IntTy};
 use rustc_attr_ir::LangItem;
 use rustc_index::Idx;
@@ -9,9 +9,10 @@ use rustc_middle::infer::canonical::ir::GenericArgKind;
 use rustc_middle::mir::Mutability;
 use rustc_middle::ty;
 use rustc_middle::ty::print::with_no_trimmed_paths;
-use rustc_middle::ty::{AdtDef, AdtKind, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt, TypingEnv};
+use rustc_middle::ty::{AdtDef, Const, GenericArg, GenericArgsRef, Instance, Ty, TyKind, TypeVisitableExt, TypingEnv};
 use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use rustc_span::{DUMMY_SP, Span};
+use std::collections::HashSet;
 
 
 impl<'tcx> Compiler<'tcx> {
@@ -109,27 +110,62 @@ impl<'tcx> Compiler<'tcx> {
         }
     }
 
-    pub fn touch_adt(&mut self, ty: Ty<'tcx>) -> IrKind {
+    pub fn touch_adt(&mut self, ty: Ty<'tcx>) -> Result<IrKind> {
+        if let TyKind::Adt(d, a) = ty.kind() && d.is_enum() {
+            if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
+                return Ok(IrKind::Native(NativeKind::Int));
+            } else if let Some(r) = self.get_default_some(*d, a)? {
+                return Ok(IrKind::Native(r));
+            }
+        }
         let key = Self::mangle_ty(ty);
         if !self.target.adts.contains_key(&key) {
-            let info = AdtInfo::new(match ty.kind() {
+            let mut info;
+            match ty.kind() {
                 TyKind::Adt(d, a) => {
-                    if !d.is_struct() {
-                        todo!();
+                    if d.is_enum() {
+                        info = AdtInfo::new(vec![FieldInfo::new("discriminant".into(), IrKind::Native(NativeKind::Int))]);
+                        for x in d.variants() {
+                            let mut vec = vec![];
+                            let mut used = HashSet::new();
+                            used.insert(0); // discriminant
+                            'label: for field in &x.fields {
+                                let kind = self.compile_ty(DUMMY_SP, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), field.ty(self.tcx, a)))?;
+                                for (i, f) in info.fields.iter().enumerate() {
+                                    if used.contains(&i) {
+                                        continue;
+                                    }
+                                    if kind == f.kind {
+                                        used.insert(i);
+                                        vec.push(i);
+                                        info.fields[i].name += &format!(" | {}.{}", x.name, field.name);
+                                        continue 'label;
+                                    }
+                                }
+                                let i = info.fields.len();
+                                used.insert(i);
+                                vec.push(i);
+                                info.fields.push(FieldInfo::new(format!("{}.{}", x.name, field.name), kind));
+                            }
+                            info.variants.push(vec);
+                        }
+                    } else if d.is_struct() {
+                        info = AdtInfo::new(d.variant(FIRST_VARIANT).fields.iter().map(|x| Ok(FieldInfo::new(x.name.to_string(), self.compile_ty(DUMMY_SP, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(self.tcx, a)))?))).collect::<Result<_>>()?)
+                    } else {
+                        panic!()
                     }
-                    d.non_enum_variant().fields.iter().map(|x| FieldInfo::new(x.name.to_string(), self.compile_ty(DUMMY_SP, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(self.tcx, a))).unwrap())).collect()
                 },
                 TyKind::Closure(..) | TyKind::Tuple(..) =>
-                    match ty.kind() {
+                    info = AdtInfo::new(match ty.kind() {
                         TyKind::Closure(_d, a) => a.as_closure().upvar_tys(),
                         TyKind::Tuple(es) => es,
                         _ => unreachable!(),
-                    }.iter().enumerate().map(|(i, x)| FieldInfo::new(i.to_string(), self.compile_ty(DUMMY_SP, x).unwrap())).collect(),
+                    }.iter().enumerate().map(|(i, x)| FieldInfo::new(i.to_string(), self.compile_ty(DUMMY_SP, x).unwrap())).collect()),
                 other => panic!("{other:?}"),
-            });
+            }
             self.target.adts.insert(key.clone(), info);
         }
-        IrKind::Adt(key)
+        Ok(IrKind::Adt(key))
     }
 
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
@@ -154,7 +190,15 @@ impl<'tcx> Compiler<'tcx> {
                 FloatTy::F32 => IrKind::Native(NativeKind::Float),
             },
             TyKind::RawPtr(e, _) => if e.is_str() { IrKind::Native(NativeKind::String) } else {
-                IrKind::Unsupported(format!("*{e:?}"))
+                match e.kind() {
+                    | TyKind::Slice(e)
+                    | TyKind::Array(e, _)
+                    => IrKind::Native(NativeKind::List(match self.compile_ty(span, *e)? {
+                        IrKind::Native(x) => x,
+                        other => todo!("{other:?}"),
+                    }.into())),
+                    _ => IrKind::Unsupported(format!("*{e:?}")),
+                }
             },
             TyKind::Str => IrKind::Native(NativeKind::String),
             TyKind::Ref(_, e, m) =>
@@ -169,18 +213,9 @@ impl<'tcx> Compiler<'tcx> {
                 },
             TyKind::Adt(d, a) if d.repr().transparent() =>
                 self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.tcx, a)))?,
-            TyKind::Adt(d, a) if d.adt_kind() == AdtKind::Enum => {
-                if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
-                    IrKind::Native(NativeKind::Int)
-                } else if let Some(r) = self.get_default_some(*d, a)? {
-                    IrKind::Native(r)
-                } else {
-                    todo!("{d:?} {a:?}")
-                }
-            },
             TyKind::Adt(..) |
             TyKind::Tuple(..) |
-            TyKind::Closure(..) => self.touch_adt(ty),
+            TyKind::Closure(..) => self.touch_adt(ty)?,
             TyKind::Never => IrKind::Never,
             TyKind::Foreign(id) => todo!("{id:?}"),
             TyKind::Array(_, _) => todo!(),

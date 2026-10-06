@@ -1,22 +1,22 @@
+#![feature(coroutines, stmt_expr_attributes)]
+#![feature(coroutine_trait)]
+
 #![no_std]
 
-#![allow(unused_imports)]
-
-extern crate rust2genshin_lib;
-
+#[allow(unused_imports)]
 use rust2genshin_lib::*;
+#[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 
-use core::f32::consts::PI;
 use core::hint::black_box;
 use rust2genshin_lib::entity::Entity;
-use rust2genshin_lib::event::character::{CharacterDownEvent, DownCause};
-use rust2genshin_lib::event::entity::{EntityCreatedEvent, TabSelectedEvent};
+use rust2genshin_lib::event::entity::TabSelectedEvent;
 
-#[event_listener]
-pub fn test_hidden(event: TabSelectedEvent) {
-    log(event.guid);
-    log(event.hidden_guid);
+#[unsafe(no_mangle)]
+pub fn test_enum(i: &mut Option<i32>) {
+    if let Some(i) = i {
+        *i = 114;
+    }
 }
 
 #[unsafe(no_mangle)]

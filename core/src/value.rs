@@ -229,7 +229,7 @@ impl NativeKind {
                 type_detail: self.encode_type(side).into(),
             }.into(),
             tracker: None,
-            storage: value.map(|x| self.encode_storage(side, x)),
+            storage: value.and_then(|x| self.encode_storage(side, x)),
         }
     }
 
@@ -349,29 +349,29 @@ impl NativeKind {
         }
     }
 
-    pub fn default(&self) -> Option<Box<dyn NativeValue>> {
+    pub fn default(&self) -> Box<dyn NativeValue> {
         use NativeKind::*;
-        Some(match self {
+        match self {
             Bool => bool::default().into(),
             Int => i32::default().into(),
             Float => f32::default().into(),
             String => std::string::String::default().into(),
             Vec3 => self::Vec3::default().into(),
-            Entity => return None,
             Enum(_) => i32::default().into(),
             Guid |
             Faction |
             Config |
             Prefab => i64::default().into(),
-            LocalVarRef => return None,
-            VarSnapshotRef => return None,
+            Entity |
+            LocalVarRef |
+            VarSnapshotRef => ().into(),
             List(_) => Vec::<Box<dyn NativeValue>>::default().into(),
             Dict { .. } => BTreeMap::<Box<dyn NativeValue>, Box<dyn NativeValue>>::default().into(),
-            Struct(r) => return r.fields.iter().map(|(_name, kind)| kind.default()).collect::<Option<StructValue>>().map(Into::into),
-        })
+            Struct(r) => r.fields.iter().map(|(_name, kind)| kind.default()).collect::<StructValue>().into(),
+        }
     }
 
-    fn encode_storage(&self, side: Side, value: &dyn NativeValue) -> typed_value::Storage {
+    fn encode_storage(&self, side: Side, value: &dyn NativeValue) -> Option<typed_value::Storage> {
         use NativeKind::*;
         use typed_value::Storage::*;
         match self {
@@ -380,14 +380,17 @@ impl NativeKind {
             Float => ValFloat(encode_float(value)),
             String => ValString(encode_string(value)),
             Vec3 => ValVector(encode_vec3(value)),
-            Entity => panic!(),
             Enum(_) => ValEnum(encode_enum(value)),
             Guid |
             Faction |
             Config |
             Prefab => ValId(encode_id(value)),
-            LocalVarRef => panic!(),
-            VarSnapshotRef => panic!(),
+            Entity |
+            LocalVarRef |
+            VarSnapshotRef => {
+                assert!(value.is::<()>());
+                return None;
+            },
             List(ele) => ValList(encode_list(side, ele, value)),
             Dict { key: k, value: v } => ValMap(encode_dict(side, k, v, value)),
             Struct(st) => {
@@ -396,7 +399,7 @@ impl NativeKind {
                     field: st.fields.iter().enumerate().map(|(i, (_name, kind))| kind.encode_typed_value(side, Some(value[i].as_ref()))).collect(),
                 })
             }
-        }
+        }.into()
     }
 
     pub fn encode_field_value(&self, value: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
@@ -505,12 +508,11 @@ impl NativeKind {
             _ => None,
         }
     }
-
-    fn is_instance(&self, _value: &Self) -> bool {
-        true
-    }
 }
 
+#[typetag::serde(name = "unit")]
+impl NativeValue for () {
+}
 #[typetag::serde]
 impl NativeValue for bool {
 }

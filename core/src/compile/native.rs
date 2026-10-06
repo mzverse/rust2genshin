@@ -1,3 +1,4 @@
+use panic_context::panic_context;
 use super::{Compiler, Result};
 use crate::compile::get_expn_macro_attr;
 use crate::compile::ir::IrKind;
@@ -66,6 +67,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     pub fn compile_native_call(&mut self, span: Span, func: Instance<'tcx>, sig: FnSig<'tcx>, params: &[IrKind]) -> Result<Option<NodeKind>> {
+        panic_context!("Compiling native call: {func:?}");
         let ret = sig.output();
         let ret_kinds = if let TyKind::Tuple(ele) = ret.kind() {
             ele.iter().collect()

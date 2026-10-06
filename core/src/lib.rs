@@ -29,6 +29,13 @@ extern crate rustc_ty_utils;
 
 #[macro_export]
 macro_rules! unwrap {
+    ($e:expr, $p:pat => $v:expr) => {
+        if let $p = $e {
+            $v
+        } else {
+            panic!("expected {}, got {:?}", stringify!($variant), $e);
+        }
+    };
     ($e:expr, $variant:path) => {
         if let $variant(x) = $e {
             x

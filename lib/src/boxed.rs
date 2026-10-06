@@ -3,7 +3,6 @@ use core::ops::{CoerceUnsized, Deref, DerefMut, LegacyReceiver};
 use rust2genshin_lib_internal::native;
 
 #[repr(transparent)]
-#[native("box")]
 pub struct Box<T: ?Sized> {
     pointer: *mut T,
     _marker: PhantomData<T>,
@@ -32,15 +31,18 @@ pub fn unbox<T>(boxed: Box<T>) -> T {
     Box::into_inner(boxed)
 }
 impl<T> Box<T> {
+    #![allow(clippy::wrong_self_convention)]
+
     #[native("box_new")]
     pub fn new(value: T) -> Self;
-    #[allow(clippy::wrong_self_convention)]
-    #[native("into_inner")]
+
+    #[native("box_into_inner")]
     pub fn into_inner(boxed: Self) -> T;
-    #[allow(clippy::wrong_self_convention)]
+
     pub fn into_ptr(boxed: Self) -> *mut T {
         boxed.pointer
     }
+
     /// # Safety
     pub unsafe fn from_ptr(pointer: *mut T) -> Self {
         Self {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr};
+use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -15,6 +15,7 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, Con
 use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span};
 use tap::Pipe;
+use crate::unwrap;
 
 pub type NodeGraphIr = NodeGraph<IrNodeId, IrKind>;
 
@@ -212,26 +213,35 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     ValueIn::link(Link::node(node, 0))
                 }
             }
-            Rvalue::Aggregate(kind, fields) if !matches!(**kind, AggregateKind::Array(..)) => {
-                match ty.kind() {
-                    TyKind::Adt(d, _a) if d.repr().transparent() =>
-                        self.compile_operand(&fields[FieldIdx::new(0)], span)?,
-                    TyKind::Adt(d, a) if d.is_enum() => {
-                        if self.compiler.get_default_some(*d, a)?.is_some() {
-                            self.compile_operand(&fields[FieldIdx::new(0)], span)?
-                        } else {
-                            todo!()
-                        }
-                    },
-                    _ => {
+            Rvalue::Aggregate(kind, fields) => match **kind {
+                AggregateKind::Array(_) => todo!(),
+                AggregateKind::Adt(..) if unwrap!(ty.kind(), TyKind::Adt(d, _) => d).repr().transparent() =>
+                    self.compile_operand(&fields[FieldIdx::new(0)], span)?,
+                AggregateKind::Adt(_, id, a, _, _) if let d = unwrap!(ty.kind(), TyKind::Adt(d, _) => d) && d.is_enum() => {
+                    if self.compiler.get_default_some(*d, a)?.is_some() {
+                        self.compile_operand(&fields[FieldIdx::new(0)], span)?
+                    } else {
                         let kind = self.compiler.compile_ty(span, ty)?;
                         let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
-                        for (i, x) in fields.iter().enumerate() {
-                            let v = self.compile_operand(x, span)?;
-                            self.graph.set_value_in(Link::node(node, i), v);
+                        self.graph.set_default(Link::node(node, 0), Some((id.index() as i32).into()));
+                        for (i, x) in self.compiler.target.adts[&unwrap!(kind, IrKind::Adt)].variants[id.index()].clone().into_iter().enumerate() {
+                            let v = self.compile_operand(&fields[FieldIdx::new(i)], span)?;
+                            self.graph.set_value_in(Link::node(node, x), v);
                         }
                         ValueIn::link(Link::node(node, 0))
                     }
+                }
+                AggregateKind::Coroutine(_, _) => todo!(),
+                AggregateKind::CoroutineClosure(_, _) => todo!(),
+                AggregateKind::RawPtr(_, _) => todo!(),
+                _ => {
+                    let kind = self.compiler.compile_ty(span, ty)?;
+                    let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                    for (i, x) in fields.iter().enumerate() {
+                        let v = self.compile_operand(x, span)?;
+                        self.graph.set_value_in(Link::node(node, i), v);
+                    }
+                    ValueIn::link(Link::node(node, 0))
                 }
             },
             Rvalue::Discriminant(from) => {
@@ -250,12 +260,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     self.graph.link_value(Link::node(node_not, 0), Link::node(node_cast, 0));
                     ValueIn::link(Link::node(node_cast, 0))
                 } else {
-                    todo!()
+                    let ty = self.mono(from.ty(&self.body.local_decls, self.tcx).ty);
+                    let kind = self.compiler.compile_ty(span, ty)?;
+                    let node = self.graph.insert(node_ir_destructure(&mut self.compiler.target, &kind));
+                    let v = self.compile_operand(&Operand::Copy(*from), span)?;
+                    self.graph.set_value_in(Link::node(node, 0), v);
+                    ValueIn::link(Link::node(node, 0))
                 }
             },
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)
-            | Rvalue::Aggregate(_, _) // non-Tuple AggregateKind still panics
             | Rvalue::CopyForDeref(_)
             | Rvalue::WrapUnsafeBinder(_, _)
             => todo!("{:?}", value),
@@ -318,7 +332,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             TyKind::Adt(d, a) if d.repr().transparent() =>
                 return self.compile_const(self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().single_field().ty(self.tcx, a)), kind, v, span),
             TyKind::Adt(d, _a) if d.is_enum() && d.variants().len() > 1 =>
-                todo!("enum const is still unsupported"),
+                self.tcx.dcx().span_fatal(span, "Enum const is still unsupported, see `black_box`"), // TODO
             TyKind::Adt(..) | TyKind::Tuple(..) => {
                 let ele: Vec<_> = match ty.kind() {
                     TyKind::Adt(d, a) => d.non_enum_variant().fields.iter().map(|x| self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(self.tcx, a))).collect(),

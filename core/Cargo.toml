@@ -23,6 +23,7 @@ downcast = { workspace = true }
 serde = { workspace = true }
 typetag = { workspace = true }
 bincode = { version = "2", features = ["serde"] }
+panic-context = "0"
 ar = "0"
 prost = "0"
 syn = "3"

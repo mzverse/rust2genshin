@@ -83,7 +83,7 @@ impl StructField {
                 r#type: ty as i32,
                 kind: kind.into(),
                 name: None,
-                val: self.kind.encode_field_value(self.kind.default().unwrap().as_ref()).into(),
+                val: self.kind.encode_field_value(self.kind.default().as_ref()).into(),
             }.into(),
         }
     }

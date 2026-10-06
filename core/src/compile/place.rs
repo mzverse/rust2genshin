@@ -13,6 +13,7 @@ use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{Ty, TyKind, TypingEnv};
 use rustc_span::Span;
 use tap::Tap;
+use crate::unwrap;
 
 #[derive(Clone, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -44,7 +45,7 @@ impl<'tcx> LocalRef<'tcx> {
 #[derive(Clone)]
 pub enum CompiledPlace<'tcx> {
     Local(CompiledLocal<LocalRef<'tcx>>),
-    Field(Box<CompiledPlace<'tcx>>, IrKind, FieldIdx),
+    Field(Box<CompiledPlace<'tcx>>, IrKind, usize),
 }
 #[derive(Clone, Copy)]
 pub enum LocalKind {
@@ -233,8 +234,7 @@ impl<'tcx> CompiledPlace<'tcx> {
                 let node = graph.insert(node_ir_destructure(target, owner_kind));
                 let v = owner.getter(target, graph, owner_kind);
                 graph.set_value_in(Link::node(node, 0), v);
-                let index = ele.index();
-                ValueIn::link(Link::node(node, index))
+                ValueIn::link(Link::node(node, *ele))
             },
         }
     }
@@ -259,9 +259,9 @@ impl<'tcx> CompiledPlace<'tcx> {
                 let node = graph.insert(node_ir_modify_struct(target, owner_kind));
                 let v = owner.getter(target, graph, owner_kind);
                 graph.set_value_in(Link::node(node, 0), v);
-                let index = 2 + ele.index() * 2;
+                let index = 2 + *ele * 2;
                 graph.set_value_in(Link::node(node, index), value);
-                let index = 3 + ele.index() * 2;
+                let index = 3 + *ele * 2;
                 graph.set_value_in(Link::node(node, index), ValueIn::value(true.into()));
                 Block::singleton(node, 0)
             },
@@ -281,16 +281,21 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                         TyKind::Adt(d, _a) if d.repr().transparent() => {
                             assert_eq!(i, FieldIdx::new(0));
                             // do nothing
-                        }
+                        },
                         TyKind::Adt(d, a) if self.compiler.get_default_some(*d, a)?.is_some() => {
                             assert_eq!(d.variant(ty.variant_index.unwrap()).def_id, self.tcx.lang_items().get(LangItem::OptionSome).unwrap());
                             assert_eq!(i, FieldIdx::new(0));
                             // do nothing
-                        }
+                        },
+                        TyKind::Adt(d, _a) if d.is_enum() => {
+                            let kind = self.compiler.compile_ty(span, ty.ty)?;
+                            let i = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].variants[ty.variant_index.unwrap().index()][i.index()];
+                            result = CompiledPlace::Field(result.into(), kind, i);
+                        },
                         _ => match result {
                             CompiledPlace::Local(CompiledLocal::Flat(v)) => result = CompiledPlace::Local(v.into_iter().nth(i.index()).unwrap()),
-                            other => result = CompiledPlace::Field(other.into(), self.compiler.compile_ty(span, ty.ty)?, i),
-                        }
+                            other => result = CompiledPlace::Field(other.into(), self.compiler.compile_ty(span, ty.ty)?, i.index()),
+                        },
                     }
                 },
                 Deref => if ty.ty.ref_mutability().unwrap() == Mutability::Mut { // TODO: raw ptr
@@ -310,7 +315,7 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                                     unreachable!()
                                 }
                             } else {
-                                todo!()
+                                // do nothing
                             },
                         TyKind::CoroutineClosure(_, _) => todo!(),
                         TyKind::Coroutine(_, _) => todo!(),

@@ -35,7 +35,7 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
 
 可参见github workflow
 
-1. 确保安装了[rustup](https://rustup.rs/)、cargo和[protoc](https://github.com/protocolbuffers/protobuf/releases)
+1. 确保安装了[rustup](https://rustup.rs/)、cargo和[protoc](https://github.com/protocolbuffers/protobuf/releases/latest)
 2. 克隆本项目
     ```shell
    git clone https://github.com/mzverse/rust2genshin
@@ -142,15 +142,15 @@ let g = const { Guid::new(42) };    // 内联 const 块
 ## 语言特性
 
 - `enum`
+    - constant
 - loops
 - `async fn`(coroutine)
 - 客户端节点图
 
 ## 类型
 
-- `VarSnapshotRef`
 - `Vec3`
-- `Vec2`
+- `VarSnapshotRef`
 - `List<T>` & `[T]`
 - `Dict<K, V>`
 - `Box<T>`
