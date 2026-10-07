@@ -4,6 +4,8 @@
 //! 操作节点用 `NodeType::procedure`(无返回值)/ `NodeType::new`(多输出)。
 //! 命名统一 `NODE_CLIENT_` + 尾部,避免与 Server 节点冲突。
 
+#![allow(unreachable_code)]
+
 use crate::node::NodeKind;
 use crate::value::NativeKind::*;
 use std::sync::LazyLock;

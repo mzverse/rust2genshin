@@ -242,6 +242,18 @@ pub struct NodeEntry {
     /// 值流的连接点排在控制流下方,侧边的分母是这两类 pin 的总和。
     pub values_in_num: usize,
     pub values_out_num: usize,
+    /// 每个**值入** pin 的类型标签,与 `values_in_num` 同长;**空串** = 这个
+    /// pin 没类型(`NodeKind::values_in_types` 里是 `None`)。统一用空串而
+    /// 不是 `Option`,和 `NodeEntry::type_label`、`NodeEntry::value_in_defaults`
+    /// 的既有约定一致,悬停层不用到处判两种"没有"。
+    ///
+    /// 悬停气泡显示的就是它(`view::hit_test`)。节点级的 `type_label` 只覆盖
+    /// `Local` / `SetLocal` 那几种,盖不住每个 pin。
+    pub values_in_types: Vec<String>,
+    /// 每个**值出** pin 的类型标签,与 `values_out_num` 同长。值出的
+    /// `NodeKind::values_out_types` 是 `Vec<IrKind>`(没有"无类型"),所以
+    /// 这里每一项都非空。
+    pub values_out_types: Vec<String>,
     /// 连到**图外**的 pin(图边界)。渲染时从这些 pin 往图外引一小段桩线、
     /// 末端标上图外边界号(`Export N`)—— 取代了以前节点里的 `[in]` / `[out]`
     /// 文字标记,而且能精确到是**哪一个引脚、哪一号边界**。
@@ -606,9 +618,9 @@ fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
     let mut nodes = Vec::new();
     for (key, node) in g.nodes.iter() {
         index_of.insert(NodeRef::from(key), nodes.len());
-        let type_label = node_type_label(&node.kind);
+        let node_type = node_type_label(&node.kind);
         // 宽度按**显示出来的**标签估算 —— 和渲染用的是同一个 `label` 函数。
-        let width = node_width(&label(&node.kind.id, &type_label));
+        let width = node_width(&label(&node.kind.id, &node_type));
         // 连到图外的 pin。节点侧的 `links` 里存着 `LinkTarget::Export` 的反向
         // 记录(`node/mod.rs:405`:Export 那侧才是 `externals`),所以按 pin
         // 逐个查即可 —— 边界号就在 `Link::index` 里,不用去翻 `g.externals`。
@@ -631,11 +643,26 @@ fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
             node_ref: NodeRef::from(key),
             position: point(node.position.0, node.position.1),
             kind: node.kind.id.clone(),
-            type_label,
+            type_label: node_type,
             controls_in_num: node.kind.controls_in_num,
             controls_out_num: node.kind.controls_out_num,
             values_in_num: node.kind.values_in_types.len(),
             values_out_num: node.kind.values_out_types.len(),
+            // 逐 pin 的类型,悬停气泡用(`view::hit_test`)。`values_in_types`
+            // 是 `Vec<Option<IrKind>>`,`None` 标签化成空串;`values_out_types`
+            // 是 `Vec<IrKind>`,没有"无类型"这一说,每一项都非空。
+            values_in_types: node
+                .kind
+                .values_in_types
+                .iter()
+                .map(|k| type_label(k.as_ref()))
+                .collect(),
+            values_out_types: node
+                .kind
+                .values_out_types
+                .iter()
+                .map(|k| type_label(Some(k)))
+                .collect(),
             ctrl_in_exports,
             ctrl_out_exports,
             value_in_exports,

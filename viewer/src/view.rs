@@ -160,6 +160,11 @@ struct EdgeView {
     a: Point<f32>,
     b: Point<f32>,
     to: Point<f32>,
+    /// 悬停气泡的文案(`edge_tip` 算好)。控制流边是 `None`。
+    tip: Option<String>,
+    /// 边在 `g.edges` 里的下标 —— 命中测试找到边之后要靠它反查文案,
+    /// 也让同一条边的两个端点共享一个身份。
+    index: usize,
 }
 
 // ------------------------------------------------------------------ 几何
@@ -263,7 +268,8 @@ fn build_nodes(
 fn build_edges(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f32) -> Vec<EdgeView> {
     g.edges
         .iter()
-        .filter_map(|e: &Edge| {
+        .enumerate()
+        .filter_map(|(index, e): (usize, &Edge)| {
             let (from, fs) = node_box(pos, &g.nodes, origin, scale, e.from.0)?;
             let (to, ts) = node_box(pos, &g.nodes, origin, scale, e.to.0)?;
             // 两侧各自的 pin 总数:控制流 + 值流,值流排在下方。
@@ -287,6 +293,8 @@ fn build_edges(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f3
                 a: point(from.x + fs.width + dx, y0),
                 b: point(to.x - dx, y1),
                 to: point(to.x, y1),
+                tip: edge_tip(g, e),
+                index,
             })
         })
         .collect()
@@ -380,6 +388,53 @@ struct PinView {
     x: f32,
     y: f32,
     ctrl: bool,
+    /// 悬停气泡的文案。控制流 pin 是 `None` —— 控制流不分类型,给不出
+    /// 有意义的话。值流 pin 是该 pin 的类型标签,空串(`""`)表示"这个 pin
+    /// 没有类型",气泡里显示 `None`。
+    tip: Option<String>,
+}
+
+/// 引脚 / 边的悬停文案(纯逻辑,可单测)。
+///
+/// `NONE_TIP` 是"这个 pin 没有类型"的固定说法:类型标签为空串时用它,
+/// 而不是把空串直接显示出去(那看起来像 bug,不像信息)。
+const NONE_TIP: &str = "None";
+
+/// 值流 pin 的类型文案。`is_out` 决定读出参还是入参的表,`pin` 是**值流里**
+/// 的序号(控制流 pin 不带类型,不走这里)。
+///
+/// 两张表都可能越界 / 为空(展平层不保证),拿不到就回 `NONE_TIP` 而不是
+/// panic —— 悬停是纯交互增强,不能因为某个畸形 `.ogia` 把窗口带走。
+fn pin_tip(n: &NodeEntry, is_out: bool, pin: usize) -> String {
+    let raw = if is_out {
+        n.values_out_types.get(pin)
+    } else {
+        n.values_in_types.get(pin)
+    };
+    match raw {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => NONE_TIP.to_string(),
+    }
+}
+
+/// 值流边的悬停文案:两端类型**一致**就只显示那一个,**不一致**就两个都显示
+/// (`A → B`)。控制流边没有类型,回 `None`。
+///
+/// 分隔符用 `→` 而不是 `-` / `,`:连线上本来就有方向感,箭头读起来就是
+/// "从哪个类型流到哪个类型",不会和负号、连字符混淆。
+fn edge_tip(g: &GraphEntry, e: &Edge) -> Option<String> {
+    if e.ctrl {
+        return None;
+    }
+    let from = g.nodes.get(e.from.0).map(|n| pin_tip(n, true, e.from.1));
+    let to = g.nodes.get(e.to.0).map(|n| pin_tip(n, false, e.to.1));
+    match (from, to) {
+        // 节点下标越界(展平层不保证,理论上不该发生)—— 两端都拿不到就
+        // 当作没类型,别 unwrap。
+        (None, None) | (None, _) | (_, None) => Some(NONE_TIP.to_string()),
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), Some(b)) => Some(format!("{a} → {b}")),
+    }
 }
 
 /// 控制流引脚的三角形顶点(包在直径 `d` 的方框里、**尖端向右**)。
@@ -408,15 +463,19 @@ fn build_pins(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f32
         };
         // 入边一侧在左边缘、出边一侧在右边缘;纵向档位就是 `0..(控制+值)`,
         // 与控制流/值流的先后无关 —— 那个顺序只决定颜色。
-        for (ctrl_num, value_num, x) in [
-            (n.controls_in_num, n.values_in_num, p.x),
-            (n.controls_out_num, n.values_out_num, p.x + s.width),
+        for (ctrl_num, value_num, is_out, x) in [
+            (n.controls_in_num, n.values_in_num, false, p.x),
+            (n.controls_out_num, n.values_out_num, true, p.x + s.width),
         ] {
             for k in 0..(ctrl_num + value_num) {
+                let ctrl = k < ctrl_num;
                 out.push(PinView {
                     x,
                     y: spread(p.y, s.height, k, ctrl_num + value_num),
-                    ctrl: k < ctrl_num,
+                    ctrl,
+                    // 控制流 pin 没有类型可显示;值流 pin 的 pin 序号是
+                    // `k - ctrl_num`(值流排在控制流下方)。
+                    tip: (!ctrl).then(|| pin_tip(n, is_out, k - ctrl_num)),
                 });
             }
         }
@@ -451,6 +510,114 @@ fn build_defaults(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale:
         }
     }
     out
+}
+
+// ------------------------------------------------------------------ 悬停命中
+
+/// 引脚 / 边的命中半径(容器局部坐标,**不随缩放变**)。
+///
+/// 圆点本身只有 `PIN_D * scale` —— 缩到 0.2 倍时直径不到 1.5px,真按图形
+/// 面积去命中几乎点不中。所以命中半径给一个**固定**的屏幕像素数(缩放无关),
+/// 让"小图也能指着"这件事成立。边同理:1px 宽的虚线不能用线宽当命中区。
+const PIN_HIT_R: f32 = 7.0;
+const EDGE_HIT_R: f32 = 5.0;
+
+/// 悬停气泡相对光标的偏移(容器局部 = 屏幕像素)和字号。偏右下是为了不挡住
+/// 光标底下那个引脚 / 连线。气泡字号**固定**、不跟画布缩放 —— 它是 UI 提示,
+/// 不是画布内容,缩到 6px 就读不了了。
+const HOVER_DX: f32 = 12.0;
+const HOVER_DY: f32 = 16.0;
+const HOVER_FONT_PX: f32 = 12.0;
+
+/// 命中测试的结果:找到的东西 + 气泡落在哪儿。
+pub struct Hover {
+    /// 气泡文案(已算好,渲染直接用)。
+    pub text: String,
+    /// 气泡锚点,**容器局部**坐标 —— 跟着光标走,不是钉在被命中的元素上
+    /// (钉在 pin 上会让气泡盖住圆点本身,反而看不清)。
+    pub at: Point<f32>,
+}
+
+/// 两点距离。
+fn dist(a: Point<f32>, b: Point<f32>) -> f32 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+}
+
+/// 命中测试:离光标最近的**有气泡的** pin / 边。
+///
+/// pin 优先于边 —— 引脚是小目标、又压在边上面,两者都够近时选 pin 才是
+/// 用户想要的(他要的是那个引脚的类型,不是那条线的)。同类里取最近的;
+/// 完全不在半径内回 `None`。
+///
+/// 边用**折线采样**近似贝塞尔:三次贝塞尔没有"点到曲线距离"的闭式解,
+/// 采样足够密(24 段)时误差远小于命中半径,不值得为此引一个几何库。
+fn hit_test(pins: &[PinView], edges: &[EdgeView], at: Point<f32>) -> Option<Hover> {
+    // pin 优先:有 tip 的 pin 里找最近的。
+    let pin = pins
+        .iter()
+        .filter_map(|p| p.tip.as_ref().map(|t| (dist(point(p.x, p.y), at), t)))
+        .filter(|(d, _)| *d <= PIN_HIT_R)
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some((_, text)) = pin {
+        return Some(Hover {
+            text: text.clone(),
+            at,
+        });
+    }
+    // 没有 pin 命中,再找边。
+    let edge = edges
+        .iter()
+        .filter_map(|e| e.tip.as_ref().map(|t| (bezier_dist(e, at), t)))
+        .filter(|(d, _)| *d <= EDGE_HIT_R)
+        .min_by(|a, b| a.0.total_cmp(&b.0))?;
+    Some(Hover {
+        text: edge.1.clone(),
+        at,
+    })
+}
+
+/// 光标到三次贝塞尔的最短距离(折线采样近似)。
+///
+/// 采样点之间的连线段用**点到线段**的距离算,不是点到采样点的距离 ——
+/// 后者在采样稀疏时会明显偏大,曲线弧度大的地方直接漏判。
+fn bezier_dist(e: &EdgeView, at: Point<f32>) -> f32 {
+    const SAMPLES: usize = 24;
+    let mut prev = e.from;
+    let mut best = f32::MAX;
+    for i in 1..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        let cur = bezier_at(e, t);
+        best = best.min(seg_dist(at, prev, cur));
+        prev = cur;
+    }
+    best
+}
+
+/// 三次贝塞尔在参数 `t` 处的点。控制点是 `from` / `a` / `b` / `to`
+/// (与 `EdgeView` 字段同名,顺序也和 `PathBuilder::cubic_bezier_to` 一致)。
+fn bezier_at(e: &EdgeView, t: f32) -> Point<f32> {
+    let u = 1.0 - t;
+    let (uu, uuu) = (u * u, u * u * u);
+    let (tt, ttt) = (t * t, t * t * t);
+    // 标准三次贝塞尔:B(t) = (1-t)³P₀ + 3(1-t)²t·P₁ + 3(1-t)t²·P₂ + t³P₃
+    let w = [uuu, 3.0 * uu * t, 3.0 * u * tt, ttt];
+    let ps = [e.from, e.a, e.b, e.to];
+    point(
+        w.iter().zip(ps.iter()).map(|(a, b)| a * b.x).sum(),
+        w.iter().zip(ps.iter()).map(|(a, b)| a * b.y).sum(),
+    )
+}
+
+/// 点到线段 `a`-`b` 的最短距离。`a == b` 时退化成点到点距离(除零保护)。
+fn seg_dist(p: Point<f32>, a: Point<f32>, b: Point<f32>) -> f32 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    if len2 <= f32::EPSILON {
+        return dist(p, a);
+    }
+    // 投影参数夹到 [0, 1] —— 落在线段延长线上的点要夹回端点。
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0);
+    dist(p, point(a.x + dx * t, a.y + dy * t))
 }
 
 // ------------------------------------------------------------------ 状态
@@ -505,6 +672,8 @@ pub struct Viewer {
     status: Option<String>,
     /// 节点右键菜单,`None` = 没弹。
     menu: Option<NodeMenu>,
+    /// 当前悬停命中的引脚 / 边,`None` = 鼠标不在任何带气泡的东西上。
+    hover: Option<Hover>,
 }
 
 impl Viewer {
@@ -521,6 +690,7 @@ impl Viewer {
             undo_stack: HashMap::new(),
             status: None,
             menu: None,
+            hover: None,
         }
     }
 
@@ -736,6 +906,43 @@ impl Viewer {
         self.set_pos(new_pos);
         self.status = Some(status);
         cx.notify();
+    }
+
+    /// 鼠标移动后重算悬停命中。
+    ///
+    /// `at_window` 是事件的**窗口**坐标;减掉画布容器左上角换成容器局部
+    /// 坐标,和 [`build_pins`] / [`build_edges`] 算几何用的是同一个坐标系。
+    /// 画布左上角由 canvas 的 prepaint 每帧写进 [`Viewer::canvas_origin`]。
+    ///
+    /// **只有气泡内容变了才 `notify`** —— 光标在同一个引脚上移动时文案不变,
+    /// 每帧重绘纯属浪费(气泡锚点会跟着光标动,所以位置变了也要重绘)。
+    fn update_hover(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
+        let o = self.canvas_origin.get();
+        let at = point(at_window.x - o.x, at_window.y - o.y);
+        let hit = self.pick(at);
+        let changed = match (&self.hover, &hit) {
+            (None, None) => false,
+            (Some(h), Some(n)) => h.text != n.text || h.at != n.at,
+            _ => true,
+        };
+        if changed {
+            self.hover = hit;
+            cx.notify();
+        }
+    }
+
+    /// 在容器局部坐标 `at` 上做一次命中测试。悬停和渲染共用这一条路径,
+    /// 免得"看到的"和"命中的"是两套几何。
+    fn pick(&self, at: Point<f32>) -> Option<Hover> {
+        let g = self.doc.graphs.get(self.current)?;
+        let pos = self
+            .positions
+            .get(self.current)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let pins = build_pins(g, pos, self.origin, self.scale);
+        let edges = build_edges(g, pos, self.origin, self.scale);
+        hit_test(&pins, &edges, at)
     }
 
     /// 无内容可画时的占位文案。`Some` 表示这一帧不画画布,居中显示一行字。
@@ -1000,6 +1207,29 @@ impl Render for Viewer {
             );
         }
 
+        // ---- 悬停气泡(最上层,压在右键菜单之上)----
+        // 跟着光标走、偏右下 —— 偏右下是为了**不挡住**光标底下那个引脚/
+        // 连线本身。字号**不跟缩放**:这是 UI 提示,不是画布内容,跟着画布
+        // 缩到 6px 就没法读了。
+        if let Some(h) = &self.hover {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(h.at.x + HOVER_DX))
+                    .top(px(h.at.y + HOVER_DY))
+                    .px_2()
+                    .rounded_sm()
+                    .bg(panel_bg())
+                    .border_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.35))
+                    .text_color(text_hi())
+                    .text_size(px(HOVER_FONT_PX))
+                    // **不裁剪**:类型名可能很长(`rust2genshin_demo::MyStruct`),
+                    // 宁可伸出去也不能只剩尾巴。
+                    .child(h.text.clone()),
+            );
+        }
+
         // ---- 节点右键菜单(最上层)----
         if let Some(menu) = &self.menu {
             layer = layer.child(
@@ -1075,6 +1305,8 @@ impl Render for Viewer {
             // 拖动时指针早离开了起手那个节点,节点的 hitbox 已经不是 hovered。
             // 详见模块头「拖拽路线」。
             .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
+                // 悬停命中**先**算:它跟"是不是在拖"无关,静止时也要跟手。
+                v.update_hover(from_px(e.position), cx);
                 // `take` 出来再放回去:下面有一支要把 `drag` 直接清成 None,
                 // 拿着 `&mut Drag` 就没法同时改 `v.drag`。
                 let Some(mut d) = v.drag.take() else {
@@ -1338,6 +1570,18 @@ mod tests {
     }
 
     fn node(controls_in: usize, controls_out: usize, values_in: usize, values_out: usize) -> NodeEntry {
+        node_with_types(controls_in, controls_out, values_in, values_out, &[], &[])
+    }
+
+    /// [`node`] 加上逐 pin 类型(悬停气泡用)。类型表给**空串**当"无类型"。
+    fn node_with_types(
+        controls_in: usize,
+        controls_out: usize,
+        values_in: usize,
+        values_out: usize,
+        in_types: &[&str],
+        out_types: &[&str],
+    ) -> NodeEntry {
         NodeEntry {
             node_ref: NodeRef::from(0),
             // 渲染测试自带坐标,不走布局。
@@ -1348,6 +1592,8 @@ mod tests {
             controls_out_num: controls_out,
             values_in_num: values_in,
             values_out_num: values_out,
+            values_in_types: in_types.iter().map(|s| s.to_string()).collect(),
+            values_out_types: out_types.iter().map(|s| s.to_string()).collect(),
             ctrl_in_exports: vec![],
             ctrl_out_exports: vec![],
             value_in_exports: vec![],
@@ -1513,5 +1759,301 @@ mod tests {
         assert_eq!(ds[0].right, 10.0 - (PIN_D / 2.0 + 3.0), "右缘贴引脚左侧");
         // 入边侧「1 控制 + 2 值」共 3 档,值入 pin 1 在第 2 位。
         assert_eq!(ds[0].y, 20.0 + NODE_H * 3.0 / 4.0, "纵向对齐值入 pin 1");
+    }
+
+    // ------------------------------------------------------- 悬停:气泡文案
+
+    /// 引脚气泡 = 该 pin 的类型;**没有类型就显示 `None`**,不是空串。
+    ///
+    /// 空串看起来像"功能坏了",`None` 才是信息:这个 pin 确实没类型。
+    #[test]
+    fn pin_tooltip_shows_the_type_or_none() {
+        let n = node_with_types(0, 0, 2, 1, &["", "Int"], &["Bool"]);
+        assert_eq!(pin_tip(&n, false, 0), "None", "空串类型 → None");
+        assert_eq!(pin_tip(&n, false, 1), "Int", "有类型就显示它");
+        assert_eq!(pin_tip(&n, true, 0), "Bool", "出参类型");
+        // 越界不能 panic —— 悬停是交互增强,畸形 .ogia 不能把窗口带走。
+        assert_eq!(pin_tip(&n, false, 99), "None");
+        assert_eq!(pin_tip(&n, true, 99), "None");
+    }
+
+    /// 边气泡:两端**一致**只显示一个;**不一致**显示两个(`A → B`)。
+    /// 控制流边没有类型,不给气泡。
+    #[test]
+    fn edge_tooltip_shows_one_type_when_equal_and_two_otherwise() {
+        let mut g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![
+                node_with_types(0, 0, 0, 2, &[], &["Int", "Int"]),
+                node_with_types(0, 0, 2, 0, &["Int", "Bool"], &[]),
+            ],
+            edges: vec![],
+        };
+        let edge = |from: usize, from_pin: usize, to: usize, to_pin: usize, ctrl: bool| Edge {
+            from: (from, from_pin),
+            to: (to, to_pin),
+            ctrl,
+        };
+
+        // Int -> Int:两端一致,只显示一个
+        g.edges = vec![edge(0, 0, 1, 0, false)];
+        assert_eq!(edge_tip(&g, &g.edges[0]).as_deref(), Some("Int"));
+
+        // Int -> Bool:不一致,两个都显示
+        g.edges = vec![edge(0, 0, 1, 1, false)];
+        assert_eq!(edge_tip(&g, &g.edges[0]).as_deref(), Some("Int → Bool"));
+
+        // 控制流边:没有类型,没有气泡
+        g.edges = vec![edge(0, 0, 1, 0, true)];
+        assert_eq!(edge_tip(&g, &g.edges[0]), None);
+    }
+
+    /// 一端没类型(`None`)时不能 panic,也不能静默少显示一端 ——
+    /// `None → Bool` 才是完整信息。
+    #[test]
+    fn edge_tooltip_shows_none_for_an_untyped_end() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![
+                node_with_types(0, 0, 0, 1, &[], &[""]),
+                node_with_types(0, 0, 1, 0, &["Bool"], &[]),
+            ],
+            edges: vec![Edge {
+                from: (0, 0),
+                to: (1, 0),
+                ctrl: false,
+            }],
+        };
+        assert_eq!(edge_tip(&g, &g.edges[0]).as_deref(), Some("None → Bool"));
+    }
+
+    // ------------------------------------------------------- 悬停:命中测试
+
+    /// 命中半径**不随缩放变** —— 缩到 0.2 倍时圆点直径不到 1.5px,按图形
+    /// 面积命中几乎点不中。这里锁住"固定屏幕像素"这个性质。
+    #[test]
+    fn hover_hit_radius_is_independent_of_zoom() {
+        assert!(PIN_HIT_R >= 5.0, "命中半径至少要够指着一个 7px 的点");
+        assert!(EDGE_HIT_R >= 3.0, "1px 宽的虚线不能按线宽命中");
+    }
+
+    /// 光标压在引脚圆点上 → 命中那个引脚的气泡。偏 2px(仍在半径内)也要中。
+    #[test]
+    fn hovering_a_pin_hits_that_pin() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![node_with_types(1, 0, 1, 0, &["Int"], &[])],
+            edges: vec![],
+        };
+        let pos = vec![point(0.0, 0.0)];
+        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let value_pin = pins
+            .iter()
+            .find(|p| p.tip.is_some())
+            .expect("有一个值流 pin");
+
+        let hit = hit_test(&pins, &[], point(value_pin.x, value_pin.y))
+            .expect("压在引脚上应当命中");
+        assert_eq!(hit.text, "Int");
+        // 偏 2px 仍在半径内
+        assert_eq!(
+            hit_test(&pins, &[], point(value_pin.x + 2.0, value_pin.y))
+                .map(|h| h.text),
+            Some("Int".to_string()),
+            "半径内偏一点也要命中"
+        );
+        // 偏到半径外就不该命中了
+        assert!(
+            hit_test(&pins, &[], point(value_pin.x + PIN_HIT_R * 4.0, value_pin.y)).is_none(),
+            "半径外不该命中"
+        );
+    }
+
+    /// **引脚优先于边**:两者都够近时选引脚 —— 引脚是小目标、又压在边上面,
+    /// 用户指着那个点要的是它的类型,不是那条线的。只查边的实现会在这里
+    /// 返回边的文案。
+    #[test]
+    fn a_pin_wins_over_an_edge_at_the_same_spot() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![
+                node_with_types(0, 0, 0, 1, &[], &["Int"]),
+                node_with_types(0, 0, 1, 0, &["Float"], &[]),
+            ],
+            edges: vec![Edge {
+                from: (0, 0),
+                to: (1, 0),
+                ctrl: false,
+            }],
+        };
+        let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
+        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let edges = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
+        // 边的**起点**正好是源节点的出 pin —— 两边都在命中半径内。
+        let start = edges[0].from;
+        let hit = hit_test(&pins, &edges, start).expect("起点上应当命中");
+        assert_eq!(hit.text, "Int", "引脚优先,不是边的 `Int → Float`");
+    }
+
+    /// 光标压在边的**中段**(不在任何引脚附近)→ 命中那条边的气泡。
+    /// 这条锁住"贝塞尔曲线上的点要能命中" —— 用端点近似(只测两端连线)
+    /// 的实现会在弧度大的边上完全测不到中段。
+    #[test]
+    fn hovering_the_middle_of_an_edge_hits_the_edge() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![
+                node_with_types(0, 0, 0, 1, &[], &["Int"]),
+                node_with_types(0, 0, 1, 0, &["Float"], &[]),
+            ],
+            edges: vec![Edge {
+                from: (0, 0),
+                to: (1, 0),
+                ctrl: false,
+            }],
+        };
+        let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
+        let edges = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
+        // 端点上下 40px,弧度最大处;离两端引脚都远。
+        let mid = bezier_at(&edges[0], 0.5);
+        assert!(
+            dist(mid, edges[0].from) > PIN_HIT_R,
+            "中段离起点引脚够远,测的确实是曲线不是端点"
+        );
+        let hit = hit_test(&[], &edges, mid).expect("曲线上应当命中边");
+        assert_eq!(hit.text, "Int → Float", "两端不一致显示两个");
+    }
+
+    /// 空白处不该命中任何东西(不给气泡)。
+    #[test]
+    fn empty_space_hits_nothing() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![node_with_types(0, 0, 0, 1, &[], &["Int"])],
+            edges: vec![],
+        };
+        let pos = vec![point(0.0, 0.0)];
+        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        assert!(hit_test(&pins, &[], point(5000.0, 5000.0)).is_none());
+    }
+
+    /// 控制流引脚**不给**气泡:控制流不分类型,显示 `None` 只会误导
+    /// (读起来像"这个引脚没连上")。
+    #[test]
+    fn control_pins_have_no_tooltip() {
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![node(1, 1, 0, 0)],
+            edges: vec![],
+        };
+        let pos = vec![point(0.0, 0.0)];
+        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        assert!(pins.iter().all(|p| p.tip.is_none()), "控制流 pin 不带 tip");
+        for p in &pins {
+            assert!(
+                hit_test(&pins, &[], point(p.x, p.y)).is_none(),
+                "控制流引脚上不该有气泡"
+            );
+        }
+    }
+
+    /// 点到线段的距离:落在线段**延长线**上的点要夹回端点,不能算投影。
+    /// 投影不夹的话,`seg_dist` 会给一个远小于实际的值,命中范围会顺着
+    /// 线段方向无限延伸出去。
+    #[test]
+    fn seg_dist_clamps_to_the_endpoints() {
+        let a = point(0.0, 0.0);
+        let b = point(10.0, 0.0);
+        // 正上方中点:距离 5
+        assert!((seg_dist(point(5.0, 5.0), a, b) - 5.0).abs() < 1e-4);
+        // 延长线上、b 右边 100px:夹回 b,距离 100(不是 0)
+        assert!(
+            (seg_dist(point(110.0, 0.0), a, b) - 100.0).abs() < 1e-4,
+            "延长线上的点要夹回端点"
+        );
+        // 退化线段 a == b:退化成点到点,不能除零
+        assert!((seg_dist(point(3.0, 4.0), a, a) - 5.0).abs() < 1e-4);
+    }
+
+    /// `bezier_dist` 采样的是**点到线段**,不是点到采样点。
+    ///
+    /// 用一条**直线**贝塞尔(四个控制点共线 = 曲线就是那条直线)当基准:
+    /// 已知解析解,和采样近似对比。采样点之间的空隙里,"到最近采样点"会
+    /// **偏大**(24 段时最坏差 ~L/48),超过命中半径时就会漏判;
+    /// "到线段"没有这个误差。这条测试把查询点放在两段采样点的**正中间**
+    /// —— 那正是点到点会露馅的位置(压在线上的点测不出来,必须偏开)。
+    #[test]
+    fn bezier_dist_measures_to_the_segment_not_the_sample_point() {
+        // 水平直线 0 → 200,四个控制点共线。
+        let straight = EdgeView {
+            ctrl: false,
+            from: point(0.0, 0.0),
+            a: point(200.0 / 3.0, 0.0),
+            b: point(400.0 / 3.0, 0.0),
+            to: point(200.0, 0.0),
+            tip: None,
+            index: 0,
+        };
+        // 曲线是直线,所以"到曲线的最短距离"有解析解 = 到那条线段的距离。
+        // 折线采样**到线段**时两者应当几乎相等(折线就是那条直线本身);
+        // 采样**到点**时会偏大 —— 偏大量约等于采样步长的一半。
+        // 查询点故意取在两个采样点的**正中间**,那是最能暴露差别的地方。
+        let step = 200.0 / 24.0;
+        for (k, x) in [step * 0.5, step * 12.5, step * 23.5]
+            .into_iter()
+            .enumerate()
+        {
+            let query = point(x, 3.0);
+            let exact = seg_dist(query, straight.from, straight.to);
+            let approx = bezier_dist(&straight, query);
+            assert!(
+                (approx - exact).abs() < 1e-3,
+                "查询点 {k}(x={x}):实测 {approx},解析解 {exact} —— \
+                 偏大说明用的是点到采样点而不是点到线段"
+            );
+        }
+        // 顺带钉住"压在线上"这个基准:距离就是 0。
+        assert!(bezier_dist(&straight, point(100.0, 0.0)) < 1e-3);
+    }
+
+    /// 贝塞尔端点:t=0 落在 `from`,t=1 落在 `to` —— 采样距离的边界条件,
+    /// 错了会让端点附近的命中偏掉。
+    #[test]
+    fn bezier_endpoints_are_exact() {
+        let e = EdgeView {
+            ctrl: false,
+            from: point(0.0, 0.0),
+            a: point(50.0, 100.0),
+            b: point(150.0, -100.0),
+            to: point(200.0, 0.0),
+            tip: None,
+            index: 0,
+        };
+        assert_eq!(bezier_at(&e, 0.0), e.from);
+        assert_eq!(bezier_at(&e, 1.0), e.to);
+        // 中点必须在控制点凸包内(不会跑到曲线外面去)
+        let mid = bezier_at(&e, 0.5);
+        assert!(mid.x > 0.0 && mid.x < 200.0);
     }
 }

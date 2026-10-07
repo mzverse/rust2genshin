@@ -1,4 +1,4 @@
-use crate::asset::Side;
+use crate::asset::{Identifier, Side};
 use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, structure_definition_data, type_definition, typed_value, vec3f};
 use crate::structure::StructRef;
 use downcast::{Any, downcast};
@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
+use crate::value::NativeKind::Entity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -233,6 +234,16 @@ impl NativeKind {
         }
     }
 
+    pub fn get_reference(&self) -> Option<Identifier> {
+        use NativeKind::*;
+        match self {
+            Struct(r) => r.id.into(),
+            List(e) => e.get_reference(),
+            Dict { key: _, value } => value.get_reference(),
+            _ => None,
+        }
+    }
+
     /// 展示控件类型:按服务端类型分发(参考导出里
     /// int→NUMBER_INPUT / string→TEXT_INPUT / float→DECIMAL_INPUT 等,
     /// 编辑器靠它决定如何渲染变量值,UNKNOWN 会显示为空)。
@@ -402,7 +413,7 @@ impl NativeKind {
         }.into()
     }
 
-    pub fn encode_field_value(&self, value: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
+    pub fn encode_field_value(&self, value: &dyn NativeValue) -> Option<structure_definition_data::var_def::value::Val> {
         use NativeKind::*;
         use structure_definition_data::var_def::value::Val::*;
         match self {
@@ -412,13 +423,14 @@ impl NativeKind {
             String => StrVal(encode_string(value)),
             Vec3 => Vec3Val(encode_vec3(value)),
             Guid => GuidVal(encode_id(value)),
-            Entity => panic!(),
             Enum(_) => todo!(),
             Faction => todo!(),
             Config => todo!(),
             Prefab => todo!(),
-            LocalVarRef => panic!(),
-            VarSnapshotRef => panic!(),
+            | Entity
+            | LocalVarRef
+            | VarSnapshotRef
+            => return None,
             List(_) => todo!(),
             NativeKind::Dict { key: k, value: v } => encode_field_dict(k, v, value),
             Struct(st) => {
@@ -432,7 +444,7 @@ impl NativeKind {
                             sub: kind.encode_subtype().unwrap_or_default().into(),
                         }.into(),
                         name: name.to_string().into(),
-                        val: kind.encode_field_value(value[i].as_ref()).into(),
+                        val: kind.encode_field_value(value[i].as_ref()),
                     }).collect(),
                     struct_id: st.id.guid,
                     id: struct_val::Id {
@@ -441,7 +453,7 @@ impl NativeKind {
                     }.into(),
                 })
             },
-        }
+        }.into()
     }
 
     pub fn encode_schema(&self) -> Option<type_definition::server_type::Schema> {

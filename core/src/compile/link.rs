@@ -4,6 +4,7 @@ use crate::compile::ir::{AdtInfo, FnInfo, Optimizer};
 use crate::node::composite::CompositeNodeGraph;
 use crate::node::{MainNodeGraph, NodeKind};
 use crate::structure::StructRef;
+use panic_context::panic_context;
 use std::collections::HashMap;
 use std::iter::Sum;
 use std::ops::AddAssign;
@@ -95,7 +96,7 @@ impl Linker {
         if let Some(r) = self.functions.get(key) {
             return r;
         }
-        // eprintln!("Linking: {key}");
+        panic_context!("Linking: {key}");
         let f = self.target.functions.remove(key).expect(key);
         let (mut graph, decl) = Optimizer {
             graph: f.graph,

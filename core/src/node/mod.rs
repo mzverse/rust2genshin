@@ -173,7 +173,7 @@ pub struct Node<NodeId = NativeNodeId, Kind = NativeKind> {
     pub kind: NodeKind<NodeId, Kind>,
     pub links: Links,
     /// 自动整理算出的坐标(左上角),默认 (0,0)。`.gia` 的 `x_pos` / `y_pos`
-    /// 就是从这里编码的;viewer 与 core 的布局共用 [`layout`](crate::node::layout::layout)。
+    /// 就是从这里编码的;viewer 与 core 的布局共用 [`layout`](layout::layout)。
     pub position: (f32, f32),
 }
 #[derive(Default, Clone)]

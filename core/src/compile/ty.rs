@@ -14,7 +14,6 @@ use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use rustc_span::{DUMMY_SP, Span};
 use std::collections::HashSet;
 
-
 impl<'tcx> Compiler<'tcx> {
     pub fn get_default_some(&mut self, d: AdtDef<'tcx>, a: GenericArgsRef<'tcx>) -> Result<Option<NativeKind>> {
         let opt = self.tcx.lang_items().get(LangItem::Option);
@@ -44,7 +43,9 @@ impl<'tcx> Compiler<'tcx> {
         match ty.kind() {
             TyKind::Tuple(tys) => Self::mangle_tuple(tys),
             TyKind::Adt(d, a) => Self::mangle_adt(d.did(), a),
-            TyKind::Closure(d, a) => Self::mangle_adt(*d, a),
+            | TyKind::Closure(d, a)
+            | TyKind::Coroutine(d, a)
+            => Self::mangle_adt(*d, a),
             TyKind::Str => "String".into(),
             TyKind::Ref(_, e, Mutability::Not) => format!("&{}", Self::mangle_ty(*e)),
             TyKind::Ref(_, e, Mutability::Mut) => format!("&mut {}", Self::mangle_ty(*e)),
@@ -125,6 +126,7 @@ impl<'tcx> Compiler<'tcx> {
                 TyKind::Adt(d, a) => {
                     if d.is_enum() {
                         info = AdtInfo::new(vec![FieldInfo::new("discriminant".into(), IrKind::Native(NativeKind::Int))]);
+                        info.discriminant = 0.into();
                         for x in d.variants() {
                             let mut vec = vec![];
                             let mut used = HashSet::new();
@@ -155,12 +157,24 @@ impl<'tcx> Compiler<'tcx> {
                         panic!()
                     }
                 },
-                TyKind::Closure(..) | TyKind::Tuple(..) =>
-                    info = AdtInfo::new(match ty.kind() {
-                        TyKind::Closure(_d, a) => a.as_closure().upvar_tys(),
-                        TyKind::Tuple(es) => es,
-                        _ => unreachable!(),
-                    }.iter().enumerate().map(|(i, x)| FieldInfo::new(i.to_string(), self.compile_ty(DUMMY_SP, x).unwrap())).collect()),
+                TyKind::Coroutine(d, a) => {
+                    let layout = self.tcx.coroutine_layout(*d, a).unwrap();
+                    info = AdtInfo::new(a.as_coroutine().upvar_tys().iter().enumerate().map(|(i, x)| FieldInfo::new(i.to_string(), self.compile_ty(DUMMY_SP, x).unwrap())).collect());
+                    info.discriminant = info.fields.len().into();
+                    info.fields.push(FieldInfo::new("__state".into(), IrKind::Native(NativeKind::Int)));
+                    let begin = info.fields.len();
+                    info.fields.extend(layout.field_tys.iter_enumerated().map(|(i, x)| Ok(FieldInfo::new(x.debuginfo_name.as_ref().map(ToString::to_string).unwrap_or_else(|| i.index().to_string()), self.compile_ty(DUMMY_SP, x.ty)?))).collect::<Result<Vec<_>>>()?);
+                    for x in &layout.variant_fields {
+                        info.variants.push(x.iter().map(|i| begin + i.index()).collect());
+                    }
+                },
+                | TyKind::Closure(..)
+                | TyKind::Tuple(..)
+                => info = AdtInfo::new(match ty.kind() {
+                    TyKind::Closure(_d, a) => a.as_closure().upvar_tys(),
+                    TyKind::Tuple(es) => es,
+                    _ => unreachable!(),
+                }.iter().enumerate().map(|(i, x)| FieldInfo::new(i.to_string(), self.compile_ty(DUMMY_SP, x).unwrap())).collect()),
                 other => panic!("{other:?}"),
             }
             self.target.adts.insert(key.clone(), info);
@@ -205,17 +219,15 @@ impl<'tcx> Compiler<'tcx> {
                 if m.is_mut() {
                     IrKind::Mut(self.compile_ty(span, *e)?.into())
                 } else {
-                    if e.is_never() { // &! write only FIXME
-                        IrKind::Native(NativeKind::LocalVarRef)
-                    } else {
-                        self.compile_ty(span, *e)?
-                    }
+                    self.compile_ty(span, *e)?
                 },
             TyKind::Adt(d, a) if d.repr().transparent() =>
                 self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.tcx, a)))?,
-            TyKind::Adt(..) |
-            TyKind::Tuple(..) |
-            TyKind::Closure(..) => self.touch_adt(ty)?,
+            | TyKind::Adt(..)
+            | TyKind::Tuple(..)
+            | TyKind::Closure(..)
+            | TyKind::Coroutine(..)
+            => self.touch_adt(ty)?,
             TyKind::Never => IrKind::Never,
             TyKind::Foreign(id) => todo!("{id:?}"),
             TyKind::Array(_, _) => todo!(),
@@ -226,7 +238,6 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Alias(_, _) => todo!(),
             TyKind::Dynamic(_, _)
             | TyKind::CoroutineClosure(_, _)
-            | TyKind::Coroutine(_, _)
             | TyKind::CoroutineWitness(_, _)
             | TyKind::Param(_)
             | TyKind::Bound(_, _)

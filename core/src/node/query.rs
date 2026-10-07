@@ -2,6 +2,8 @@
 //!
 //! 人工设计,替换自动生成版本:引脚语义命名、动态结构用 Vec、类型准确。
 
+#![allow(unreachable_code)]
+
 use crate::node::NodeKind;
 use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;

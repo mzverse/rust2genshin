@@ -3,6 +3,8 @@
 //! 人工设计:每个节点用 `NodeType::procedure`(无返回值)/ `NodeType::func`(单返回值)
 //! 或 `NodeType::new`(多输出)构建。1 个 flow 输入 + 值输入 + 1 个 flow 输出。
 
+#![allow(unreachable_code)]
+
 use crate::node::NodeKind;
 use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;

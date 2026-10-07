@@ -3,6 +3,8 @@
 //! 事件触发器:无 flow 输入,1 个 flow 输出(事件发生时触发),值输出为事件参数。
 //! 人工设计,统一用 `NodeType::trigger` 构建。
 
+#![allow(unreachable_code)]
+
 use crate::node::NodeKind;
 use crate::value::NativeKind::*;
 use std::sync::LazyLock;

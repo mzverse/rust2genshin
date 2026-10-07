@@ -845,7 +845,7 @@ mod tests {
     fn positions_increase_with_level() {
         let pos = compute(&diamond());
         assert!(pos[4].0 > pos[2].0, "汇合点必须在两支的右边");
-        assert!(pos[2].1 != pos[3].1, "同层不同节点不能重叠");
+        assert_ne!(pos[2].1, pos[3].1, "同层不同节点不能重叠");
     }
 
     /// 层的横向步进按层内**最宽**节点算:宽节点把后面所有层推右,

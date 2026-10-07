@@ -7,6 +7,7 @@
 #![feature(rustc_attrs)]
 #![feature(reborrow)]
 #![feature(decl_macro)]
+#![feature(coroutine_trait)]
 #![allow(internal_features)]
 
 pub mod entity;

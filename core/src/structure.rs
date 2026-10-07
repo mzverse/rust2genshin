@@ -12,6 +12,7 @@ use crate::node::{NodeKind, PinType};
 use crate::value::{NativeKind, NativeValue};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::iter;
 use tap::Tap;
 
 /// 拼装结构体: 字段值 → 结构体
@@ -83,7 +84,7 @@ impl StructField {
                 r#type: ty as i32,
                 kind: kind.into(),
                 name: None,
-                val: self.kind.encode_field_value(self.kind.default().as_ref()).into(),
+                val: self.kind.encode_field_value(self.kind.default().as_ref()),
             }.into(),
         }
     }
@@ -139,7 +140,8 @@ impl StructureDefinition {
             id: bundle.alloc(identifier::Category::Default, identifier::AssetKind::Structure),
             fields: self.fields.iter().map(|x| (x.name.clone(), x.kind.clone())).collect(),
         };
-        let mut references = Vec::new();
+        let deps: Vec<_> = self.fields.iter().flat_map(|x| x.kind.get_reference()).collect();
+        let mut references = deps.clone();
         for (name, imp, pins) in [
             ("Assemble Struct Server", node_interface::Implementation {
                 category: node_interface::implementation::Category::StructAssembly as i32,
@@ -210,7 +212,7 @@ impl StructureDefinition {
                 implementation: imp,
                 template_root: node_interface::TemplateRoot::Struct,
                 template_sub: node_interface::TemplateSub::StructSub,
-                references: vec![result.id],
+                references: iter::once(result.id).chain(deps.iter().copied()).collect(),
             }.apply(bundle);
             references.push(id);
         }

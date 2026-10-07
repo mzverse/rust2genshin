@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure};
+use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure, node_ir_modify_struct};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -7,6 +7,7 @@ use crate::node::control::node_switch;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
 use crate::value::{NativeKind, NativeValue};
 use either::Either;
+use panic_context::panic_context;
 use rustc_abi::{FieldIdx, Integer, IntegerType, Size};
 use rustc_attr_ir::LangItem;
 use rustc_index::{Idx, IndexVec};
@@ -25,7 +26,7 @@ pub struct CompilingFn<'tcx, 'a> {
     pub compiler: &'a mut Compiler<'tcx>,
     pub graph: &'a mut NodeGraphIr,
     pub body: &'a Body<'tcx>,
-    pub locals: &'a IndexVec<Local, CompiledLocal<LocalRef<'tcx>>>,
+    pub locals: &'a IndexVec<Local, CompiledLocal<LocalRef>>,
 }
 
 #[derive(Clone, Default)]
@@ -84,7 +85,23 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let (p, r) = a.as_ref();
                     Some(self.compile_assign_rvalue(*p, r, statement.source_info.span)?)
                 }
-                StatementKind::SetDiscriminant { .. } => todo!(),
+                StatementKind::SetDiscriminant { place, variant_index } => {
+                    let ty = self.mono(place.ty(&self.body.local_decls, self.tcx).ty);
+                    match ty.kind() {
+                        TyKind::Adt(_, _) => self.tcx.dcx().span_fatal(statement.source_info.span, "setting discriminant of enum"),
+                        TyKind::Coroutine(_, _) => {
+                            let kind = self.compiler.compile_ty(statement.source_info.span, ty)?;
+                            let node = self.graph.insert(node_ir_modify_struct(&mut self.compiler.target, &kind));
+                            let st = self.compile_operand(&Operand::Copy(**place), statement.source_info.span)?;
+                            let state = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].discriminant.unwrap();
+                            self.graph.set_value_in(Link::node(node, 0), st);
+                            self.graph.set_value_in(Link::node(node, 2 + state * 2), ValueIn::value((variant_index.index() as i32).into()));
+                            self.graph.set_value_in(Link::node(node, 3 + state * 2), ValueIn::value(true.into()));
+                            Block::singleton(node, 0).into()
+                        },
+                        _ => panic!(),
+                    }
+                },
                 StatementKind::PlaceMention(_) => todo!(),
                 StatementKind::AscribeUserType(_, _) => todo!(),
                 StatementKind::Coverage(_) => todo!(),
@@ -231,7 +248,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         ValueIn::link(Link::node(node, 0))
                     }
                 }
-                AggregateKind::Coroutine(_, _) => todo!(),
                 AggregateKind::CoroutineClosure(_, _) => todo!(),
                 AggregateKind::RawPtr(_, _) => todo!(),
                 _ => {
@@ -245,28 +261,30 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             },
             Rvalue::Discriminant(from) => {
-                let TyKind::Adt(d, a) = self.place_ty(*from).ty.kind() else { unreachable!() };
-                if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
-                    self.compile_operand(&Operand::Copy(*from), span)?
-                } else if let Some(kind) = self.compiler.get_default_some(*d, a)? {
-                    assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val, 0);
-                    assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionSome).unwrap())).val, 1);
-                    let node_eq = self.graph.insert(node_ir_native(node_equal(kind)));
-                    let v = self.compile_operand(&Operand::Copy(*from), span)?;
-                    self.graph.set_value_in(Link::node(node_eq, 0), v);
-                    let node_not = self.graph.insert(node_ir_native(NODE_NOT.clone()));
-                    self.graph.link_value(Link::node(node_eq, 0), Link::node(node_not, 0));
-                    let node_cast = self.graph.insert(node_ir_native(node_cast(NativeKind::Bool, NativeKind::Int).unwrap()));
-                    self.graph.link_value(Link::node(node_not, 0), Link::node(node_cast, 0));
-                    ValueIn::link(Link::node(node_cast, 0))
-                } else {
-                    let ty = self.mono(from.ty(&self.body.local_decls, self.tcx).ty);
-                    let kind = self.compiler.compile_ty(span, ty)?;
-                    let node = self.graph.insert(node_ir_destructure(&mut self.compiler.target, &kind));
-                    let v = self.compile_operand(&Operand::Copy(*from), span)?;
-                    self.graph.set_value_in(Link::node(node, 0), v);
-                    ValueIn::link(Link::node(node, 0))
+                let ty = self.place_ty(*from).ty;
+                if let TyKind::Adt(d, a) = ty.kind() {
+                    if d.repr().int == Some(IntegerType::Fixed(Integer::I32, true)) {
+                        return self.compile_operand(&Operand::Copy(*from), span);
+                    } else if let Some(kind) = self.compiler.get_default_some(*d, a)? {
+                        assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val, 0);
+                        assert_eq!(d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionSome).unwrap())).val, 1);
+                        let node_eq = self.graph.insert(node_ir_native(node_equal(kind)));
+                        let v = self.compile_operand(&Operand::Copy(*from), span)?;
+                        self.graph.set_value_in(Link::node(node_eq, 0), v);
+                        let node_not = self.graph.insert(node_ir_native(NODE_NOT.clone()));
+                        self.graph.link_value(Link::node(node_eq, 0), Link::node(node_not, 0));
+                        let node_cast = self.graph.insert(node_ir_native(node_cast(NativeKind::Bool, NativeKind::Int).unwrap()));
+                        self.graph.link_value(Link::node(node_not, 0), Link::node(node_cast, 0));
+                        return Ok(ValueIn::link(Link::node(node_cast, 0)));
+                    }
                 }
+                let ty = self.mono(from.ty(&self.body.local_decls, self.tcx).ty);
+                let kind = self.compiler.compile_ty(span, ty)?;
+                let node = self.graph.insert(node_ir_destructure(&mut self.compiler.target, &kind));
+                let v = self.compile_operand(&Operand::Copy(*from), span)?;
+                self.graph.set_value_in(Link::node(node, 0), v);
+                let state = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].discriminant.unwrap();
+                ValueIn::link(Link::node(node, state))
             },
             Rvalue::Repeat(_, _)
             | Rvalue::ThreadLocalRef(_)
@@ -540,6 +558,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     }
 
     fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: Vec<ValueIn>, destination: Option<Place<'tcx>>) -> Result<Block> {
+        panic_context!("Compiling calling: {func:?}");
+        panic_context!("args: {args:?}");
         if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
             self.tcx.dcx().span_note(span, "Ignored panic");
             return Ok(Block::nop(self.graph));

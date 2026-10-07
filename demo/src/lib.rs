@@ -1,4 +1,4 @@
-#![feature(coroutines, stmt_expr_attributes)]
+#![feature(coroutines)]
 #![feature(coroutine_trait)]
 
 #![no_std]
@@ -9,13 +9,29 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use core::hint::black_box;
+use core::ops::CoroutineState;
+use rust2genshin_lib::asynchronous::{asynchronous, resume_coroutine, sleep};
 use rust2genshin_lib::entity::Entity;
 use rust2genshin_lib::event::entity::TabSelectedEvent;
 
+#[inline(never)]
+pub fn co(f: f32) -> impl ::core::ops::Coroutine<Yield=f32, Return=()> {
+    #[inline(never)]
+    #[coroutine] static move || {
+        yield f
+    }
+}
+
 #[unsafe(no_mangle)]
-pub fn test_enum(i: &mut Option<i32>) {
-    if let Some(i) = i {
-        *i = 114;
+pub fn test_co() {
+    let mut co = co(114.514);
+    match resume_coroutine(&mut co) {
+        CoroutineState::Yielded(x) => log(x),
+        CoroutineState::Complete(_) => log("complete"),
+    }
+    match resume_coroutine(&mut co) {
+        CoroutineState::Yielded(x) => log(x),
+        CoroutineState::Complete(_) => log("complete"),
     }
 }
 

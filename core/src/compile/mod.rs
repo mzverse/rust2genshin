@@ -15,7 +15,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::{BasicBlock, Body, Local, RETURN_PLACE};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{Instance, Ty, TyCtxt, TyKind, TypingEnv};
+use rustc_middle::ty::{Instance, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_span::{DUMMY_SP, ErrorGuaranteed, ExpnKind, MacroKind, Span};
 use rustc_structures::CrateType;
@@ -248,12 +248,13 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<FnInfo> {
-        let is_closure = matches!(self.tcx.def_kind(func.def_id()), DefKind::Closure);
+        let tcx = self.tcx;
+        let is_closure = matches!(tcx.def_kind(func.def_id()), DefKind::Closure);
         let mut graph = NodeGraph::new(NodeGraphKind::ServerEntity, self.mangle_func(func));
-        let body = self.tcx.instance_mir(func.def);
+        let body = tcx.instance_mir(func.def);
         // graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map
-        let args = self.tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, x)| x.as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{i}"))).collect::<Vec<_>>();
+        let args = tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, x)| x.as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{i}"))).collect::<Vec<_>>();
         let mut compiling_locals = CompilingLocals {
             compiler: self,
             block: Block::nop(&mut graph),
@@ -268,18 +269,32 @@ impl<'tcx> Compiler<'tcx> {
         locals.push(r);
         let mut params = vec![];
         if is_closure {
-            let arg0 = body.local_decls.get(Local::arg(0)).unwrap();
-            let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, arg0.ty), LocalKind::Arg, "#closure".to_string(), arg0.source_info.span)?;
-            locals.push(r);
-            params.push(k);
-            let mut p1 = vec![];
-            for (i, name) in args.iter().enumerate() {
-                let decl = body.local_decls.get(Local::arg(1 + i)).unwrap();
-                let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, decl.ty), LocalKind::Arg, name.clone(), decl.source_info.span)?;
-                p1.push(k);
-                locals.push(r);
+            let ty = func.instantiate_mir_and_normalize_erasing_regions(tcx, TypingEnv::fully_monomorphized(), tcx.type_of(func.def_id()));
+            match ty.kind() {
+                TyKind::Closure(..) => {
+                    let arg0 = body.local_decls.get(Local::arg(0)).unwrap();
+                    let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, arg0.ty), LocalKind::Arg, "#closure".to_string(), arg0.source_info.span)?;
+                    locals.push(r);
+                    params.push(k);
+                    let mut p1 = vec![];
+                    for (i, name) in args.iter().enumerate() {
+                        let decl = body.local_decls.get(Local::arg(1 + i)).unwrap();
+                        let (k, r) = compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, decl.ty), LocalKind::Arg, name.clone(), decl.source_info.span)?;
+                        p1.push(k);
+                        locals.push(r);
+                    }
+                    params.push(CompiledLocal::Flat(p1));
+                },
+                TyKind::Coroutine(_d, a) => {
+                    let (k, r) = compiling_locals.solve_local(Ty::new_pinned_ref(tcx, tcx.lifetimes.re_erased, ty, Mutability::Mut), LocalKind::Arg, "self".to_string(), DUMMY_SP)?;
+                    locals.push(r);
+                    params.push(k);
+                    let (k, r) = compiling_locals.solve_local(a.as_coroutine().resume_ty(), LocalKind::Arg, "arg".to_string(), DUMMY_SP)?;
+                    locals.push(r);
+                    params.push(k);
+                },
+                _ => panic!(),
             }
-            params.push(CompiledLocal::Flat(p1));
         } else {
             for (i, x) in args.iter().enumerate() {
                 let decl = body.local_decls.get(Local::arg(i)).unwrap();
@@ -295,7 +310,7 @@ impl<'tcx> Compiler<'tcx> {
             proxies_in: (0..compiling_locals.params).collect(),
             proxies_out: vec![None; compiling_locals.rets],
         };
-        for x in body.local_decls.iter().skip(1 + args.len() + is_closure as usize) { // other locals
+        for x in body.local_decls.iter().skip(locals.len()) { // other locals
             locals.push(compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, x.ty), LocalKind::Other, "".to_string(), x.source_info.span)?.1);
         }
         let CompilingLocals { mut block, .. } = compiling_locals;

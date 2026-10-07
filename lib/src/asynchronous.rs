@@ -1,3 +1,5 @@
+use core::ops::{Coroutine, CoroutineState};
+use core::pin::Pin;
 pub use rust2genshin_lib_internal::asynchronous;
 
 pub macro sleep($x:expr) {
@@ -41,4 +43,8 @@ pub macro awa($x:expr) {
             }
         }
     }
+}
+
+pub fn resume_coroutine<T: Coroutine>(co: &mut T) -> CoroutineState<T::Yield, T::Return> {
+    unsafe { Pin::new_unchecked(co) }.resume(())
 }

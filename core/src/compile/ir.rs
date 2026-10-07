@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::mem;
 use std::mem::swap;
+use panic_context::panic_context;
 use tap::Tap;
+use crate::asset::generated::identifier;
 
 pub struct Optimizer {
     pub graph: NodeGraphIr,
@@ -64,22 +66,32 @@ pub enum IrKind {
     LocalRef(Box<IrKind>),
     Adt(String),
     Mut(Box<IrKind>),
+    PartialMut(String),
     Unsupported(String),
 }
 impl Display for IrKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             IrKind::Native(native) => write!(f, "{native}"),
             IrKind::Never => write!(f, "Never"),
             IrKind::LocalRef(kind) => write!(f, "Local<{kind}>"),
             IrKind::Adt(key) => write!(f, "{key}"),
             IrKind::Mut(kind) => write!(f, "Mut<{kind}>"),
+            IrKind::PartialMut(kind) => write!(f, "PartialMut<{kind}>"),
             IrKind::Unsupported(info) => write!(f, "Unsupported<{info}>"),
         }
     }
 }
 
 impl IrKind {
+    pub fn partial_mut(kind: IrKind) -> IrKind {
+        if let Self::Adt(kind) = kind {
+            IrKind::PartialMut(kind)
+        } else {
+            kind
+        }
+    }
+
     pub fn as_native(&self) -> Option<&NativeKind> {
         match self {
             IrKind::Native(native) => native.into(),
@@ -112,7 +124,9 @@ impl IrKind {
     pub fn lower(&self, linker: &mut Linker) -> NativeKind {
         match self {
             IrKind::Native(native) => native.clone(),
-            IrKind::Adt(kind) => Self::touch_adt(linker, kind.clone()),
+            | IrKind::Adt(kind)
+            | IrKind::PartialMut(kind)
+            => Self::touch_adt(linker, kind.clone()),
             IrKind::Mut(_) => panic!(),
             IrKind::Never => panic!(),
             IrKind::LocalRef(kind) => {
@@ -151,12 +165,14 @@ pub struct FieldInfo {
 pub struct AdtInfo {
     pub fields: Vec<FieldInfo>,
     pub variants: Vec<Vec<usize>>,
+    pub discriminant: Option<usize>,
 }
 impl AdtInfo {
     pub fn new(fields: Vec<FieldInfo>) -> Self {
         Self {
             fields,
             variants: vec![],
+            discriminant: None,
         }
     }
 }
@@ -183,7 +199,11 @@ impl FieldInfo {
 pub fn struct_fields(target: &mut Target, kind: &IrKind) -> Vec<FieldInfo> {
     match kind {
         IrKind::Adt(intern) => target.adts.get(intern).unwrap().fields.clone(),
-        IrKind::Mut(e) => vec![FieldInfo::new(0.to_string(), IrKind::Native(NativeKind::LocalVarRef)), FieldInfo::new(1.to_string(), e.as_ref().clone())],
+        IrKind::Mut(e) => vec![FieldInfo::new(0.to_string(), IrKind::Native(NativeKind::LocalVarRef)), FieldInfo::new(1.to_string(), IrKind::partial_mut(e.as_ref().clone()))],
+        IrKind::PartialMut(e) => struct_fields(target, &IrKind::Adt(e.clone())).into_iter().map(|mut x| {
+            x.kind = IrKind::partial_mut(x.kind);
+            x
+        }).collect(),
         _ => panic!("{kind:?}"),
     }
 }
@@ -217,6 +237,7 @@ impl Optimizer {
         let IrNodeId::Fn(key) = &self.graph.get_node(x).kind.id else {
             return;
         };
+        panic_context!("Linking calling {key}");
         let key = key.clone();
         let CompiledFn { id: _, node, decl } = linker.touch_fn(&key).clone();
         let low = self.graph.insert(node_ir_native(node));
@@ -276,7 +297,10 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        node_local(&kind.values_out_types[1].lower(linker)).unwrap()
+                        node_local(&match &kind.values_out_types[1] {
+                            IrKind::PartialMut(_) => panic!(),
+                            other => other.lower(linker),
+                        }).unwrap()
                     }
                 },
                 IrNodeId::SetLocal => {
@@ -450,8 +474,16 @@ impl Optimizer {
     pub fn eliminate_if(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
         if n.kind.id.as_native() == Some(&NODE_IF.id) && n.links.values_in[0].link.is_none() {
-            let value = *n.links.values_in[0].default.as_ref().unwrap().downcast_ref::<bool>().unwrap();
-            self.relink_controls(node, 0, 1 - value as usize);
+            let tar = 1 - *n.links.values_in[0].default.as_ref().unwrap().downcast_ref::<bool>().unwrap() as usize;
+            if n.links.controls_out[tar].first() == Some(&Link::node(node, 0)) {
+                let from = n.links.controls_in[0].clone();
+                let un = self.graph.insert(node_ir_unreachable());
+                for from in from {
+                    self.graph.relink_controls(from, Link::node(node, 0), &[Link::node(un, 0)]);
+                }
+                return None;
+            }
+            self.relink_controls(node, 0, tar);
             self.graph.remove(node);
             None
         } else {
@@ -549,7 +581,8 @@ impl Optimizer {
         assert!(setters.remove(&Link::node(node, 0)));
 
         let ret = self.graph.externals.controls_in.iter().flatten().copied().collect::<Vec<_>>();
-        let usages = n_local.links.values_out[1].iter().copied().filter(|&x| {
+        let mut usages = vec![];
+        'l1: for &x in &n_local.links.values_out[1] {
             let mut queue = VecDeque::new();
             queue.push_back(x);
             while let Some(now) = queue.pop_front() {
@@ -557,16 +590,23 @@ impl Optimizer {
                     queue.extend(ret.clone());
                     continue;
                 };
+                let l = &self.graph.get_node(now_node).links;
+                if !l.controls_in.is_empty() && matches!(n.kind.values_in_types[1].as_ref().unwrap(), IrKind::Adt(..)) {
+                    match self.graph.get_node(now_node).kind.id {
+                        IrNodeId::Modify if now.index == 0 => return Some(()),
+                        IrNodeId::Native(NativeNodeId { kind: identifier::AssetKind::GeneratedStub, .. }) => return Some(()), // TODO
+                        _ => (),
+                    }
+                }
                 if now_node == node {
                     continue;
                 } else if setters.contains(&now) {
-                    return false;
+                    continue 'l1;
                 }
-                let l = &self.graph.get_node(now_node).links;
                 if let Some(l) = l.controls_in.first() {
                     for &x in l {
                         if x.target.is_export() {
-                            return false;
+                            continue 'l1;
                         }
                         queue.push_back(x);
                     }
@@ -574,8 +614,8 @@ impl Optimizer {
                     queue.extend(l.values_out.iter().flatten());
                 }
             }
-            true
-        }).collect::<Vec<_>>();
+            usages.push(x);
+        }
         if usages.len() > max {
             return Some(());
         }
@@ -623,6 +663,7 @@ impl Optimizer {
             return Some(());
         }
         if n.links.values_in.is_empty() {
+            self.graph.remove(node);
             return None;
         }
         let Some(Link { target: LinkTarget::Node(from), .. }) = n.links.values_in[0].link else {
