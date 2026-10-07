@@ -375,6 +375,11 @@ impl Optimizer {
         self.graph.externals.values_out.retain(|_| active[i].tap(|_| i += 1));
         let mut i = 0;
         self.decl.proxies_in.retain(|_| active[i].tap(|_| i += 1));
+        self.decl.proxies_out = self.graph.externals.values_in.iter().map(|x| match x.link {
+            Some(Link { target: LinkTarget::Node(..), .. }) => None,
+            Some(Link { target: LinkTarget::Export, index }) => Either::Left(index).into(),
+            None => Either::Right(x.default.clone()).into(),
+        }).collect();
 
         let active: Vec<_> = self.graph.externals.values_in.iter().map(|v| matches!(v.link, Some(Link { target: LinkTarget::Node(..), .. }))).collect();
         let mut rm = HashMap::new();

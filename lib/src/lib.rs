@@ -49,7 +49,7 @@ impl<T: ToString + ?Sized> ToString for &T {
     }
 }
 
-#[rustc_force_inline]
+#[inline(always)]
 pub fn log(s: impl ToString) {
     #[native_exec(1)]
     fn log_(s: String);
