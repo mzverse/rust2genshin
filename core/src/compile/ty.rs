@@ -2,7 +2,7 @@ use crate::compile::ir::{AdtInfo, FieldInfo, IrKind};
 use crate::compile::{Compiler, Result};
 use crate::value::NativeKind;
 use rustc_abi::{FIRST_VARIANT, FieldIdx, Integer, IntegerType};
-use rustc_ast::{FloatTy, IntTy};
+use rustc_ast::{FloatTy, IntTy, UintTy};
 use rustc_attr_ir::LangItem;
 use rustc_index::Idx;
 use rustc_middle::infer::canonical::ir::GenericArgKind;
@@ -195,7 +195,14 @@ impl<'tcx> Compiler<'tcx> {
                     return self.helper().span_err(span, format!("Unsupported int: {}", ty.name())),
                 IntTy::Isize | IntTy::I32 => IrKind::Native(NativeKind::Int),
             },
-            TyKind::Uint(e) => IrKind::Unsupported(e.name_str().to_string()),
+            TyKind::Uint(e) => {
+                match e {
+                    | UintTy::U32
+                    | UintTy::Usize
+                    => IrKind::Native(NativeKind::Int),
+                    _ => IrKind::Unsupported(e.name_str().to_string()),
+                }
+            },
             TyKind::Float(ty) => match ty {
                 FloatTy::F16 |
                 FloatTy::F64 |
@@ -232,7 +239,10 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Foreign(id) => todo!("{id:?}"),
             TyKind::Array(_, _) => todo!(),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
-            TyKind::Slice(_) => todo!(),
+            TyKind::Slice(_) => {
+                self.tcx.dcx().span_err(span, "TODO");
+                todo!()
+            },
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),

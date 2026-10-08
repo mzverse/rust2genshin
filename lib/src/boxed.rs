@@ -1,10 +1,11 @@
 use core::marker::{CoerceShared, PhantomData, Reborrow, Unsize};
 use core::ops::{CoerceUnsized, Deref, DerefMut, LegacyReceiver};
+use core::ptr::NonNull;
 use rust2genshin_lib_internal::native;
 
 #[repr(transparent)]
 pub struct Box<T: ?Sized> {
-    pointer: *mut T,
+    pointer: NonNull<T>,
     _marker: PhantomData<T>,
 }
 impl<T: ?Sized> LegacyReceiver for Box<T> {
@@ -16,7 +17,7 @@ impl<T: ?Sized> Drop for Box<T> {
     fn drop(&mut self) {
         unsafe { self.pointer.drop_in_place(); }
         #[native("free")]
-        fn free<T: ?Sized>(pointer: *mut T);
+        fn free<T: ?Sized>(pointer: NonNull<T>);
         free(self.pointer);
     }
 }
@@ -39,15 +40,25 @@ impl<T> Box<T> {
     #[native("box_into_inner")]
     pub fn into_inner(boxed: Self) -> T;
 
-    pub fn into_ptr(boxed: Self) -> *mut T {
+    pub fn into_non_null(boxed: Self) -> NonNull<T> {
         boxed.pointer
+    }
+
+    pub fn into_ptr(boxed: Self) -> *mut T {
+        boxed.pointer.as_ptr()
+    }
+    
+    pub unsafe fn from_non_null(pointer: NonNull<T>) -> Box<T> {
+        Self {
+            pointer,
+            _marker: PhantomData,
+        }
     }
 
     /// # Safety
     pub unsafe fn from_ptr(pointer: *mut T) -> Self {
-        Self {
-            pointer,
-            _marker: PhantomData,
+        unsafe {
+            Self::from_non_null(NonNull::new_unchecked(pointer))
         }
     }
 }
@@ -73,13 +84,13 @@ impl<T: ?Sized> Deref for Box<T> {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.pointer }
+        unsafe { self.pointer.as_ref() }
     }
 }
 impl<T: ?Sized> DerefMut for Box<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.pointer }
+        unsafe { self.pointer.as_mut() }
     }
 }
 impl<T: ?Sized> AsRef<T> for Box<T> {
@@ -95,7 +106,7 @@ impl<T: ?Sized> AsMut<T> for Box<T> {
 
 #[repr(transparent)]
 pub struct BoxRef<'a, T: ?Sized> {
-    pointer: *mut T,
+    pointer: NonNull<T>,
     _marker: PhantomData<&'a T>,
 }
 impl<T: ?Sized> LegacyReceiver for BoxRef<'_, T> {
@@ -113,7 +124,7 @@ impl<T: ?Sized> Deref for BoxRef<'_, T> {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.pointer }
+        unsafe { self.pointer.as_ref() }
     }
 }
 impl<T: ?Sized> AsRef<T> for BoxRef<'_, T> {
@@ -125,7 +136,7 @@ impl<T: ?Sized> AsRef<T> for BoxRef<'_, T> {
 
 #[repr(transparent)]
 pub struct BoxRefMut<'a, T: ?Sized> {
-    pointer: *mut T,
+    pointer: NonNull<T>,
     _marker: PhantomData<&'a mut T>,
 }
 impl<T: ?Sized> LegacyReceiver for BoxRefMut<'_, T> {
@@ -139,13 +150,13 @@ impl<T: ?Sized> Deref for BoxRefMut<'_, T> {
 
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.pointer }
+        unsafe { self.pointer.as_ref() }
     }
 }
 impl<T: ?Sized> DerefMut for BoxRefMut<'_, T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.pointer }
+        unsafe { self.pointer.as_mut() }
     }
 }
 impl<T: ?Sized> AsRef<T> for BoxRefMut<'_, T> {

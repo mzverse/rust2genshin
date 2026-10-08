@@ -37,6 +37,7 @@ pub enum IrNodeId {
     Assemble,
     Destructure,
     Modify,
+    FieldMut(usize),
     BlackBox,
 }
 impl IrNodeId {
@@ -54,9 +55,7 @@ impl IrNodeId {
     }
 }
 
-pub fn node_ir_black_box(kind: &IrKind) -> NodeKindIr {
-    NodeKind::new(IrNodeId::BlackBox, 1, 1, vec![kind.clone().into()], vec![kind.clone()])
-}
+pub type AdtKey = String;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -64,9 +63,9 @@ pub enum IrKind {
     Native(NativeKind),
     Never,
     LocalRef(Box<IrKind>),
-    Adt(String),
     Mut(Box<IrKind>),
-    PartialMut(String),
+    Adt(AdtKey),
+    PartialMut(AdtKey),
     Unsupported(String),
 }
 impl Display for IrKind {
@@ -155,6 +154,10 @@ pub fn node_ir_set_local(kind: &IrKind) -> NodeKindIr {
     NodeKind::new(IrNodeId::SetLocal, 1, 1, vec![IrKind::LocalRef(kind.clone().into()).into(), kind.clone().into()], vec![])
 }
 
+pub fn node_ir_black_box(kind: &IrKind) -> NodeKindIr {
+    NodeKind::new(IrNodeId::BlackBox, 1, 1, vec![kind.clone().into()], vec![kind.clone()])
+}
+
 #[derive(Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FieldInfo {
@@ -196,9 +199,9 @@ impl FieldInfo {
         }
     }
 }
-pub fn struct_fields(target: &mut Target, kind: &IrKind) -> Vec<FieldInfo> {
+pub fn struct_fields(target: &Target, kind: &IrKind) -> Vec<FieldInfo> {
     match kind {
-        IrKind::Adt(intern) => target.adts.get(intern).unwrap().fields.clone(),
+        IrKind::Adt(key) => target.adts.get(key).unwrap().fields.clone(),
         IrKind::Mut(e) => vec![FieldInfo::new(0.to_string(), IrKind::Native(NativeKind::LocalVarRef)), FieldInfo::new(1.to_string(), IrKind::partial_mut(e.as_ref().clone()))],
         IrKind::PartialMut(e) => struct_fields(target, &IrKind::Adt(e.clone())).into_iter().map(|mut x| {
             x.kind = IrKind::partial_mut(x.kind);
@@ -208,15 +211,15 @@ pub fn struct_fields(target: &mut Target, kind: &IrKind) -> Vec<FieldInfo> {
     }
 }
 
-pub fn node_ir_assemble(target: &mut Target, kind: &IrKind) -> NodeKindIr {
+pub fn node_ir_assemble(target: &Target, kind: &IrKind) -> NodeKindIr {
     NodeKind::new(IrNodeId::Assemble, 0, 0, struct_fields(target, kind).into_iter().map(|FieldInfo { kind, .. }| Some(kind)).collect(), vec![kind.clone()])
 }
 
-pub fn node_ir_destructure(target: &mut Target, kind: &IrKind) -> NodeKindIr {
+pub fn node_ir_destructure(target: &Target, kind: &IrKind) -> NodeKindIr {
     NodeKind::new(IrNodeId::Destructure, 0, 0, vec![kind.clone().into()], struct_fields(target, kind).into_iter().map(|FieldInfo { kind, .. }| kind).collect())
 }
 
-pub fn node_ir_modify_struct(target: &mut Target, kind: &IrKind) -> NodeKindIr {
+pub fn node_ir_modify_struct(target: &Target, kind: &IrKind) -> NodeKindIr {
     let mut params = vec![kind.clone().into()];
     params.push(None);
     for x in struct_fields(target, kind) {
@@ -224,6 +227,10 @@ pub fn node_ir_modify_struct(target: &mut Target, kind: &IrKind) -> NodeKindIr {
         params.push(IrKind::Native(NativeKind::Bool).into());
     }
     NodeKind::new(IrNodeId::Modify, 1, 1, params, vec![])
+}
+
+pub fn node_ir_field_mut(target: &Target, adt: &AdtKey, idx: usize) -> NodeKindIr {
+    NodeKind::new(IrNodeId::FieldMut(idx), 0, 0, vec![IrKind::PartialMut(adt.to_string()).into()], vec![IrKind::Mut(target.adts.get(adt).unwrap().fields[idx].kind.clone().into())])
 }
 
 impl Optimizer {
@@ -337,6 +344,7 @@ impl Optimizer {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 },
+                IrNodeId::FieldMut(idx) => panic!("{idx}"),
                 IrNodeId::Fn(_) => unreachable!(),
                 IrNodeId::BlackBox => {
                     let n = self.graph.get_node(x);
@@ -558,7 +566,7 @@ impl Optimizer {
         }
 
         const DEFAULT_MAX: usize = 1;
-        let max = if let IrKind::Native(native) = n.kind.values_in_types[1].as_ref().unwrap() && node_local(native).is_some() {
+        let max = if is_storable(n.kind.values_in_types[1].as_ref().unwrap()) {
             DEFAULT_MAX
         } else {
             usize::MAX
@@ -775,6 +783,15 @@ impl Optimizer {
         for x in tos {
             self.graph.set_value_in(x, value.clone());
         }
+    }
+}
+
+pub fn is_storable(kind: &IrKind) -> bool {
+    match kind {
+        IrKind::Native(native) => node_local(native).is_some(),
+        IrKind::Adt(..) => true,
+        IrKind::PartialMut(..) => false,
+        _ => false,
     }
 }
 

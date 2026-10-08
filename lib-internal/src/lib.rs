@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use proc_macro::{Span, TokenStream};
 use quote::{ToTokens, quote};
-use syn::{Block, ForeignItemFn, ItemEnum, ItemFn, ReturnType, Type, parse_macro_input};
+use syn::{parse_macro_input, Block, Expr, ForeignItemFn, ItemEnum, ItemFn, ReturnType, Type, ExprLoop, ExprForLoop, ExprWhile};
 use zyn::zyn;
 
 #[proc_macro_attribute]
@@ -81,6 +81,22 @@ fn tag(input: TokenStream) -> TokenStream {
         x.set_span(Span::call_site());
         x
     }).collect()
+}
+
+#[proc_macro_attribute]
+pub fn async_loop(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // TODO
+    let mut expr = parse_macro_input!(input as Expr);
+    let body = match &mut expr {
+        Expr::Loop(ExprLoop { body, .. }) => body,
+        Expr::ForLoop(ExprForLoop { body, .. }) => body,
+        Expr::While(ExprWhile { body, .. }) => body,
+        _ => panic!(),
+    };
+    body.stmts.push(syn::parse(zyn! {
+        yield ::rust2genshin_lib::asynchronous::async_jump();
+    }.into_token_stream().into()).unwrap());
+    expr.into_token_stream().into()
 }
 
 #[proc_macro_attribute]

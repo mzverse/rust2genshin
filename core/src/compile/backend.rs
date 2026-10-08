@@ -43,6 +43,9 @@ impl CodegenBackend for R2gCodegenBackend {
             replaced_intrinsics: [
                 "black_box",
             ].into_iter().map(Symbol::intern).collect(),
+            fallback_intrinsics: [
+                "cold_path",
+            ].into_iter().map(Symbol::intern).collect(),
             ..Default::default()
         }
     }

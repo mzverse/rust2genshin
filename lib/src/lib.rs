@@ -18,6 +18,8 @@ pub mod boxed;
 pub mod player;
 pub mod event;
 pub mod asynchronous;
+pub mod task;
+pub mod sc;
 
 use core::num::NonZero;
 pub use rust2genshin_lib_internal::event_listener;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
+use std::{env, fs};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use new_string_template::template::Template;
@@ -45,5 +45,18 @@ pub fn build(target: &str) {
     cargo!("clean", "-p", "rust2genshin-demo");
     cargo!("clean", "-p", "rust2genshin-lib");
 
-    cargo!("build", "--release", "-p", "rust2genshin-demo", "--target", &format!("./{target}.json"), "-Zunstable-options", "-Zjson-target-spec", "-Zbuild-std=core");
+    // unsafe {
+    //     env::set_var("RUSTFLAGS", "-Zinline-mir -Zmir-opt-level=4 -Zinline-mir-threshold=200 -Zalways-encode-mir=yes");
+    // }
+
+    cargo![
+        "build",
+        "--release",
+        "-p",
+        "rust2genshin-demo",
+        "--target", &format!("./{target}.json"),
+        "-Zunstable-options",
+        "-Zjson-target-spec",
+        "-Zbuild-std=core",
+    ];
 }

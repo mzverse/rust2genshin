@@ -139,6 +139,8 @@ let g = const { Guid::new(42) };    // 内联 const 块
 
 # Todo List
 
+inline
+
 ## 语言特性
 
 - `enum`

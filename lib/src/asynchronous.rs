@@ -1,29 +1,23 @@
 use core::ops::{Coroutine, CoroutineState};
 use core::pin::Pin;
-pub use rust2genshin_lib_internal::asynchronous;
+pub use rust2genshin_lib_internal::{asynchronous, async_loop};
 
 pub macro sleep($x:expr) {
     yield $x
 }
 
 #[must_use]
+#[inline(always)]
 // #[native("async_point")]
 pub fn async_point() -> f32 {
     0.
 }
 
 #[must_use]
+#[inline(always)]
 // #[native("async_jump")]
 pub fn async_jump() -> f32 {
     0.
-}
-
-pub macro async_loop($($t:tt)*) {
-    loop {
-        yield $crate::asynchronous::async_point();
-        $($t)*
-        yield $crate::asynchronous::async_jump();
-    }
 }
 
 pub macro async_continue($($x:lifetime)?) {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure, node_ir_modify_struct};
+use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure, node_ir_modify_struct, node_ir_field_mut};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -135,6 +135,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
+                if matches!(ty0.kind(), TyKind::Uint(..)) {
+                    panic!("{ty0:?}");
+                }
                 let kind0 = self.compiler.compile_ty(v.0.span(&self.body.local_decls), ty0)?.into_native().unwrap();
                 let mut node = self.graph.insert(node_ir_native(match op {
                     BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow =>
@@ -162,11 +165,23 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let b = self.compile_operand(&v.1, span)?;
                 self.graph.set_value_in(Link::node(node, 0), a);
                 self.graph.set_value_in(Link::node(node, 1), b);
-                if matches!(op, BinOp::Ne) {
-                    // ! (a == b) — invert the equal node's bool output
-                    let not_node = self.graph.insert(node_ir_native(NODE_NOT.clone()));
-                    self.graph.link_value(Link::node(node, 0), Link::node(not_node, 0));
-                    node = not_node;
+                match op {
+                    | BinOp::AddWithOverflow
+                    | BinOp::SubWithOverflow
+                    | BinOp::MulWithOverflow
+                    => {
+                        let tu = self.compiler.compile_ty(span, Ty::new_tup(self.tcx, &[ty0, self.tcx.types.bool]))?;
+                        let n_ass = self.graph.insert(node_ir_assemble(&self.compiler.target, &tu));
+                        self.graph.link_value(Link::node(node, 0), Link::node(n_ass, 0));
+                        node = n_ass;
+                    },
+                    BinOp::Ne => {
+                        // ! (a == b) — invert the equal node's bool output
+                        let n_not = self.graph.insert(node_ir_native(NODE_NOT.clone()));
+                        self.graph.link_value(Link::node(node, 0), Link::node(n_not, 0));
+                        node = n_not;
+                    }
+                    _ => (),
                 }
                 ValueIn::link(Link::node(node, 0))
             }
@@ -194,18 +209,27 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             } else {
                 self.helper().span_err(span, "Reborrow from raw ptr is still unsupported")
             },
-            Rvalue::Ref(_region, k, place) => match k {
-                BorrowKind::Mut { .. } => if let CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter, .. })) = self.compile_place(*place, span)? {
+            Rvalue::Ref(_region, BorrowKind::Mut { .. }, place) => match self.compile_place(*place, span)? {
+                CompiledPlace::Local(CompiledLocal::Singleton(LocalRef { setter, getter, .. })) => {
                     let kind = self.compiler.compile_ty(span, ty)?;
-                    let result = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                    let result = self.graph.insert(node_ir_assemble(&self.compiler.target, &kind));
                     self.graph.set_value_in(Link::node(result, 0), ValueIn::link(setter));
                     self.graph.set_value_in(Link::node(result, 1), ValueIn::link(getter));
                     ValueIn::link(Link::node(result, 0))
-                } else {
-                    return self.helper().span_err(span, "Only local singleton can be ref mut");
                 },
-                _ => self.compile_operand(&Operand::Copy(*place), span)?
+                CompiledPlace::Field(owner, adt, idx) => {
+                    let node = self.graph.insert(node_ir_field_mut(&self.compiler.target, &adt, idx));
+                    let v = owner.getter(&self.compiler.target, self.graph, &IrKind::Adt(adt));
+                    self.graph.set_value_in(Link::node(node, 0), v);
+                    ValueIn::link(Link::node(node, 0))
+                },
+                _ => {
+                    self.tcx.dcx().span_err(span, "Only local singleton can be ref mut");
+                    todo!()
+                },
             },
+            Rvalue::Ref(_region, _, place) =>
+                 self.compile_operand(&Operand::Copy(*place), span)?,
             Rvalue::RawPtr(_, p) => {
                 let Some(ProjectionElem::Deref) = p.projection.last() else {
                     return self.helper().span_err(span, format!("RawPtr rvalue is still unsupported: {p:?}"))?;
@@ -215,8 +239,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Cast(kind, op, target_ty) => {
                 // FIXME: f32 to i32
                 let from_ty = op.ty(&self.body.local_decls, self.tcx);
-                let from_kind = self.compiler.compile_ty(span, from_ty)?.into_native().unwrap();
-                let to_kind = self.compiler.compile_ty(span, *target_ty)?.into_native().unwrap();
+                let from_kind = self.compiler.compile_ty(span, from_ty)?.into_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{from_ty:?}")));
+                let to_kind = self.compiler.compile_ty(span, *target_ty)?.into_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{target_ty:?}")));
                 if from_kind == to_kind {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
@@ -234,12 +258,12 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 AggregateKind::Array(_) => todo!(),
                 AggregateKind::Adt(..) if unwrap!(ty.kind(), TyKind::Adt(d, _) => d).repr().transparent() =>
                     self.compile_operand(&fields[FieldIdx::new(0)], span)?,
-                AggregateKind::Adt(_, id, a, _, _) if let d = unwrap!(ty.kind(), TyKind::Adt(d, _) => d) && d.is_enum() => {
+                AggregateKind::Adt(_, id, _, _, _) if let (d, a) = unwrap!(ty.kind(), TyKind::Adt(d, a) => (d, a)) && d.is_enum() => {
                     if self.compiler.get_default_some(*d, a)?.is_some() {
                         self.compile_operand(&fields[FieldIdx::new(0)], span)?
                     } else {
                         let kind = self.compiler.compile_ty(span, ty)?;
-                        let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                        let node = self.graph.insert(node_ir_assemble(&self.compiler.target, &kind));
                         self.graph.set_default(Link::node(node, 0), Some((id.index() as i32).into()));
                         for (i, x) in self.compiler.target.adts[&unwrap!(kind, IrKind::Adt)].variants[id.index()].clone().into_iter().enumerate() {
                             let v = self.compile_operand(&fields[FieldIdx::new(i)], span)?;
@@ -557,7 +581,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         })
     }
 
-    fn compile_call(&mut self, span: Span, func: Instance<'tcx>, args: Vec<ValueIn>, destination: Option<Place<'tcx>>) -> Result<Block> {
+    fn compile_call(&mut self, span: Span, mut func: Instance<'tcx>, args: Vec<ValueIn>, destination: Option<Place<'tcx>>) -> Result<Block> {
         panic_context!("Compiling calling: {func:?}");
         panic_context!("args: {args:?}");
         if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
@@ -566,22 +590,27 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
         let sig = self.helper().fn_sig(func);
         let params: Vec<IrKind> = self.helper().fn_params(func, sig).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
-        let node_kind = if let InstanceKind::Intrinsic(def_id) = func.def {
-            match self.tcx.intrinsic(def_id).unwrap().name.as_str() {
-                "black_box" => node_ir_black_box(&params[0]),
-                other => todo!("intrinsic: {other}"),
+        let node_kind = loop {
+            if let InstanceKind::Intrinsic(def_id) = func.def {
+                let int = self.tcx.intrinsic(def_id).unwrap();
+                match int.name.as_str() {
+                    "black_box" => break node_ir_black_box(&params[0]),
+                    other if int.must_be_overridden => todo!("intrinsic: {other}"),
+                    _ => func = Instance::new_raw(func.def_id(), func.args),
+                }
             }
-        } else if params.iter().all(|x| x.as_native().is_some())
-            && let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
-            node_ir_native(native)
-        } else {
-            let ret = self.compiler.compile_ty(span, sig.output())?;
-            NodeKind::new(
-                IrNodeId::Fn(self.compiler.touch_fn(func)?),
-                1, 1,
-                params.iter().cloned().map(Some).collect(),
-                vec![ret],
-            )
+            break if params.iter().all(|x| x.as_native().is_some())
+                && let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
+                node_ir_native(native)
+            } else {
+                let ret = self.compiler.compile_ty(span, sig.output())?;
+                NodeKind::new(
+                    IrNodeId::Fn(self.compiler.touch_fn(func)?),
+                    1, 1,
+                    params.iter().cloned().map(Some).collect(),
+                    vec![ret],
+                )
+            };
         };
         let control = match (node_kind.controls_in_num, node_kind.controls_out_num) {
             (0, 0) => false,

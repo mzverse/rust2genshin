@@ -1,5 +1,6 @@
 #![feature(coroutines)]
 #![feature(coroutine_trait)]
+#![feature(stmt_expr_attributes, proc_macro_hygiene)]
 
 #![no_std]
 
@@ -8,49 +9,57 @@ use rust2genshin_lib::*;
 #[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 
-use core::hint::black_box;
-use core::ops::CoroutineState;
-use rust2genshin_lib::asynchronous::{async_loop, asynchronous, resume_coroutine, sleep};
-use rust2genshin_lib::entity::Entity;
-use rust2genshin_lib::event::entity::TabSelectedEvent;
+use rust2genshin_lib::asynchronous::{asynchronous, resume_coroutine, async_loop};
 
-#[inline(never)]
-pub fn co() -> impl ::core::ops::Coroutine<Yield=f32, Return=()> {
-    #[inline(never)]
-    #[coroutine] static move || {
-        async_loop! {
-            log("hello loop!");
-        }
+// pub struct Range<T>(T, T, T);
+//
+// impl<T: AddAssign + PartialOrd + Copy> Iterator for Range<T> {
+//     type Item = T;
+//
+//     #[inline(always)]
+//     fn next(&mut self) -> Option<Self::Item> {
+//         let now = self.0;
+//         if now < self.1 {
+//             self.0 += self.2;
+//             now.into()
+//         } else {
+//             None
+//         }
+//     }
+// }
+//
+// #[inline(always)]
+// pub fn range<T: AddAssign + PartialOrd + Copy>(begin: T, end: T, step: T) -> Range<T> {
+//     Range(begin, end, step)
+// }
+
+#[asynchronous]
+pub fn co() {
+    let mut i = 0;
+    #[async_loop]
+    while i < 10 {
+        log(i);
+        i += 1;
     }
 }
 
 #[unsafe(no_mangle)]
 pub fn test_co() {
     let mut co = co();
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
-    match resume_coroutine(&mut co) {
-        CoroutineState::Yielded(x) => log(x),
-        CoroutineState::Complete(_) => log("complete"),
-    }
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
+    resume_coroutine(&mut co);
 }
 
 // #[unsafe(no_mangle)]
