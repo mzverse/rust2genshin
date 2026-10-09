@@ -800,8 +800,8 @@ fn is_calc(kind: &NodeKindIr) -> bool {
 }
 
 fn is_random(id: &IrNodeId) -> bool {
-    if let IrNodeId::Native(native) = *id {
-        native == NODE_RANDOM_INT.id || native == NODE_RANDOM_FLOAT.id
+    if let IrNodeId::Native(native) = id {
+        *native == NODE_RANDOM_INT.id || *native == NODE_RANDOM_FLOAT.id
     } else {
         false
     }

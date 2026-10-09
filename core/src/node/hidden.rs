@@ -106,12 +106,12 @@ pub fn node_on_native_custom_value_change<NodeId, Kind>(graph: &mut NodeGraph<No
         references: vec![],
     });
     result.id.kernel = 0;
-    result.using_struct = Some(decl.into());
-    result.selectors_out[3] = 21.into();
-    result.selectors_out[4] = 21.into();
-    result.imps_out[3] = type_definition::server_type::Implementation::Struct;
-    result.imps_out[4] = type_definition::server_type::Implementation::Struct;
-    result.references = vec![kind.id];
+    result.id.using_struct = Some(decl.into());
+    result.id.selectors_out[3] = 21.into();
+    result.id.selectors_out[4] = 21.into();
+    result.id.imps_out[3] = type_definition::server_type::Implementation::Struct;
+    result.id.imps_out[4] = type_definition::server_type::Implementation::Struct;
+    result.id.references = vec![kind.id];
     result
 }
 

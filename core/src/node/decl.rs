@@ -1,6 +1,6 @@
 use crate::asset::generated::{AssetData, NodeInterface, NodeInterfaceContainer, PinInterface, PinSignature, asset_data, identifier, node_interface, node_interface_container, pin_interface, pin_signature};
 use crate::asset::{AssetBundle, Identifier};
-use crate::node::{NativeNodeId, NodeKind, PinType};
+use crate::node::{NodeKind, PinType};
 use crate::value::NativeKind;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -134,19 +134,7 @@ pub fn node_declared(
     values_in_types: Vec<Option<NativeKind>>,
     values_out_types: Vec<NativeKind>,
 ) -> NodeKind {
-    // let AssetData {
-    //     payload: Some(
-    //         asset_data::Payload::InterfaceData(
-    //             NodeInterfaceContainer {
-    //                 inner: Some(
-    //                     node_interface_container::InnerWrapper {
-    //                         interface: Some(node_interface), ..
-    //                     }), ..
-    //             })), ..
-    // } = assets.get(id).unwrap() else { panic!() };
-    NodeKind::new(NativeNodeId {
-        kind: identifier::AssetKind::GeneratedStub,
-        id: id.guid,
-        kernel: id.guid,
-    }, controls_in_num, controls_out_num, values_in_types, values_out_types).tap_mut(|node| node.references = vec![id])
+    NodeKind::native(identifier::AssetKind::GeneratedStub, id.guid, id.guid, controls_in_num, controls_out_num, values_in_types, values_out_types).tap_mut(|node|
+        node.id.references = vec![id]
+    )
 }

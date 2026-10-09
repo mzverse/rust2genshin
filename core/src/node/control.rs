@@ -30,7 +30,7 @@ pub fn node_switch(kind: NativeKind, cases: usize) -> NodeKind {
     };
     let mut result = NodeKind::simple(3, 1, 1 + cases, vec![kind.clone(), List(Box::new(kind))], vec![]);
     result.id.kernel = kernel_id;
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }

@@ -3,6 +3,7 @@ use crate::asset::{AssetBundle, Side};
 use crate::value::{NativeKind, NativeValue};
 use slab::Slab;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use tap::{Pipe, Tap};
 
 pub mod arithmetic;
@@ -61,16 +62,37 @@ impl NodeRef {
     }
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct NativeNodeId {
     pub kind: identifier::AssetKind,
     pub id: i64,
     pub kernel: i64,
+
+    pub selectors_in: Vec<Option<i32>>,
+    pub selectors_out: Vec<Option<i32>>,
+
+    pub imps_out: Vec<type_definition::server_type::Implementation>,
+
+    pub references: Vec<Identifier>,
+
+    pub using_struct: Option<Box<DependencyDeclaration>>,
 }
 impl NativeNodeId {
-    pub fn shell_eq(self, other: Self) -> bool {
+    pub fn shell_eq(&self, other: &Self) -> bool {
         self.id == other.id && self.kind == other.kind
+    }
+}
+impl PartialEq for NativeNodeId {
+    fn eq(&self, other: &Self) -> bool {
+        self.shell_eq(other) && self.kernel == other.kernel
+    }
+}
+impl Hash for NativeNodeId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.kind.hash(state);
+        self.kernel.hash(state);
     }
 }
 
@@ -83,15 +105,6 @@ pub struct NodeKind<NodeId = NativeNodeId, Kind = NativeKind> {
     pub controls_out_num: usize,
     pub values_in_types: Vec<Option<Kind>>,
     pub values_out_types: Vec<Kind>,
-
-    pub selectors_in: Vec<Option<i32>>,
-    pub selectors_out: Vec<Option<i32>>,
-
-    pub imps_out: Vec<type_definition::server_type::Implementation>,
-
-    pub references: Vec<Identifier>,
-
-    pub using_struct: Option<Box<DependencyDeclaration>>,
 }
 impl PartialEq for NodeKind {
     fn eq(&self, other: &Self) -> bool {
@@ -111,17 +124,32 @@ impl<NodeId, Kind> NodeKind<NodeId, Kind> {
             id,
             controls_in_num,
             controls_out_num,
-            selectors_in: vec![None; values_in_types.len()],
-            selectors_out: vec![None; values_out_types.len()],
-            imps_out: vec![type_definition::server_type::Implementation::Primitive; values_out_types.len()],
             values_in_types,
             values_out_types,
-            references: vec![],
-            using_struct: None,
         }
     }
 }
 impl NodeKind {
+    pub fn native(
+        kind: identifier::AssetKind,
+        id: i64,
+        kernel: i64,
+        controls_in_num: usize,
+        controls_out_num: usize,
+        values_in_types: Vec<Option<NativeKind>>,
+        values_out_types: Vec<NativeKind>,
+    ) -> Self {
+        Self::new(NativeNodeId {
+            kind,
+            id,
+            kernel,
+            selectors_in: vec![None; values_in_types.len()],
+            selectors_out: vec![None; values_out_types.len()],
+            imps_out: vec![type_definition::server_type::Implementation::Primitive; values_out_types.len()],
+            references: vec![],
+            using_struct: None,
+        }, controls_in_num, controls_out_num, values_in_types, values_out_types)
+    }
     pub fn simple(
         id: i64,
         controls_in_num: usize,
@@ -129,11 +157,15 @@ impl NodeKind {
         values_in_types: Vec<NativeKind>,
         values_out_types: Vec<NativeKind>,
     ) -> Self {
-        Self::new(NativeNodeId {
+        Self::native(
+            identifier::AssetKind::SysCallStub,
             id,
-            kind: identifier::AssetKind::SysCallStub,
-            kernel: 0,
-        }, controls_in_num, controls_out_num, values_in_types.into_iter().map(Some).collect(), values_out_types)
+            0,
+            controls_in_num,
+            controls_out_num,
+            values_in_types.into_iter().map(Some).collect(),
+            values_out_types
+        )
     }
     pub fn expr(id: i64, values_in_types: Vec<NativeKind>, value_out_type: NativeKind) -> Self {
         Self::simple(id, 0, 0, values_in_types, vec![value_out_type])
@@ -544,7 +576,7 @@ impl NodeGraph {
         const POS_SCALA: f32 = 5.;
         let mut references = vec![];
         for (_, x) in &self.nodes {
-            references.extend(x.kind.references.clone());
+            references.extend(x.kind.id.references.clone());
         }
         let side = self.class.side();
         AssetData {
@@ -652,10 +684,10 @@ impl NodeGraph {
                                     }
                                 };
                                 for (i, x) in n.links.values_out.iter().enumerate() {
-                                    let Some(s) = n.kind.selectors_out[i] else {
+                                    let Some(s) = n.kind.id.selectors_out[i] else {
                                         continue;
                                     };
-                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), None, x, n.kind.imps_out[i]));
+                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), None, x, n.kind.id.imps_out[i]));
                                 }
                                 let mut kernel = 0;
                                 for (i, x) in n.links.values_in.iter().enumerate() {
@@ -663,7 +695,7 @@ impl NodeGraph {
                                         continue;
                                     };
                                     if !x.is_unset() {
-                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), type_definition::server_type::Implementation::Primitive));
+                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.id.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), type_definition::server_type::Implementation::Primitive));
                                     }
                                     kernel += 1;
                                 }
@@ -673,7 +705,7 @@ impl NodeGraph {
                             attached_comment: None, // TODO
                             context_declaration: None, // TODO
                             signal_version: None, // TODO
-                            using_struct: n.kind.using_struct.clone().map(|x| *x), // TODO
+                            using_struct: n.kind.id.using_struct.clone().map(|x| *x), // TODO
                         }).collect(),
                         port_mapping: vec![].tap_mut(|port_mapping| {
                             for (&kind, p) in self.exports.iter() {

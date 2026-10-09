@@ -15,69 +15,56 @@ use std::sync::LazyLock;
 // ========================================================================
 
 /// 拆分向量为分量(Arithmetic.Math.Split_Vector,ID 9):Vec → x/y/z
-pub static NODE_SPLIT_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::simple(9, 0, 0, vec![Vec3], vec![Float, Float, Float])
-});
+pub static NODE_SPLIT_VECTOR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::simple(9, 0, 0, vec![Vec3], vec![Float, Float, Float]));
 
 /// 向量加法(ID 10):a + b
-pub static NODE_VECTOR_ADD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(10, vec![Vec3, Vec3], Vec3)
-});
+pub static NODE_VECTOR_ADD: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(10, vec![Vec3, Vec3], Vec3));
 
 /// 向量减法(ID 11):a - b
-pub static NODE_VECTOR_SUBTRACT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(11, vec![Vec3, Vec3], Vec3)
-});
+pub static NODE_VECTOR_SUBTRACT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(11, vec![Vec3, Vec3], Vec3));
 
 /// 向量缩放(ID 12):vector * scale
-pub static NODE_VECTOR_SCALE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(12, vec![Vec3, Float], Vec3)
-});
+pub static NODE_VECTOR_SCALE: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(12, vec![Vec3, Float], Vec3));
 
 /// 向量夹角(ID 13):a 与 b 的夹角(度)
-pub static NODE_VECTOR_ANGLE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(13, vec![Vec3, Vec3], Float)
-});
+pub static NODE_VECTOR_ANGLE: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(13, vec![Vec3, Vec3], Float));
 
 /// 向量归一化(ID 74):长度归一为 1
-pub static NODE_VECTOR_NORMALIZE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(74, vec![Vec3], Vec3)
-});
+pub static NODE_VECTOR_NORMALIZE: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(74, vec![Vec3], Vec3));
 
 /// 向量长度(ID 220):模长
-pub static NODE_VECTOR_LENGTH: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(220, vec![Vec3], Float)
-});
+pub static NODE_VECTOR_LENGTH: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(220, vec![Vec3], Float));
 
 /// 两点距离(ID 244):a 与 b 的距离
-pub static NODE_DISTANCE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(244, vec![Vec3, Vec3], Float)
-});
+pub static NODE_DISTANCE: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(244, vec![Vec3, Vec3], Float));
 
 /// 向量旋转(ID 474):按旋转量旋转
-pub static NODE_VECTOR_ROTATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(474, vec![Vec3, Vec3], Vec3)
-});
+pub static NODE_VECTOR_ROTATE: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(474, vec![Vec3, Vec3], Vec3));
 
 /// 向量点积(ID 505)
-pub static NODE_VECTOR_DOT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(505, vec![Vec3, Vec3], Float)
-});
+pub static NODE_VECTOR_DOT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(505, vec![Vec3, Vec3], Float));
 
 /// 向量叉积(ID 506)
-pub static NODE_VECTOR_CROSS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(506, vec![Vec3, Vec3], Vec3)
-});
+pub static NODE_VECTOR_CROSS: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(506, vec![Vec3, Vec3], Vec3));
 
 /// 向量转旋转(ID 519):由前向/上向量构造旋转
-pub static NODE_VECTOR_TO_ROTATION: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(519, vec![Vec3, Vec3], Vec3)
-});
+pub static NODE_VECTOR_TO_ROTATION: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(519, vec![Vec3, Vec3], Vec3));
 
 /// 创建向量(ID 225):x/y/z 分量
-pub static NODE_CREATE_VECTOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(225, vec![Float, Float, Float], Vec3)
-});
+pub static NODE_CREATE_VECTOR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(225, vec![Float, Float, Float], Vec3));
 
 // ========================================================================
 // 数值二元运算(泛型 R<T>,按 Float 语义)
@@ -89,22 +76,18 @@ pub fn node_add(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 200;
             0
-
         }
         Float => {
-
             result.id.kernel = 201;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -114,22 +97,18 @@ pub fn node_subtract(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 202;
             0
-
         }
         Float => {
-
             result.id.kernel = 203;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -139,22 +118,18 @@ pub fn node_multiply(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 204;
             0
-
         }
         Float => {
-
             result.id.kernel = 205;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -164,22 +139,18 @@ pub fn node_divide(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 206;
             0
-
         }
         Float => {
-
             result.id.kernel = 207;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -189,22 +160,18 @@ pub fn node_power(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 209;
             0
-
         }
         Float => {
-
             result.id.kernel = 210;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -214,22 +181,18 @@ pub fn node_max(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 211;
             0
-
         }
         Float => {
-
             result.id.kernel = 212;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -239,29 +202,24 @@ pub fn node_min(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 213;
             0
-
         }
         Float => {
-
             result.id.kernel = 214;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
 /// 取余(ID 208):整数取余
-pub static NODE_REM: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(208, vec![Int, Int], Int)
-});
+pub static NODE_REM: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(208, vec![Int, Int], Int));
 
 // ========================================================================
 // 一元运算与夹取
@@ -273,21 +231,17 @@ pub fn node_abs(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 216;
             0
-
         }
         Float => {
-
             result.id.kernel = 217;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -297,21 +251,17 @@ pub fn node_sign(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 218;
             0
-
         }
         Float => {
-
             result.id.kernel = 219;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -322,108 +272,85 @@ pub fn node_clamp(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 222;
             0
-
         }
         Float => {
-
             result.id.kernel = 223;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
-    result.selectors_in[2] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
+    result.id.selectors_in[2] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
 /// 四舍五入(ID 224):value 按舍入模式取整
-pub static NODE_ROUND: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(224, vec![Float, Enum(todo!())], Int)
-});
+pub static NODE_ROUND: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(224, vec![Float, Enum(todo!())], Int));
 
 /// 平方根(ID 221)
-pub static NODE_SQRT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(221, vec![Float], Float)
-});
+pub static NODE_SQRT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(221, vec![Float], Float));
 
 /// 对数(ID 215):log_base(value)
-pub static NODE_LOGARITHM: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(215, vec![Float, Float], Float)
-});
+pub static NODE_LOGARITHM: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(215, vec![Float, Float], Float));
 
 // ========================================================================
 // 三角函数
 // ========================================================================
 
 /// 正弦(ID 291)
-pub static NODE_SIN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(291, vec![Float], Float)
-});
+pub static NODE_SIN: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::expr(291, vec![Float], Float));
 
 /// 余弦(ID 292)
-pub static NODE_COS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(292, vec![Float], Float)
-});
+pub static NODE_COS: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::expr(292, vec![Float], Float));
 
 /// 正切(ID 293)
-pub static NODE_TAN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(293, vec![Float], Float)
-});
+pub static NODE_TAN: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::expr(293, vec![Float], Float));
 
 /// 反正弦(ID 294)
-pub static NODE_ASIN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(294, vec![Float], Float)
-});
+pub static NODE_ASIN: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(294, vec![Float], Float));
 
 /// 反余弦(ID 295)
-pub static NODE_ACOS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(295, vec![Float], Float)
-});
+pub static NODE_ACOS: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(295, vec![Float], Float));
 
 /// 反正切(ID 296)
-pub static NODE_ATAN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(296, vec![Float], Float)
-});
+pub static NODE_ATAN: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(296, vec![Float], Float));
 
 /// 弧度转角度(ID 321)
-pub static NODE_RAD_TO_DEG: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(321, vec![Float], Float)
-});
+pub static NODE_RAD_TO_DEG: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(321, vec![Float], Float));
 
 /// 角度转弧度(ID 322)
-pub static NODE_DEG_TO_RAD: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(322, vec![Float], Float)
-});
+pub static NODE_DEG_TO_RAD: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(322, vec![Float], Float));
 
 // ========================================================================
 // 布尔逻辑
 // ========================================================================
 
 /// 与(ID 226)
-pub static NODE_AND: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(226, vec![Bool, Bool], Bool)
-});
+pub static NODE_AND: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(226, vec![Bool, Bool], Bool));
 
 /// 或(ID 227)
-pub static NODE_OR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(227, vec![Bool, Bool], Bool)
-});
+pub static NODE_OR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(227, vec![Bool, Bool], Bool));
 
 /// 异或(ID 228)
-pub static NODE_XOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(228, vec![Bool, Bool], Bool)
-});
+pub static NODE_XOR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(228, vec![Bool, Bool], Bool));
 
 /// 非(ID 229)
-pub static NODE_NOT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(229, vec![Bool], Bool)
-});
+pub static NODE_NOT: LazyLock<NodeKind> = LazyLock::new(|| NodeKind::expr(229, vec![Bool], Bool));
 
 // ========================================================================
 // 比较
@@ -447,8 +374,8 @@ pub fn node_equal(ty: NativeKind) -> NodeKind {
         _ => panic!("Unsupported type: {ty:?}"),
     };
     result.id.kernel = kernel;
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -463,8 +390,8 @@ pub fn node_enum_equal(id: i32) -> NodeKind {
         _ => panic!(),
     };
     result.id.kernel = kernel;
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -474,21 +401,17 @@ pub fn node_less_than(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 230;
             0
-
         }
         Float => {
-
             result.id.kernel = 235;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -498,21 +421,17 @@ pub fn node_less_equal(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 231;
             0
-
         }
         Float => {
-
             result.id.kernel = 236;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -522,21 +441,17 @@ pub fn node_greater_than(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 232;
             0
-
         }
         Float => {
-
             result.id.kernel = 237;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -546,21 +461,17 @@ pub fn node_greater_equal(ty: NativeKind) -> NodeKind {
 
     let selected = match ty {
         Int => {
-
             result.id.kernel = 233;
             0
-
         }
         Float => {
-
             result.id.kernel = 238;
             1
-
         }
-        _ => panic!("Unsupported type: {ty:?}")
+        _ => panic!("Unsupported type: {ty:?}"),
     };
-    result.selectors_in[0] = selected.into();
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 
@@ -569,44 +480,36 @@ pub fn node_greater_equal(ty: NativeKind) -> NodeKind {
 // ========================================================================
 
 /// 左移(ID 778)
-pub static NODE_LEFT_SHIFT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(778, vec![Int, Int], Int)
-});
+pub static NODE_LEFT_SHIFT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(778, vec![Int, Int], Int));
 
 /// 右移(ID 779)
-pub static NODE_RIGHT_SHIFT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(779, vec![Int, Int], Int)
-});
+pub static NODE_RIGHT_SHIFT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(779, vec![Int, Int], Int));
 
 /// 按位与(ID 780)
-pub static NODE_BITWISE_AND: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(780, vec![Int, Int], Int)
-});
+pub static NODE_BITWISE_AND: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(780, vec![Int, Int], Int));
 
 /// 按位或(ID 781)
-pub static NODE_BITWISE_OR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(781, vec![Int, Int], Int)
-});
+pub static NODE_BITWISE_OR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(781, vec![Int, Int], Int));
 
 /// 按位异或(ID 782)
-pub static NODE_BITWISE_XOR: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(782, vec![Int, Int], Int)
-});
+pub static NODE_BITWISE_XOR: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(782, vec![Int, Int], Int));
 
 /// 按位非(ID 783)
-pub static NODE_BITWISE_NOT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(783, vec![Int], Int)
-});
+pub static NODE_BITWISE_NOT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(783, vec![Int], Int));
 
 /// 写入位(ID 784):value 的第 bit 位置为 bit_value
-pub static NODE_WRITE_BIT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(784, vec![Int, Int, Int], Int)
-});
+pub static NODE_WRITE_BIT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(784, vec![Int, Int, Int], Int));
 
 /// 读取位(ID 785):取出 value 的第 bit 位
-pub static NODE_READ_BIT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(785, vec![Int, Int], Int)
-});
+pub static NODE_READ_BIT: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(785, vec![Int, Int], Int));
 
 // ========================================================================
 // 时间
@@ -649,9 +552,8 @@ pub static NODE_TIME_TO_TIMESTAMP: LazyLock<NodeKind> = LazyLock::new(|| {
 });
 
 /// 时间戳转星期(ID 754)
-pub static NODE_TIMESTAMP_TO_WEEKDAY: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(754, vec![Int], Int)
-});
+pub static NODE_TIMESTAMP_TO_WEEKDAY: LazyLock<NodeKind> =
+    LazyLock::new(|| NodeKind::expr(754, vec![Int], Int));
 
 // ========================================================================
 // 列表 / 字典 / 类型转换
@@ -676,8 +578,8 @@ pub fn node_assemble_list(ty: NativeKind) -> NodeKind {
         other => panic!("Arithmetic.General.Assemble_List does not support type {other:?}"),
     };
     result.id.kernel = kernel;
-    result.selectors_in[0] = selected.into();
-    result.selectors_out[0] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_out[0] = selected.into();
     result
 }
 
@@ -717,18 +619,32 @@ pub fn node_cast(from_ty: NativeKind, to_ty: NativeKind) -> Option<NodeKind> {
         Int => 3,
         _ => unreachable!(),
     };
-    result.selectors_in[0] = selected_in.into();
-    result.selectors_out[0] = selected_out.into();
+    result.id.selectors_in[0] = selected_in.into();
+    result.id.selectors_out[0] = selected_out.into();
     result.into()
 }
 
 /// 创建字典(ID 1088):key 列表 + value 列表 → 字典
 pub static NODE_CREATE_DICTIONARY: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(1088, vec![List(Int.into()), List(Int.into())], Dict { key: Int.into(), value: Int.into() })
+    NodeKind::expr(
+        1088,
+        vec![List(Int.into()), List(Int.into())],
+        Dict {
+            key: Int.into(),
+            value: Int.into(),
+        },
+    )
 });
 
 /// 组装字典(ID 1788):若干 K/V 对拼成字典,键值对数量动态
 pub static NODE_ASSEMBLE_DICTIONARY: LazyLock<NodeKind> = LazyLock::new(|| {
     // 键值对动态添加,这里按 1 对占位
-    NodeKind::expr(1788, vec![Int, Int], Dict { key: Int.into(), value: Int.into() })
+    NodeKind::expr(
+        1788,
+        vec![Int, Int],
+        Dict {
+            key: Int.into(),
+            value: Int.into(),
+        },
+    )
 });

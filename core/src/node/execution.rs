@@ -48,7 +48,7 @@ pub fn node_set_local(kind: &NativeKind) -> NodeKind {
         _ => panic!("Unsupported type: {kind:?}"),
     };
     result.id.kernel = kernel;
-    result.selectors_in[1] = selected.into();
+    result.id.selectors_in[1] = selected.into();
     result
 }
 

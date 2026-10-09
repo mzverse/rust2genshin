@@ -304,8 +304,8 @@ pub fn node_local(kind: &NativeKind) -> Option<NodeKind> {
         _ => return None,
     };
     result.id.kernel = kernel;
-    result.selectors_in[0] = selected.into();
-    result.selectors_out[1] = selected.into();
+    result.id.selectors_in[0] = selected.into();
+    result.id.selectors_out[1] = selected.into();
     result.into()
 }
 

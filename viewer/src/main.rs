@@ -23,13 +23,16 @@
 //! 里面就带 `rust2genshin_demo.ogia` entry。所以这个夹具只是给**测试**用的
 //! 确定性输入,不是"没有真数据可用时的替代品"。
 
+pub mod doc;
+pub mod optimize;
+pub mod view;
+
 use std::path::PathBuf;
 
 use gpui::AppContext as _;
 use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use rust2genshin_viewer::doc;
-use rust2genshin_viewer::view::{Undo, Viewer};
+use view::{Undo, Viewer};
 
 fn main() {
     let mut args = std::env::args_os().skip(1);

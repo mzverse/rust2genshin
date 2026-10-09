@@ -159,12 +159,30 @@ mod sys_call_label_tests {
     use rust2genshin::asset::generated::identifier;
     use rust2genshin::node::NativeNodeId;
 
-    fn sys(id: i64) -> NativeNodeId {
+    /// 造一个 `NativeNodeId`。
+    ///
+    /// core 把 `selectors_*` / `imps_out` / `references` / `using_struct`
+    /// 这些**外壳字段**从 `NodeKind` 搬进了 `NativeNodeId`(`refactor(core):
+    /// NativeNodeId`),所以手写结构体字面量得把它们都填上。这几个字段
+    /// 与标签无关,统一填"空"。
+    ///
+    /// **不要**改成 `..Default::default()` —— `NativeNodeId` 没有 `Default`
+    /// impl,加了只是把编译错误推迟到字段变动时;显式列全更好。
+    fn native_id(kind: identifier::AssetKind, id: i64, kernel: i64) -> NativeNodeId {
         NativeNodeId {
+            kind,
             id,
-            kind: identifier::AssetKind::SysCallStub,
-            kernel: 0,
+            kernel,
+            selectors_in: vec![],
+            selectors_out: vec![],
+            imps_out: vec![],
+            references: vec![],
+            using_struct: None,
         }
+    }
+
+    fn sys(id: i64) -> NativeNodeId {
+        native_id(identifier::AssetKind::SysCallStub, id, 0)
     }
 
     /// 命中的 id → 短名,不再带 `#<id>`。带类型标注的也照样挂 `<T>`。
@@ -191,15 +209,24 @@ mod sys_call_label_tests {
     /// 真实身份,viewer 不去给它起名。
     #[test]
     fn non_syscall_native_keeps_kind_prefix() {
-        let composite = NativeNodeId {
-            id: 7,
-            kind: identifier::AssetKind::GeneratedStub,
-            kernel: 0,
-        };
+        let composite = native_id(identifier::AssetKind::GeneratedStub, 7, 0);
         assert_eq!(
             label(&IrNodeId::Native(composite), ""),
             "GeneratedStub#7"
         );
+    }
+
+    /// `kernel` 是同 id 的**变体**编号(多分支 `node_switch` 就是 `kernel`
+    /// 3=Int / 4=Str),标签只按 `id` 查 —— 同一个 `id` 的不同 kernel
+    /// 共用同一个短名。这里锁住"kernel 不进短名表",不然将来有人想按
+    /// (id, kernel) 建表时会被这条挡住。
+    #[test]
+    fn kernel_variant_does_not_change_the_label() {
+        let int_switch = native_id(identifier::AssetKind::SysCallStub, 3, 3);
+        let str_switch = native_id(identifier::AssetKind::SysCallStub, 3, 4);
+        // 两个 kernel 都查 id=3,表里没有 → 都回退到同一个 `syscall#3`。
+        assert_eq!(label(&IrNodeId::Native(int_switch), ""), "syscall#3");
+        assert_eq!(label(&IrNodeId::Native(str_switch), ""), "syscall#3");
     }
 
     /// `label` 同时是 [`node_width`] 的依据 —— 短名应当比兜底短
@@ -1768,9 +1795,23 @@ pub mod fixture {
         let mut callee = NodeGraphIr::new(NodeGraphKind::ServerEntity, "callee");
         callee.push_export_control_in(ExportDecl::new("in".into(), None));
         callee.push_export_control_out(ExportDecl::new("out".into(), None));
+        // ⚠️ 必须声明这个**返回值槽**,否则 link 一定 panic。
+        //
+        // `Optimizer::lower`(`core/src/compile/ir.rs` 尾部)会**重算**
+        // `decl.proxies_out = externals.values_in.iter()...` —— 函数存进
+        // `Target` 时手写的 `proxies_out` 一律作废。而 `link_node` 拿
+        // `proxies_out` 当迭代器去填 `decl.ret.assemble_all(...)`:`ret` 是
+        // `Singleton(())`(要 1 个值),`proxies_out` 空的话迭代器立刻
+        // `next().unwrap()` 炸在 `place.rs` 里。
+        //
+        // 方向别看反:`push_export_value_out` 往 `externals.**values_in**`
+        // 推(值流向图外 = 返回值),`values_out` 那侧才是函数参数。
+        callee.push_export_value_out(ExportDecl::new("ret".into(), None));
         let cl = callee.insert(node_ir_local(&int()));
         let c0 = callee.insert(node_ir_set_local(&int()));
         callee.link_value(Link::node(cl, 0), Link::node(c0, 0));
+        // `node_ir_local` 的 `values_out = [LocalRef(T), T]`,T 的下标是 **1**。
+        callee.link_value(Link::node(cl, 1), Link::export(0));
         callee.link_control(Link::export(0), Link::node(c0, 0));
         callee.link_control(Link::node(c0, 0), Link::export(0));
 

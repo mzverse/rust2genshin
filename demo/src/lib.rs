@@ -10,7 +10,6 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
-
 // pub struct Range<T>(T, T, T);
 //
 // impl<T: AddAssign + PartialOrd + Copy> Iterator for Range<T> {
@@ -46,7 +45,7 @@ pub fn co0() -> f32 {
 
 #[asynchronous]
 pub fn co() {
-    co0().await;
+    // co0().await;
     let mut i = 0;
     #[async_loop]
     while i < 5 {
@@ -77,6 +76,9 @@ pub fn test_co() {
     co.resume();
 }
 
+// use rust2genshin_lib::entity::Entity;
+// use rust2genshin_lib::event::entity::TabSelectedEvent;
+//
 // #[unsafe(no_mangle)]
 // pub fn test_closure(i: i32) {
 //     #[inline(never)]
@@ -212,7 +214,7 @@ pub fn test_co() {
 //
 // #[unsafe(no_mangle)]
 // pub fn nested_update(p: ((i32, f32), bool), n: i32) -> ((i32, f32), bool) {
-//     let mut pair = black_box(p);
+//     let mut pair = p;
 //     pair.0.0 = n;
 //     pair
 // }

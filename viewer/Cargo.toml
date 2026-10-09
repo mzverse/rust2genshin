@@ -4,12 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
-[lib]
-name = "rust2genshin_viewer"
-path = "src/lib.rs"
-
 [[bin]]
-name = "ogia-viewer"
+name = "rust2genshin_viewer"
 path = "src/main.rs"
 
 [lints]

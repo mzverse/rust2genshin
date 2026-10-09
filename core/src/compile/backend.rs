@@ -62,9 +62,9 @@ impl CodegenBackend for R2gCodegenBackend {
         // (proc-macro / #[test] 过滤在 export 内部处理)
         // crate::export::maybe_export_crate(tcx, &cfg);
         match tcx.crate_name(LOCAL_CRATE).as_str() {
-            "core" |
-            "compiler_builtins" =>
-                return Box::new(CompiledModules { modules: vec![], allocator_module: None }),
+            | "core"
+            | "compiler_builtins"
+            => return Box::new(CompiledModules { modules: vec![], allocator_module: None }),
             _ => (),
         }
         let module = compile::compile(tcx).ok();
