@@ -9,7 +9,7 @@ use rust2genshin_lib::*;
 #[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 
-use rust2genshin_lib::asynchronous::{asynchronous, resume_coroutine, async_loop};
+use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
 
 // pub struct Range<T>(T, T, T);
 //
@@ -34,10 +34,22 @@ use rust2genshin_lib::asynchronous::{asynchronous, resume_coroutine, async_loop}
 // }
 
 #[asynchronous]
+pub fn co0() -> f32 {
+    let mut i = 10;
+    #[async_loop]
+    while i < 15 {
+        log(i);
+        i += 1;
+    }
+    114.
+}
+
+#[asynchronous]
 pub fn co() {
+    co0().await;
     let mut i = 0;
     #[async_loop]
-    while i < 10 {
+    while i < 5 {
         log(i);
         i += 1;
     }
@@ -46,20 +58,23 @@ pub fn co() {
 #[unsafe(no_mangle)]
 pub fn test_co() {
     let mut co = co();
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
-    resume_coroutine(&mut co);
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
 }
 
 // #[unsafe(no_mangle)]

@@ -3,13 +3,9 @@ name = "rust2genshin-lib"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-rust-version.workspace = true
 
 [dependencies]
 rust2genshin-lib-internal = { path = "../lib-internal" }
-
-[profile.release]
-overflow-checks = false
 
 [features]
 server = []

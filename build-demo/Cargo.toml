@@ -4,8 +4,6 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
-[lib]
-
 [[bin]]
 name = "beyond-server"
 path = "src/beyond-server.rs"
@@ -20,6 +18,3 @@ serde_json = "1"
 
 [lints]
 workspace = true
-
-[profile.release]
-opt-level = 3

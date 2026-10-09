@@ -3,7 +3,6 @@ name = "rust2genshin"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"

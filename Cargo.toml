@@ -26,7 +26,6 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 authors = ["lyt", "mz"]
-rust-version = "1.100.0"
 
 [workspace.dependencies]
 rust2genshin-lib = { path = "lib" }
@@ -37,3 +36,7 @@ serde = "1"
 typetag = "0"
 
 [workspace.lints.rust]
+
+[profile.release]
+opt-level = 3
+overflow-checks = false

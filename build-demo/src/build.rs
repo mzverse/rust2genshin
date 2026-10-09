@@ -23,10 +23,9 @@ where
     }
 }
 
-#[macro_export]
 macro_rules! cargo {
     ($($x:expr),+ $(,)?) => {
-        $crate::cargo([$($x),+])
+        cargo([$($x),+])
     };
 }
 
@@ -42,11 +41,11 @@ pub fn build(target: &str) {
 
     gen_target(target);
 
-    cargo!("clean", "-p", "rust2genshin-demo");
-    cargo!("clean", "-p", "rust2genshin-lib");
+    // cargo!("clean", "-p", "rust2genshin-demo");
+    // cargo!("clean", "-p", "rust2genshin-lib");
 
     // unsafe {
-    //     env::set_var("RUSTFLAGS", "-Zinline-mir -Zmir-opt-level=4 -Zinline-mir-threshold=200 -Zalways-encode-mir=yes");
+    //     env::set_var("RUSTFLAGS", "-Zinline-mir -Zmir-opt-level=4 -Zinline-mir-threshold=20000 -Zalways-encode-mir");
     // }
 
     cargo![

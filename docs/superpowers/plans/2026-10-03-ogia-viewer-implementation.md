@@ -136,7 +136,7 @@ fn main() {}
 Run: `cargo build -p rust2genshin-viewer`
 Expected: 成功。首次会拉取并编译 gpui 及其依赖树，耗时较长（数分钟），属正常。
 
-若报 `rustc_private` 相关错误，确认 `viewer/src/main.rs` 与 `lib.rs` 首行都是 `#![feature(rustc_private)]`，且用的是 `nightly-2026-10-01`（`rustc --version` 核对）。
+若报 `rustc_private` 相关错误，确认 `viewer/src/main.rs` 与 `build` 首行都是 `#![feature(rustc_private)]`，且用的是 `nightly-2026-10-01`（`rustc --version` 核对）。
 
 - [ ] **Step 6: 提交**
 

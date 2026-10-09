@@ -3,14 +3,13 @@ name = "rust2genshin-lib-internal"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-rust-version.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
 zyn = "0"
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 

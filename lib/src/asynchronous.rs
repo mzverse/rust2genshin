@@ -29,9 +29,12 @@ pub macro async_continue($($x:lifetime)?) {
 
 pub macro awa($x:expr) {
     {
-        let mut x = ::core::pin::pin!($x);
-        $crate::asynchronous::async_loop! {
-            match ::core::ops::Coroutine::resume(::core::pin::Pin::new(&mut x), ()) {
+        let mut x = $x;
+        loop {
+            match {
+                use $crate::asynchronous::Resume;
+                x.resume()
+            } {
                 ::core::ops::CoroutineState::Yielded(x) => yield x,
                 ::core::ops::CoroutineState::Complete(x) => break x,
             }
@@ -39,6 +42,16 @@ pub macro awa($x:expr) {
     }
 }
 
-pub fn resume_coroutine<T: Coroutine>(co: &mut T) -> CoroutineState<T::Yield, T::Return> {
-    unsafe { Pin::new_unchecked(co) }.resume(())
+pub trait Resume {
+    type Return;
+
+    fn resume(&mut self) -> CoroutineState<f32, Self::Return>;
+}
+
+impl<T: Coroutine<Yield = f32>> Resume for T {
+    type Return = T::Return;
+
+    fn resume(&mut self) -> CoroutineState<f32, Self::Return> {
+        unsafe { Pin::new_unchecked(self) }.resume(())
+    }
 }

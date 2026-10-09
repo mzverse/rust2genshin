@@ -3,7 +3,6 @@ name = "rust2genshin-viewer"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 
 [lib]
 name = "rust2genshin_viewer"
@@ -18,7 +17,7 @@ workspace = true
 
 [dependencies]
 rust2genshin = { path = "../core" }
-gpui = "0.2.2"
+gpui = "0"
 bincode = { version = "2", features = ["serde"] }
 ar = "0"
 serde = { workspace = true }

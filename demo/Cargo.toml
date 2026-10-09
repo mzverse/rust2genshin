@@ -2,7 +2,6 @@
 name = "rust2genshin-demo"
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 #homepage.workspace = true
 #license.workspace = true
 #repository.workspace = true
@@ -10,9 +9,6 @@ rust-version.workspace = true
 
 [lib]
 crate-type = ["dylib", "rlib"]
-
-[profile.release]
-overflow-checks = false
 
 [lints]
 workspace = true

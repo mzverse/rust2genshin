@@ -41,7 +41,7 @@ fn delta(a: f32, b: f32, c: f32) -> f32 {
    git clone https://github.com/mzverse/rust2genshin
    ```
 3. 将`demo`文件夹重命名，同时记得改项目根目录的`Cargo.toml`的`members`
-4. 在重命名后的demo的`lib.rs`中编写自己的节点图（Rust代码）
+4. 在重命名后的demo的`build`中编写自己的节点图（Rust代码）
 5. 构建demo
     ```shell
     cargo run -p build-demo --bin beyond-server
