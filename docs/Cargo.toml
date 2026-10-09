@@ -1,0 +1,19 @@
+[package]
+name = "rust2genshin-docs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "compile"
+path = "src/compile.rs"
+
+[[bin]]
+name = "watch"
+path = "src/watch.rs"
+
+[dependencies]
+notify = "8"
+
+[lints]
+workspace = true

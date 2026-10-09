@@ -1,0 +1,175 @@
+/* 左边导航是 `<toc-component>`(toc.js 定义的 web component,树在它的
+ * shadow root 里)。整棵目录树有 130 个 li,自然高度几千 px。
+ *
+ * 窄屏:body 是单栏,侧栏排在正文上面。这会儿如果还占满一屏,正文就被顶到
+ * 第二屏去了,所以只给半屏、内部滚动。
+ * 宽屏:见下面的 media query —— 定高一屏 + sticky,页面高度才由正文决定。 */
+toc-component {
+    display: block;
+    max-height: 50vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+body {
+    background-color: #fdfdfd;
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 600pt);
+    gap: 50pt;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 0;
+    margin: 0;
+}
+
+.outline-toggle {
+    position: fixed;
+    right: 20px;
+    top: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    font-size: 28px;
+    cursor: pointer;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.outline {
+    background-color: white;
+    position: fixed;
+    padding-inline-start: 3pt;
+    font-size: 12pt;
+    color: #565565;
+    font-weight: 600;
+    align-self: start;
+    box-sizing: border-box;
+    overflow: hidden auto;
+    padding-left: 20px;
+    padding-right: 40px;
+    max-width: 240pt;
+
+    top: 0;
+    height: 100vh;
+    right: -300px;
+    z-index: 1002;
+    transition: right 0.3s ease;
+    overflow-y: auto;
+
+    &.open {
+        right: 0;
+    }
+}
+.outline-close {
+    position: sticky;
+    float: right;
+    top: 0;
+    right: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #f0f0f0;
+    border: 1px solid #ddd;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.outline-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1001;
+    display: none;
+
+    &.open {
+        display: block;
+    }
+}
+
+@media (min-width: 768px) {
+    body {
+        /* 第一栏 160pt(213px)装不下目录树:树在 `li > .block { width: auto }`
+         * 下自然宽度约 289px,右边距折叠按钮(right:0)会被推出可视区,
+         * 只能靠 overflow-x: hidden 裁掉。放宽到 240pt。 */
+        grid-template-columns: minmax(auto, 240pt) minmax(0, 600pt) minmax(0, auto);
+        gap: 50pt;
+    }
+    /* 定高一屏 + sticky:不定住的话目录树会把 body 第一行 grid 拉高几千 px,
+     * grid 里其它格子(含正文)跟着 stretch,整页被撑高。 */
+    toc-component {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        max-height: none;
+    }
+    /* 开关按钮**连壳一起**拿走。
+     *
+     * `outline.typ` 用 `html_elem("button", ...)` 输出这个按钮,Typst 的
+     * HTML 导出把块级内容自动包进一层 `<p>`。`.outline-toggle` 隐藏了,
+     * 但那层 `<p>` 仍在 body 的 grid 流里占一个单元,而且它排在 main 之后、
+     * nav.outline 之前 —— 正好顶掉侧栏该在的第 1 行第 2 列,侧栏被挤到
+     * 下一行(y 从 32 掉到 1251),页面凭空多出一整屏高度。
+     * `display: none` 掉按钮不够,得连 `p` 一起。
+     */
+    .outline-toggle, .outline-close,
+    .outline-toggle + p,
+    p:has(> .outline-toggle) {
+        display: none !important;
+    }
+    .outline {
+        position: sticky;
+        top: 32px;
+        height: calc(100vh - 64px);
+        /* 基础规则里的 `right: -300px` 是移动端"抽屉藏在屏幕外"的默认位。
+         * 宽屏下必须清掉,否则 320px 宽的侧栏有 300px 被推出视口。 */
+        right: auto;
+    }
+    /* `.block` 是 Typst 的通用块级包装(`style.css`),`display: flex` 且
+     * 没写 `flex-direction` —— 默认 row。正文里它每次只装一个子元素,
+     * row 和 column 没差别,所以一直没暴露问题;目录把 535 个 `li` 塞进
+     * 同一个 `.block`,row 就把它们全横着挤进 320px,压成一团糊字。
+     * 限定在 `.outline` 里改,不去动全局 `.block`(那会影响正文公式)。 */
+    .outline .block {
+        flex-direction: column;
+    }
+    /* 全局 reset 的 `line-height: 0.8` 比字号还小,目录继承了它,16px 的字
+     * 被压进 13px 的行里、上下互相叠。目录自己重设一个正常行距。 */
+    .outline, .outline ul, .outline li {
+        line-height: 1.4;
+    }
+    .outline-overlay {
+        display: none !important;
+    }
+}
+
+.outline a {
+    color: inherit;
+    text-decoration: none;
+}
+.outline a:hover {
+    text-decoration: underline;
+}
+.outline li.current > :first-child * {
+    color: #11566c;
+}
+.outline ul {
+    list-style: none;
+    padding-inline-start: 12pt;
+    display: block;
+    margin-block-start: 0;
+    margin-block-end: 0;
+}
+.outline > ul {
+    padding-inline-start: 0;
+}

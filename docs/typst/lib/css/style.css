@@ -1,0 +1,57 @@
+ul {
+    padding-left: 15pt;
+}
+
+dd {
+    margin-inline-start: 18pt;
+}
+
+* {
+    line-height: 0.8;
+}
+p {
+    line-height: normal;
+}
+/* 同理:`li` 的字号是 16px,0.8 的行盒只有 12.8px,正文列表项会上下叠字。 */
+li {
+    line-height: normal;
+}
+*:has(.place) {
+    position: relative;
+}
+.place {
+    position: absolute;
+}
+.block {
+    width: fit-content;
+}
+.inline-flex {
+    display: inline-flex;
+}
+.box, .place{
+    display: inline-flex;
+    align-items: baseline;
+    box-sizing: border-box;
+}
+
+.stack {
+    display: inline-flex;
+
+    & > * {
+        flex: 1;
+    }
+}
+
+table {
+    border-collapse: collapse;
+    --inset: 5pt;
+
+    td, th {
+        padding: var(--inset);
+    }
+}
+
+hr {
+    margin-top: 10rem;
+    margin-bottom: 10rem;
+}

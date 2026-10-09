@@ -1,0 +1,142 @@
+/* 这里的 `main` 是 toc.html 自己的 <main>(整棵树被它塞进 shadow root),
+ * 不是页面的正文 —— 下面的 `main` 选择器只作用在 shadow 内部。
+ * 原来的 `margin: 5pt -9pt -9pt` 会让这一层比容器还宽 9pt,树和折叠按钮
+ * 会被推出可视区,所以左右外边距改成 0。
+ * `min-height: 100vh`(template.css)是给正文那栏用的,在这儿会让侧栏
+ * 无论如何都撑满一整屏 —— 树上只有几行字时尤其明显。 */
+main {
+    padding: 9pt 8pt 9pt 4pt;
+    margin: 5pt 0 0;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow-x: clip;
+}
+
+/* shadow root 里也吃得到全局 reset 的 `* { line-height: 0.8 }`
+ * (toc.html 把 style.css 也 link 了一份进来),0.8 比字号还小,
+ * 相邻两行会叠在一起。目录自己重设一个正常行距。 */
+li, ul, a {
+    line-height: 1.4;
+}
+
+a {
+    margin-block-end: 4px;
+}
+
+main > ul > li > *:first-child {
+    margin-block-end: 9pt;
+}
+
+ul {
+    list-style: none;
+    padding-inline-start: 12pt;
+    transition: ease .2s all;
+}
+main > ul {
+    padding-inline-start: 0 !important;
+}
+
+li > *:first-child {
+    display: block;
+    padding: 2pt 12pt 2pt 6pt;
+    border-radius: 6px;
+}
+
+li {
+    position: relative;
+}
+
+/* `.block { width: fit-content }`(style.css)会让这一层按子树内容撑宽,
+ * 深层目录比侧栏容器还宽,右侧的折叠按钮被推出可视区。树里不需要
+ * shrink-to-fit,让它跟着容器走。 */
+li > .block {
+    width: auto;
+}
+
+/* Typst 在 `<a>` 和 `<button>` 之间插了 `<span style="white-space: pre-wrap"> </span>`
+ * 空格占位。因为 `<a>` 是 display:block,后面这些 inline span 自己撑出一个
+ * 匿名行盒,白占一整行高度(折叠起来的分组尤其明显)。`.block` 是结构性的,
+ * 要留着。 */
+li > span:not(.block) {
+    display: none;
+}
+
+li.open > *:first-child {
+    background: #eff0f3;
+}
+
+li > button.open {
+    display: block;
+    position: absolute;
+    top: 0;
+    right: 0;
+    border: 0;
+    width: 18pt;
+    height: 18pt;
+    padding: 3pt;
+    border-radius: 4pt;
+    background-color: #eff0f3;
+}
+li > button.open::after {
+    content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+    color: #19181f;
+}
+@media (hover: hover) {
+    li > button.open {
+        opacity: 0;
+    }
+}
+li:hover > button.open, li.open > button.open, li:focus-visible > button.open, li > button.open:focus-visible {
+    opacity: 1;
+}
+li.open > button.open {
+    background: #eff0f3;
+    transform: rotate(90deg);
+}
+li > button.open:hover {
+    background: #e4e5ea;
+}
+
+/* 折叠的子列表。`ul` 不是 `li` 的直接子元素 —— Typst 的 HTML 导出把块级
+ * 内容包一层 `<span class="block">`(style.css 里 `.block { display:flex }`),
+ * 实际结构是 `li > span.block > ul`。选择器写 `li > ul` 一条都匹配不上,
+ * 结果所有分组恒展开、折叠按钮点了没反应。
+ * 两种都留着:万一哪天 Typst 不再包这层壳,`li > ul` 仍然生效。 */
+li > ul,
+li > .block > ul {
+    visibility: hidden;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+}
+li.open > ul,
+li.open > .block > ul {
+    visibility: visible;
+    max-height: none;
+    opacity: 1;
+}
+
+li.current > *:first-child {
+    color: #11566c;
+    font-weight: 600;
+}
+li.current > *:first-child::after {
+    content: "";
+    position: absolute;
+    width: 3pt;
+    height: 3pt;
+    border-radius: 50%;
+    background: #11566c;
+    right: 8pt;
+    top: 9pt;
+    margin-block: auto;
+}
+
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}

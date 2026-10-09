@@ -1404,8 +1404,8 @@ impl Render for Viewer {
         // 而不是 `Styled` / `InteractiveElement` 上,所以每一层都得先 `.id(..)`
         // 变成 stateful 元素。**`.id()` 必须在调用它们之前**,链式调用是从左往右
         // 推导接收者的,写反了就还是普通 `Div`。
-        let sidebar = div()
-            .id("sidebar")
+        let toc = div()
+            .id("toc")
             .w(px(240.0))
             .h_full()
             .flex_shrink_0()
@@ -1522,7 +1522,7 @@ impl Render for Viewer {
             .on_drop::<ExternalPaths>(cx.listener(|v, paths: &ExternalPaths, _w, cx| {
                 v.handle_drop(paths, cx);
             }))
-            .child(sidebar)
+            .child(toc)
             .child(canvas_el)
             .child(rules_panel)
             .into_any_element()

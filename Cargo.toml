@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "docs",
     "core",
     "build-demo",
     "lib",
