@@ -21,14 +21,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        id: pages
+
       - name: Install Typst with Cargo
         run: cargo install typst-cli
 
       - name: Build Docs
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: cargo run -p rust2genshin-docs --bin compile
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -22,7 +22,7 @@
     if target() == "html" {
         return html.elem(tag, args.pos().join(), attrs: attrs + args.named());
     }
-    if ("script", "style", "template").contains(tag) {
+    if ("head", "script", "style", "template").contains(tag) {
         return none;
     }
     return args.pos().join();
@@ -36,11 +36,12 @@
     }
 }
 
+#let base_path = sys.inputs.at("base_path", default: "");
 #let import_style(src) = {
-    return html_elem("link", attrs: (href: src, rel: "stylesheet"))[];
+    return html_elem("link", attrs: (href: base_path + src, rel: "stylesheet"))[];
 }
 #let import_script(src) = {
-    return html_elem("script", attrs: (src: src))[]
+    return html_elem("script", attrs: (src: base_path + src))[]
 }
 
 #let hr = html_elem("hr")[];

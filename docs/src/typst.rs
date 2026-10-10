@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::io::Write;
-use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
+use std::{env, iter};
 
 fn walk(dir: PathBuf) -> impl Iterator<Item = PathBuf> {
     dir.read_dir().unwrap().map(Result::unwrap).flat_map(|x| {
@@ -50,6 +50,7 @@ pub fn run(cmd: &str) -> i32 {
         .args(["./docs/typst/main.typ", output.to_str().unwrap()])
         .args(["--features", "bundle,html"])
         .args(["--format", "bundle"])
+        .args(env::var("BASE_PATH").ok().map(|x| format!("--input base_path={x}")))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
