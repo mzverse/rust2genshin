@@ -43,14 +43,14 @@ pub fn build() {
 }
 
 pub fn run(cmd: &str) -> i32 {
-    let output = std::env::current_exe().unwrap().parent().unwrap().join("docs");
+    let output = env::current_exe().unwrap().parent().unwrap().join("docs");
     Command::new("typst")
         .arg(cmd)
         .args(["--root", SRC.to_str().unwrap()])
         .args(["./docs/typst/main.typ", output.to_str().unwrap()])
         .args(["--features", "bundle,html"])
         .args(["--format", "bundle"])
-        .args(env::var("BASE_PATH").ok().map(|x| format!("--input base_path={x}")))
+        .args(env::var("BASE_PATH").into_iter().flat_map(|x| ["--input".to_string(), format!("base_path={x}")]))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

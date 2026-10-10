@@ -1,4 +1,4 @@
-#import "template.typ": *
+#import "/lib/lib.typ": *
 
 #let headings = state("headings", ())
 #let headingPath = state("headingPath", ())
@@ -21,8 +21,10 @@
     #content
 ]
 
-#import_style("/lib/css/outline.css");
-#import_script("/lib/js/outline.js");
+#custom_element(() => {
+    import_style("/lib/css/outline.css");
+    import_script("/lib/js/outline.js");
+})[]
 #html_elem("button", attrs: (class: "outline-toggle"))[☰];
 #context {
     let result = ();

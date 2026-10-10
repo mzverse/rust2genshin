@@ -1,0 +1,5 @@
+{
+    "tinymist.rootPath": "${workspaceFolder}/docs/typst",
+    "tinymist.projectResolution": "lockDatabase",
+    "tinymist.exportTarget": "html"
+}
