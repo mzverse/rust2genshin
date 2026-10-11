@@ -10,7 +10,9 @@
 
 Windows: ```shell winget install --id Typst.Typst```
 
-MacOS: ```shell brew install typst```
+Homebrew（MacOS、Linux）: ```shell brew install typst```
+
+Snap（Ubuntu）：```shell sudo snap install typst```
 
 cargo：```shell cargo install --locked typst-cli```
 

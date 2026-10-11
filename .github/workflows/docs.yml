@@ -25,8 +25,12 @@ jobs:
         uses: actions/configure-pages@v5
         id: pages
 
-      - name: Install Typst with Cargo
-        run: cargo install typst-cli
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Install Typst
+#        run: cargo install typst-cli
+        run: brew install typst
 
       - name: Build Docs
         env:
