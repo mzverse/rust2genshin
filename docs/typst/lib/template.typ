@@ -1,8 +1,17 @@
-#import "contents.typ";
-#import contents: *;
+#import "contents.typ": *;
+
+#let this-doc = state("this-doc");
 
 #let template(con, toc: true, with_outline: true, title: none) = context {
     set text(lang: "zh", font: "Microsoft YaHei", size: 12pt);
+    show link: if target() == "html" { it => {
+        let dest = it.dest;
+        if type(dest) == str and dest.starts-with("/") {
+            html.a(href: base_path + dest, it.body)
+        } else {
+            it
+        }
+    } } else { it => it };
     show raw: set text(font: ("Consolas", "Microsoft YaHei"));
     context html_elem("html", attrs: (lang: text.lang), {
         import "style.typ";
@@ -13,6 +22,7 @@
         show: code_block.template;
         html_elem("head", {
             html.meta(charset: "utf-8");
+            html.base(href: base_path + this-doc.get());
             if document.title != none {
                 html_elem("title", contentToString(document.title));
             }

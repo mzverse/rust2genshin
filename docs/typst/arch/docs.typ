@@ -19,3 +19,17 @@ Typst用于生成html
 使用```shell typst watch```实时更新已有文件
 
 Rust监听文件的增删并重建main.typ
+
+= Base Path
+
+== Rust
+
+从环境变量`BASE_PATH`转移到```typst sys.inputs```
+
+== Typst
+
+存至`contents.base_path`
+
+在生成`href`和`src`属性前手动添加
+
+在`template`中将绝对路径的`link`处理为`html.a`

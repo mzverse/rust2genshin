@@ -44,4 +44,10 @@
     return html_elem("script", attrs: (src: base_path + src))[]
 }
 
+#let path_to_str(p) = {
+    let r = repr(p);
+    assert(r.starts-with("path"));
+    eval("str" + r.slice(4))
+}
+
 #let hr = html_elem("hr")[];

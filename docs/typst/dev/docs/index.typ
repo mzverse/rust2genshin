@@ -73,7 +73,7 @@ cargo run -p rust2genshin-docs --bin watch
 
 每个文档的开头固定为：
 
-```typ
+```typst
 #import "/lib/lib.typ": *;
 #let title = [请输入标题];
 #show: template;
