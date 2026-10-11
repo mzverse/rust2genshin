@@ -1,4 +1,5 @@
-const tocPath = new URL('../toc.html', document.currentScript.src).pathname;
+const pathHtml = new URL('../toc.html', document.currentScript.src).pathname;
+const pathCss = new URL('../css/toc.css', document.currentScript.src).pathname;
 
 customElements.define('toc-component', class extends HTMLElement {
     constructor() {
@@ -11,8 +12,16 @@ customElements.define('toc-component', class extends HTMLElement {
     }
 
     async loadToc() {
-        const response = await fetch(tocPath);
-        this.shadowRoot.innerHTML = await response.text();
+        async function get(path) {
+            return await (await fetch(path)).text();
+        }
+        let html = get(pathHtml);
+        let css = get(pathCss);
+
+        const extraSheet = new CSSStyleSheet();
+        extraSheet.replaceSync(await css);
+        this.shadowRoot.adoptedStyleSheets.push(extraSheet);
+        this.shadowRoot.innerHTML = await html;
 
         let currentPath = decodeURIComponent(window.location.pathname);
         if(currentPath.endsWith("/"))
@@ -32,6 +41,13 @@ customElements.define('toc-component', class extends HTMLElement {
             item.addEventListener('click', e => {
                 e.preventDefault();
                 e.target.parentElement.classList.toggle('open');
+            });
+        });
+        // 抽屉模式的关闭按钮。开关逻辑在 outline.js(它管着遮罩和 body 的
+        // overflow),这里只发一个事件过去,不重复实现一遍。
+        this.shadowRoot.querySelectorAll('.drawer-close').forEach(item => {
+            item.addEventListener('click', () => {
+                document.dispatchEvent(new CustomEvent('drawer-close'));
             });
         });
     }

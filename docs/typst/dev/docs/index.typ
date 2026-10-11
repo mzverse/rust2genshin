@@ -79,4 +79,16 @@ cargo run -p rust2genshin-docs --bin watch
 #import "/lib/lib.typ": *;
 #let title = [请输入标题];
 #show: template;
+
+#set raw(lang: "rust");
 ```
+
+`#set raw(...)` 给页内的行内代码设默认语言 —— 不设的话 Typst 导出的 `<code>` 没有语言标注，高亮器只能自动猜。代码块自己的 ```` ```rust ```` / ```` ```shell ```` 优先级更高，不受影响。页面主体不是 Rust 时换成对应语言（本页这类讲 Typst / CSS 的就不要写 `rust`）。
+
+注意几件容易踩的事：
+
+- 加粗是 `*文字*`，不是 `**文字**`。写错会渲染成*空*的 `<strong>`，字不加粗，而且只有一条 `no text within stars` 警告
+- 链接是 `#link("url")[文字]` 或裸 URL。`[文字](url)` 会被当字面量原样渲染
+- 没有表格样式，别用 Markdown 的 `| a | b |`，用 `#list` 或 `#table(...)`
+
+改样式之前先看#link("/dev/docs/layout.html")[排版]页，那三个坑不报错，只能靠知道。

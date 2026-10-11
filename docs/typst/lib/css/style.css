@@ -7,10 +7,10 @@ dd {
 }
 
 * {
-    line-height: 0.8;
+    line-height: 21pt;
 }
 p {
-    line-height: normal;
+    margin: 12pt 0;
 }
 /* 同理:`li` 的字号是 16px,0.8 的行盒只有 12.8px,正文列表项会上下叠字。 */
 li {

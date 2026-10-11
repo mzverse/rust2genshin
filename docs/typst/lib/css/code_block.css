@@ -43,6 +43,7 @@ code-block {
     }
 
     &::part(header) {
+        line-height: 0.8em;
         position: absolute;
         margin: 0;
         top: 4pt;
@@ -108,14 +109,14 @@ pre {
 }
 
 code, code-block::part(code) {
-    font-family: 'Fira Code', 'Consolas', 'Monaco', 'PingFang SC', 'Microsoft YaHei', 'Courier New', monospace;
+    font-family: Menlo, Monaco, Consolas, "Cascadia Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "JetBrains Mono", "Fira Code", Cousine, "Roboto Mono", "Courier New", Courier, sans-serif, system-ui;
 }
 
 code {
-    margin-inline: 0.2em;
+    margin-inline: 0;
     background-color: #eff3f8 !important;
     border-radius: 0.1em;
-    padding: 0;
+    padding: 0 !important;
     padding-inline: 2pt;
 }
 

@@ -1,48 +1,107 @@
-/* 左边导航是 `<toc-component>`(toc.js 定义的 web component,树在它的
- * shadow root 里)。整棵目录树有 130 个 li,自然高度几千 px。
- *
- * 窄屏:body 是单栏,侧栏排在正文上面。这会儿如果还占满一屏,正文就被顶到
- * 第二屏去了,所以只给半屏、内部滚动。
- * 宽屏:见下面的 media query —— 定高一屏 + sticky,页面高度才由正文决定。 */
+/* 页面骨架有两栏可折叠的侧栏,都由本文件管:
+ *   - 左栏 `<toc-component>`(全站目录,toc.js 定义的 web component)
+ *   - 右栏 `nav.outline`(本页目录,outline.typ 生成)
+ * 窄屏下两者都是盖在正文上的抽屉,各有开关按钮,共用一层遮罩。
+ * 分三档,窗口收窄时先收左栏:
+ *   <768px       两栏都收起成抽屉;☰ 在左上 / 右上
+ *   768–1079px   右栏恢复成常驻列,左栏仍是抽屉
+ *   ≥1080px      两栏都常驻,三列
+ * 按钮由 outline.typ 输出,抽屉开合在 outline.js。 */
+
+/* 左栏。窄屏是抽屉:固定定位、默认推到屏幕外,`.open` 滑进来。
+ * 用 transform 而不是 `left` 偏移,因为宽度是 min(85vw, 320px) ——
+ * 窄到 85vw < 320px 时按固定 px 值藏不干净,总有一截留在屏内。 */
 toc-component {
     display: block;
-    max-height: 50vh;
-    overflow-y: auto;
-    overflow-x: hidden;
+    position: fixed;
+    top: 0;
+    left: 0;
+    /* 高度跟着内容走,上限一屏。满屏白底而目录只占顶上一点时,底下
+     * 一大片纯白很扎眼;内容多过一屏才滚。 */
+    max-height: 100vh;
+    width: min(85vw, 320px);
+    background-color: #fdfdfd;
+    box-shadow: 6px 0 24px rgba(0, 0, 0, .18);
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    z-index: 1002;
+    overflow: hidden auto;
+
+    &.open {
+        transform: translateX(0);
+    }
 }
 
 body {
     background-color: #fdfdfd;
     min-height: 100vh;
     display: grid;
+    /* 窄屏单列:两栏侧栏都是 fixed 抽屉,脱离文档流,grid 里只剩正文。 */
     grid-template-columns: minmax(0, 600pt);
-    gap: 50pt;
+    /* 窄屏只有一列,这个 gap 用不上;宽屏那份在 media query 里自己设。 */
+    gap: 16px;
     justify-content: center;
     box-sizing: border-box;
     padding: 0;
     margin: 0;
 }
 
-.outline-toggle {
+/* 两个抽屉共用的遮罩,由 outline.js 创建。 */
+.drawer-overlay {
     position: fixed;
-    right: 20px;
-    top: 20px;
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    background-color: #007bff;
-    color: white;
-    border: none;
-    font-size: 28px;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1001;
+    display: none;
+
+    &.open {
+        display: block;
+    }
+}
+
+/* 两个抽屉的开关按钮。固定定位,不占 grid 格子;只在对应抽屉存在的
+ * 那几档出现(宽屏那份在 media query 里 display:none)。
+ * 做成 40px 的白底描边方块,配色跟目录里的折叠按钮一致(#eff0f3 /
+ * #19181f)。图标用内联 SVG,不依赖字体里有没有 `☰` 这个字形 ——
+ * 按钮里原本的 `☰` 文本用 font-size:0 藏掉。 */
+.toc-toggle, .outline-toggle {
+    position: fixed;
+    top: 16px;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    background-color: #fff;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2319181f' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 20px 20px;
+    border: 1px solid #e2e3e8;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .10);
+    color: transparent;
+    font-size: 0;
     cursor: pointer;
     z-index: 1000;
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: background-color .15s ease;
+}
+.toc-toggle { left: 16px; }
+.outline-toggle { right: 16px; }
+.toc-toggle:hover, .outline-toggle:hover { background-color: #eff0f3; }
+.toc-toggle:active, .outline-toggle:active { background-color: #e4e5ea; }
+
+/* 窄屏正文顶端要给浮动的 ☰ 让位,否则 h1 会被压在按钮底下。
+ * 两栏都常驻、按钮消失的宽档在 media query 里把留白收回去。 */
+main {
+    padding-top: 48px;
 }
 
 .outline {
-    background-color: white;
     position: fixed;
     padding-inline-start: 3pt;
     font-size: 12pt;
@@ -53,17 +112,30 @@ body {
     overflow: hidden auto;
     padding-left: 20px;
     padding-right: 40px;
+    /* 抽屉上下留一圈:目录树的行盒自己是贴边的,不留的话第一条紧顶着
+     * 面板上沿、跟右上角的 ✕ 挤在同一行,最后一条也贴着下沿。 */
+    padding-top: 12px;
+    padding-bottom: 12px;
     max-width: 240pt;
 
+    /* 窄屏下这一栏是盖在正文上的抽屉,必须有实底 —— 否则目录文字和底下
+     * 的正文叠在一起,读不了。宽屏下它在 grid 里独占右列,底色与 body
+     * 相同,看不出来。宽度也定死:只写 max-width 会按内容撑,条目少的页
+     * 抽屉只有 160 多 px,文字被挤成一列。 */
+    width: min(85vw, 320px);
+    background-color: #fdfdfd;
+    box-shadow: -6px 0 24px rgba(0, 0, 0, .18);
+
     top: 0;
-    height: 100vh;
-    right: -300px;
+    /* 同左栏:抽屉高度贴着内容,别撑成一整屏白。 */
+    max-height: 100vh;
+    right: 0;
+    transform: translateX(100%);
     z-index: 1002;
-    transition: right 0.3s ease;
-    overflow-y: auto;
+    transition: transform 0.3s ease;
 
     &.open {
-        right: 0;
+        transform: translateX(0);
     }
 }
 .outline-close {
@@ -82,58 +154,45 @@ body {
     align-items: center;
     justify-content: center;
 }
-.outline-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
-    z-index: 1001;
-    display: none;
-
-    &.open {
-        display: block;
-    }
-}
 
 @media (min-width: 768px) {
+    /* 右栏恢复成 grid 里的一格,左栏还是抽屉,所以这档是两列。 */
     body {
-        /* 第一栏 160pt(213px)装不下目录树:树在 `li > .block { width: auto }`
-         * 下自然宽度约 289px,右边距折叠按钮(right:0)会被推出可视区,
-         * 只能靠 overflow-x: hidden 裁掉。放宽到 240pt。 */
-        grid-template-columns: minmax(auto, 240pt) minmax(0, 600pt) minmax(0, auto);
+        grid-template-columns: minmax(0, 600pt) minmax(0, auto);
         gap: 50pt;
     }
-    /* 定高一屏 + sticky:不定住的话目录树会把 body 第一行 grid 拉高几千 px,
-     * grid 里其它格子(含正文)跟着 stretch,整页被撑高。 */
-    toc-component {
-        position: sticky;
-        top: 0;
-        height: 100vh;
-        max-height: none;
-    }
-    /* 开关按钮**连壳一起**拿走。
+    /* 右栏的开关和关闭按钮在它常驻之后就没用了。
      *
-     * `outline.typ` 用 `html_elem("button", ...)` 输出这个按钮,Typst 的
-     * HTML 导出把块级内容自动包进一层 `<p>`。`.outline-toggle` 隐藏了,
-     * 但那层 `<p>` 仍在 body 的 grid 流里占一个单元,而且它排在 main 之后、
-     * nav.outline 之前 —— 正好顶掉侧栏该在的第 1 行第 2 列,侧栏被挤到
-     * 下一行(y 从 32 掉到 1251),页面凭空多出一整屏高度。
-     * `display: none` 掉按钮不够,得连 `p` 一起。
-     */
+     * 顺带 `p:has(...)` 那两条:历史上 Typst 的 HTML 导出会把按钮包进
+     * 一层 `<p>`,`display: none` 掉按钮不够,那层壳还在 grid 流里占一个
+     * 格子、顶掉侧栏该在的位置。现在导出的是 body 的直接子元素,规则匹配
+     * 不到,留着以防导出行为再变。 */
     .outline-toggle, .outline-close,
     .outline-toggle + p,
     p:has(> .outline-toggle) {
         display: none !important;
     }
+    /* 定高一屏 + sticky:不定住的话目录树会把 body 第一行 grid 拉高几千 px,
+     * grid 里其它格子(含正文)跟着 stretch,整页被撑高。 */
     .outline {
         position: sticky;
         top: 32px;
         height: calc(100vh - 64px);
-        /* 基础规则里的 `right: -300px` 是移动端"抽屉藏在屏幕外"的默认位。
-         * 宽屏下必须清掉,否则 320px 宽的侧栏有 300px 被推出视口。 */
-        right: auto;
+        /* 基础规则里的 `transform` 是移动端"抽屉藏在屏幕外"的默认位,
+         * 常驻列必须清掉。 */
+        transform: none;
+        /* 基础规则里的定宽和投影都是给移动端抽屉的;宽屏下这一栏是 grid
+         * 里的一格,宽度交给 grid,投影会糊在正文边上,都清掉。 */
+        width: auto;
+        box-shadow: none;
+        /* 基础规则里上下那圈留白是给抽屉的:常驻列有 `top: 32px`,这 12px
+         * 叠上去会让它比左边目录树低一大截。 */
+        padding-top: 0;
+        padding-bottom: 0;
+        /* 同理 z-index:抽屉要压在遮罩(z-index:1001)之上才需要它;常驻列
+         * 带着它就会盖住遮罩 —— 768–1079 这档左栏还是抽屉,开出来时右边
+         * 这一列会亮在遮罩外面,还能点。 */
+        z-index: auto;
     }
     /* `.block` 是 Typst 的通用块级包装(`style.css`),`display: flex` 且
      * 没写 `flex-direction` —— 默认 row。正文里它每次只装一个子元素,
@@ -143,12 +202,41 @@ body {
     .outline .block {
         flex-direction: column;
     }
-    /* 全局 reset 的 `line-height: 0.8` 比字号还小,目录继承了它,16px 的字
-     * 被压进 13px 的行里、上下互相叠。目录自己重设一个正常行距。 */
+    /* 全局 reset 的 `line-height` 比字号还小,目录继承了它,16px 的字
+     * 被压进很窄的行里、上下互相叠。目录自己重设一个正常行距。 */
     .outline, .outline ul, .outline li {
         line-height: 1.4;
     }
-    .outline-overlay {
+}
+
+@media (min-width: 1080px) {
+    /* 左栏也恢复成常驻列,这档才是完整三列。 */
+    body {
+        /* 第一栏 160pt(213px)装不下目录树:树在 `li > .block { width: auto }`
+         * 下自然宽度约 289px,右边距折叠按钮(right:0)会被推出可视区,
+         * 只能靠 overflow-x: hidden 裁掉。放宽到 240pt。 */
+        grid-template-columns: minmax(auto, 240pt) minmax(0, 600pt) minmax(0, auto);
+    }
+    toc-component {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        /* 抽屉那套固定宽度 / 实底 / 投影 / 位移在常驻列里都不需要。 */
+        width: auto;
+        background-color: transparent;
+        box-shadow: none;
+        transform: none;
+        z-index: auto;
+    }
+    .toc-toggle {
+        display: none !important;
+    }
+    /* 两栏都常驻,按钮和留白都撤掉。 */
+    main {
+        padding-top: 0;
+    }
+    /* 遮罩兜底:这档开不出抽屉,不该出现。 */
+    .drawer-overlay {
         display: none !important;
     }
 }

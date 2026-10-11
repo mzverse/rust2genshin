@@ -1,3 +1,37 @@
+/* 抽屉模式(窄屏)下目录右上角的关闭按钮,由 toc.typ 输出。
+ * 不能复用 outline.css 的 `.outline-close` —— 页面样式进不了 shadow root,
+ * 只有 `toc.html` link 进来的 style.css / template.css 和这份 toc.css 生效。
+ * 定位成 `absolute` 而不是 `float`:绝对定位的包含块是 main 的 **padding
+ * box**,按钮因此落在右边距里,不占目录树那一列的宽度(见 main 上的
+ * `padding-right`)。用 `float` 的话它只能待在内容盒里,跟每行右端那个
+ * 折叠按钮抢同一块地方。 */
+.drawer-close {
+    display: none;
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #f0f0f0;
+    border: 1px solid #ddd;
+    font-size: 18px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+}
+@media (max-width: 1079px) {
+    .drawer-close {
+        display: flex;
+    }
+}
+/* 上面那个按钮写在 toc.typ 的 `#context` 块里,Typst 的 HTML 导出把它包了
+ * 一层 `<p>`(`style.css` 的 `p { margin: 12pt 0 }` 会在目录顶上白留一截)。
+ * `display: contents` 撤掉这层壳,按钮直接挂到 main 下。 */
+main > p:has(> .drawer-close) {
+    display: contents;
+}
+
 /* 这里的 `main` 是 toc.html 自己的 <main>(整棵树被它塞进 shadow root),
  * 不是页面的正文 —— 下面的 `main` 选择器只作用在 shadow 内部。
  * 原来的 `margin: 5pt -9pt -9pt` 会让这一层比容器还宽 9pt,树和折叠按钮
@@ -5,11 +39,19 @@
  * `min-height: 100vh`(template.css)是给正文那栏用的,在这儿会让侧栏
  * 无论如何都撑满一整屏 —— 树上只有几行字时尤其明显。 */
 main {
+    position: relative;
     padding: 9pt 8pt 9pt 4pt;
     margin: 5pt 0 0;
     min-height: 0;
     box-sizing: border-box;
     overflow-x: clip;
+}
+/* 抽屉模式下给右上角的关闭按钮腾位置 —— 按钮绝对定位在 padding box 里,
+ * 右边距不留宽就会被目录树压住。宽屏那档没有这个按钮,也就不留。 */
+@media (max-width: 1079px) {
+    main {
+        padding-right: 48px;
+    }
 }
 
 /* shadow root 里也吃得到全局 reset 的 `* { line-height: 0.8 }`
@@ -32,8 +74,14 @@ ul {
     padding-inline-start: 12pt;
     transition: ease .2s all;
 }
-main > ul {
+/* 顶层那一层不该缩进,缩进是给嵌套层用的。`main > ul` 这条匹配不上 ——
+ * Typst 把 `list()` 包进 `.block`(`main > .block > ul`),所以两层选择器都写。
+ * `margin-block: 0` 撤掉 UA 默认的 `ul { margin-block: 1em }`,那是树顶上
+ * 凭空多出来的一截空白。 */
+main > ul,
+main > .block > ul {
     padding-inline-start: 0 !important;
+    margin-block: 0;
 }
 
 li > *:first-child {
@@ -46,11 +94,14 @@ li {
     position: relative;
 }
 
-/* `.block { width: fit-content }`(style.css)会让这一层按子树内容撑宽,
- * 深层目录比侧栏容器还宽,右侧的折叠按钮被推出可视区。树里不需要
- * shrink-to-fit,让它跟着容器走。 */
-li > .block {
+/* `.block` 是 Typst 给每层 `list()` 加的包装(style.css 里是
+ * `display: flex; width: fit-content`)。`fit-content` 让整棵树按内容撑宽:
+ * 顶层那份只有 200px,装在 320px 的抽屉里右边空一大条,行的高亮也够不到边。
+ * 改成 `width: auto` 跟着容器走,并用 column 方向让里面的 `ul` 被 stretch
+ * 撑满 —— 单子项的 flex row 不会把子项撑开(`.block` 每次只装一个 `ul`)。 */
+main .block {
     width: auto;
+    flex-direction: column;
 }
 
 /* Typst 在 `<a>` 和 `<button>` 之间插了 `<span style="white-space: pre-wrap"> </span>`

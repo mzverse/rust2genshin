@@ -372,7 +372,6 @@
         show repeat: [...]; // TODO
         show grid: c => c.children.sum(); // TODO
         show grid.cell: c => c.body; // TODO
-        import_style("/lib/css/style.css");
         con
     }
 }

@@ -39,49 +39,64 @@ document.addEventListener('DOMContentLoaded', _ => {
     if (overviewList) {
         initializeScrollHighlight(overviewList);
     }
-    
 
-    const toggleBtn = document.querySelector('.outline-toggle');
-    const closeBtn = document.querySelector('.outline-close');
-    const outline = document.querySelector('.outline');
-    
-    let overlay = document.querySelector('.outline-overlay');
+    /* 两个抽屉:左栏全站目录、右栏本页目录。窄屏下各自固定定位、默认在
+     * 屏幕外,`.open` 滑进来,共用一层遮罩,同一时刻只开一个。
+     * `columnAt` 是这个抽屉恢复成 grid 常驻列的断点(跟 outline.css 的
+     * media query 对齐)—— 跨过它就把还开着的抽屉关掉,否则遮罩会盖在
+     * 常驻列上。 */
+    const drawers = [
+        { panel: document.querySelector('toc-component'), toggle: '.toc-toggle', columnAt: 1080 },
+        { panel: document.querySelector('.outline'), toggle: '.outline-toggle', columnAt: 768 },
+    ].filter(d => d.panel);
+
+    let overlay = document.querySelector('.drawer-overlay');
     if (!overlay) {
         overlay = document.createElement('div');
-        overlay.className = 'outline-overlay';
+        overlay.className = 'drawer-overlay';
         document.body.appendChild(overlay);
     }
-    
-    function openoutline() {
-        outline.classList.add('open');
-        overlay.classList.add('open');
-        document.body.style.overflow = 'hidden';
-    }
-    
-    function closeoutline() {
-        outline.classList.remove('open');
+
+    let opened = null;
+
+    function closeDrawer() {
+        if (!opened) return;
+        opened.panel.classList.remove('open');
+        opened = null;
         overlay.classList.remove('open');
         document.body.style.overflow = '';
     }
-    
-    if (toggleBtn) toggleBtn.addEventListener('click', openoutline);
-    if (closeBtn) closeBtn.addEventListener('click', closeoutline);
-    if (overlay) overlay.addEventListener('click', closeoutline);
-    
-    document.addEventListener('keydown', e => {
-        if (e.key === 'Escape' && outline.classList.contains('open')) {
-            closeoutline();
-        }
+
+    function openDrawer(drawer) {
+        if (opened === drawer) return;
+        closeDrawer();
+        drawer.panel.classList.add('open');
+        opened = drawer;
+        overlay.classList.add('open');
+        document.body.style.overflow = 'hidden';
+    }
+
+    for (const drawer of drawers) {
+        const toggle = document.querySelector(drawer.toggle);
+        if (toggle) toggle.addEventListener('click', () => openDrawer(drawer));
+    }
+    // 右栏的 ✕ 在页面里,直接接;左栏的 ✕ 在 toc-component 的 shadow root
+    // 里查不到,由 toc.js 发 `drawer-close` 事件过来。
+    document.querySelectorAll('.outline-close').forEach(btn => {
+        btn.addEventListener('click', closeDrawer);
     });
-    
+    document.addEventListener('drawer-close', closeDrawer);
+    overlay.addEventListener('click', closeDrawer);
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeDrawer();
+    });
+
     let resizeTimer;
     window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-            if (window.innerWidth >= 768 && outline.classList.contains('open')) {
-                closeoutline();
-                document.body.style.overflow = '';
-            }
+            if (opened && window.innerWidth >= opened.columnAt) closeDrawer();
         }, 100);
     });
 });

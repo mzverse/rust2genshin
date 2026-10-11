@@ -159,7 +159,7 @@ impl Entity {
 
     /// 获取实体类型(stage/object/player/character/creation)
     #[native_calc(260)]
-    pub fn entity_type(self) -> EntityKind;
+    pub fn kind(self) -> EntityKind;
 
     /// 前向向量
     #[native_calc(516)]

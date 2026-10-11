@@ -1,6 +1,6 @@
 #import "contents.typ": *;
 
-#let this-doc = state("this-doc");
+#let this-path = state("this-path");
 
 #let template(con, toc: true, with_outline: true, title: none) = context {
     set text(lang: "zh", font: "Microsoft YaHei", size: 12pt);
@@ -22,7 +22,8 @@
         show: code_block.template;
         html_elem("head", {
             html.meta(charset: "utf-8");
-            html.base(href: base_path + this-doc.get());
+            html.meta(name:"viewport", content: "width=device-width, initial-scale=1.0");
+            html.base(href: base_path + this-path.get());
             if document.title != none {
                 html_elem("title", contentToString(document.title));
             }
@@ -46,10 +47,13 @@
             #if document.title != none {
                 html_elem("h1", document.title)
             }
-            #con
+            #con;
+            #if toc {
+                html.div(style: "height: calc(100vh - 5em);")
+            }
         ]
         if with_outline {
-            include outline;
+            outline.outline();
         }
     })
 }
