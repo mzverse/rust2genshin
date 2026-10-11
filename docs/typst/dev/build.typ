@@ -93,4 +93,4 @@ target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia
 
 `viewer` 不在 workspace 的 `default-members` 里。它依赖 gpui，Linux 上要 X11/Wayland 和字体库，CI 没装 —— 要构建它得显式 `cargo build -p rust2genshin-viewer`。
 
-文档站有单独的一条 workflow（`.github/workflows/docs.yml`），见#link("/arch/docs.html")[文档站怎么构建]。
+文档站有单独的一条 workflow（`.github/workflows/docs.yml`），见#link("/arch/docs/index.html")[文档站]。

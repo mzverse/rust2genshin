@@ -4,9 +4,25 @@
 
 #set raw(lang: "rust");
 
+#import "/lib/graph.typ";
+
 节点图里没有「跳回上面」这种操作（控制流不允许成环），循环要靠原生的循环节点实现。有两种。
 
 = 有限循环
+
+#{
+    import graph: *;
+    node({
+        [有限循环]
+        ctrl_in()
+        ctrl_in[退出循环]
+        ctrl_out[循环体]
+        ctrl_out[循环结束]
+        data_in("Int")[begin]
+        data_in("Int")[end]
+        data_out("Int")[当前值]
+    })
+}
 
 它*只储存*一个东西：当前循环值。进入循环时，当前循环值被设成*循环起始值*。
 
@@ -22,7 +38,22 @@ for (int i = begin; i <= end; i++)
 
 = 列表迭代循环
 
-这个节点*不储存元素，也不储存列表长度* —— 每次用到元素或长度时都重新求一遍，等价于
+#{
+    import graph: *;
+    node({
+        [列表迭代循环]
+        ctrl_in()
+        ctrl_in[退出循环]
+        ctrl_out[循环体]
+        ctrl_out[循环结束]
+        data_in("List<T>")[列表]
+        data_out("T")[当前值]
+    })
+}
+
+只储存当前索引
+
+*不储存元素，也不储存列表长度* —— 每次用到元素或长度时都重新求一遍，等价于
 
 ```cpp
 for (int i = 0; i < list.size(); i++) {

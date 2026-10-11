@@ -4,7 +4,18 @@
 
 #set raw(lang: "rust");
 
-节点图里的局部变量对应一对节点：*获取局部变量* 和 *设置局部变量*。
+#import "/lib/graph.typ";
+
+#{
+    import graph: *;
+    node({
+        [获取局部变量]
+        data_out("LocalRef")[变量引用]
+        data_out("T")[值]
+    })
+}
+
+将这个节点称为“局部变量”更合适
 
 = 它储存什么
 

@@ -4,7 +4,7 @@
     <inspection_tool class="HtmlUnknownTag" enabled="true" level="WARNING" enabled_by_default="true">
       <option name="myValues">
         <value>
-          <list size="10">
+          <list size="12">
             <item index="0" class="java.lang.String" itemvalue="nobr" />
             <item index="1" class="java.lang.String" itemvalue="noembed" />
             <item index="2" class="java.lang.String" itemvalue="comment" />
@@ -15,6 +15,8 @@
             <item index="7" class="java.lang.String" itemvalue="ui-card" />
             <item index="8" class="java.lang.String" itemvalue="code-block" />
             <item index="9" class="java.lang.String" itemvalue="expand-panel" />
+            <item index="10" class="java.lang.String" itemvalue="ui-graph-node" />
+            <item index="11" class="java.lang.String" itemvalue="ui-graph" />
           </list>
         </value>
       </option>

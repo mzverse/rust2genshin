@@ -1,0 +1,71 @@
+/* 简单的节点图 —— host 元素、light DOM 的数据载体、节点光标。
+ *
+ * 渲染都在 ui-graph 的 shadow root 里(graph.js 的内联 <style> 管):一个
+ * <svg> 装下所有连线,和每个节点一个 <foreignObject>,后者靠 <slot
+ * name="节点id"> 把 light DOM 里的 <ui-graph-node> 投影进去 —— 元素不搬家。
+ * 节点没给 id 时 JS 按文档顺序编一个名字。
+ *
+ * 定位和变换都在 shadow 里,这份够不着;这里只管 light DOM 侧:藏数据载体、
+ * 给节点光标 —— 投影出来的元素在 flat tree 里换了地方,但选择器仍然按它在
+ * light DOM 里的位置匹配,所以 `ui-graph > ui-graph-node` 照样命中。 */
+
+ui-graph {
+    display: block;
+    position: relative;
+    margin: 1rem 0;
+    /* 高度由 graph.typ 的 height 参数写进 data-height,JS 读它填到 style */
+    overflow: hidden;
+    border-radius: 8px;
+    /* 图是可以拖、可以缩放的交互区域,得让人看得出边界 */
+    border: 1px solid #d7d9e2;
+    background-color: #fbfbfd;
+
+    /* <pin> / <connection> 只是数据载体,要藏。引脚挂在节点底下,所以是后代
+     * 选择器而不是子代。 */
+    & pin,
+    & connection {
+        display: none;
+    }
+
+    /* 没跑 JS(或自定义元素还没定义)时才露出来的说明文字;渲染成功后
+     * graph.js 会把它删掉。 */
+    &:not(:defined) > .graph-fallback {
+        display: block;
+        padding: 12px 14px;
+        border: 1px dashed #c9cbd4;
+        border-radius: 6px;
+        background-color: #f7f8fa;
+        color: #565565;
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    /* 定义之前节点得先藏起来 —— 那时它还是个没样式的空盒子,会闪一下。
+     * 定义那一刻起这条规则自动失效,节点可以量尺寸了。 */
+    &:not(:defined) > ui-graph-node {
+        display: none;
+    }
+}
+
+/* 单独摆的节点(不放进图里):自己占一行。图里的节点由 .g-node 定位,
+ * 不要外边距。 */
+ui-graph-node {
+    display: block;
+    margin: 1rem 0;
+}
+
+ui-graph ui-graph-node {
+    margin: 0;
+}
+
+/* 节点光标。一路手型:节点上 grab,按住 grabbing,没有十字箭头。 */
+ui-graph > ui-graph-node {
+    cursor: grab;
+}
+
+ui-graph.dragging > ui-graph-node {
+    cursor: grabbing;
+}
+
+/* 平移整张图(右键 / 中键)的光标在 graph.js 的内联 <style> 里 —— 那层
+ * <svg> 在 shadow 内部,页面样式选不中。 */

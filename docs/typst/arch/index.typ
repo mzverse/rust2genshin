@@ -35,4 +35,4 @@ Rust → 节点图。
 
 #link("/arch/reference.html")[参考项目] —— 节点 ID、proto 字段、`.gia` 格式的外部依据，以及它和本项目的差异。
 
-#link("/arch/docs.html")[文档站怎么构建] —— 本站自身怎么从 Typst 编译并发布。
+#link("/arch/docs/index.html")[文档站] —— 本站自身怎么从 Typst 编译并发布，以及文档站里那些自定义元素怎么搭起来的。

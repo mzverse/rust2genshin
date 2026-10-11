@@ -27,7 +27,9 @@ cargo run -p rust2genshin-docs --bin compile
 
 = Watch
 
-编译此文档时，实时更新（增量编译）
+编译并提供一个本地web服务
+
+编辑此文档时，实时更新（增量编译），浏览器中也自动刷新
 
 启动watch并保持运行
 
@@ -72,6 +74,8 @@ cargo run -p rust2genshin-docs --bin watch
 ```
 
 = 编写文档
+
+#set raw(lang: "typst");
 
 每个文档的开头固定为：
 
