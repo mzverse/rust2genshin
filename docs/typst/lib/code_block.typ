@@ -20,18 +20,14 @@
             })
         ]
         #html_elem("div", part: "content")[
-            #html_elem("pre", part: "pre")[
-                #html_elem("code", part: "code")[
-                    #html_elem("slot")[code]
-                ]
-            ]
+            #html_elem("slot")[code]
         ]
     ]
-    #show raw.where(block: false): r => html.code(r.text, class: "language-"+r.lang);
-    #show raw.where(block: true): r => html.elem("code-block", attrs: if r.lang != none {(lang: r.lang)} else {(:)}, html.pre(r.text));
+//     #show raw.where(block: false): r => html.code(r.text, class: "language-"+r.lang);
+    #show raw.where(block: true): r => html.elem("code-block", r);
     #html_elem("link", attrs: (href: "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css", rel: "stylesheet"))[];
-    #html_elem("link", attrs: (href: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-light.min.css", rel: "stylesheet"))[];
-    #html_elem("script", attrs: (src: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"))[];
+//     #html_elem("link", attrs: (href: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-light.min.css", rel: "stylesheet"))[];
+//     #html_elem("script", attrs: (src: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"))[];
     #import_style("/lib/css/code_block.css");
     #import_script("/lib/js/code_block.js");
     #con;

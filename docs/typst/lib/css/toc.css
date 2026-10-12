@@ -74,41 +74,29 @@ ul {
     padding-inline-start: 12pt;
     transition: ease .2s all;
 }
-/* 顶层那一层不该缩进,缩进是给嵌套层用的。`main > ul` 这条匹配不上 ——
- * Typst 把 `list()` 包进 `.block`(`main > .block > ul`),所以两层选择器都写。
+/* 顶层那一层不该缩进,缩进是给嵌套层用的。
  * `margin-block: 0` 撤掉 UA 默认的 `ul { margin-block: 1em }`,那是树顶上
  * 凭空多出来的一截空白。 */
-main > ul,
-main > .block > ul {
+main > ul {
     padding-inline-start: 0 !important;
     margin-block: 0;
 }
 
+/* 每个 `li` 的第一行就是它的 `<a>` —— 分组和叶子都一样,链接后面跟着折叠
+ * 按钮。下面的高亮、内边距、圆点全都挂在这行上。 */
 li > *:first-child {
     display: block;
     padding: 2pt 12pt 2pt 6pt;
     border-radius: 6px;
 }
-
 li {
     position: relative;
 }
 
-/* `.block` 是 Typst 给每层 `list()` 加的包装(style.css 里是
- * `display: flex; width: fit-content`)。`fit-content` 让整棵树按内容撑宽:
- * 顶层那份只有 200px,装在 320px 的抽屉里右边空一大条,行的高亮也够不到边。
- * 改成 `width: auto` 跟着容器走,并用 column 方向让里面的 `ul` 被 stretch
- * 撑满 —— 单子项的 flex row 不会把子项撑开(`.block` 每次只装一个 `ul`)。 */
-main .block {
-    width: auto;
-    flex-direction: column;
-}
-
-/* Typst 在 `<a>` 和 `<button>` 之间插了 `<span style="white-space: pre-wrap"> </span>`
+/* Typst 在链接和折叠按钮之间插了 `<span style="white-space: pre-wrap"> </span>`
  * 空格占位。因为 `<a>` 是 display:block,后面这些 inline span 自己撑出一个
- * 匿名行盒,白占一整行高度(折叠起来的分组尤其明显)。`.block` 是结构性的,
- * 要留着。 */
-li > span:not(.block) {
+ * 匿名行盒,白占一整行高度(折叠起来的分组尤其明显)。 */
+li > span {
     display: none;
 }
 
@@ -147,20 +135,14 @@ li > button.open:hover {
     background: #e4e5ea;
 }
 
-/* 折叠的子列表。`ul` 不是 `li` 的直接子元素 —— Typst 的 HTML 导出把块级
- * 内容包一层 `<span class="block">`(style.css 里 `.block { display:flex }`),
- * 实际结构是 `li > span.block > ul`。选择器写 `li > ul` 一条都匹配不上,
- * 结果所有分组恒展开、折叠按钮点了没反应。
- * 两种都留着:万一哪天 Typst 不再包这层壳,`li > ul` 仍然生效。 */
-li > ul,
-li > .block > ul {
+/* 折叠的子列表。`ul` 直接挂在 `li` 下,靠 visibility + max-height 收起。 */
+li > ul {
     visibility: hidden;
     max-height: 0;
     opacity: 0;
     overflow: hidden;
 }
-li.open > ul,
-li.open > .block > ul {
+li.open > ul {
     visibility: visible;
     max-height: none;
     opacity: 1;

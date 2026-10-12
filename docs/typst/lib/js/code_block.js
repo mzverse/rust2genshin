@@ -16,13 +16,16 @@
             this.attachShadow({ mode: 'open' });
         }
         connectedCallback() {
-            let lang = this.getAttribute("lang");
-            this.classList.add(`class="language-${lang}"`);
             this.shadowRoot.appendChild(template.content.cloneNode(true));
-            this.shadowRoot.querySelector('[part="language-badge"]').append(
-                Object.assign(document.createElement('i'), { className: `fab mr-1 fa-${icons[lang] ?? lang}` }),
-                lang
-            );
+            let badge = this.shadowRoot.querySelector('[part="language-badge"]');
+            this.shadowRoot.querySelector('slot').addEventListener('slotchange', () => {
+                let lang = this.firstChild.firstChild.getAttribute("data-lang");
+                badge.firstChild?.remove();
+                badge.append(
+                    Object.assign(document.createElement('i'), { className: `fab mr-1 fa-${icons[lang] ?? lang}` }),
+                    lang
+                );
+            });
             const button = this.shadowRoot.querySelector('[part="copy"]');
             button.addEventListener('click', () => {
                 navigator.clipboard.writeText(this.textContent).then(() => {
@@ -43,11 +46,11 @@
     });
 }
 
-document.addEventListener('DOMContentLoaded', _ => {
-    hljs.configure({
-        cssSelector: 'code, code-block',
-        ignoreUnescapedHTML: true,
-    });
-    hljs.registerLanguage("output", () => ({}))
-    hljs.highlightAll();
-});
+// document.addEventListener('DOMContentLoaded', _ => {
+//     hljs.configure({
+//         cssSelector: 'code, code-block',
+//         ignoreUnescapedHTML: true,
+//     });
+//     hljs.registerLanguage("output", () => ({}))
+//     hljs.highlightAll();
+// });
