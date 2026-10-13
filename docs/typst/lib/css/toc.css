@@ -84,9 +84,9 @@ main > ul {
 
 /* 每个 `li` 的第一行就是它的 `<a>` —— 分组和叶子都一样,链接后面跟着折叠
  * 按钮。下面的高亮、内边距、圆点全都挂在这行上。 */
-li > *:first-child {
+li > :first-child {
     display: block;
-    padding: 2pt 12pt 2pt 6pt;
+    padding: 2.5px 16px 2.5px 8px;
     border-radius: 6px;
 }
 li {
@@ -107,8 +107,8 @@ li.open > *:first-child {
 li > button.open {
     display: block;
     position: absolute;
-    top: 0;
-    right: 0;
+    top: 1pt;
+    right: 1pt;
     border: 0;
     width: 18pt;
     height: 18pt;
@@ -120,7 +120,7 @@ li > button.open {
     }
 }
 li > button.open::after {
-    content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+    content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='m15 18-6-6 6-6'/%3E%3C/svg%3E");
     color: #19181f;
 }
 li:hover > button.open, li.open > button.open, li:focus-visible > button.open, li > button.open:focus-visible {
@@ -129,7 +129,7 @@ li:hover > button.open, li.open > button.open, li:focus-visible > button.open, l
 }
 li.open > button.open {
     background: #eff0f3;
-    transform: rotate(90deg);
+    transform: rotate(-90deg);
 }
 li > button.open:hover {
     background: #e4e5ea;
