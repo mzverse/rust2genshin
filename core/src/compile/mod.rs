@@ -1,9 +1,8 @@
 use crate::compile::func::{CompilingFn, FnDecl, NodeGraphIr, node_ir_native};
 use crate::compile::helper::Helper;
-use crate::compile::ir::{node_ir_assemble, FnInfo, IrNodeId, Optimizer, node_ir_nop};
+use crate::compile::ir::{FnInfo, IrNodeId, Optimizer, node_ir_assemble, node_ir_nop};
 use crate::compile::link::Target;
 use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
-use crate::node::control::NODE_IF;
 use crate::node::{ExportDecl, Link, NodeGraph, NodeGraphKind, NodeKind, NodeRef};
 use proc_macro2::{Ident, TokenStream};
 use rustc_attr_ir::{Attribute, AttributeKind};

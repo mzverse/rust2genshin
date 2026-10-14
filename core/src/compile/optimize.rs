@@ -6,7 +6,7 @@ use crate::compile::ir;
 use crate::compile::ir::{IrKind, IrNodeId, Optimizer};
 use crate::compile::link::{CompiledFn, Linker};
 use crate::node::arithmetic::{NODE_NOT, node_cast, node_equal};
-use crate::node::control::NODE_IF;
+use crate::node::control::{node_switch, NODE_IF};
 use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
 use crate::node::query::node_local;
@@ -172,13 +172,23 @@ impl Optimizer {
                             self.graph.relink_controls(&last.controls_in[0], Link::node(x, 0), &[Link::node(n1, 0)]);
                             self.graph.link_controls(Link::node(n1, 0), &last.controls_out[1 - br_false]);
                             self.graph.link_controls(Link::node(n1, 1), &last.controls_out[br_false]);
-                            self.graph.remove(x);
-                            continue;
                         },
-                        _ => {
-                            todo!()
+                        k => {
+                            // TODO: when values.len() > 10
+                            let last = node.links.clone();
+                            let values = values.clone();
+                            let n1 = self.graph.insert(node_ir_native(node_switch(k, values.len())));
+                            self.graph.set_value_in(Link::node(n1, 0), last.values_in[0].clone());
+                            self.graph.relink_controls(&last.controls_in[0], Link::node(x, 0), &[Link::node(n1, 0)]);
+                            self.graph.link_controls(Link::node(n1, 0), last.controls_out.last().unwrap());
+                            for i in 0..values.len() {
+                                self.graph.link_controls(Link::node(n1, 1 + i), &last.controls_out[i]);
+                            }
+                            self.graph.set_default(Link::node(n1, 1), Some(values.into()));
                         }
                     }
+                    self.graph.remove(x);
+                    continue;
                 },
                 IrNodeId::Assemble => {
                     let k = kind.values_out_types[0].lower(linker);
