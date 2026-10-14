@@ -70,6 +70,7 @@ main > ul > li > *:first-child {
 }
 
 ul {
+    margin-block-start: 2pt;
     list-style: none;
     padding-inline-start: 12pt;
     transition: ease .2s all;

@@ -63,7 +63,7 @@ pub struct CompilingLocals<'a, 'tcx> {
 impl<'tcx> CompilingLocals<'_, 'tcx> {
     pub fn solve_local(&mut self, ty: Ty<'tcx>, k: LocalKind, name: String, span: Span) -> Result<(CompiledLocal<()>, CompiledLocal<LocalRef>)> {
         fn f(s: &mut CompilingLocals, kind: IrKind, k: LocalKind, name: String) -> (CompiledLocal<()>, CompiledLocal<LocalRef>) {
-            let local = s.graph.insert(node_ir_local(&kind));
+            let local = s.graph.insert(node_ir_local(kind.clone()));
             // if kind.encode_storage(Side::Server).is_some() {
             //     self.graph.graph.set_default(Connection(local, 0), kind.clone());
             // }
@@ -76,7 +76,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                     }
                     LocalKind::Arg => {
                         s.graph.push_export_value_in(ExportDecl::new(name, kind.clone().into()));
-                        let block = l.setter(s.graph, &kind, ValueIn::link(Link::export(s.params)));
+                        let block = l.setter(s.graph, kind, ValueIn::link(Link::export(s.params)));
                         s.block.extend(s.graph, block);
                         s.params += 1;
                     }
@@ -219,7 +219,7 @@ impl<T> CompiledLocal<T> {
 }
 
 impl LocalRef {
-    pub fn setter(&self, graph: &mut NodeGraphIr, kind: &IrKind, value: ValueIn) -> Block {
+    pub fn setter(&self, graph: &mut NodeGraphIr, kind: IrKind, value: ValueIn) -> Block {
         let node = graph.insert(node_ir_set_local(kind));
         graph.set_value_in(Link::node(node, 0), ValueIn::link(self.setter));
         graph.set_value_in(Link::node(node, 1), value);
@@ -257,7 +257,7 @@ impl CompiledPlace {
                 struct Ctx(Block);
                 impl LocalDestructureCtx<LocalRef> for Ctx {
                     fn leaf(&mut self, graph: &mut NodeGraphIr, kind: &IrKind, content: &LocalRef, value: ValueIn) {
-                        let block = content.setter(graph, kind, value);
+                        let block = content.setter(graph, kind.clone(), value);
                         self.0.extend(graph, block)
                     }
 

@@ -20,9 +20,12 @@ ui-graph {
     border: 1px solid #d7d9e2;
     background-color: #fbfbfd;
 
-    /* <pin> / <connection> 只是数据载体,要藏。引脚挂在节点底下,所以是后代
-     * 选择器而不是子代。 */
-    & pin,
+    /* <connection> 只是数据载体,要藏。引脚挂在节点底下,所以是后代选择器
+     * 而不是子代。
+     * `<pin>` 不在这儿藏 —— 引脚标签就是把它投影到 shadow 里那块 div 上
+     * 显示的(graph.js 里按 slot 名认领),display:none 会连标签一起藏掉。
+     * 没被认领的引脚(没有标签的那些)本来也不渲染:带 slot 名却找不到对应
+     * <slot> 的元素不会被画出来。 */
     & connection {
         display: none;
     }

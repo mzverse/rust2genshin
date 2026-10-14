@@ -525,7 +525,19 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
         self.controls_in_mut(to).push(from);
     }
 
-    pub fn relink_controls(&mut self, from: Link, to0: Link, to1: &[Link]) {
+    pub fn link_controls(&mut self, from: Link, to: &[Link]) {
+        for &to in to {
+            self.link_control(from, to);
+        }
+    }
+
+    pub fn relink_controls(&mut self, from: &[Link], to0: Link, to1: &[Link]) {
+        for &from in from {
+            self.relink_control(from, to0, to1);
+        }
+    }
+
+    pub fn relink_control(&mut self, from: Link, to0: Link, to1: &[Link]) {
         let mut a = false;
         self.controls_out_mut(from).pipe(|from| *from = from.iter().flat_map(|&x| if x == to0 {
             assert!(!a);

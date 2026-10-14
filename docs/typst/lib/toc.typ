@@ -18,7 +18,7 @@
                 #if "index.html" in value {
                     link(path+name+"/index.html", value.at("index.html"))
                 } else {
-                    name
+                    html.span(name)
                 };
                 #html_elem("button", attrs: (class: "open"))[]
                 #gen(value, path: path+name+"/")
@@ -27,7 +27,7 @@
             if name == "index.html" and path != "" {
                 continue;
             };
-            if hides.contains(path+name) {
+            if hides.contains(path + name) {
                 continue;
             };
             result.push(link(path+name, value));

@@ -4,13 +4,6 @@
 
 #set raw(lang: "rust");
 
-= test <test>
-
-== sec <sec>
-
-#link(<test>)[test]
-#link(<sec>)[sec]
-
 这一栏讲 *怎么继续开发 `rust2genshin`* —— 现在要动手改点东西，从哪下手。
 
 和#link("/arch/index.html")[架构]栏的区别：架构讲这个项目*是怎么搭起来的*（分层、管线、格式），读它是为了理解；这一栏讲*怎么改它*（构建、调试、加节点），读它是为了动手。

@@ -32,7 +32,11 @@ shadow root 里只有一层 `<svg class="g-layer">`，*没有 `viewBox`* —— 
 
 节点*不搬家*：shadow root 里放一个 `<slot name="节点id">`，把文档里写的 `<ui-graph-node>` 投影进去。元素仍然在 light DOM 里，所以 `ui-graph > ui-graph-node` 这类选择器照样命中 —— 节点的光标就是这么做的（shadow root 里的样式够不着 light DOM 的节点）。节点没给 `id` 时（只是单独摆一个看看形状），JS 按文档顺序编个名字当 slot 名，且不进 `byId` —— 连接也就引用不到它。
 
-节点自己又是一层：盒子里放一个无名 `<slot>`，把节点里的内容（标题文本连同一堆 `<pin>`）投影进来。引脚由 `::slotted(pin) { display: none }` 藏掉，剩下的就是标题 —— 于是盒子 `width: max-content` 量出来的宽度天然就是标题的宽，不用另外量一个 title 元素。
+节点自己又是一层：盒子里放一个无名 `<slot>`，只接标题那段文本节点 —— 每根 pin 都带了 `slot` 名，被各自的标签 `<slot>` 认领去了。于是盒子 `width: max-content` 量出来的宽度天然就是标题的宽，不用另外量一个 title 元素。
+
+引脚标签是同一套投影的另一半：JS 给 light DOM 里的每个 pin 写上 `slot` 属性（值就是那套组内序号名字），shadow 里每个标签是一个 `<foreignObject>` 包一个 `<div>`，div 里放 `<slot name="...">` 认领对应的 pin。尺寸量 div 的 `getBoundingClientRect`，而不是估字宽 —— 页面的字体、行高、文字样式怎么改都跟着变。foreignObject 只当裁剪框，宽高跟着量出来的 div 写。
+
+这里有两个坑：`<slot>` 的选择属性叫 `name`，写成 `slot=` 等于把这个 slot 自己变成可分配的节点，它就不再参与分配、`assignedNodes()` 恒空；slot 嵌在 foreignObject 里没关系，分配只看 shadow root。另外 slot 的分配是结构性的、绘制看 `display` —— `graph.css` 里那条 `ui-graph pin { display: none }` 得去掉，否则投影出来的标签也被一起藏掉。没有标签的引脚（`slot` 名找不到对应 `<slot>`）本来就不渲染，不用额外处理。
 
 === 顺序：先 slot，再量尺寸
 
@@ -58,9 +62,19 @@ shadow root 里只有一层 `<svg class="g-layer">`，*没有 `viewBox`* —— 
 
 连线*不画箭头* —— 端点就是引脚中心，再补一个三角只是多余。
 
+=== 盖在上面的形状层要点名让路
+
+引脚形状那层 svg（`.g-shapes`）是绝对定位铺满整个节点的，又排在节点的 `foreignObject` 之后 —— SVG 的绘制顺序就是文档顺序，于是它压在标题上面。标题里要是写了链接（`#link(...)`），点下去命中的是 `<svg>` 而不是那个 `<a>`，链接彻底点不动：合成事件里 `composedPath()[0]` 直接是 `svg`。
+
+所以这层要 `pointer-events: none`，再用 `.g-shapes > circle, .g-shapes > polygon` 把引脚形状本身放回来 —— 它们得能悬停出类型提示。不能靠调 DOM 顺序把 svg 挪到 `foreignObject` 前面：引脚圆点有一半在盒子外面，挪到底下会被 `.g-box` 的白底盖住。
+
+顺带一个连带效应：`pointer-events` 会**继承**，而引脚标签的 `foreignObject` 也挂在这层 svg 下，所以 `.g-label` 得显式写 `pointer-events: auto`，否则标签里的链接（`ctrl_out[#link(...)[]]` 这种）同样点不动 —— 而且它的表现是「命中 `.g-label` 那个 div」，比标题那种更隐蔽。
+
 = 交互
 
-左键拖节点，右键 / 中键拖整张图（空白处左键不动），滚轮缩放。
+桌面：左键拖节点，右键 / 中键拖整张图，空白处左键什么都不做，滚轮缩放。触摸：单指按在节点上拖节点，按在空白处拖整张图 —— 触摸没有右键，空白处是唯一能搬图的地方；鼠标那边则保持「左键只管节点」，两条路按 `pointerType` 分开。
+
+两份起点：世界坐标（拖节点用）和屏幕坐标（平移用）。平移吃*屏幕像素*，图跟手、跟缩放无关；拖节点吃*世界坐标*，图缩放多少，指针走过的世界距离就是多少。两者混用的话，缩放之后越拖越飞。
 
 两份起点：世界坐标（拖节点用）和屏幕坐标（平移用）。平移吃*屏幕像素*，图跟手、跟缩放无关；拖节点吃*世界坐标*，图缩放多少，指针走过的世界距离就是多少。两者混用的话，缩放之后越拖越飞。
 
@@ -83,6 +97,12 @@ ui-graph.dragging > ui-graph-node { cursor: grabbing; }
 ```
 
 平移那边的 `.graph-root.panning` 是同一个原因，不是顺手加的。
+
+=== 拖动不能吃掉交互元素
+
+`pointerdown` 里有 `setPointerCapture` 和 `ev.preventDefault()`，两者都会让后续的 `pointerup` 和 `click` 落到 `.graph-root` 身上 —— 重置按钮和节点标题里的链接就再也收不到 `click` 了（表现是按钮按下去什么反应都没有，链接点了不跳）。所以 `pointerdown` 开头先看一眼目标：`button, a, input, select, textarea` 直接放行，不捕获、不拦截。
+
+另外建按钮要用 `document.createElement` 而不是文件里的 `el()` —— `el()` 一律建 SVG 名字空间的元素，HTML 元素那样建出来没有盒子（`getBoundingClientRect()` 全 0），按下去也未必是它。
 
 = 布局
 

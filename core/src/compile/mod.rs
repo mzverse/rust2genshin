@@ -1,6 +1,6 @@
 use crate::compile::func::{CompilingFn, FnDecl, NodeGraphIr, node_ir_native};
 use crate::compile::helper::Helper;
-use crate::compile::ir::{node_ir_assemble, FnInfo, IrNodeId, Optimizer};
+use crate::compile::ir::{node_ir_assemble, FnInfo, IrNodeId, Optimizer, node_ir_nop};
 use crate::compile::link::Target;
 use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
 use crate::node::control::NODE_IF;
@@ -32,6 +32,7 @@ pub mod ty;
 pub mod helper;
 pub mod backend;
 pub mod link;
+mod optimize;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
 
@@ -102,9 +103,7 @@ impl Block {
         }
     }
     pub fn nop(graph: &mut NodeGraphIr) -> Self {
-        let node = graph.insert(node_ir_native(NODE_IF.clone()));
-        graph.set_default(Link::node(node, 0), Some(true.into()));
-        Self::singleton(node, 0)
+        Self::singleton(graph.insert(node_ir_nop()), 0)
     }
     pub fn extend(&mut self, graph: &mut NodeGraphIr, other: Block) {
         graph.link_control(self.end, other.begin);

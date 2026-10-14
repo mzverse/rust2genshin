@@ -73,7 +73,7 @@
     data-dir: dir,
     data-kind: kind,
     data-type: contentToString(type),
-  ), contentToString(pos.at(0, default: "")))
+  ), pos.at(0, default: ""))
 }
 
 /// 控制流入口引脚。控制流没有类型,也没有标签。

@@ -220,13 +220,13 @@
             return html_elem("span", class: "box container", style: strStyle(style), c.body)
         };
         show block: c => {
-            if c.body.func() == html.elem {
-                return c.body;
-            }
             if c.body == auto {
                 _ = text(font: "[debug] "+repr(c), "");
                 return c;
                 // panic(c);
+            }
+            if c.body.func() == html.elem {
+                return c.body;
             }
             let style = styleCommon(c);
             // TODO

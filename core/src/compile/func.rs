@@ -1,10 +1,10 @@
 use super::*;
-use crate::compile::ir::{node_ir_assemble, node_ir_black_box, node_ir_unreachable, IrKind, IrNodeId, NodeKindIr, node_ir_destructure, node_ir_modify_struct, node_ir_field_mut};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_destructure, node_ir_field_mut, node_ir_modify_struct, node_ir_switch, node_ir_unreachable};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
-use crate::node::control::node_switch;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
+use crate::unwrap;
 use crate::value::{NativeKind, NativeValue};
 use either::Either;
 use panic_context::panic_context;
@@ -16,7 +16,6 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, Con
 use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv};
 use rustc_span::{DUMMY_SP, Span};
 use tap::Pipe;
-use crate::unwrap;
 
 pub type NodeGraphIr = NodeGraph<IrNodeId, IrKind>;
 
@@ -91,7 +90,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                         TyKind::Adt(_, _) => self.tcx.dcx().span_fatal(statement.source_info.span, "setting discriminant of enum"),
                         TyKind::Coroutine(_, _) => {
                             let kind = self.compiler.compile_ty(statement.source_info.span, ty)?;
-                            let node = self.graph.insert(node_ir_modify_struct(&mut self.compiler.target, &kind));
+                            let node = self.graph.insert(node_ir_modify_struct(&self.compiler.target, &kind));
                             let st = self.compile_operand(&Operand::Copy(**place), statement.source_info.span)?;
                             let state = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].discriminant.unwrap();
                             self.graph.set_value_in(Link::node(node, 0), st);
@@ -276,7 +275,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 AggregateKind::RawPtr(_, _) => todo!(),
                 _ => {
                     let kind = self.compiler.compile_ty(span, ty)?;
-                    let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                    let node = self.graph.insert(node_ir_assemble(&self.compiler.target, &kind));
                     for (i, x) in fields.iter().enumerate() {
                         let v = self.compile_operand(x, span)?;
                         self.graph.set_value_in(Link::node(node, i), v);
@@ -304,7 +303,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
                 let ty = self.mono(from.ty(&self.body.local_decls, self.tcx).ty);
                 let kind = self.compiler.compile_ty(span, ty)?;
-                let node = self.graph.insert(node_ir_destructure(&mut self.compiler.target, &kind));
+                let node = self.graph.insert(node_ir_destructure(&self.compiler.target, &kind));
                 let v = self.compile_operand(&Operand::Copy(*from), span)?;
                 self.graph.set_value_in(Link::node(node, 0), v);
                 let state = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].discriminant.unwrap();
@@ -323,7 +322,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         self.compile_assign(place, span, value_in)
     }
 
-    fn compile_const(&mut self, ty: Ty<'tcx>, kind: IrKind, v: ConstValue, span: Span) -> Result<ValueIn> {
+    fn compile_const(&mut self, ty: Ty<'tcx>, kind: &IrKind, v: ConstValue, span: Span) -> Result<ValueIn> {
         let layout = self.tcx.layout_of(PseudoCanonicalInput {
             typing_env: TypingEnv::fully_monomorphized(),
             value: ty,
@@ -340,7 +339,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             ConstValue::ZeroSized |
             ConstValue::Slice { .. } => panic!(),
         };
-        if let IrKind::Native(ref kind) = kind && let Some(r) = native_const(kind, get_scalar) {
+        if let IrKind::Native(kind) = kind && let Some(r) = native_const(kind, get_scalar) {
             return Ok(ValueIn::value(r));
         }
         Ok(ValueIn::value(match ty.kind() {
@@ -384,18 +383,18 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 return Ok(match ele.len() {
                     0 => ValueIn::default(),
                     1 => {
-                        let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                        let node = self.graph.insert(node_ir_assemble(&self.compiler.target, kind));
                         let k = self.compiler.compile_ty(span, ele[0])?;
-                        let v = self.compile_const(ele[0], k, v, span)?;
+                        let v = self.compile_const(ele[0], &k, v, span)?;
                         self.graph.set_value_in(Link::node(node, 0), v);
                         ValueIn::link(Link::node(node, 0))
                     },
                     _ => {
                         let ConstValue::Indirect { alloc_id, offset } = v else { panic!("{v:?}") };
-                        let node = self.graph.insert(node_ir_assemble(&mut self.compiler.target, &kind));
+                        let node = self.graph.insert(node_ir_assemble(&self.compiler.target, kind));
                         for (i, x) in ele.into_iter().enumerate() {
                             let k = self.compiler.compile_ty(span, x)?;
-                            let v = self.compile_const(x, k, ConstValue::Indirect {
+                            let v = self.compile_const(x, &k, ConstValue::Indirect {
                                 alloc_id,
                                 offset: offset + layout.fields.offset(i),
                             }, span)?;
@@ -436,11 +435,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                self.compile_place(*p, span)?.getter(&mut self.compiler.target, self.graph, &kind)
+                self.compile_place(*p, span)?.getter(&self.compiler.target, self.graph, &kind)
             }
             Operand::Constant(co) => {
                 let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.tcx.dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
-                self.compile_const(ty, kind, v, span)?
+                self.compile_const(ty, &kind, v, span)?
             }
             Operand::RuntimeChecks(_) => ValueIn::value(false.into()),
         })
@@ -483,28 +482,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 })
             },
             TerminatorKind::SwitchInt { discr, targets, .. } => {
-                let node = if discr.ty(&self.body.local_decls, self.tcx).is_bool() {
-                    let node = self.graph.insert(node_ir_native(NODE_IF.clone()));
-                    self.graph.link_control(Link::node(node, 0), blocks[targets.target_for_value(1u128)].begin);
-                    self.graph.link_control(Link::node(node, 1), blocks[targets.target_for_value(0u128)].begin);
-                    node
-                } else {
-                    if targets.all_targets().len() > 10 { // limited by Genshin Impact
-                        self.tcx.dcx().span_err(terminator.source_info.span, format!("Too many cases: {}", targets.all_targets().len()));
-                        todo!();
-                    }
-                    // FIXME: ir_switch
-                    let node = self.graph.insert(node_ir_native(node_switch(NativeKind::Int, targets.all_values().len())));
-                    self.graph.set_default(Link::node(node, 1), Some(targets.all_values().iter().map(|x| ScalarInt::try_from_int(x.0 as u64, Size::from_bytes(4)).unwrap().to_i32().into()).collect::<Vec<Box<dyn NativeValue>>>().into()));
-                    self.graph.link_control(Link::node(node, 0), blocks[targets.otherwise()].begin);
-                    for i in 0..targets.all_values().len() {
-                        let index = 1 + i;
-                        self.graph.link_control(Link::node(node, index), blocks[targets.all_targets()[i]].begin);
-                    }
-                    node
-                };
-                let value = self.compile_operand(discr, terminator.source_info.span)?;
-                self.graph.set_value_in(Link::node(node, 0), value);
+                let ty = self.mono(discr.ty(&self.body.local_decls, self.tcx));
+                let span = terminator.source_info.span;
+                let kind = self.compiler.compile_ty(span, ty)?;
+                let values = targets.all_values().iter().map(|x| Ok(self.compile_const(ty, &kind, ConstValue::Scalar(Scalar::Int(ScalarInt::try_from_uint(x.get(), ty.primitive_size(self.tcx)).unwrap())), span)?.default.unwrap())).collect::<Result<_>>()?;
+                let node = self.graph.insert(node_ir_switch(kind, values));
+                let v = self.compile_operand(discr, terminator.source_info.span)?;
+                self.graph.set_value_in(Link::node(node, 0), v);
+                for (i, &x) in targets.all_targets().iter().enumerate() {
+                    self.graph.link_control(Link::node(node, i), blocks[x].begin);
+                }
                 Link::node(node, 0)
             },
             TerminatorKind::Unreachable => {
@@ -594,7 +581,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             if let InstanceKind::Intrinsic(def_id) = func.def {
                 let int = self.tcx.intrinsic(def_id).unwrap();
                 match int.name.as_str() {
-                    "black_box" => break node_ir_black_box(&params[0]),
+                    "black_box" => break node_ir_black_box(params[0].clone()),
                     other if int.must_be_overridden => todo!("intrinsic: {other}"),
                     _ => func = Instance::new_raw(func.def_id(), func.args),
                 }
