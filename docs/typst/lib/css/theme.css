@@ -48,9 +48,12 @@
     --panel-border: black;
     --panel-head-hover: silver;
 
-    /* 代码 */
+    /* 代码。code-inline-fg 是 Typst 高亮里那个「语法红」——style.typ 的
+     * show text 只要 text.fill 不是默认值就写内联 color,标点(`/`、`<`、
+     * `>`)就是这么来的,浅色下就是 #d73948 本身。深色下才换值。 */
     --code-bg: #fdfdfd;
     --code-inline-bg: #eff3f8;
+    --code-inline-fg: #d73948;
 
     /* 代码块控件(经 ::part() 进 code-block 的 shadow) */
     --badge-bg: #2563eb;
@@ -141,6 +144,9 @@
 
     --code-bg: #1a1a1f;
     --code-inline-bg: #26262e;
+    /* #d73948 压在深色上只有 3.3:1,读不出来;换成同色相提亮后的红。
+     * 对 --code-inline-bg 是 6.2:1、对 --code-bg 是 7.1:1,都在 4.5 之上。 */
+    --code-inline-fg: #ff8080;
 
     --badge-bg: #1d4ed8;
     --badge-fg: #e0e7ff;

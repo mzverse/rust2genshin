@@ -130,3 +130,12 @@ code-block[lang="output"], code.language-output {
 pre:has(code.language-output) {
     background-color: black;
 }
+
+/* Typst 给 raw 里的标点写了内联 color(#d73948),内联样式压得过任何
+ * 普通规则,token 层管不到 —— 深色下这个红读不出来。用 !important 把它
+ * 按回 token。只在深色生效,浅色保持 Typst 原样。
+ * 选择器只认这一个色值:同一份高亮里还有 #301414、#b60157、#4b69c6 等
+ * 另外几种 token 色,按 [style*="color"] 匹配会把它们一并刷成红色。 */
+:root[data-theme="dark"] code span[style*="#d73948"] {
+    color: var(--code-inline-fg) !important;
+}
