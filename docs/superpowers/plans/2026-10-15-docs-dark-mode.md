@@ -126,13 +126,18 @@ cd F:/rust2genshin && git add docs/typst/lib/css/theme.css docs/typst/lib/templa
 
 ---
 
-### Task 2: 主题解析脚本
+### Task 2: 主题解析脚本 ✅ 已完成（commit `afd3806`、`378ea27`）
+
+
+> 复审发现并已修掉一处 **注释与代码不符**：``if (!stored())`` 把「读者是否手动选过」完全押在 localStorage 上，存储被禁用时（`file://`、隐私模式）闸门永远开着，系统一变就冲掉读者的选择。加了只活在内存里的 `manual` 标记，**与 `stored()` 同时成立才算没手动选过** —— 少任一个都会漏（刷新后 `manual` 归零，存储禁用时 `stored()` 恒为 null）。`CLAUDE.md` 要求注释里的每条断言都能对应到代码，所以注释同步改了。
+
+
 
 **Files:**
 - Create: `docs/typst/lib/js/theme.js`
 - Modify: `docs/typst/lib/template.typ:40`（Task 1 已加 `import_script`，本 task 只写文件本体）
 
-- [ ] **Step 1: 写 `theme.js`**
+- [x] **Step 1: 写 `theme.js`**
 
 ```js
 // 在第一帧之前定下主题。这是 <head> 里的阻塞脚本,跑在正文渲染之前,
@@ -192,7 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 ```
 
-- [ ] **Step 2: 断言脚本被复制进产物并被每页引用**
+- [x] **Step 2: 断言脚本被复制进产物并被每页引用**
 
 ```shell
 cd F:/rust2genshin && ls target/debug/docs/lib/js/theme.js && grep -c 'src="/lib/js/theme.js"' target/debug/docs/user/index.html
@@ -200,7 +205,7 @@ cd F:/rust2genshin && ls target/debug/docs/lib/js/theme.js && grep -c 'src="/lib
 
 预期：文件存在；`grep -c` 输出 `1`。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/js/theme.js && git commit -m "feat(docs): resolve theme before first paint"
@@ -780,7 +785,8 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 - 点站内链接跳转 → 保持。
 - 开发者工具切系统主题：*没有*手动选过时，页面实时跟随；手动选过（按钮点过一次）时，**不**跟随。
 - 深色系统下首次打开 → 不闪一下浅色。
-- 无痕/禁 `localStorage` 下点按钮 → 页面正常切换，只是刷新后回到系统设置（不报错）。
+- 无痕/禁 `localStorage` 下点按钮 → 页面正常切换，只是刷新后回到系统设置（不报错）；此时改系统主题也**不**该冲掉这次的手动选择（`theme.js` 的 `manual` 标记管的就是这一段）。
+- **`/lib/js/theme.js` 与 `/lib/css/theme.css` 在浏览器网络面板里必须都是 200，不是 404。** `<script src>` / `<link>` 指向缺失文件时构建照样退出 0、页面照样浅色、控制台没有报错 —— 这是整个特性最容易静默失效的地方。
 
 - [ ] **Step 4: 回归 `dev/docs/layout.typ` 的三个坑**
 
