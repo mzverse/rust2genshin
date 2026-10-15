@@ -224,7 +224,7 @@ cd F:/rust2genshin && git add docs/typst/lib/js/theme.js && git commit -m "feat(
 - `toc.css` 里 `li > button.open::after` 的 data URI：已经是 `stroke='currentColor'`，Task 6 只补 `color`，URI 不动。
 - `style.css` 里 `p::before { content: "DO NOT USE <p>" ; color: red }`：调试哨兵，不参与配色。
 
-- [ ] **Step 1: 改 `style.css`**
+- [x] **Step 1: 改 `style.css`**
 
 `a { color: #3964fe; }`（`docs/typst/lib/css/style.css:33`）改成：
 
@@ -250,7 +250,7 @@ a {
 }
 ```
 
-- [ ] **Step 2: 改 `template.css`**
+- [x] **Step 2: 改 `template.css`**
 
 整个文件改成：
 
@@ -268,7 +268,7 @@ body {
 }
 ```
 
-- [ ] **Step 3: 改 `expand-panel.css`**
+- [x] **Step 3: 改 `expand-panel.css`**
 
 `background: #efefef`（:6）、`border: 1pt solid black`（:4）、`background: gainsboro`（:11）、`background: silver`（:16）全部换 token，文件改成：
 
@@ -326,11 +326,11 @@ expand-panel {
 
 注意 `silver`（hover）换成 `--active` 而不是新加 token —— 浅色下 `#e4e5ea` 与 `silver` 同属中性灰这一档，视觉等价。
 
-- [ ] **Step 4: 改 `graph.css`**
+- [x] **Step 4: 改 `graph.css`**
 
 `border: 1px solid #d7d9e2; background-color: #fbfbfd;`（:19-20）换 token；fallback 那块的 `border: 1px dashed #c9cbd4; background-color: #f7f8fa; color: #565565;`（:41-43）换成 `var(--graph-border)` / `var(--graph-fallback-bg)` / `var(--muted)`。
 
-- [ ] **Step 5: 改 `code_block.css`**
+- [x] **Step 5: 改 `code_block.css`**
 
 `background-color: #fdfdfd`（:8）→ `var(--code-bg)`；`box-shadow: 0 4px 12px #59556533`（:10）→ `var(--shadow-rest)`；`box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12)`（:14）→ `var(--shadow-hover)`；`background-color: #eff3f8 !important`（:100）→ `var(--code-inline-bg) !important`。
 
@@ -345,7 +345,7 @@ expand-panel {
 
 `[lang="output"]` 与 `pre:has(code.language-output)` 的 `black`/`white`（:127-131）**不动** —— 那是模拟终端，本来就是深底，两个主题下都保持黑。
 
-- [ ] **Step 6: 改 `card.css` 的三套配色**
+- [x] **Step 6: 改 `card.css` 的三套配色**
 
 `ui-card` 里三段 `&[type="…"]` 改成：
 
@@ -362,11 +362,11 @@ expand-panel {
 
 `tip` 用 `--card-tip-*`，`attention` 用 `--card-attention-*`，同理。三段 `mask-image` 的 data URI 原样保留（里面是 `currentColor`）。`ui-card:hover` 的 `box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1)`（:16）→ `var(--shadow-float)`。
 
-- [ ] **Step 7: 改 `toc.css`**
+- [x] **Step 7: 改 `toc.css`**
 
 `#f0f0f0`（:16）、`#ddd`（:17）→ `var(--close-bg)` / `var(--close-border)`（与 `.outline-close` 共用同一对 token，浅色下这两处本来就在抄同一个色值）；`#eff0f3`（:99、:112、:122、:126）→ `var(--hover)`；`#e4e5ea`（:130）→ `var(--active)`；`#19181f`（:119）→ `var(--fg)`；`#11566c`（:147、:156）→ `var(--accent)`。
 
-- [ ] **Step 8: 改 `outline.css`**
+- [x] **Step 8: 改 `outline.css`**
 
 除 Task 6 会重写的按钮和顶栏部分外，本步先做：
 
@@ -380,7 +380,7 @@ expand-panel {
 - :83 `.toc-toggle/.outline-toggle` 的 `box-shadow: 0 1px 4px rgba(0, 0, 0, .10)` → `var(--shadow-float)`（Task 5 会把这两个按钮挪进顶栏，这条规则保留）
 - :251 `.outline li.current > :first-child * { color: #11566c }` → `var(--accent)`
 
-- [ ] **Step 9: 断言：除例外清单外没有裸颜色字面量残留**
+- [x] **Step 9: 断言：除例外清单外没有裸颜色字面量残留**
 
 ```shell
 cd F:/rust2genshin/docs/typst/lib/css && grep -nE '#[0-9a-fA-F]{3,8}\b' style.css template.css toc.css outline.css card.css code_block.css graph.css expand-panel.css | grep -v 'theme.css'
@@ -390,7 +390,7 @@ cd F:/rust2genshin/docs/typst/lib/css && grep -nE '#[0-9a-fA-F]{3,8}\b' style.cs
 
 如果还有输出，逐条判断：是 data URI 里烤死的颜色（记下来，Task 5 处理），还是漏改的 token 引用。
 
-- [ ] **Step 10: 构建 + 视觉比对**
+- [x] **Step 10: 构建 + 视觉比对**
 
 ```shell
 cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links" && typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle; echo "EXIT=$?"
@@ -398,7 +398,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 浏览器打开 `target/debug/docs/user/index.html`：页面应与改动前**完全一致**。特别看 —— 代码块底色、行内 `code` 底色、折叠面板、info/tip/attention 卡片、节点图的画布和节点盒子。
 
-- [ ] **Step 11: 提交**
+- [x] **Step 11: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/css && git commit -m "refactor(docs): reference color tokens instead of literals"
@@ -413,7 +413,7 @@ cd F:/rust2genshin && git add docs/typst/lib/css && git commit -m "refactor(docs
 
 节点图整个渲染器在 `ui-graph` 的 shadow root 里，页面 CSS 选不中。但自定义属性会从宿主 `ui-graph` 继承进来 —— 所以把内联 `<style>` 里的字面量换成 `var(--graph-*)` 就够了，不需要 JS 传值。SVG 里的 `stroke` 同理。
 
-- [ ] **Step 1: 改 `NODE_CSS`**
+- [x] **Step 1: 改 `NODE_CSS`**
 
 `docs/typst/lib/js/graph.js:86-118` 的模板字符串里替换四处：
 
@@ -425,7 +425,7 @@ cd F:/rust2genshin && git add docs/typst/lib/css && git commit -m "refactor(docs
 - `.g-data { fill: #fff; stroke: #11566c }` → `fill: var(--graph-box); stroke: var(--graph-accent)`
 - `:host(:hover) .g-box { border-color: #11566c }` 与 `:host(.hot) .g-box { border-color: #11566c; ... }` → `var(--graph-accent)`
 
-- [ ] **Step 2: 改 shadow 里的连线与 reset 按钮样式**
+- [x] **Step 2: 改 shadow 里的连线与 reset 按钮样式**
 
 `docs/typst/lib/js/graph.js:473-484` 替换三处：
 
@@ -433,7 +433,7 @@ cd F:/rust2genshin && git add docs/typst/lib/css && git commit -m "refactor(docs
 - `.g-reset { ... border: 1px solid #c9cbd4; background: rgba(255, 255, 255, .9); color: #11566c; ... }` → `border: 1px solid var(--graph-border); background: var(--graph-reset-bg); color: var(--graph-accent);`
 - `.g-reset:hover { background: #fff; }` → `background: var(--graph-box);`
 
-- [ ] **Step 3: 断言没有漏网的字面量**
+- [x] **Step 3: 断言没有漏网的字面量**
 
 ```shell
 cd F:/rust2genshin && grep -nE '#[0-9a-fA-F]{3,8}\b|rgba?\(255, ?255, ?255' docs/typst/lib/js/graph.js
@@ -441,11 +441,11 @@ cd F:/rust2genshin && grep -nE '#[0-9a-fA-F]{3,8}\b|rgba?\(255, ?255, ?255' docs
 
 预期：无输出。
 
-- [ ] **Step 4: 构建 + 视觉比对**
+- [x] **Step 4: 构建 + 视觉比对**
 
 跑 Task 3 Step 10 的构建命令，然后打开含节点图的页面（`docs/typst/arch/low/dataflow.typ` 等，产物 `target/debug/docs/arch/low/dataflow.html`）。拖一个节点、缩放、按 reset —— 外观应与改动前一致。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/js/graph.js && git commit -m "refactor(docs): theme node graph through CSS tokens"
@@ -465,7 +465,7 @@ cd F:/rust2genshin && git add docs/typst/lib/js/graph.js && git commit -m "refac
 2. 顶栏必须 `position: sticky; top: 0` —— 两个 ☰ 现在是 `position: fixed`，滚动时始终够得着；挪进普通顶栏会让它们在任何长于视口的页面上滚没，是回退。sticky 保住了行为，但也意味着顶栏现在盖住内容，于是五个偏移量要跟着 `--header-h` 走。
 3. `main { padding-top: 48px }` 删掉 —— 它存在的唯一原因是给浮动 ☰ 让位；顶栏独占一个 grid 行之后不再重叠，留着只会在每个窄屏页面多 48px 死白。
 
-- [ ] **Step 1: 在 `outline.typ` 里输出顶栏**
+- [x] **Step 1: 在 `outline.typ` 里输出顶栏**
 
 `docs/typst/lib/outline.typ:22-24` 现在是：
 
@@ -495,11 +495,11 @@ cd F:/rust2genshin && git add docs/typst/lib/js/graph.js && git commit -m "refac
 
 `theme.js` 用 `document.querySelector('.theme-toggle')` 找按钮，`aria-label` 在 `DOMContentLoaded` 时被改写成目标状态。
 
-- [ ] **Step 2: `body` 加一行 grid，顶栏横跨**
+- [x] **Step 2: `body` 加一行 grid，顶栏横跨**
 
 `docs/typst/lib/css/outline.css:35` 的 `body` 块，在 `grid-template-columns` 紧后面加 `grid-template-rows: auto 1fr;`。
 
-- [ ] **Step 3: 写顶栏样式**
+- [x] **Step 3: 写顶栏样式**
 
 在 `outline.css` 的 `.toc-toggle, .outline-toggle` 规则**之前**插入：
 
@@ -567,7 +567,7 @@ cd F:/rust2genshin && git add docs/typst/lib/js/graph.js && git commit -m "refac
 .theme-toggle:active { background-color: var(--active); }
 ```
 
-- [ ] **Step 4: 两个 ☰ 改成顶栏里的常规流按钮**
+- [x] **Step 4: 两个 ☰ 改成顶栏里的常规流按钮**
 
 `docs/typst/lib/css/outline.css:70-96` 整段替换。原规则用 `position: fixed; top: 16px` 加一个烤死 `stroke='%2319181f'` 的 data URI；新规则去掉定位、把图标挪到 `::before`（`☰` 字形已经被 `font-size: 0` 藏了，伪元素正好占那个位置）：
 
@@ -613,7 +613,7 @@ cd F:/rust2genshin && git add docs/typst/lib/js/graph.js && git commit -m "refac
 .outline-toggle { right: 16px; }
 ```
 
-- [ ] **Step 5: `main { padding-top: 48px }` 删掉**
+- [x] **Step 5: `main { padding-top: 48px }` 删掉**
 
 `docs/typst/lib/css/outline.css:100`：
 
@@ -625,7 +625,7 @@ main {
 
 整条删掉（`@media (min-width: 1080px)` 里那条 `main { padding-top: 0 }` 也一并删掉 —— 现在基础规则就是 0）。
 
-- [ ] **Step 6: 五个偏移量改走 `--header-h`**
+- [x] **Step 6: 五个偏移量改走 `--header-h`**
 
 | 规则 | 改成 |
 |---|---|
@@ -635,7 +635,7 @@ main {
 | `.outline`（`@media (min-width: 768px)` 里的常驻列） | `top: calc(var(--header-h) + 16px);` 取代 `top: 32px;`；`height: calc(100vh - var(--header-h) - 32px);` 取代 `height: calc(100vh - 64px);` |
 | `toc-component`（`@media (min-width: 1080px)` 里的常驻列） | `top: var(--header-h);` 取代 `top: 0;`；`height: calc(100vh - var(--header-h));` 取代 `height: 100vh;` |
 
-- [ ] **Step 7: 构建**
+- [x] **Step 7: 构建**
 
 ```shell
 cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links" && typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle; echo "EXIT=$?"
@@ -643,7 +643,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 预期 `EXIT=0`。
 
-- [ ] **Step 8: 断言顶栏进了 HTML**
+- [x] **Step 8: 断言顶栏进了 HTML**
 
 ```shell
 cd F:/rust2genshin && grep -o '<header class="site-header">' target/debug/docs/user/index.html && grep -c 'class="theme-toggle"' target/debug/docs/user/index.html
@@ -651,7 +651,7 @@ cd F:/rust2genshin && grep -o '<header class="site-header">' target/debug/docs/u
 
 预期：第一行打印 `<header class="site-header">`；第二行输出 `1`。
 
-- [ ] **Step 9: 三个断点各看一次**
+- [x] **Step 9: 三个断点各看一次**
 
 打开 `target/debug/docs/user/index.html`，把浏览器宽度分别调到 **375px / 800px / 1280px**，每档确认：
 
@@ -662,7 +662,7 @@ cd F:/rust2genshin && grep -o '<header class="site-header">' target/debug/docs/u
 - 1280px：两栏都常驻，☰ 都消失，只剩站名和主题按钮。
 - 滚动一段，正文从顶栏底下过去，顶栏停在原地；正文没有被顶栏压住（`main` 顶部不再有 48px 死白）。
 
-- [ ] **Step 10: 提交**
+- [x] **Step 10: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/outline.typ docs/typst/lib/css/outline.css && git commit -m "feat(docs): add sticky header bar with theme toggle"
@@ -677,11 +677,11 @@ cd F:/rust2genshin && git add docs/typst/lib/outline.typ docs/typst/lib/css/outl
 
 Task 1 里的深色值是**提议值**，不是终值。本 task 校准它们。
 
-- [ ] **Step 1: 在浏览器里打开深色模式**
+- [x] **Step 1: 在浏览器里打开深色模式**
 
 开发者工具 → Rendering → Emulate CSS `prefers-color-scheme: dark`。或者直接点顶栏的主题按钮（此时系统是浅色，`theme.js` 会存下 `dark`）。
 
-- [ ] **Step 2: 量对比度**
+- [x] **Step 2: 量对比度**
 
 在 console 里跑，对每个「字 / 底」组合取实测值（`getComputedStyle` 拿的是最终解析值，比手算准）：
 
@@ -700,11 +700,11 @@ ratio(document.querySelector('.outline li.current > *:first-child'), document.qu
 ratio(document.querySelector('main a'), document.querySelector('main')); // 链接 ≥ 4.5
 ```
 
-- [ ] **Step 3: 按实测结果调整 `theme.css` 的深色值**
+- [x] **Step 3: 按实测结果调整 `theme.css` 的深色值**
 
 验收线：正文 / `.outline` / 链接 / 卡片文字 ≥ 4.5:1；`--accent`、边框 ≥ 3:1。任何一项不达标，调**深色那一侧**的值（不要动浅色块，浅色已经过 Step 3 的视觉比对），重跑 Step 2。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/css/theme.css && git commit -m "fix(docs): calibrate dark palette contrast"
@@ -717,7 +717,7 @@ cd F:/rust2genshin && git add docs/typst/lib/css/theme.css && git commit -m "fix
 **Files:**
 - Modify: `docs/typst/dev/docs/layout.typ`
 
-- [ ] **Step 1: 在 `layout.typ` 末尾加第四节**
+- [x] **Step 1: 在 `layout.typ` 末尾加第四节**
 
 文件末尾追加（`#set raw(lang: "css")` 在文件头部已经设过了，直接写）：
 
@@ -736,7 +736,7 @@ cd F:/rust2genshin && git add docs/typst/lib/css/theme.css && git commit -m "fix
 深色模式的主题由 `lib/js/theme.js` 在 `<head>` 里解析成 `documentElement` 上的 `data-theme`，所以它*依赖 JS*：没 JS 就只有浅色。这在本项目可接受 —— 侧栏、节点图、复制按钮本来就全是 JS 驱动的。
 ```
 
-- [ ] **Step 2: 构建 + 看页面**
+- [x] **Step 2: 构建 + 看页面**
 
 ```shell
 cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links" && typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle; echo "EXIT=$?"
@@ -744,7 +744,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 打开 `target/debug/docs/dev/docs/layout.html`，确认第四节渲染正常、目录树里出现新条目。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/dev/docs/layout.typ && git commit -m "docs(docs): document theme variables and shadow boundaries"
@@ -756,7 +756,7 @@ cd F:/rust2genshin && git add docs/typst/dev/docs/layout.typ && git commit -m "d
 
 **Files:** 无改动，只验证。
 
-- [ ] **Step 1: 全量构建**
+- [x] **Step 1: 全量构建**
 
 ```shell
 cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links" && typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle; echo "EXIT=$?"
@@ -764,7 +764,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 预期 `EXIT=0`。
 
-- [ ] **Step 2: 两主题 × 三断点**
+- [x] **Step 2: 两主题 × 三断点**
 
 用 Playwright 或浏览器分别在 **375 / 800 / 1280px**、**浅色 / 深色**下过一遍这几个页面：
 
@@ -778,7 +778,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 每档确认：没有亮色残片、没有不可读的文字、没有溢出或错位。
 
-- [ ] **Step 3: 行为**
+- [x] **Step 3: 行为**
 
 - 点主题按钮 → 页面立即切换，`aria-label` 变成目标状态（「切换到浅色模式」）。
 - 刷新 → 保持上次的选择。
@@ -788,13 +788,13 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 - 无痕/禁 `localStorage` 下点按钮 → 页面正常切换，只是刷新后回到系统设置（不报错）；此时改系统主题也**不**该冲掉这次的手动选择（`theme.js` 的 `manual` 标记管的就是这一段）。
 - **`/lib/js/theme.js` 与 `/lib/css/theme.css` 在浏览器网络面板里必须都是 200，不是 404。** `<script src>` / `<link>` 指向缺失文件时构建照样退出 0、页面照样浅色、控制台没有报错 —— 这是整个特性最容易静默失效的地方。
 
-- [ ] **Step 4: 回归 `dev/docs/layout.typ` 的三个坑**
+- [x] **Step 4: 回归 `dev/docs/layout.typ` 的三个坑**
 
 - **`.block` 包装**：正文里块级内容仍应撑满，不因为新顶栏改变宽度。
 - **全局 `line-height: 0.8`**：正文列表项没有上下叠字；目录树和侧栏行距正常。
 - **`.block { width: fit-content }`**：顶栏那行没有因为宽度塌陷而挤成一团。
 
-- [ ] **Step 5: 断言仓库里没有残留的颜色字面量**
+- [x] **Step 5: 断言仓库里没有残留的颜色字面量**
 
 ```shell
 cd F:/rust2genshin/docs/typst && grep -rnE '#[0-9a-fA-F]{3,8}\b' lib/css lib/js --include=*.css --include=*.js | grep -v 'lib/css/theme.css'
@@ -802,7 +802,7 @@ cd F:/rust2genshin/docs/typst && grep -rnE '#[0-9a-fA-F]{3,8}\b' lib/css lib/js 
 
 预期：无输出。data URI 里 `currentColor` 的不算（不是 hex 字面量），`code_block.css` 的 `black`/`white` 是关键字也不匹配这个正则。
 
-- [ ] **Step 6: 提交（如果有改动）**
+- [x] **Step 6: 提交（如果有改动）**
 
 ```shell
 cd F:/rust2genshin && git status --short
@@ -836,6 +836,36 @@ cd F:/rust2genshin && git status --short
 
 **Placeholder 扫描**：无 TBD / TODO / 「同上」/「类似 Task N」。每处 CSS 都给了完整替换文本。
 
-**命名一致性**：`--graph-box` / `--graph-border` / `--graph-edge` / `--graph-pin` / `--graph-canvas` / `--graph-reset-bg` 在 Task 1 定义、Task 3（`graph.css`）和 Task 4（`graph.js`）使用，名字一致。`.theme-toggle`、`--header-h`、`.site-header` 三处一致。
+**命名一致性**：`--graph-box` / `--graph-border` / `--graph-accent` / `--graph-canvas` / `--graph-reset-bg` 在 Task 1 定义、Task 3（`graph.css`）和 Task 4（`graph.js`）使用，名字一致。`.theme-toggle`、`--header-h`、`.site-header` 三处一致。
 
 **已知的计划外风险**：`cargo run -p rust2genshin-docs` 在本机不可用（依赖 build script 崩溃）。若将来 cargo 恢复，`docs/src/compile.rs` 无需改动 —— 本计划只改 `typst/` 下的静态资源。
+
+---
+
+## 实施结果：计划漏掉的三件事
+
+计划的 TDD 形态在本项目不存在（无 CSS 测试框架），但更关键的漏项是**只能靠真浏览器渲染才发现的东西**。装了 Playwright + Chromium 之后，这三件全都落在「静态推理全对、实际渲染全错」的位置上：
+
+**1. 顶栏必须显式写 `grid-row: 1`（Task 5 的硬伤）。**
+DOM 顺序是 `toc-component` → `main` → `header` → `nav.outline`，顶栏排第三。CSS Grid 的自动放置按文档顺序走：只写 `grid-column: 1 / -1` 的话，前面的 `main` / `toc-component` 先占掉第 1 行，顶栏被挤到第 2 行 —— **整条顶栏掉到页面最底下**（实测 `headerTop` = 1885px）。推理时「有确定列就会先去第一行」是错的：确定列的项仍在后续放置阶段，只是**往后数行**。加 `grid-row: 1`（确定行）后它先于自动放置落位，其余项再依次填第 2 行。
+
+**2. Typst 会把颜色写成内联 `style`，整套 token 层管不到（Task 3/6 的盲区）。**
+`lib/style.typ` 的 `show text` 只要 `text.fill` 不是默认值就写内联 `color:`，而内联样式压得过任何普通规则。而且 Typst 吐的是**一整套为暗底设计的语法高亮配色**：在浅色底上恰好都过（最低 4.13:1），在深色底上七种全挂 —— 注释色 `#301414` 只有 **1.13:1**，等于看不见。
+解法必须 `!important`，而且**一个色值一条规则**：一条 `span[style*="color"]` 会把九种 token 角色全刷成同一个颜色，高亮就没了。最终按角色命名成 `--code-syn-{keyword,string,comment,literal,symbol,member,macro,markup,attribute,plain}`，规则只在 `:root[data-theme="dark"]` 下生效，浅色逐字节不变。
+
+**3. 视觉验证不是可选的收尾，而是唯一能发现上面两件事的手段。**
+本计划 Task 3/4/5 的每一个静态断言都「全过」，而 Task 5 的顶栏整整坏了一版才被渲染抓出来。
+
+## 验收：实际跑出来的结果
+
+Playwright + Chromium + 本地静态服务，两主题 × 三断点 × 7 个页面：
+
+| 检查 | 结果 |
+|---|---|
+| 文字对比度全量扫描（7 页，深色） | **0 处低于 4.5:1** |
+| 文字对比度全量扫描（7 页，浅色） | 2 处 4.12 / 4.13 —— Typst 自带色，**改动前就存在**；浅色必须逐字节不变，故保留 |
+| 行为测试 20 项（切换 / 持久化 / 跟随系统 / 存储被禁 / 垃圾值回退 / `aria-label` 方向 / 资源 200） | **20/20 通过** |
+| 三档断点栅格位置（375 / 800 / 1280） | header 恒在 0，main / toc / outline 各就各位 |
+| `dev/docs/layout.typ` 三个坑 | 坑 2（`line-height`）11 个 `li` 全部合规；坑 1/3（`.block`）**当前构建里根本没有 `.block` 元素** —— `grep` 命中的只是那一页讲 `.block` 的代码样例本身。属于潜伏未触发，不是「通过」 |
+
+**仍需人眼拍板的取舍**：深色下抽屉用 `--bg` 而非 `--surface`，与页面同色、只靠 `--shadow-drawer` 分界（浅色下两者只差一个色阶，看不出来）。可接受，但若觉得深色下边界不够清楚，把 `outline.css` 里 `toc-component` 与 `.outline` 的 `background-color` 换成 `var(--surface)` 即可 —— 浅色下 `--surface` 是 `#fff` 对 `#fdfdfd`，几乎无感。
