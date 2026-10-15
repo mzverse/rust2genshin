@@ -10,56 +10,77 @@ It does **not** emit machine code — the backend's `link` is essentially a dumm
 
 ## Toolchain
 
-- **Rust nightly** is required (uses `rustc_private` crates and unstable flags). The intended config is in `rust-toolchain.toml.bak` (this file is **not** auto-loaded; every `cargo` invocation must pass `+nightly` explicitly).
-- Required nightly components: `rustc-dev`, `rust-src`, `llvm-tools-preview`.
-- System dep: `protoc` (protobuf compiler) for `core/build.rs` to compile `core/proto/asset.proto`.
-- Workspace edition `2024`, MSRV `1.100.0`. See root `Cargo.toml`.
+- **Rust nightly** is required (uses `rustc_private` crates and unstable flags). The config lives in `rust-toolchain.toml` at the repo root, which **is** auto-loaded by cargo/rustup, so plain `cargo …` already uses the pinned toolchain — there is no need to pass `+nightly` (or any toolchain override) explicitly. There is no `rust-toolchain.toml.bak`.
+  - `rust-toolchain.toml`: `channel = "nightly-2026-10-08"`, `components = ["rustc-dev", "rust-src", "llvm-tools-preview"]`.
+  - Pinning matters: the codegen ABI breaks silently on a different nightly.
+- System dep: `protoc` (protobuf compiler) for `core/build.rs` to compile `core/proto/asset.proto`. CI installs it with `sudo apt install protobuf-compiler` (`.github/workflows/build.yml:20`).
+- Workspace edition `2024` (root `Cargo.toml:28`, `workspace.package`). The workspace does **not** declare a `rust-version` key anywhere, so there is no MSRV claim to rely on.
 
 ## Build & run
 
-The full pipeline is driven by `build-demo/src/main.rs`, which:
+The full pipeline is driven by `build-demo` (`build-demo/src/build.rs`), which:
 
-1. `cargo +nightly build -p rust2genshin` — builds the backend cdylib (`target/debug/{lib,}rust2genshin{,.so,.dll,.dylib}`).
-2. `cargo +nightly clean -p rust2genshin-demo` — invalidates the leaf crate's cache so the backend actually runs.
-3. `cargo +nightly rustc --release -p rust2genshin-demo -- -Coverflow-checks=off -Zalways-encode-mir=yes -Zdump-mir=shr -Zcodegen-backend=<backend-path>` — compiles `demo` through the backend.
+1. `cargo build -p rust2genshin` (`build-demo/src/build.rs:40`) — builds the backend cdylib (`target/debug/{lib,}rust2genshin{,.so,.dll,.dylib}`).
+2. `gen_target` (`build-demo/src/build.rs:32-37`) — renders `genshin-unknown-<target>.json.template` with the absolute path of the built backend into `genshin-unknown-<target>.json`; the backend is selected by that spec's `default-codegen-backend`.
+3. `cargo build --release -p rust2genshin-demo --target ./<target>.json -Zunstable-options -Zjson-target-spec -Zbuild-std=core` (`build-demo/src/build.rs:51-60`) — compiles `demo` through the backend.
+
+There is **no** separate `cargo clean` step in the script any more (it is commented out at `build-demo/src/build.rs:44-45`), and **no `-Zcodegen-backend=` flag is passed** — the custom target spec carries the backend instead.
+
+`build-demo` has **two binaries** — `beyond-server` and `classic-server` (`build-demo/Cargo.toml:7-13`) — so `--bin` is mandatory:
 
 ```shell
-cargo +nightly run -p build-demo
+cargo run -p build-demo --bin beyond-server
+cargo run -p build-demo --bin classic-server
 ```
 
-The output is `target/<crate-name>.gia`.
+The output is `target/<target-name>/release/<crate-name>.gia`, e.g. `target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia` (`target/` + target-spec name + `/release/` + crate name).
 
 **Single-step / sub-builds:**
 
-- Backend only: `cargo +nightly build -p rust2genshin`
-- A target leaf crate alone (bypassing `build-demo`): `cargo +nightly rustc -p <leaf-crate> -- -Coverflow-checks=off -Zcodegen-backend=$(echo target/debug/librust2genshin*)` (Linux example — DLL suffix varies by OS).
-- The CI workflow at `.github/workflows/build.yml` is the canonical reference.
+- Backend only: `cargo build -p rust2genshin`
+- The viewer is not a workspace default member (`Cargo.toml:17-23`, because `gpui` needs X11/Wayland/font system libs that CI does not install) — build it explicitly with `cargo build -p rust2genshin-viewer`.
+- The CI workflow at `.github/workflows/build.yml` is the canonical reference; it runs exactly `cargo run -p build-demo --bin beyond-server` (`.github/workflows/build.yml:22`).
 
 **Tests:** there are no in-repo tests for the backend itself. The leaf crate `demo` is exercised by the `build-demo` flow.
 
 ## Workspace layout
 
-This is a Cargo workspace (`Cargo.toml` lists the members):
+This is a Cargo workspace (`Cargo.toml` lists the members and `default-members`; `viewer` is a member but deliberately excluded from `default-members`):
 
-- `core/` — package **`rust2genshin`** (`crate-type = ["cdylib"]`). The codegen backend itself. Exports `__rustc_codegen_backend` so rustc can load it via `-Zcodegen-backend`. Declares `#![feature(rustc_private)]` and `extern crate rustc_*` to reach into the compiler.
-- `lib/` — package **`rust2genshin-lib`** (`#![no_std]`). The user-facing library: types (`Guid`, `Vec3`), `Entity`, `List`, `Dict`, math traits (`Divide`, `I32::shr`, `F32::sqrt/sin/...`), and the `log` helper. Re-exports the `event_listener` proc-macro from `lib-internal`.
-- `lib-internal/` — package **`rust2genshin-lib-internal`** (`proc-macro = true`). Defines the proc-macro attributes `native`, `native_calc`, `native_exec`, `event_listener`. These turn fn declarations into bodyless stubs (body replaced with `::core::unreachable!()`) and tag the call site with a numeric ID the backend resolves into a system node.
-- `demo/` — package **`rust2genshin-demo`**. The target leaf crate where users write their Rust code. Must be `#![no_std]` (backend warns otherwise).
-- `build-demo/` — package **`build-demo`**. Tiny binary that runs the three-step pipeline above. This is what `cargo +nightly run -p build-demo` invokes.
+```
+core/                package `rust2genshin` (cdylib `rust2genshin` + bin `rust2genshin-linker`)
+  build.rs           prost-build writes the proto bindings into OUT_DIR
+  proto/asset.proto  the single .gia protobuf layer
+  src/               asset.rs / value.rs / structure.rs / linker.rs / lib.rs / compile/ / node/
+lib/                 package `rust2genshin-lib` (#![no_std], the target crate's runtime API)
+  src/               asynchronous / boxed / dict / entity / list / math / player / sc / task + event/
+lib-internal/        package `rust2genshin-lib-internal` (proc-macro)
+demo/                package `rust2genshin-demo` — the target leaf crate, node graphs live here
+build-demo/          package `build-demo` (bins: beyond-server / classic-server)
+viewer/              package `rust2genshin-viewer`, reads the intermediate `.ogia` (not a default member)
+docs/                doc-site builder + `docs/typst/` sources
+```
+
+- `core/` — the codegen backend itself. Exports `__rustc_codegen_backend` so rustc can load it. Declares `#![feature(rustc_private)]` and `extern crate rustc_*` to reach into the compiler.
+- `lib/` — the user-facing library: types, `Entity`/`Player`, containers, math traits (`Divide`, `I32::shr`, `F32::sqrt/sin/...`), and the `log` helper. Re-exports the proc-macros from `lib-internal`.
+- `lib-internal/` — `proc-macro = true`, all macros in one `src/lib.rs`: `native` (`:12`), `native_calc` (`:38`), `native_exec` (`:43`), `native_enum` (`:48`), `event` (`:68`), `event_listener` (`:73`), `async_loop` (`:90`), `asynchronous` (`:106`). They turn fn declarations into bodyless stubs and tag the call site with a numeric ID the backend resolves into a system node.
+- `demo/` — the target leaf crate where users write their Rust code. Must be `#![no_std]` (the backend warns otherwise but still compiles).
 
 ## Backend architecture (`core/src`)
 
-- **`backend.rs`** — Implements `CodegenBackend` (the trait rustc uses to load a custom codegen). `codegen_crate` calls `compile::compile(tcx)` then returns an empty `CompiledModules`. `__rustc_codegen_backend` is the entry symbol.
-- **`parser.rs`** — HIR visitors: `dump_hir_to_string`, `collect_entry_points_*`, `collect_entry_point_def_ids`. Recognizes `#[event_listener]` items by inspecting the `outer_expn` of the item span (the attribute is consumed by the proc-macro; only the expansion context remains). This is the **legacy / entry-point** path; the MIR-based path in `compile/` is what currently drives function compilation.
-- **`compile/mod.rs`** — The driver. Defines `Compiler`, `Block`, `CompilingFn`, `WithTcx`. `compile(tcx)` creates the output dir, builds the `AssetBundle` (initially empty), collects all `fn` items via HIR walk, calls `touch_fn` on each, and saves `target/<crate>.gia`.
-- **`compile/func.rs`** — The MIR→node-graph translator. Per basic block, walks statements (`Assign` Rvalues) then terminators. Implements arithmetic/comparison ops, locals, calls, `SwitchInt` (≤100 cases), `Return`/`Goto`/`Assert`/`Call`/`TailCall`. Calls into `compile_native_call` (see below) for `native*`-tagged functions; otherwise treats callees as composite nodes (recursive `touch_fn`).
-- **`compile/native.rs`** — Resolves proc-macro-tagged calls into node-graph nodes. `#[native("divide")]` → `node_divide`; `#[native_calc(N)]` / `#[native_exec(N)]` → `NodeKind::new(N, control_out, control_in, params, ret)`.
-- **`compile/native.rs`** also intercepts `LangItem::Panic` (silently emits a `log` warning) and intrinsics like `black_box` (todo).
-- **`compile/compile2.rs`**, **`compile/optimize.rs`** — Experimental / WIP passes. `optimize.rs` is currently empty (0 lines).
-- **`asset/mod.rs`** — `AssetBundle` (Slab of boxed `Asset`s), `encode()` splits primary vs. dependency assets based on `display: Vec<i64>`, `save()` writes the file with the strict 20-byte header (`[total_size|schema_ver=1|marker=0x0326|file_type=3|proto_len]`) and 4-byte footer (`0x0679`). See comments for the exact byte-level spec.
-- **`asset/value.rs`** — TypedValue hierarchy (`AnyValue`, `ValueBool`, `ValueInt`, `ValueFloat`, `ValueString`, `ValueIntList`, `ValueDefault`).
-- **`asset/node_graph/`** — Node-graph construction. Submodules by category: `arithmetic`, `comparison`, `control` (switch/branch), `execution` (log, set_local), `query` (`node_local`), `composite` (subgraph calls), `structure`, `trigger`, `client`, `hidden`. Each exports pre-built `NodeKind` constants.
-- **`asset/generated/`** — `include!` of `OUT_DIR/rust2genshin.rs` (prost-generated bindings from `proto/asset.proto`).
+- **`compile/backend.rs`** — Implements `CodegenBackend`. `codegen_crate` (`:60`) calls `compile::compile(tcx)` (`:70`) and wraps the result in a `CompiledModule` whose object is the `.ogia`; `link` (`:85`) delegates to rustc's shared `link_binary` (`:103`). `__rustc_codegen_backend` is the entry symbol. The file header comment states the "no machine code" contract.
+- **`compile/mod.rs`** — The driver. `compile(tcx)` (`:56`) warns when the crate is not `#![no_std]` (`:70`; only proc-macro / test crates are actually skipped), then builds `Compiler::new(tcx)` (`:145`, which resolves the `rust2genshin_lib` dependency via `LIB_NAME` at `:132`) and runs it. `Compiler::run` (`:168`) seeds the main graph and takes entry points from `exported_generic_symbols` chained with `exported_non_generic_symbols` (`:170`). Also defines `Block { begin, end }` (`:93`) and `find_lib_fn` (`:117`).
+- **`compile/func.rs`** — The MIR->node-graph translator (`CompilingFn`, `FnDecl`). Per basic block it walks statements (`Assign` Rvalues) then terminators, calling into `compile/native.rs` for `native*`-tagged functions and otherwise treating callees as composite nodes (recursive `touch_fn`, `compile/mod.rs:237`). `Assert` and `panic` terminators are skipped outright, so overflow and bounds checks never reach the graph.
+- **`compile/place.rs`** — `CompiledLocal` / `CompilingLocals`: recursively flattens MIR `Place` projections (tuple fields, struct fields, derefs) into node-graph locals; closures therefore end up as a `#closure + args` pair.
+- **`compile/ty.rs`** — `compile_ty` plus type mangling. Primitives map to `NativeKind` (`ty.rs:191-224`): `bool` -> `Bool`; `isize`/`i32`/`u32`/`usize` -> `Int`; `f32` -> `Float`; `str` and `*const str` -> `String`; raw pointers to slices/arrays -> `List`. Other int/float widths (`i8`/`i16`/`i64`/`i128`, `f16`/`f64`/`f128`) are hard errors.
+- **`compile/ir.rs`** + **`compile/optimize.rs`** — `NodeGraphIr` and `Optimizer`. `ir.rs` holds the IR data structures plus `Link`/`ValueIn` lowering helpers; `optimize.rs` (852 lines, **not** empty) holds the actual `impl Optimizer` passes: `verify` (`:24`), `link_node` (`:30`), `lower` (`:85`), `optimize` (`:363`) and the elimination family (`eliminate_solos`, `eliminate_nop`, `raise_if`, `eliminate_branches`, `eliminate_switch`, `eliminate_set_local`, `eliminate_local`, `eliminate_calc`, `eliminate_assemble`, `eliminate_destructure`, `eliminate_bool_eq_int`, `eliminate_not_not`).
+- **`compile/link.rs`** — `Linker` and `Target`. `Linker::link` (`:67`) walks the target's functions, calls `set_primary` for the exported ones (`:74`), lowers and `layout`s the main graph (`:81-82`), then `assets.save` (`:89`). `Linker::touch_fn` (`:95`) turns each compiled function into its own composite-node asset.
+- **`asset.rs`** — `AssetBundle` (primary + dependency assets) and `AssetBundle::save` (`:109`), which writes the strict 20-byte header (`[total_size | schema_ver=1 | marker=0x0326 | file_type=3 | proto_len]`) and the 4-byte footer (`0x0679`), skipping the write when the bytes are unchanged so the output mtime stays stable. The prost bindings are `include!`d from `OUT_DIR/rust2genshin.rs` (`:8`), generated by `core/build.rs` into `OUT_DIR` — **not** into a checked-in `asset/generated/` directory.
+- **`value.rs`** — the node-graph type system: `NativeKind` (the enum) and `NativeValue` (the trait each type implements). The old `AnyValue` / `ValueBool` / `ValueInt` / `ValueString` hierarchy no longer exists.
+- **`node/`** — node construction, split by domain: `mod.rs` (`NodeKind`, `Node`, `Connection`, `Link`, `NodeRef`; `NODE_ID_BEGIN = 1`), `arithmetic.rs`, `control.rs` (switch/branch), `execution.rs` (log, set_local), `query.rs` (`node_local`), `composite.rs` (subgraph calls), `decl.rs` (pin declarations), `hidden.rs`, `layout.rs`, `client.rs`. Nodes are built at runtime; there is no registry table.
+- **`compile/native.rs`** — Resolves proc-macro-tagged calls into node-graph nodes. `#[native("divide")]` → `node_divide`; `#[native_calc(N)]` / `#[native_exec(N)]` → `NodeKind::new(N, control_out, control_in, params, ret)`. It also intercepts `LangItem::Panic` (emits a `log` warning) and intrinsics like `black_box`.
+
+There is no `compile2.rs`, no `asset/mod.rs`, no `asset/value.rs`, no `asset/node_graph/` directory, and no checked-in `asset/generated/`. Struct-related nodes live in `core/src/structure.rs`; the graph-layout pass lives in `core/src/node/layout.rs`.
 
 ## Proto schema (`core/proto/asset.proto`)
 
@@ -67,19 +88,23 @@ The `.gia` payload is a serialized `AssetBundleData { assets, dependencies, expo
 
 ## How user code becomes a graph
 1. User writes `pub fn solve(a: f32, b: f32, c: f32) -> f32 { ... }` in `demo/src/lib.rs`.
-2. Marking with `#[unsafe(no_mangle)]` or `#[unsafe(export_name = "...")]` makes it a **composite node** and adds it to `display` (primary assets) — only primary assets are importable by the engine.
-3. The backend's HIR walk collects the `LocalDefId`, and `compile_fn` runs:
-   - Allocates a `node_local` per MIR local, plus a `set_local` for the return slot.
-   - For each `Assign` Rvalue: arithmetic/comparison → matching node; integer division warns (use `.divide()`); right-shift on `i32` is routed through `I32::shr` from `lib` via `find_lib_fn`.
-   - For each `Terminator`: `SwitchInt` → `node_switch` (bool → `NODE_IF`, integer → `node_switch` with case list); `Call` to a `native*`-tagged fn → system node; other calls → composite node (recursive).
-4. Function-local node refs and connection wires are built up via `Block { begin, end }` and `connect_control` / `set_value_in`.
+2. Marking it with `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "...")]` puts it into `exported_generic_symbols` / `exported_non_generic_symbols`, which is exactly how `Compiler::run` picks entry points (`compile/mod.rs:170`) — there is no HIR walk for entry-point discovery any more. Exported functions also become **primary assets** in `Linker::link` (`compile/link.rs:72-74`) — only primary assets are importable by the engine.
+3. For each entry point the compiler first tries `compile_native_call` (a `#[native*]`-tagged fn compiles straight to a system node); anything else goes through `touch_fn` (`compile/mod.rs:237`), which recurses into callees.
+4. `compile_fn` (`compile/mod.rs:248`) then builds the function's IR:
+   - MIR locals become node-graph locals via `compile/place.rs` (`CompiledLocal` / `CompilingLocals`), plus a `set_local` for the return slot.
+   - Each `Rvalue::BinaryOp` maps to a node from `core/src/node/arithmetic.rs` (`func.rs:141-162`): add/sub/mul, `Div` → `node_divide` (there is no longer a "Div is slow and big" warning — integer division compiles straight to the divide node), `Rem`, bitwise ops, comparisons, `Shl` → `NODE_LEFT_SHIFT`. `Shr`/`ShrUnchecked` and `Cmp`/`Offset` are still `todo!()` (`func.rs:155`, `:161`). The `*Unchecked` / `*WithOverflow` variants are collapsed onto the same plain nodes, which is why overflow wraps by design.
+   - Each `Terminator`: `SwitchInt` → `node_switch` (bool → `NODE_IF`, integer → `node_switch` with a case list, `func.rs:484-489`); `Call` to a `native*`-tagged fn → system node; other calls → composite node (recursive). `Return`/`Goto` drive control flow; `Assert`/`panic` are dropped.
+5. Function-local node refs and wires are tracked by `Block { begin, end }` (`compile/mod.rs:93`) plus `link_control` / `set_value_in`.
+6. `Compiler::run` finishes by handing the `Target` to the linker; `Linker::link` (`compile/link.rs:67`) marks exported graphs primary, calls `Optimizer::lower` (`compile/optimize.rs:85`, which runs `optimize()` to a fixpoint at `:363`), runs `node::layout::layout`, and finally `AssetBundle::save` (`core/src/asset.rs:109`) writes the `.gia`.
+7. Separately, `Compiler::save` (`compile/mod.rs:161`) writes the intermediate `.ogia` — a bincode-serialized `Target` — which is what the viewer reads; it is not the shipping artifact.
 
 ## Constraints baked into the backend
-- `#![no_std]` required on the user crate (compiler warns otherwise).
-- Supported primitives: `bool`, `i32`, `isize`, `f32`, `*const str` / `&str` (treated as `ValueString`). Other int/float widths return `compile_ty` errors.
-- `i32` arithmetic compiles to unchecked nodes by design (overflow wraps) — keep `-Coverflow-checks=off`.
-- `i32 / i32` triggers `span_warn` "Div is slow and big" — use `.divide()` (calls the dedicated divide node).
-- `SwitchInt` cases capped at 100 (Genshin editor limit).
+- `#![no_std]` expected on the user crate (the backend warns otherwise but still compiles it — `compile/mod.rs:70`).
+- Supported primitives, per `compile_ty` (`core/src/compile/ty.rs:191-224`): `bool`, `i32`, `isize`, `u32`, `usize`, `f32`, `*const str` / `&str` (as `NativeKind::String`). Other int widths (`i8`/`i16`/`i64`/`i128`) and float widths (`f16`/`f64`/`f128`) are `span_err`s. Handle types (`Guid`, `Entity`, `Prefab`, `Config`, `Faction`) are accepted as opaque `NativeKind`s (`ty.rs:29-33`).
+- `i32` arithmetic compiles to **unchecked** nodes by design (overflow wraps) — this is why you do not want overflow checks in the graph.
+- You therefore do **not** need to pass `-Coverflow-checks=off`. Nothing in the tooling passes it: `build-demo/src/build.rs` does not (`cargo clean` lines are commented out at `:44-45`, and the only `RUSTFLAGS` mention is a commented-out `-Zalways-encode-mir` line at `:48`), and CI does not either. The workspace relies on `[profile.release] overflow-checks = false` (`Cargo.toml:43`) plus the fact that `Assert` terminators are dropped during translation anyway — the workspace documentation page on debugging explains the history.
+- There is no "Div is slow and big" warning any more; `BinOp::Div` maps directly to `node_divide` (`core/src/compile/func.rs:148`).
+- `Shr`/`ShrUnchecked` and `Cmp`/`Offset` are still `todo!()` and will panic the backend if you write them.
 - Mirrors of these and unsupported features (events/cast/struct/loops/Box/async/closure/tuple/unsigned/`i64`/client node graph) are listed in `README.md`.
 
 ## Common files to edit
@@ -87,10 +112,12 @@ The `.gia` payload is a serialized `AssetBundleData { assets, dependencies, expo
 | Task | File(s) |
 |---|---|
 | Add a new system node (e.g. a new trig function) | `lib/src/math.rs` (trait method + `#[native_calc(N)]`), `core/src/compile/native.rs` only if the proc-macro path needs branching |
-| Add a new node-graph builder | `core/src/asset/node_graph/<category>.rs` (a `NodeKind` constant), then `pub use` from `core/src/asset/node_graph/mod.rs` |
-| Wire up a new Rust MIR construct | `core/src/compile/func.rs` (statements/terminators/Rvalues) |
-| Change the protobuf schema | `core/proto/asset.proto` (regenerated into `asset/generated/` by `core/build.rs`) |
-| Change `.gia` file framing | `core/src/asset/mod.rs` (`AssetBundle::save`) |
+| Add a new node-graph builder | `core/src/node/<category>.rs` (a constructor returning a `NodeKind`), then wire it at the use site in `core/src/compile/func.rs` or `core/src/compile/ir.rs` |
+| Add a new value type | `core/src/value.rs` — a `NativeKind` variant plus `impl NativeValue` |
+| Wire up a new Rust MIR construct | `core/src/compile/func.rs` (statements / terminators / Rvalues) |
+| Add an IR/graph optimization pass | `core/src/compile/optimize.rs` (`impl Optimizer`, alongside `eliminate_*`) |
+| Change the protobuf schema | `core/proto/asset.proto` — prost regenerates into `OUT_DIR` on the next `cargo build`; the result is `include!`d at `core/src/asset.rs:8` |
+| Change `.gia` file framing | `core/src/asset.rs` (`AssetBundle::save`) |
 | Add a new proc-macro attribute | `lib-internal/src/lib.rs` |
 
 ## Gotchas
@@ -99,4 +126,7 @@ The `.gia` payload is a serialized `AssetBundleData { assets, dependencies, expo
 - The backend does not produce machine code; the `link` step is essentially a no-op. Crates that need linking (proc-macro deps, executables) are handled by the host rustc; only the leaf crate goes through this backend.
 - `cargo check` will NOT trigger the backend — only `cargo build`/`rustc` does (codegen callbacks fire after analysis).
 - `find_lib_fn` searches `compiler.lib` (the `rust2genshin-lib` crate) for a specific fully-qualified name; if you add a new helper to `lib/`, you'll get a `Lib fn not found` error pointing to the candidate list until the name match lines up.
-- `rust-toolchain.toml` is intentionally absent — the `.bak` file is the template. Don't rename it without ensuring every developer / CI machine has the same nightly, otherwise the codegen ABI breaks silently.
+- `rust-toolchain.toml` **is** present at the repo root and pins `nightly-2026-10-08` with `rustc-dev`, `rust-src`, and `llvm-tools-preview`; rustup auto-loads it, so plain `cargo` picks it up. Don't relax or delete it without ensuring every developer / CI machine has the same nightly, otherwise the codegen ABI breaks silently. There is no `.bak` template.
+- `build-demo` has two binaries (`beyond-server`, `classic-server`) — always pass `--bin`, or `cargo run -p build-demo` will fail with an ambiguity error.
+- Never add `-Zcodegen-backend=<path>` to the build: `build-demo` selects the backend through the generated `genshin-unknown-<target>.json` spec's `default-codegen-backend` field, and passes `-Zjson-target-spec` / `-Zbuild-std=core` instead.
+- Do not manually pass `-Coverflow-checks=off` or `-Zalways-encode-mir=yes`; nothing in the build script or CI passes them. The reason overflow checks are unwanted is a design property, not a build flag: `i32` arithmetic is lowered to unchecked nodes (`core/src/compile/func.rs:142-147` folds `AddUnchecked` / `AddWithOverflow` onto the plain `node_add`), and `Assert` terminators are dropped during translation, so overflow wraps in the graph by design.
