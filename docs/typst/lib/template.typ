@@ -37,7 +37,9 @@
             if document.title != none {
                 html_elem("title", contentToString(document.title));
             }
+            import_script("/lib/js/theme.js");
             import_script("/lib/js/style.js");
+            import_style("/lib/css/theme.css");
             import_style("/lib/css/style.css");
             import_style("/lib/css/template.css");
             include math_render;

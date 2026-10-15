@@ -1,0 +1,131 @@
+/* 全站颜色 token 的唯一定义处。
+ *
+ * 组件样式一律引用 var(--x),不写字面量 —— 组件的 CSS 进不了 shadow root
+ * (toc-component / code-block / expand-panel / ui-graph 都在自己的
+ * shadow 里渲染),而自定义属性是唯一能穿过 shadow 边界的东西。
+ *
+ * 深色值只在下面 :root[data-theme="dark"] 一处出现,不散落成各文件的
+ * 覆盖块 —— 两份副本迟早漂移。data-theme 由 lib/js/theme.js 在第一帧
+ * 之前写到 documentElement 上。 */
+
+:root {
+    color-scheme: light;
+
+    /* 底与面 */
+    --bg: #fdfdfd;
+    --surface: #fff;
+
+    /* 字 */
+    --fg: #19181f;
+    --muted: #565565;
+    --subtle: #7a7c86;
+
+    /* 强调 */
+    --accent: #11566c;
+    --link: #3964fe;
+
+    /* 线与状态 */
+    --border: #e2e3e8;
+    --border-soft: #d7d9e2;
+    --hover: #eff0f3;
+    --active: #e4e5ea;
+
+    /* 折叠面板 */
+    --panel: #efefef;
+    --panel-head: gainsboro;
+
+    /* 代码 */
+    --code-bg: #fdfdfd;
+    --code-inline-bg: #eff3f8;
+
+    /* 投影与遮罩 */
+    --shadow-1: #59556533;
+    --shadow-2: rgba(0, 0, 0, 0.12);
+    --overlay: rgba(0, 0, 0, 0.5);
+
+    /* 锚点 hover 高亮(lib/js/style.js 加的 .highlight) */
+    --highlight-bg: rgba(255, 152, 0, 0.08);
+    --highlight-fg: #ff9800;
+
+    /* ui-card 三种提示。每组四个: 底 / 边 / 字 / 图标。 */
+    --card-info-bg: #D1ECF1;
+    --card-info-border: #BEE5EB;
+    --card-info-fg: #0C5460;
+    --card-info-icon: #17A2B8;
+
+    --card-tip-bg: #D4EDDA;
+    --card-tip-border: #C3E6CB;
+    --card-tip-fg: #155724;
+    --card-tip-icon: #28A745;
+
+    --card-attention-bg: #FFF3CD;
+    --card-attention-border: #FFEEBA;
+    --card-attention-fg: #856404;
+    --card-attention-icon: #FFC107;
+
+    /* 节点图。graph.css 管画布(light DOM),graph.js 的内联 <style> 管
+     * shadow 里的节点盒子、连线、控件 —— 两边同名引用同一个 token。 */
+    --graph-canvas: #fbfbfd;
+    --graph-box: #fff;
+    --graph-border: #c9cbd4;
+    --graph-edge: #11566c;
+    --graph-pin: #7a7c86;
+    --graph-reset-bg: rgba(255, 255, 255, 0.9);
+
+    /* 顶栏高度。顶栏是 sticky 的,所有抽屉/侧栏的偏移都从这一个值算。 */
+    --header-h: 48px;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg: #16161a;
+    --surface: #1f1f24;
+
+    --fg: #e6e6ea;
+    --muted: #a0a0aa;
+    --subtle: #8a8a95;
+
+    --accent: #4fd1e0;
+    --link: #8ab4ff;
+
+    --border: #33333c;
+    --border-soft: #2a2a33;
+    --hover: #2a2a33;
+    --active: #3a3a45;
+
+    --panel: #1c1c21;
+    --panel-head: #24242b;
+
+    --code-bg: #1a1a1f;
+    --code-inline-bg: #26262e;
+
+    --shadow-1: #00000066;
+    --shadow-2: rgba(0, 0, 0, 0.5);
+    --overlay: rgba(0, 0, 0, 0.65);
+
+    --highlight-bg: rgba(255, 152, 0, 0.18);
+    --highlight-fg: #ffb74d;
+
+    --card-info-bg: #12303a;
+    --card-info-border: #1d4b5a;
+    --card-info-fg: #9fdcea;
+    --card-info-icon: #4dd0e1;
+
+    --card-tip-bg: #12301c;
+    --card-tip-border: #1d4a2c;
+    --card-tip-fg: #a5e0b0;
+    --card-tip-icon: #4ade80;
+
+    --card-attention-bg: #3a2c0d;
+    --card-attention-border: #5c4713;
+    --card-attention-fg: #f0cf85;
+    --card-attention-icon: #fbbf24;
+
+    --graph-canvas: #101014;
+    --graph-box: #24242c;
+    --graph-border: #3a3a45;
+    --graph-edge: #4fd1e0;
+    --graph-pin: #8a8a95;
+    --graph-reset-bg: rgba(36, 36, 44, 0.9);
+}
