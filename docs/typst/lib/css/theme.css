@@ -3,8 +3,9 @@
  * 组件样式一律引用 var(--x),不写字面量 —— 组件的 CSS 进不了 shadow root
  * (toc-component / code-block / expand-panel / ui-graph 都在自己的
  * shadow 里渲染),而自定义属性是唯一能穿过 shadow 边界的东西。正因如此,
- * 布局常量(--header-h)也放在这里:它同样要跨进 shadow root(两侧抽屉都
- * 按它算偏移),走的是同一条继承链,放进组件文件只会让它在 shadow 里失效。
+ * 布局常量(--header-h)也放在这里:两侧抽屉将要按它算偏移,而抽屉在
+ * shadow root 里,走的是同一条继承链 —— 放进组件文件只会让它在 shadow
+ * 里失效。
  *
  * 这也是本文件**故意**不 link 进任何 shadow shell(如 toc.html)的理由:
  * 继承本身就把 token 带进去了,再显式 link 一遍是多余的。toc.css 顶上那条
@@ -101,8 +102,8 @@
     /* 未定义时露出来的说明框,与画布底色刻意不同 */
     --graph-fallback-bg: #f7f8fa;
 
-    /* 顶栏高度。现在只被 outline.css 的 main { padding-top: 48px } 用作
-     * 浮动开关按钮的让位高度;顶栏落地后会复用同一个值。 */
+    /* 顶栏高度。outline.css 的 main { padding-top: 48px } 现在硬写的正是
+     * 这个数(给浮动开关按钮让位),顶栏落地后改成引用它。 */
     --header-h: 48px;
 }
 
