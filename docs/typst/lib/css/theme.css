@@ -1,8 +1,15 @@
-/* 全站颜色 token 的唯一定义处。
+/* 全站 token 的唯一定义处。
  *
  * 组件样式一律引用 var(--x),不写字面量 —— 组件的 CSS 进不了 shadow root
  * (toc-component / code-block / expand-panel / ui-graph 都在自己的
- * shadow 里渲染),而自定义属性是唯一能穿过 shadow 边界的东西。
+ * shadow 里渲染),而自定义属性是唯一能穿过 shadow 边界的东西。正因如此,
+ * 布局常量(--header-h)也放在这里:它同样要跨进 shadow root(两侧抽屉都
+ * 按它算偏移),走的是同一条继承链,放进组件文件只会让它在 shadow 里失效。
+ *
+ * 这也是本文件**故意**不 link 进任何 shadow shell(如 toc.html)的理由:
+ * 继承本身就把 token 带进去了,再显式 link 一遍是多余的。toc.css 顶上那条
+ * "只有 style.css / template.css / toc.css 在 shadow 里生效"的注释只约束
+ * 样式表,不影响自定义属性 —— var(--bg) 在 shadow 里照样解析得到。
  *
  * 深色值只在下面 :root[data-theme="dark"] 一处出现,不散落成各文件的
  * 覆盖块 —— 两份副本迟早漂移。data-theme 由 lib/js/theme.js 在第一帧
@@ -24,7 +31,8 @@
     --accent: #11566c;
     --link: #3964fe;
 
-    /* 线与状态 */
+    /* 线与状态。hover / active 是**盖在面上的一层状态色**,不是结构线,
+     * 两者的深色值必须刻意错开 —— 同值会让「有边的东西一 hover 就没反应」。 */
     --border: #e2e3e8;
     --border-soft: #d7d9e2;
     --hover: #eff0f3;
@@ -32,15 +40,33 @@
 
     /* 折叠面板 */
     --panel: #efefef;
-    --panel-head: gainsboro;
+    --panel-head: #dcdcdc;
 
     /* 代码 */
     --code-bg: #fdfdfd;
     --code-inline-bg: #eff3f8;
 
-    /* 投影与遮罩 */
-    --shadow-1: #59556533;
-    --shadow-2: rgba(0, 0, 0, 0.12);
+    /* 代码块控件(经 ::part() 进 code-block 的 shadow) */
+    --badge-bg: #2563eb;
+    --badge-fg: #ffffff;
+    --copy-bg: #7c3aed;
+    --copy-fg: #ffffff;
+    --copy-hover-bg: #6d28d9;
+    --copy-hover-fg: #ede9fe;
+    --copied-bg: #98c379;
+    --copied-fg: #ffffff;
+
+    /* 关闭按钮。outline.css 的 .outline-close 和 toc.css 的 .drawer-close
+     * 是同一颗按钮的两份实现,共用这一组。 */
+    --close-bg: #f0f0f0;
+    --close-border: #ddd;
+
+    /* 投影与遮罩。按角色命名,不是按深浅:rest / hover 是代码块的一对
+     * 抬升,drawer 是两侧抽屉的投影,float 是顶栏按钮和卡片 hover 的那层薄影。 */
+    --shadow-rest: #59556533;
+    --shadow-hover: rgba(0, 0, 0, 0.12);
+    --shadow-drawer: rgba(0, 0, 0, 0.18);
+    --shadow-float: rgba(0, 0, 0, 0.10);
     --overlay: rgba(0, 0, 0, 0.5);
 
     /* 锚点 hover 高亮(lib/js/style.js 加的 .highlight) */
@@ -64,15 +90,19 @@
     --card-attention-icon: #FFC107;
 
     /* 节点图。graph.css 管画布(light DOM),graph.js 的内联 <style> 管
-     * shadow 里的节点盒子、连线、控件 —— 两边同名引用同一个 token。 */
+     * shadow 里的节点盒子、连线、控件 —— 两边同名引用同一个 token。
+     * accent 在 graph.js 里同时是连线描边、节点 hover/热边框、控件底色、
+     * data-node 描边和重置按钮文字,是一个角色而非「一种边」。 */
     --graph-canvas: #fbfbfd;
     --graph-box: #fff;
     --graph-border: #c9cbd4;
-    --graph-edge: #11566c;
-    --graph-pin: #7a7c86;
+    --graph-accent: #11566c;
     --graph-reset-bg: rgba(255, 255, 255, 0.9);
+    /* 未定义时露出来的说明框,与画布底色刻意不同 */
+    --graph-fallback-bg: #f7f8fa;
 
-    /* 顶栏高度。顶栏是 sticky 的,所有抽屉/侧栏的偏移都从这一个值算。 */
+    /* 顶栏高度。现在只被 outline.css 的 main { padding-top: 48px } 用作
+     * 浮动开关按钮的让位高度;顶栏落地后会复用同一个值。 */
     --header-h: 48px;
 }
 
@@ -89,10 +119,12 @@
     --accent: #4fd1e0;
     --link: #8ab4ff;
 
+    /* 深色下结构线与状态色分得更开:border-soft / graph-border 压暗,
+     * hover / active 抬亮到它们之上。 */
     --border: #33333c;
-    --border-soft: #2a2a33;
-    --hover: #2a2a33;
-    --active: #3a3a45;
+    --border-soft: #26262f;
+    --hover: #2e2e3a;
+    --active: #42424f;
 
     --panel: #1c1c21;
     --panel-head: #24242b;
@@ -100,8 +132,22 @@
     --code-bg: #1a1a1f;
     --code-inline-bg: #26262e;
 
-    --shadow-1: #00000066;
-    --shadow-2: rgba(0, 0, 0, 0.5);
+    --badge-bg: #1d4ed8;
+    --badge-fg: #e0e7ff;
+    --copy-bg: #6d28d9;
+    --copy-fg: #f5f3ff;
+    --copy-hover-bg: #7c3aed;
+    --copy-hover-fg: #ede9fe;
+    --copied-bg: #4a9e5f;
+    --copied-fg: #f0fdf4;
+
+    --close-bg: #26262e;
+    --close-border: #3f3f4a;
+
+    --shadow-rest: #00000066;
+    --shadow-hover: rgba(0, 0, 0, 0.5);
+    --shadow-drawer: rgba(0, 0, 0, 0.6);
+    --shadow-float: rgba(0, 0, 0, 0.35);
     --overlay: rgba(0, 0, 0, 0.65);
 
     --highlight-bg: rgba(255, 152, 0, 0.18);
@@ -125,7 +171,7 @@
     --graph-canvas: #101014;
     --graph-box: #24242c;
     --graph-border: #3a3a45;
-    --graph-edge: #4fd1e0;
-    --graph-pin: #8a8a95;
+    --graph-accent: #4fd1e0;
     --graph-reset-bg: rgba(36, 36, 44, 0.9);
+    --graph-fallback-bg: #17171c;
 }
