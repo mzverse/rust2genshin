@@ -48,9 +48,10 @@
     --panel-border: black;
     --panel-head-hover: silver;
 
-    /* 代码。code-inline-fg 是 Typst 高亮里那个「语法红」——style.typ 的
-     * show text 只要 text.fill 不是默认值就写内联 color,标点(`/`、`<`、
-     * `>`)就是这么来的,浅色下就是 #d73948 本身。深色下才换值。 */
+    /* 代码。code-inline-fg 是 Typst 高亮里出现最多的那个色 —— 全站 1047 处
+     * 内联 color,涂的是 Rust 关键字(`if`、`-` …)和路径里的标点(`/`)。
+     * style.typ 的 show text 只要 text.fill 不是默认值就写内联 color,
+     * 浅色下就是 #d73948 本身。深色下才换值。 */
     --code-bg: #fdfdfd;
     --code-inline-bg: #eff3f8;
     --code-inline-fg: #d73948;
@@ -152,12 +153,19 @@
     --accent: #4fd1e0;
     --link: #8ab4ff;
 
-    /* 深色下结构线与状态色分得更开:border-soft / graph-border 压暗,
-     * hover / active 抬亮到它们之上。 */
-    --border: #33333c;
+    /* 深色下这一组要按角色分开:
+     *   border-soft  #26262f  结构线里最弱的一档(只在 ui-graph 上)
+     *   border       #6a6a78  控件自己的那一圈边。顶栏三个按钮的底是
+     *                          --surface #1f1f24,边框压到 #33333c 时按钮
+     *                          与底色只差 1.3:1,深色下整个按钮看不见;
+     *                          这一档对 --surface 实测 3.1:1。
+     *   hover        #363643  状态层,压在 surface / panel 之上,要比
+     *                          surface 明显,否则 hover 不可见
+     *   active       #4a4a57  比 hover 再抬一档 */
+    --border: #6a6a78;
     --border-soft: #26262f;
-    --hover: #2e2e3a;
-    --active: #42424f;
+    --hover: #363643;
+    --active: #4a4a57;
 
     /* 深色下纯黑描边会在页底消失,面板边换成实打实看得见的灰:浅色的 black
      * 对 --panel 有 18.3:1,这一档要保住「面板是个有边的盒子」这件事 ——
@@ -199,7 +207,8 @@
     --copy-fg: #f5f3ff;
     --copy-hover-bg: #7c3aed;
     --copy-hover-fg: #ede9fe;
-    --copied-bg: #4a9e5f;
+    /* 「已复制」徽标底色压深,好让 12px 的 --copied-fg 上去 4.5。 */
+    --copied-bg: #35804c;
     --copied-fg: #f0fdf4;
 
     --close-bg: #26262e;
@@ -234,6 +243,8 @@
     --graph-box: #24242c;
     --graph-border: #3a3a45;
     --graph-accent: #4fd1e0;
-    --graph-reset-bg: rgba(36, 36, 44, 0.9);
+    /* 比 --graph-box(#24242c) 亮一档,否则 .g-reset:hover 在深色下等于
+     * 没变化(hover 目标 --graph-box 恰好就是 rest 的实色)。 */
+    --graph-reset-bg: rgba(58, 58, 69, 0.9);
     --graph-fallback-bg: #17171c;
 }

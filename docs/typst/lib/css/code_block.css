@@ -141,11 +141,11 @@ pre:has(code.language-output) {
  * 下生效,浅色保持 Typst 原样 —— token 的浅色值就是 Typst 现在吐的那个,
  * 所以浅色渲染逐字节不变。
  *
- * 为什么不用一条 `span[style*="color"]` 通配:那会把九种 token 色全部
+ * 为什么不用一条 `span[style*="color"]` 通配:那会把十种 token 色全部
  * 刷成同一个颜色,高亮就没了。按色值逐条匹配才是「一种颜色 → 一个角色」。
- * 九个色值对应的角色见 theme.css 里 --code-syn-* 那段注释;深色值对
+ * 十个色值对应的角色见 theme.css 里 --code-syn-* 那段注释;深色值对
  * --code-inline-bg(#26262e)与 --code-bg(#1a1a1f)的实测对比度:
- *   keyword  #ff8080 6.18 / 7.14   string   #7ec87e 7.47 / 8.63
+ *   inline-fg #ff8080 6.18 / 7.14  string   #7ec87e 7.47 / 8.63
  *   comment  #969aa6 5.34 / 6.17   literal  #e58ec0 6.41 / 7.40
  *   symbol   #82aaff 6.53 / 7.55   member   #c39ae8 6.51 / 7.52
  *   macro    #4fc4d4 7.28 / 8.40   markup   #3f9fa8 4.81 / 5.56

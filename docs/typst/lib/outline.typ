@@ -30,16 +30,18 @@
     // 会让它们滚没。
     // 左栏按钮也跟着放这儿 —— 本站每页要么 `toc` 和 `with_outline` 一起开、
     // 要么一起关(toc.typ),所以抽屉的样式和脚本在 outline.css / outline.js
-    // 里一份就够。aria-label 是给 JS 前的一版静态文案,theme.js 在
+    // 里一份就够。
+    // 三个按钮都带 aria-label:☰ 本身是图形,不给名字读屏只会念「按钮」。
+    // theme-toggle 那条是给 JS 前的一版静态文案,theme.js 在
     // DOMContentLoaded 时会按**目标**状态(而不是当前状态)改写它。
     html_elem("header", attrs: (class: "site-header"), {
         html_elem("div", attrs: (class: "header-left"), {
-            html_elem("button", attrs: (class: "toc-toggle"))[☰]
+            html_elem("button", attrs: (class: "toc-toggle", aria-label: "全站目录"))[☰]
             html_elem("a", attrs: (class: "site-title", href: base_path + "/index.html"))[rust2genshin]
         })
         html_elem("div", attrs: (class: "header-right"), {
             html_elem("button", attrs: (class: "theme-toggle", aria-label: "切换主题"))[]
-            html_elem("button", attrs: (class: "outline-toggle"))[☰]
+            html_elem("button", attrs: (class: "outline-toggle", aria-label: "本页目录"))[☰]
         })
     })
     context {
