@@ -19,7 +19,14 @@ dd {
     margin-inline-start: 18pt;
 }
 
-p {
+p::before {
+    content: "DO NOT USE <p>\A";
+    white-space: pre;
+    color: red;
+}
+p, par {
+    display: block;
+    unicode-bidi: isolate;
     margin: 12pt 0;
 }
 a {
@@ -52,7 +59,7 @@ li {
 }
 
 .stack {
-    display: inline-flex;
+    display: flex;
 
     & > * {
         flex: 1;

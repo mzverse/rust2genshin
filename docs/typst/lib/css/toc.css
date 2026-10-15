@@ -25,12 +25,6 @@
         display: flex;
     }
 }
-/* 上面那个按钮写在 toc.typ 的 `#context` 块里,Typst 的 HTML 导出把它包了
- * 一层 `<p>`(`style.css` 的 `p { margin: 12pt 0 }` 会在目录顶上白留一截)。
- * `display: contents` 撤掉这层壳,按钮直接挂到 main 下。 */
-main > p:has(> .drawer-close) {
-    display: contents;
-}
 
 /* 这里的 `main` 是 toc.html 自己的 <main>(整棵树被它塞进 shadow root),
  * 不是页面的正文 —— 下面的 `main` 选择器只作用在 shadow 内部。

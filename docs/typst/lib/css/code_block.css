@@ -3,6 +3,10 @@
 }
 
 code-block {
+    *:only-child:is(&) {
+        width: 100%;
+        height: 100%;
+    }
     display: block;
     margin: 0;
     padding: 1rem;
@@ -32,6 +36,7 @@ code-block {
     &::part(content) {
         padding: 0;
         margin: 0;
+        overflow: auto;
     }
 
     pre {

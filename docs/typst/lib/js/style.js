@@ -1,13 +1,15 @@
 document.addEventListener('mouseover', e => {
     const link = e.target.closest('a[href^="#"]');
-    if(!link)
+    let href;
+    if(!link || (href = link.getAttribute('href')) === '#')
         return;
-    document.querySelector(link.getAttribute('href')).classList.add('highlight');
+    document.querySelector(href).classList.add('highlight');
 });
 
 document.addEventListener('mouseout', e => {
     const link = e.target.closest('a[href^="#"]');
-    if(!link)
+    let href;
+    if(!link || (href = link.getAttribute('href')) === '#')
         return;
-    document.querySelector(link.getAttribute('href')).classList.remove('highlight');
+    document.querySelector(href).classList.remove('highlight');
 });

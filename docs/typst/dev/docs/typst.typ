@@ -3,7 +3,7 @@
 #let title = [Typst的简单教程];
 #show: template;
 
-#let codeWithResult(code1) = stack(code1, block(eval(code1.text, mode: "markup"), stroke: 1pt, inset: 3pt), dir: ltr);
+#let code-result(code) = stack(dir: ltr, spacing: none, block(code), block(eval(code.text, mode: "markup"), stroke: 1pt, inset: 3pt));
 
 Typst的简单教程
 
@@ -36,17 +36,19 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 ```
 #import "/lib/lib.typ": *;
-#set raw(lang: "java");
-#let title = [这里是标题];
 #show: template;
+
+#let title = [这里是标题];
+#set raw(lang: "java");
 ```
 
 以下是各语句的简单注释：
 ```
 #import "/lib/lib.typ": *; // 导入依赖，我们写了一些基础设施在这里
-#set raw(lang: "java"); // 设置代码块的默认语言，例如java
-#let title = [这里是标题]; // 设置文档标题
 #show: template; // 应用模板（样式），这个模板也在基础设施中
+
+#let title = [这里是标题]; // 设置文档标题
+#set raw(lang: "java"); // 设置代码块的默认语言，例如java
 ```
 
 = 标记模式
@@ -55,7 +57,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 在这里你可以插入一些表达式，以`#`开始，结束的`;`可以省略，例如：
 
-#codeWithResult(````
+#code-result(````
 文本直接写在这里
 - 支持标题等特殊语法
 - 支持无序列表
@@ -80,7 +82,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 常量字面值的语法与C++、Java等语言类似：
 
-#codeWithResult(```
+#code-result(```
 #"字符串字面量";
 #114514; // 整数
 #3.1415926; // 浮点数
@@ -94,7 +96,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 若语句以换行结束，`;`可以省略
 
-#codeWithResult(```
+#code-result(```
 #{ // 代码块开始
     "字符串表达式1";
     "表达式2";
@@ -105,7 +107,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 使用`let`创建变量，使用`=`赋值
 
-#codeWithResult(```
+#code-result(```
 #{
     let x = 10;
     x = x + 5;
@@ -115,7 +117,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 声明语句可以直接插入标记模式中，则变量的作用域为所在的内容
 
-#codeWithResult(```
+#code-result(```
 #let x = 10;
 #(x = x + 5); // 此处添加括号，否则只解析#x为代码
 #x;
@@ -125,7 +127,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 函数的声明方式与变量类似：
 
-#codeWithResult(```
+#code-result(```
 #let add(a, b) = a + b;
 #add(1, 2);
 ```);
@@ -134,7 +136,7 @@ Typst兼容一部分的Markdown语法，以下是一些常见区别：
 
 不支持Markdown的表格语法，得用`table`函数。`columns`指定列数，之后*按行优先*依次给出每个单元格，单元格是`[]`内容块。相邻的`[]`各算一个参数，所以直接连着写就行：
 
-#codeWithResult(````
+#code-result(````
 #table(columns: 2, align: center + horizon)[偏移][含义
 ][`0x00`][文件总大小 − 4
 ][`0x04`][schema 版本 = 1

@@ -37,7 +37,7 @@ lower后得到if或switch节点
 
 一些常量，原则上不应有重复
 
-每个值对应一个分支
+每个值对应一个#link(<tag-switch-cases>)[分支]
 
 = cases <tag-switch-cases>
 

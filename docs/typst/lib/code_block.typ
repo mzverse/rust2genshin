@@ -4,9 +4,9 @@
     #show raw.where(lang: "output"): set text(fill: white);
     #show raw.where(block: false): it => box(inset: (left: 2pt, right: 2pt), box(it, fill: if it.lang == "output" { black } else { silver }, outset: (top: 2pt, bottom: 2pt), inset: (left: 2pt, right: 2pt)));
     #show raw.where(block: true): it => if it.lang == "output" {
-        box(it, fill: black, inset: 6pt, width: 100%) 
+        box(it, fill: black, inset: 6pt)
     } else { 
-        box(it, stroke: 0.6pt, inset: 6pt, width: 100%) 
+        box(it, stroke: 0.6pt, inset: 6pt)
     };
     #con;
 ] else [

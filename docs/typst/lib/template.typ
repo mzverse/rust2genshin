@@ -25,7 +25,7 @@
     show raw: set text(font: ("Consolas", "Microsoft YaHei"));
     context html_elem("html", attrs: (lang: text.lang), {
         import "style.typ";
-        show: style.templateStyle;
+        show: style.template-style;
         import "math_render.typ";
         show: math_render.template;
         import "code_block.typ";

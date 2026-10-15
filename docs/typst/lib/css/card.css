@@ -36,25 +36,25 @@ ui-card {
         flex: 1;
     }
 
-    & > [slot="content"] {
-        * {
-            margin: 0;
-        }
-        p {
-            margin-top: 0 !important;
-            margin-bottom: 0.5rem !important;
-        }
-        p:last-child {
-            margin-bottom: 0 !important;
-        }
-        ul, ol {
-            margin: 0.5rem 0;
-            padding-left: 1.5rem;
-        }
-        li {
-            margin-bottom: 0.25rem;
-        }
-    }
+    /*& > [slot="content"] {*/
+    /*    * {*/
+    /*        margin: 0;*/
+    /*    }*/
+    /*    p, par {*/
+    /*        margin-top: 0 !important;*/
+    /*        margin-bottom: 0.5rem !important;*/
+    /*        &:last-child {*/
+    /*            margin-bottom: 0 !important;*/
+    /*        }*/
+    /*    }*/
+    /*    ul, ol {*/
+    /*        margin: 0.5rem 0;*/
+    /*        padding-left: 1.5rem;*/
+    /*    }*/
+    /*    li {*/
+    /*        margin-bottom: 0.25rem;*/
+    /*    }*/
+    /*}*/
 
     &[type="info"] {
         background-color: #D1ECF1;

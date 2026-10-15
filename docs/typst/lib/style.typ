@@ -49,6 +49,14 @@
     return "calc(" + repr(value) + ")";
 }
 
+#let fraction_to_float(value) = {
+    repr(value).slice(0, -"fr".len())
+}
+
+#let encode_fraction(value) = {
+    ("flex": fraction_to_float(value))
+}
+
 #let styleStroke(value) = {
     if value == auto {
         value = 1pt + black;
@@ -84,8 +92,12 @@
 };
 
 #let strStyle(value) = {
-    return value.pairs().map(((k, v))=>k+": "+v+";\n").sum(default: "");
+    return value.pairs().map(((k, v))=>k+": "+v+";").sum(default: "");
 };
+
+#let encode_style(style) = {
+
+}
 
 #let mapBoxDic(dic) = {
     if dic.keys().contains("x") {
@@ -126,11 +138,22 @@
 
 #let styleCommon(c) = {
     let style = (:);
-    if c.width != auto {
-        style.insert("width", styleRelative(c.width));
+    let width = c.width;
+    if width != auto {
+        if type(width) == fraction {
+            style += encode_fraction(width);
+//             width = 100%;
+        } else {
+            style.insert("width", styleRelative(width));
+        }
     };
-    if c.height != auto {
-        style.insert("height", styleRelative(c.height));
+    let height = c.height;
+    if height != auto {
+        if type(height) == fraction {
+            style += encode_fraction(height);
+        } else {
+            style.insert("height", styleRelative(height));
+        }
     };
     if c.stroke != none {
         if type(c.stroke) == dictionary {
@@ -187,7 +210,7 @@
     return html_elem("div", attrs: ("class": "stack container", "style": strStyle(style)), children.join());
 }
 
-#let templateStyle(con) = context {
+#let template-style(con) = context {
     show sequence: it => {
         let s = [---];
         if not it.children.contains(s) {
@@ -205,6 +228,9 @@
         set page(height: auto);
         con
      } else {
+        show par: it => {
+            html.elem("par", it.body)
+        };
         show colbreak: html.hr();
         show pagebreak: it => colbreak(weak: it.weak);
         show text: it =>  {
@@ -216,6 +242,17 @@
         };
         show box: c => {
             let style = styleCommon(c);
+            if c.width == auto {
+                let children = c.body;
+                if children.func() == sequence {
+                    children = children.children;
+                } else {
+                    children = (children,);
+                }
+                if children.any(x => x.func() == box and type(x.width) == fraction) {
+                    style.insert("width", "100%");
+                }
+            }
             // TODO
             return html_elem("span", class: "box container", style: strStyle(style), c.body)
         };
