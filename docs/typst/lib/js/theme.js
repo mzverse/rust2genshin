@@ -7,6 +7,10 @@
 const KEY = 'r2g-theme';
 const root = document.documentElement;
 
+// 本次访问里读者点过按钮的标记。只活在内存里,刷新就没了 —— 所以它
+// 只能覆盖当前这一次页面浏览,跨访问的偏好还得靠 stored()。
+let manual = false;
+
 function system() {
     return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
@@ -28,10 +32,13 @@ function apply(theme) {
 const saved = stored();
 apply(saved === 'dark' || saved === 'light' ? saved : system());
 
-// 跟着系统实时变 —— 但只在读者没有手动选过的时候。没有这道闸,手动切到
-// 浅色之后再改系统设置,会把读者的选择悄悄冲掉。
+// 跟着系统实时变 —— 但只在读者没有手动选过的时候。手动选过有两道信号:
+// manual 管这一次页面浏览(点按钮就置位,即使存储被禁用也能挡住),
+// stored() 管之后的访问(刷新后 manual 归零,但存下来的偏好还在)。
+// 两个都没有才跟着系统走;少了任何一道,手动切过的读者都可能在自己的
+// 选择被系统设置悄悄冲掉 —— 存储不可用时缺 manual,刷新后缺 stored()。
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-    if (!stored()) apply(e.matches ? 'dark' : 'light');
+    if (!manual && !stored()) apply(e.matches ? 'dark' : 'light');
 });
 
 // 按钮是 Typst 写进 body 的,脚本在 head 里跑的时候它还不存在。
@@ -43,6 +50,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // aria-label 说的是「按下去会变成什么」,不是「现在是什么」。
     button.setAttribute('aria-label', LABEL[root.dataset.theme]);
     button.addEventListener('click', () => {
+        // 先记下这次手动选择,哪怕下面写存储失败了。
+        manual = true;
         const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
         try {
             localStorage.setItem(KEY, next);
