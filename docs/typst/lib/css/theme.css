@@ -55,6 +55,30 @@
     --code-inline-bg: #eff3f8;
     --code-inline-fg: #d73948;
 
+    /* Typst 高亮里另外几种 token 色。同样是内联 style,同样压得过普通规则,
+     * 改写由 code_block.css 末尾那组 [style*="#xxxxxx"] 规则做(逐个色值,
+     * 不是一个通配)。这里的浅色值**就是 Typst 现在吐出来的原值**,记的是事实,
+     * 不是另挑的一套;规则只在深色下生效,所以浅色一个字都不动。
+     * 角色按 span 里实际长什么样划的,不是按色值也不是按编号:
+     *   comment   注释 `//` `///` `/*`
+     *   string    字符串字面量
+     *   literal   数字与常量(0x00 / 111 / DSL)
+     *   symbol    类型名与函数名 —— Typst 给这两者同一个色值,故并成一个角色
+     *   member    字段与属性名(`.` `:` 之后那个)
+     *   macro     宏调用 `vec!` `cargo!`
+     *   markup    标记语言原文 `<custom-element>` / 转义 `\<`
+     *   attribute Rust 属性 `#[..]` `#![..]`
+     *   plain     围栏 / 反引号等没有高亮的原文 */
+    --code-syn-comment: #74747c;
+    --code-syn-string: #198810;
+    --code-syn-literal: #b60157;
+    --code-syn-symbol: #4b69c6;
+    --code-syn-member: #8b41b1;
+    --code-syn-macro: #16718d;
+    --code-syn-markup: #1d6c76;
+    --code-syn-attribute: #301414;
+    --code-syn-plain: #6b6b6f;
+
     /* 代码块控件(经 ::part() 进 code-block 的 shadow) */
     --badge-bg: #2563eb;
     --badge-fg: #ffffff;
@@ -147,6 +171,23 @@
     /* #d73948 压在深色上只有 3.3:1,读不出来;换成同色相提亮后的红。
      * 对 --code-inline-bg 是 6.2:1、对 --code-bg 是 7.1:1,都在 4.5 之上。 */
     --code-inline-fg: #ff8080;
+
+    /* 深色代码底上,Typst 那套为暗底设计的浅色值反而读不出来(注释色
+     * #74747c 对 --code-inline-bg 只有 3.2:1,属性色 #301414 更只有
+     * 1.1:1,等于没有)。下面每个值都是**保住原色相、只提亮**之后挑的,
+     * 对 --code-inline-bg(#26262e)与 --code-bg(#1a1a1f)都在 4.5 之上,
+     * 实测见 code_block.css 的注释。 */
+    --code-syn-comment: #969aa6;
+    --code-syn-string: #7ec87e;
+    --code-syn-literal: #e58ec0;
+    --code-syn-symbol: #82aaff;
+    --code-syn-member: #c39ae8;
+    --code-syn-macro: #4fc4d4;
+    /* 比 macro 暗一档,两个青靠明度分开而不是靠色相 */
+    --code-syn-markup: #3f9fa8;
+    --code-syn-attribute: #dfa3ad;
+    /* plain 比 comment 亮一档:没高亮的正文该最显眼,注释该退后 */
+    --code-syn-plain: #a8a8b0;
 
     --badge-bg: #1d4ed8;
     --badge-fg: #e0e7ff;

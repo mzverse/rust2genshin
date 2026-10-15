@@ -131,11 +131,57 @@ pre:has(code.language-output) {
     background-color: black;
 }
 
-/* Typst 给 raw 里的标点写了内联 color(#d73948),内联样式压得过任何
- * 普通规则,token 层管不到 —— 深色下这个红读不出来。用 !important 把它
- * 按回 token。只在深色生效,浅色保持 Typst 原样。
- * 选择器只认这一个色值:同一份高亮里还有 #301414、#b60157、#4b69c6 等
- * 另外几种 token 色,按 [style*="color"] 匹配会把它们一并刷成红色。 */
+/* Typst 的语法高亮是**内联**写在 <span style="color: #xxxxxx"> 上的
+ * (style.typ 的 show text:只要 text.fill 不是默认值就写内联 color),
+ * 内联样式压得过任何普通规则,token 层自己管不到 —— 深色下这套为暗底设计
+ * 的浅色值压在深色代码底上大多读不出来(属性色 #301414 对 --code-inline-bg
+ * 只有 1.13:1,注释色 #74747c 也只有 3.24:1)。
+ *
+ * 下面每条规则认**一个**色值,把它按回一个按角色命名的 token。只在深色
+ * 下生效,浅色保持 Typst 原样 —— token 的浅色值就是 Typst 现在吐的那个,
+ * 所以浅色渲染逐字节不变。
+ *
+ * 为什么不用一条 `span[style*="color"]` 通配:那会把九种 token 色全部
+ * 刷成同一个颜色,高亮就没了。按色值逐条匹配才是「一种颜色 → 一个角色」。
+ * 九个色值对应的角色见 theme.css 里 --code-syn-* 那段注释;深色值对
+ * --code-inline-bg(#26262e)与 --code-bg(#1a1a1f)的实测对比度:
+ *   keyword  #ff8080 6.18 / 7.14   string   #7ec87e 7.47 / 8.63
+ *   comment  #969aa6 5.34 / 6.17   literal  #e58ec0 6.41 / 7.40
+ *   symbol   #82aaff 6.53 / 7.55   member   #c39ae8 6.51 / 7.52
+ *   macro    #4fc4d4 7.28 / 8.40   markup   #3f9fa8 4.81 / 5.56
+ *   attr     #dfa3ad 7.13 / 8.24   plain    #a8a8b0 6.36 / 7.34
+ * 全部在 4.5 之上。
+ *
+ * code-block 虽带 shadow root,但 raw 里的 <code> 是 slot 出来的普通后代,
+ * 留在 light DOM 里,所以这里的普通选择器够得着。 */
+
 :root[data-theme="dark"] code span[style*="#d73948"] {
     color: var(--code-inline-fg) !important;
+}
+:root[data-theme="dark"] code span[style*="#74747c"] {
+    color: var(--code-syn-comment) !important;
+}
+:root[data-theme="dark"] code span[style*="#198810"] {
+    color: var(--code-syn-string) !important;
+}
+:root[data-theme="dark"] code span[style*="#b60157"] {
+    color: var(--code-syn-literal) !important;
+}
+:root[data-theme="dark"] code span[style*="#4b69c6"] {
+    color: var(--code-syn-symbol) !important;
+}
+:root[data-theme="dark"] code span[style*="#8b41b1"] {
+    color: var(--code-syn-member) !important;
+}
+:root[data-theme="dark"] code span[style*="#16718d"] {
+    color: var(--code-syn-macro) !important;
+}
+:root[data-theme="dark"] code span[style*="#1d6c76"] {
+    color: var(--code-syn-markup) !important;
+}
+:root[data-theme="dark"] code span[style*="#301414"] {
+    color: var(--code-syn-attribute) !important;
+}
+:root[data-theme="dark"] code span[style*="#6b6b6f"] {
+    color: var(--code-syn-plain) !important;
 }
