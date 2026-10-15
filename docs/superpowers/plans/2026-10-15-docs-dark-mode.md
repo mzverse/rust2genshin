@@ -31,7 +31,15 @@ export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links"
 typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle
 ```
 
-`docs/typst/main.typ` 由 `cargo run -p rust2genshin-docs --bin compile` 生成（`docs/src/typst.rs:27-45`），已 gitignore。本计划**不新增或删除任何 `.typ` 文件**，所以 `main.typ` 不用重新生成。构建成功时退出码 0，输出里只有 `no text within stars` 这类已知告警。
+`docs/typst/main.typ` 由 `docs/src/typst.rs:21 build()` 生成：它遍历整个 `docs/typst` 树，为每个文件写一行 `#bundle_document("/...")` 或 `#bundle_asset("/...")`。**Typst 的 bundle 导出只发清单里有的东西。** 所以：
+
+- 新增任何 **asset**（`.css` / `.js`，即 `.typ` 以外的文件）必须同时在 `main.typ` 加一行 `#bundle_asset`，否则引用它的 `<link>` / `<script src>` 静默 404 —— 构建照样退出 0，样式只是不生效。这是 Task 1 实际踩到的坑。
+- 新增或删除 `.typ` 页面同理，需要 `#bundle_document` 行。
+- `main.typ` 是 gitignored 的（`docs/typst/.gitignore:1`）。加在生成器会给出的排序位置上，**不要提交**；下次 `cargo run` 重新生成时结果一致。
+
+本计划只新增一个 asset：`lib/js/theme.js`（Task 2）。`lib/css/theme.css`（Task 1）已加好。
+
+构建成功时退出码 0，输出里只有 `no text within stars` 这类已知告警。
 
 人工看效果：`cargo run -p rust2genshin-docs --bin watch`（本机同样受 cargo 问题影响，改用 `typst watch --root docs/typst ./docs/typst/main.path target/debug/docs --features bundle,html --format bundle` 加浏览器手动刷新）。
 
@@ -41,7 +49,7 @@ typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --featur
 
 | 文件 | 动作 | 职责 |
 |---|---|---|
-| `docs/typst/lib/css/theme.css` | **新建** | 全部颜色 token 的唯一定义处；浅色/深色各一块 |
+| `docs/typst/lib/css/theme.css` | **新建** | 全部 token 的唯一定义处；浅色/深色各一块，另放跨 shadow 用的布局常量 |
 | `docs/typst/lib/js/theme.js` | **新建** | 在第一帧前解析并设置 `data-theme`，接线切换按钮 |
 | `docs/typst/lib/template.typ` | 改 | link `theme.css`、script `theme.js` |
 | `docs/typst/lib/outline.typ` | 改 | 输出 `<header class="site-header">` |
@@ -60,149 +68,21 @@ typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --featur
 
 ---
 
-### Task 1: 建立 token 层
+### Task 1: 建立 token 层 ✅ 已完成（commit `44bc4a`、`37344cc`、`7b0f768`）
+
+> **实施结果与本计划初稿有三处出入，后续 task 以 `docs/typst/lib/css/theme.css` 的实际内容为准：**
+>
+> 1. **新增 asset 必须登记进 `docs/typst/main.typ`。** 本计划初稿以为「本计划不新增 `.typ` 文件，所以 `main.typ` 不用重新生成」——错的。`main.typ` 是 `docs/src/typst.rs:21 build()` 生成的**清单**，站点里每个文件都要一行 `#bundle_document` / `#bundle_asset`，Typst 的 bundle 导出只发清单里有的东西。新增任何 **asset**（`.css`/`.js`）都必须加一行，否则 `<link>`/`<script src>` 静默 404。该文件是 gitignored 的，加在生成器会给出的位置上，不要提交。
+> 2. **token 名按角色命名，不按下标。** `--shadow-1`/`--shadow-2` → `--shadow-rest`/`--shadow-hover`，另加 `--shadow-drawer`（抽屉投影 `.18`）与 `--shadow-float`（顶栏按钮与卡片 hover 的 `.10`，两处同值共用一个）。
+> 3. **补齐了初稿漏掉的 token。** `code_block.css` 的 10 个字面量（语言徽标、复制按钮三种状态）、两处共用的关闭按钮 `#f0f0f0`/`#ddd`、`graph.css` 的 fallback 底色都补上了；`--graph-pin` 因为与 `--subtle` 同值而删掉；`--graph-edge` → `--graph-accent`。
 
 **Files:**
 - Create: `docs/typst/lib/css/theme.css`
 - Modify: `docs/typst/lib/template.typ:41`
 
-- [ ] **Step 1: 写 `theme.css`**
+- [x] **Step 1: 写 `theme.css`**
 
-```css
-/* 全站颜色 token 的唯一定义处。
- *
- * 组件样式一律引用 var(--x),不写字面量 —— 组件的 CSS 进不了 shadow root
- * (toc-component / code-block / expand-panel / ui-graph 都在自己的
- * shadow 里渲染),而自定义属性是唯一能穿过 shadow 边界的东西。
- *
- * 深色值只在下面 :root[data-theme="dark"] 一处出现,不散落成各文件的
- * 覆盖块 —— 两份副本迟早漂移。data-theme 由 lib/js/theme.js 在第一帧
- * 之前写到 documentElement 上。 */
-
-:root {
-    color-scheme: light;
-
-    /* 底与面 */
-    --bg: #fdfdfd;
-    --surface: #fff;
-
-    /* 字 */
-    --fg: #19181f;
-    --muted: #565565;
-    --subtle: #7a7c86;
-
-    /* 强调 */
-    --accent: #11566c;
-    --link: #3964fe;
-
-    /* 线与状态 */
-    --border: #e2e3e8;
-    --border-soft: #d7d9e2;
-    --hover: #eff0f3;
-    --active: #e4e5ea;
-
-    /* 折叠面板 */
-    --panel: #efefef;
-    --panel-head: gainsboro;
-
-    /* 代码 */
-    --code-bg: #fdfdfd;
-    --code-inline-bg: #eff3f8;
-
-    /* 投影与遮罩 */
-    --shadow-1: #59556533;
-    --shadow-2: rgba(0, 0, 0, 0.12);
-    --overlay: rgba(0, 0, 0, 0.5);
-
-    /* 锚点 hover 高亮(lib/js/style.js 加的 .highlight) */
-    --highlight-bg: rgba(255, 152, 0, 0.08);
-    --highlight-fg: #ff9800;
-
-    /* ui-card 三种提示。每组四个: 底 / 边 / 字 / 图标。 */
-    --card-info-bg: #D1ECF1;
-    --card-info-border: #BEE5EB;
-    --card-info-fg: #0C5460;
-    --card-info-icon: #17A2B8;
-
-    --card-tip-bg: #D4EDDA;
-    --card-tip-border: #C3E6CB;
-    --card-tip-fg: #155724;
-    --card-tip-icon: #28A745;
-
-    --card-attention-bg: #FFF3CD;
-    --card-attention-border: #FFEEBA;
-    --card-attention-fg: #856404;
-    --card-attention-icon: #FFC107;
-
-    /* 节点图。graph.css 管画布(light DOM),graph.js 的内联 <style> 管
-     * shadow 里的节点盒子、连线、控件 —— 两边同名引用同一个 token。 */
-    --graph-canvas: #fbfbfd;
-    --graph-box: #fff;
-    --graph-border: #c9cbd4;
-    --graph-edge: #11566c;
-    --graph-pin: #7a7c86;
-    --graph-reset-bg: rgba(255, 255, 255, 0.9);
-
-    /* 顶栏高度。顶栏是 sticky 的,所有抽屉/侧栏的偏移都从这一个值算。 */
-    --header-h: 48px;
-}
-
-:root[data-theme="dark"] {
-    color-scheme: dark;
-
-    --bg: #16161a;
-    --surface: #1f1f24;
-
-    --fg: #e6e6ea;
-    --muted: #a0a0aa;
-    --subtle: #8a8a95;
-
-    --accent: #4fd1e0;
-    --link: #8ab4ff;
-
-    --border: #33333c;
-    --border-soft: #2a2a33;
-    --hover: #2a2a33;
-    --active: #3a3a45;
-
-    --panel: #1c1c21;
-    --panel-head: #24242b;
-
-    --code-bg: #1a1a1f;
-    --code-inline-bg: #26262e;
-
-    --shadow-1: #00000066;
-    --shadow-2: rgba(0, 0, 0, 0.5);
-    --overlay: rgba(0, 0, 0, 0.65);
-
-    --highlight-bg: rgba(255, 152, 0, 0.18);
-    --highlight-fg: #ffb74d;
-
-    --card-info-bg: #12303a;
-    --card-info-border: #1d4b5a;
-    --card-info-fg: #9fdcea;
-    --card-info-icon: #4dd0e1;
-
-    --card-tip-bg: #12301c;
-    --card-tip-border: #1d4a2c;
-    --card-tip-fg: #a5e0b0;
-    --card-tip-icon: #4ade80;
-
-    --card-attention-bg: #3a2c0d;
-    --card-attention-border: #5c4713;
-    --card-attention-fg: #f0cf85;
-    --card-attention-icon: #fbbf24;
-
-    --graph-canvas: #101014;
-    --graph-box: #24242c;
-    --graph-border: #3a3a45;
-    --graph-edge: #4fd1e0;
-    --graph-pin: #8a8a95;
-    --graph-reset-bg: rgba(36, 36, 44, 0.9);
-}
-```
-
-- [ ] **Step 2: 在 `template.typ` 里 link 它（必须在 `style.css` 之前）**
+- [x] **Step 2: 在 `template.typ` 里 link 它（必须在 `style.css` 之前）**
 
 `docs/typst/lib/template.typ:40-42` 现在是：
 
@@ -222,7 +102,7 @@ typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --featur
             import_style("/lib/css/template.css");
 ```
 
-- [ ] **Step 3: 跑构建**
+- [x] **Step 3: 跑构建**
 
 ```shell
 cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/WinGet/Links" && typst compile --root docs/typst ./docs/typst/main.typ target/debug/docs --features bundle,html --format bundle; echo "EXIT=$?"
@@ -230,7 +110,7 @@ cd F:/rust2genshin && export PATH="$PATH:/c/Users/53548/AppData/Local/Microsoft/
 
 预期：`EXIT=0`，输出只有已知的 `no text within stars` 告警。
 
-- [ ] **Step 4: 断言 token 文件被复制进产物并被每页 link**
+- [x] **Step 4: 断言 token 文件被复制进产物并被每页 link**
 
 ```shell
 cd F:/rust2genshin && ls target/debug/docs/lib/css/theme.css && grep -c 'href="/lib/css/theme.css"' target/debug/docs/user/index.html target/debug/docs/index.html
@@ -238,7 +118,7 @@ cd F:/rust2genshin && ls target/debug/docs/lib/css/theme.css && grep -c 'href="/
 
 预期：两个文件都存在；`grep -c` 两行各输出 `1`。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```shell
 cd F:/rust2genshin && git add docs/typst/lib/css/theme.css docs/typst/lib/template.typ && git commit -m "feat(docs): add color token layer for theming"
@@ -443,11 +323,22 @@ expand-panel {
 
 - [ ] **Step 4: 改 `graph.css`**
 
-`border: 1px solid #d7d9e2; background-color: #fbfbfd;`（:19-20）换 token；fallback 那块的 `border: 1px dashed #c9cbd4; background-color: #f7f8fa; color: #565565;`（:41-43）换成 `var(--graph-border)` / `var(--graph-canvas)` / `var(--muted)`。
+`border: 1px solid #d7d9e2; background-color: #fbfbfd;`（:19-20）换 token；fallback 那块的 `border: 1px dashed #c9cbd4; background-color: #f7f8fa; color: #565565;`（:41-43）换成 `var(--graph-border)` / `var(--graph-fallback-bg)` / `var(--muted)`。
 
 - [ ] **Step 5: 改 `code_block.css`**
 
-`background-color: #fdfdfd`（:8）→ `var(--code-bg)`；`box-shadow: 0 4px 12px #59556533`（:10）→ `var(--shadow-1)`；`box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12)`（:14）→ `var(--shadow-2)`；`background-color: #eff3f8 !important`（:100）→ `var(--code-inline-bg) !important`。`[lang="output"]` 的 `black`/`white` **不动**。
+`background-color: #fdfdfd`（:8）→ `var(--code-bg)`；`box-shadow: 0 4px 12px #59556533`（:10）→ `var(--shadow-rest)`；`box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12)`（:14）→ `var(--shadow-hover)`；`background-color: #eff3f8 !important`（:100）→ `var(--code-inline-bg) !important`。
+
+代码块控件（Task 1 补齐的 8 个 token，本步消费）：
+
+| 位置 | 字面量 | token |
+|---|---|---|
+| :66-67 语言徽标 | `#2563eb` / `#ffffff` | `--badge-bg` / `--badge-fg` |
+| :75-76 复制按钮 | `#7c3aed` / `#ffffff` | `--copy-bg` / `--copy-fg` |
+| :88-89 复制按钮 hover | `#6d28d9` / `#ede9fe` | `--copy-hover-bg` / `--copy-hover-fg` |
+| :92-93 已复制状态 | `#98c379` / `#ffffff` | `--copied-bg` / `--copied-fg` |
+
+`[lang="output"]` 与 `pre:has(code.language-output)` 的 `black`/`white`（:127-131）**不动** —— 那是模拟终端，本来就是深底，两个主题下都保持黑。
 
 - [ ] **Step 6: 改 `card.css` 的三套配色**
 
@@ -464,11 +355,11 @@ expand-panel {
     }
 ```
 
-`tip` 用 `--card-tip-*`，`attention` 用 `--card-attention-*`，同理。三段 `mask-image` 的 data URI 原样保留（里面是 `currentColor`）。`ui-card:hover` 的 `box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1)`（:16）→ `var(--shadow-2)`。
+`tip` 用 `--card-tip-*`，`attention` 用 `--card-attention-*`，同理。三段 `mask-image` 的 data URI 原样保留（里面是 `currentColor`）。`ui-card:hover` 的 `box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1)`（:16）→ `var(--shadow-float)`。
 
 - [ ] **Step 7: 改 `toc.css`**
 
-`#f0f0f0`（:16）、`#ddd`（:17）→ `var(--surface)` / `var(--border)`（这两个是 `.drawer-close` 按钮，浅色下 `#fff` 与 `#f0f0f0` 同档）；`#eff0f3`（:99、:112、:122、:126）→ `var(--hover)`；`#e4e5ea`（:130）→ `var(--active)`；`#19181f`（:119）→ `var(--fg)`；`#11566c`（:147、:156）→ `var(--accent)`。
+`#f0f0f0`（:16）、`#ddd`（:17）→ `var(--close-bg)` / `var(--close-border)`（与 `.outline-close` 共用同一对 token，浅色下这两处本来就在抄同一个色值）；`#eff0f3`（:99、:112、:122、:126）→ `var(--hover)`；`#e4e5ea`（:130）→ `var(--active)`；`#19181f`（:119）→ `var(--fg)`；`#11566c`（:147、:156）→ `var(--accent)`。
 
 - [ ] **Step 8: 改 `outline.css`**
 
@@ -477,9 +368,11 @@ expand-panel {
 - :35 `body { background-color: #fdfdfd }` → `var(--bg)`
 - :50 `.drawer-overlay { background-color: rgba(0, 0, 0, 0.5) }` → `var(--overlay)`
 - :16 `toc-component { background-color: #fdfdfd }` → `var(--bg)`
-- :141 `.outline-close { background-color: #f0f0f0; border: 1px solid #ddd }` → `var(--surface)` / `var(--border)`
+- :141 `.outline-close { background-color: #f0f0f0; border: 1px solid #ddd }` → `var(--close-bg)` / `var(--close-border)`
 - :104 `.outline { color: #565565 }` → `var(--muted)`；`:133` 的 `background-color: #fdfdfd` → `var(--bg)`
 - :95-96 `.toc-toggle:hover/.outline-toggle:hover/.…:active { background-color: #eff0f3 / #e4e5ea }` → `var(--hover)` / `var(--active)`
+- :24 和 :127 两处 `box-shadow: … rgba(0, 0, 0, .18)`（`toc-component` 与 `.outline` 的抽屉投影）→ `var(--shadow-drawer)`
+- :83 `.toc-toggle/.outline-toggle` 的 `box-shadow: 0 1px 4px rgba(0, 0, 0, .10)` → `var(--shadow-float)`（Task 5 会把这两个按钮挪进顶栏，这条规则保留）
 - :251 `.outline li.current > :first-child * { color: #11566c }` → `var(--accent)`
 
 - [ ] **Step 9: 断言：除例外清单外没有裸颜色字面量残留**
@@ -522,17 +415,17 @@ cd F:/rust2genshin && git add docs/typst/lib/css && git commit -m "refactor(docs
 - `background: #fff` → `background: var(--graph-box)`
 - `border: 1.5px solid #c9cbd4` → `border: 1.5px solid var(--graph-border)`
 - `line-height: 21px; color: #19181f` → `line-height: 21px; color: var(--fg)`
-- `color: #7a7c86`（`.g-label`）→ `color: var(--graph-pin)`
-- `.g-ctrl { fill: #11566c }` → `fill: var(--graph-edge)`
-- `.g-data { fill: #fff; stroke: #11566c }` → `fill: var(--graph-box); stroke: var(--graph-edge)`
-- `:host(:hover) .g-box { border-color: #11566c }` 与 `:host(.hot) .g-box { border-color: #11566c; ... }` → `var(--graph-edge)`
+- `color: #7a7c86`（`.g-label`）→ `color: var(--subtle)`（`--graph-pin` 已删，同值不同名会漂）
+- `.g-ctrl { fill: #11566c }` → `fill: var(--graph-accent)`
+- `.g-data { fill: #fff; stroke: #11566c }` → `fill: var(--graph-box); stroke: var(--graph-accent)`
+- `:host(:hover) .g-box { border-color: #11566c }` 与 `:host(.hot) .g-box { border-color: #11566c; ... }` → `var(--graph-accent)`
 
 - [ ] **Step 2: 改 shadow 里的连线与 reset 按钮样式**
 
 `docs/typst/lib/js/graph.js:473-484` 替换三处：
 
-- `.g-edge { fill: none; stroke: #11566c; ... }` → `stroke: var(--graph-edge)`
-- `.g-reset { ... border: 1px solid #c9cbd4; background: rgba(255, 255, 255, .9); color: #11566c; ... }` → `border: 1px solid var(--graph-border); background: var(--graph-reset-bg); color: var(--graph-edge);`
+- `.g-edge { fill: none; stroke: #11566c; ... }` → `stroke: var(--graph-accent)`
+- `.g-reset { ... border: 1px solid #c9cbd4; background: rgba(255, 255, 255, .9); color: #11566c; ... }` → `border: 1px solid var(--graph-border); background: var(--graph-reset-bg); color: var(--graph-accent);`
 - `.g-reset:hover { background: #fff; }` → `background: var(--graph-box);`
 
 - [ ] **Step 3: 断言没有漏网的字面量**
