@@ -159,11 +159,15 @@
     --hover: #2e2e3a;
     --active: #42424f;
 
-    /* 深色下纯黑描边会在页底消失,面板边改用比 --border(#33333c)略强
-     * 一档的灰;hover 则是 --panel-head(#24242b) 之上的一档,对应浅色的 silver。 */
+    /* 深色下纯黑描边会在页底消失,面板边换成实打实看得见的灰:浅色的 black
+     * 对 --panel 有 18.3:1,这一档要保住「面板是个有边的盒子」这件事 ——
+     * 实测对 --panel(#1c1c21) 3.4:1、对 --bg(#16161a) 3.7:1、对
+     * --surface(#1f1f24) 3.3:1、对 --close-bg(#26262e) 3.0:1,都在 3 之上。
+     * --close-border 复用同一个值(两者都是「控件自己的一圈边」),故一并改。
+     * hover 则是 --panel-head(#24242b) 之上的一档,对应浅色的 silver。 */
     --panel: #1c1c21;
     --panel-head: #24242b;
-    --panel-border: #3f3f4a;
+    --panel-border: #6f6f7d;
     --panel-head-hover: #32323c;
 
     --code-bg: #1a1a1f;
@@ -199,7 +203,8 @@
     --copied-fg: #f0fdf4;
 
     --close-bg: #26262e;
-    --close-border: #3f3f4a;
+    /* 与 --panel-border 同一个值,理由见上面那段 */
+    --close-border: #6f6f7d;
 
     --shadow-rest: #00000066;
     --shadow-hover: rgba(0, 0, 0, 0.5);
