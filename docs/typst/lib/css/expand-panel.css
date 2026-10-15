@@ -1,6 +1,6 @@
 expand-panel {
     display: block;
-    border: 1pt solid var(--border);
+    border: 1pt solid var(--panel-border);
     margin: 6pt 0;
     border-radius: 6pt;
     background: var(--panel);
@@ -14,11 +14,8 @@ expand-panel {
         justify-content: space-between;
         align-items: center;
     }
-    /* 头部的 hover 底色。原先写的是命名色 silver,比 --active 的浅色值深
-     * 一档,换过来之后 hover 比原来浅一些。取的是「盖在面上的状态灰」这个
-     * 角色(与目录里折叠按钮的 hover 同档),不另立 token。 */
     &::part(header):hover {
-        background: var(--active);
+        background: var(--panel-head-hover);
     }
 
     &::part(arrow) {

@@ -39,9 +39,13 @@
     --hover: #eff0f3;
     --active: #e4e5ea;
 
-    /* 折叠面板 */
+    /* 折叠面板。panel-border 是面板自身的描边,历史上写的是命名色 black,
+     * 比同页的 --border 深得多;panel-head-hover 是头部 hover 那一层,
+     * 原先写的是 silver。两者都按原值立 token,不在浅色下换档。 */
     --panel: #efefef;
     --panel-head: #dcdcdc;
+    --panel-border: black;
+    --panel-head-hover: silver;
 
     /* 代码 */
     --code-bg: #fdfdfd;
@@ -127,8 +131,12 @@
     --hover: #2e2e3a;
     --active: #42424f;
 
+    /* 深色下纯黑描边会在页底消失,面板边改用比 --border(#33333c)略强
+     * 一档的灰;hover 则是 --panel-head(#24242b) 之上的一档,对应浅色的 silver。 */
     --panel: #1c1c21;
     --panel-head: #24242b;
+    --panel-border: #3f3f4a;
+    --panel-head-hover: #32323c;
 
     --code-bg: #1a1a1f;
     --code-inline-bg: #26262e;
