@@ -11,16 +11,16 @@ code-block {
     margin: 0;
     padding: 1rem;
     position: relative;
-    background-color: #fdfdfd;
+    background-color: var(--code-bg);
     border-radius: 5pt;
     overflow: hidden;
     transition: all 0.3s ease;
-    box-shadow: 0 4px 12px #59556533;
+    box-shadow: 0 4px 12px var(--shadow-rest);
     box-sizing: border-box;
     min-width: 240pt;
 
     &:hover {
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+        box-shadow: 0 8px 30px var(--shadow-hover);
     }
 
     :not(.container) > & {
@@ -63,8 +63,8 @@ code-block {
         align-items: center;
         gap: 0.25rem;
         margin: 0;
-        background-color: #2563eb;
-        color: #ffffff;
+        background-color: var(--badge-bg);
+        color: var(--badge-fg);
         padding: 0.25rem 0.5rem;
         border-radius: 4px;
         font-size: 12px;
@@ -72,8 +72,8 @@ code-block {
     }
     &::part(copy) {
         margin: 0;
-        background-color: #7c3aed;
-        color: #ffffff;
+        background-color: var(--copy-bg);
+        color: var(--copy-fg);
         border: none;
         border-radius: 4px;
         padding: 0.25rem 0.75rem;
@@ -85,12 +85,12 @@ code-block {
         gap: 0.25rem;
     }
     &::part(copy):hover {
-        background-color: #6d28d9;
-        color: #ede9fe;
+        background-color: var(--copy-hover-bg);
+        color: var(--copy-hover-fg);
     }
     &::part(copy).copied {
-        background-color: #98c379;
-        color: #ffffff;
+        background-color: var(--copied-bg);
+        color: var(--copied-fg);
     }
     @media(hover: hover) {
         &::part(header) {
@@ -118,7 +118,7 @@ code, code-block::part(code) {
 
 code:not(pre > code) {
     margin-inline: 0;
-    background-color: #eff3f8 !important;
+    background-color: var(--code-inline-bg) !important;
     border-radius: 0.1em;
     padding-inline: 2pt;
 }

@@ -4,9 +4,9 @@
 }
 
 .highlight {
-    outline: 2px solid #ff9800;
+    outline: 2px solid var(--highlight-fg);
     outline-offset: 4px;
-    background: rgba(255, 152, 0, 0.08);
+    background: var(--highlight-bg);
     transition: background 0.25s, outline-color 0.25s;
     border-radius: 4px;
 }
@@ -30,7 +30,7 @@ p, par {
     margin: 12pt 0;
 }
 a {
-    color: #3964fe;
+    color: var(--link);
     text-decoration-line: none;
     &:hover {
         text-decoration-line: underline;

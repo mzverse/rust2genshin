@@ -20,8 +20,8 @@ toc-component {
      * 一大片纯白很扎眼;内容多过一屏才滚。 */
     max-height: 100vh;
     width: min(85vw, 320px);
-    background-color: #fdfdfd;
-    box-shadow: 6px 0 24px rgba(0, 0, 0, .18);
+    background-color: var(--bg);
+    box-shadow: 6px 0 24px var(--shadow-drawer);
     transform: translateX(-100%);
     transition: transform 0.3s ease;
     z-index: 1002;
@@ -33,7 +33,7 @@ toc-component {
 }
 
 body {
-    background-color: #fdfdfd;
+    background-color: var(--bg);
     min-height: 100vh;
     display: grid;
     /* 窄屏单列:两栏侧栏都是 fixed 抽屉,脱离文档流,grid 里只剩正文。 */
@@ -53,7 +53,7 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
+    background-color: var(--overlay);
     z-index: 1001;
     display: none;
 
@@ -64,8 +64,8 @@ body {
 
 /* 两个抽屉的开关按钮。固定定位,不占 grid 格子;只在对应抽屉存在的
  * 那几档出现(宽屏那份在 media query 里 display:none)。
- * 做成 40px 的白底描边方块,配色跟目录里的折叠按钮一致(#eff0f3 /
- * #19181f)。图标用内联 SVG,不依赖字体里有没有 `☰` 这个字形 ——
+ * 做成 40px 的白底描边方块,配色跟目录里的折叠按钮一致(--hover / --active)。
+ * 图标用内联 SVG,不依赖字体里有没有 `☰` 这个字形 ——
  * 按钮里原本的 `☰` 文本用 font-size:0 藏掉。 */
 .toc-toggle, .outline-toggle {
     position: fixed;
@@ -74,13 +74,13 @@ body {
     height: 40px;
     padding: 0;
     border-radius: 10px;
-    background-color: #fff;
+    background-color: var(--surface);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2319181f' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: center;
     background-size: 20px 20px;
-    border: 1px solid #e2e3e8;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .10);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px var(--shadow-float);
     color: transparent;
     font-size: 0;
     cursor: pointer;
@@ -92,8 +92,8 @@ body {
 }
 .toc-toggle { left: 16px; }
 .outline-toggle { right: 16px; }
-.toc-toggle:hover, .outline-toggle:hover { background-color: #eff0f3; }
-.toc-toggle:active, .outline-toggle:active { background-color: #e4e5ea; }
+.toc-toggle:hover, .outline-toggle:hover { background-color: var(--hover); }
+.toc-toggle:active, .outline-toggle:active { background-color: var(--active); }
 
 /* 窄屏正文顶端要给浮动的 ☰ 让位,否则 h1 会被压在按钮底下。
  * 两栏都常驻、按钮消失的宽档在 media query 里把留白收回去。 */
@@ -105,7 +105,7 @@ main {
     position: fixed;
     padding-inline-start: 3pt;
     font-size: 12pt;
-    color: #565565;
+    color: var(--muted);
     font-weight: 600;
     align-self: start;
     box-sizing: border-box;
@@ -123,8 +123,8 @@ main {
      * 相同,看不出来。宽度也定死:只写 max-width 会按内容撑,条目少的页
      * 抽屉只有 160 多 px,文字被挤成一列。 */
     width: min(85vw, 320px);
-    background-color: #fdfdfd;
-    box-shadow: -6px 0 24px rgba(0, 0, 0, .18);
+    background-color: var(--bg);
+    box-shadow: -6px 0 24px var(--shadow-drawer);
 
     top: 0;
     /* 同左栏:抽屉高度贴着内容,别撑成一整屏白。 */
@@ -146,8 +146,8 @@ main {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background-color: #f0f0f0;
-    border: 1px solid #ddd;
+    background-color: var(--close-bg);
+    border: 1px solid var(--close-border);
     font-size: 18px;
     cursor: pointer;
     display: flex;
@@ -249,7 +249,7 @@ main {
     text-decoration: underline;
 }
 .outline li.current > :first-child * {
-    color: #11566c;
+    color: var(--accent);
 }
 .outline ul {
     list-style: none;

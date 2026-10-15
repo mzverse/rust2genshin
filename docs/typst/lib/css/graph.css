@@ -17,8 +17,8 @@ ui-graph {
     overflow: hidden;
     border-radius: 8px;
     /* 图是可以拖、可以缩放的交互区域,得让人看得出边界 */
-    border: 1px solid #d7d9e2;
-    background-color: #fbfbfd;
+    border: 1px solid var(--border-soft);
+    background-color: var(--graph-canvas);
 
     /* <connection> 只是数据载体,要藏。引脚挂在节点底下,所以是后代选择器
      * 而不是子代。
@@ -35,10 +35,10 @@ ui-graph {
     &:not(:defined) > .graph-fallback {
         display: block;
         padding: 12px 14px;
-        border: 1px dashed #c9cbd4;
+        border: 1px dashed var(--graph-border);
         border-radius: 6px;
-        background-color: #f7f8fa;
-        color: #565565;
+        background-color: var(--graph-fallback-bg);
+        color: var(--muted);
         font-size: 14px;
         line-height: 1.5;
     }

@@ -1,21 +1,24 @@
 expand-panel {
     display: block;
-    border: 1pt solid black;
+    border: 1pt solid var(--border);
     margin: 6pt 0;
     border-radius: 6pt;
-    background: #efefef;
+    background: var(--panel);
     
     &::part(header) {
         border-radius: 6pt;
         cursor: pointer;
-        background: gainsboro;
+        background: var(--panel-head);
         padding: 9pt 9pt;
         display: flex;
         justify-content: space-between;
         align-items: center;
     }
-    &::part(header):hover { 
-        background: silver; 
+    /* 头部的 hover 底色。原先写的是命名色 silver,比 --active 的浅色值深
+     * 一档,换过来之后 hover 比原来浅一些。取的是「盖在面上的状态灰」这个
+     * 角色(与目录里折叠按钮的 hover 同档),不另立 token。 */
+    &::part(header):hover {
+        background: var(--active);
     }
 
     &::part(arrow) {
