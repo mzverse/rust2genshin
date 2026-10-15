@@ -2,6 +2,8 @@
 
 本文件是给 agent 的开发指南。
 
+> **与 `CLAUDE_alt.md` 的关系**：仓库根下还有一个 `CLAUDE_alt.md`。**两处冲突时以 `CLAUDE_alt.md` 为准**；本文件的其余内容（agent 的工作指引、命令、目录结构速查）不变。叙述性的文档在已发布的站点上，不在这两个文件里。
+
 **面向人的文档在 <https://mzverse.github.io/rust2genshin/>** —— 叙述性的说明（构建流程、调试技巧、加节点/加原生调用、节点图语义）都在那边。这里只留 agent 干活必需的信息和指路，避免两处各写一份然后分叉。
 
 改动本文件时：**每条断言都要能对应到代码**，写下 `文件:行`。这个文件曾经漂移得很厉害（工具链版本、目录结构、编译路径全对不上），不要再让它变成叙述性文档。
@@ -56,7 +58,7 @@ cargo build -p rust2genshin-viewer
 
 产物路径是 `target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia`（`<target 名>/release/<crate 名>.gia`）。
 
-不要手动传 `-Coverflow-checks=off` 或 `-Zalways-encode-mir=yes` —— 构建脚本和 CI 里都没有，也不需要有（原因见站点「调试」页）。
+不要手动传 `-Coverflow-checks=off` 或 `-Zalways-encode-mir=yes` —— 构建脚本和 CI 里都没有，也不需要有（原因见站点「调试」页）。原因是设计上的：后端把 `i32` 算术编译成 unchecked 节点（`compile/func.rs:142-147` 把 `AddUnchecked` / `AddWithOverflow` 折到普通 `node_add`），`Assert` 终结符又在翻译时直接丢弃，溢出在节点图里本来就是按 wrapping 语义走的。
 
 ## 工作区结构
 
