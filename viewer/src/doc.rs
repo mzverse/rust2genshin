@@ -108,6 +108,9 @@ pub fn label(kind: &IrNodeId, type_label: &str) -> String {
     let base = match kind {
         IrNodeId::Native(x) => sys_call_label(x),
         IrNodeId::Fn(s) => s.clone(),
+        // 分支名标在每个控制出引脚上(`ctrl_out_labels`),标题只留节点本身
+        // 的名字 —— `Switch` 的 `Debug` 会把整张分支表塞进标题。
+        IrNodeId::Switch(_) => "switch".to_string(),
         other => format!("{other:?}"),
     };
     if type_label.is_empty() {
@@ -238,6 +241,28 @@ mod sys_call_label_tests {
         assert!(short.len() < long.len(), "{short:?} 应当比 {long:?} 短");
         assert!(node_width(&short) <= NODE_W, "短名不应撑宽,实测 {}px", node_width(&short));
     }
+
+    /// `Switch` 的标题只留 `switch`,分支值逐个标在控制出引脚上,最后一个
+    /// 控制出是 default —— 两边必须对上,否则画出来的分支名错位。
+    #[test]
+    fn switch_label_and_ctrl_out_labels_line_up() {
+        let values: Vec<Box<dyn rust2genshin::value::NativeValue>> =
+            vec![Box::new(1i32), Box::new("two".to_string())];
+        let kind = rust2genshin::compile::ir::node_ir_switch(
+            rust2genshin::compile::ir::IrKind::Native(rust2genshin::value::NativeKind::Int),
+            values,
+        );
+        assert_eq!(label(&kind.id, ""), "switch");
+        let labels = ctrl_out_labels(&kind.id);
+        assert_eq!(labels, vec!["1", "\"two\"", "default"]);
+        assert_eq!(
+            labels.len(),
+            kind.controls_out_num,
+            "分支名要和控制出 pin 一一对应"
+        );
+        // 其余节点没有分支名
+        assert!(ctrl_out_labels(&IrNodeId::Nop).is_empty());
+    }
 }
 
 /// 一个连到图外的 pin。
@@ -281,6 +306,12 @@ pub struct NodeEntry {
     /// `NodeKind::values_out_types` 是 `Vec<IrKind>`(没有"无类型"),所以
     /// 这里每一项都非空。
     pub values_out_types: Vec<String>,
+    /// 每个**控制出** pin 的分支名,与 `controls_out_num` 同长;其余节点是
+    /// 空 Vec(控制流本来就不分类型)。
+    ///
+    /// 只有 `Switch` 有:`values` 的第 i 项标在第 i 个控制出上,最后那个
+    /// 控制出是 default 分支(见 `IrNodeId::Switch` 的定义)。
+    pub ctrl_out_labels: Vec<String>,
     /// 连到**图外**的 pin(图边界)。渲染时从这些 pin 往图外引一小段桩线、
     /// 末端标上图外边界号(`Export N`)—— 取代了以前节点里的 `[in]` / `[out]`
     /// 文字标记,而且能精确到是**哪一个引脚、哪一号边界**。
@@ -640,6 +671,22 @@ fn export_pins<T>(pins: &[T], find_export: impl Fn(&T) -> Option<usize>) -> Vec<
         .collect()
 }
 
+/// 每个控制出 pin 的分支名(见 [`NodeEntry::ctrl_out_labels`])。
+///
+/// 只有 `Switch` 有 —— `controls_out_num` 是 `values.len() + 1`,前 `n` 个
+/// 对应各个分支值,最后那个是兜底的 default(`ir.rs` 里 `Switch` 的定义
+/// 就这么写的)。其余节点返回空 Vec。
+fn ctrl_out_labels(kind: &IrNodeId) -> Vec<String> {
+    match kind {
+        IrNodeId::Switch(values) => values
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .chain(std::iter::once("default".to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
     let mut index_of = HashMap::new();
     let mut nodes = Vec::new();
@@ -690,6 +737,7 @@ fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
                 .iter()
                 .map(|k| type_label(Some(k)))
                 .collect(),
+            ctrl_out_labels: ctrl_out_labels(&node.kind.id),
             ctrl_in_exports,
             ctrl_out_exports,
             value_in_exports,
@@ -1044,8 +1092,8 @@ mod tests {
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
         // `node_ir_local` 是 0 进 0 出的纯值节点,连不了控制边;
         // `node_ir_set_local` 才是 1 进 1 出。
-        let a = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
-        let b = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        let a = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        let b = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         g.link_control(Link::node(a, 0), Link::node(b, 0));
         // 绕过 `NodeGraph::remove`,直接捅 slab —— a 的 controls_out[0] 里
         // 留下一条指向已删除节点的边。
@@ -1074,9 +1122,9 @@ mod tests {
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
         // 下标 0:值的来源(纯值节点,values_out[0] 是 Int)
-        let src = g.insert(node_ir_local(&IrKind::Native(NativeKind::Int)));
+        let src = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
         // 下标 1:消费方(SetLocal 的 values_in[1])
-        let dst = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        let dst = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         g.link_value(Link::node(src, 0), Link::node(dst, 1));
 
         let mut t = Target::default();
@@ -1105,10 +1153,10 @@ mod tests {
         use rust2genshin::value::NativeKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        g.insert(node_ir_local(&IrKind::Native(NativeKind::Int))); // 下标 0
-        let src = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int))); // 下标 1
+        g.insert(node_ir_local(IrKind::Native(NativeKind::Int))); // 下标 0
+        let src = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int))); // 下标 1
         // `insert` 内部才按 `controls_in_num` 建 `Links`,所以改完再插才生效。
-        let mut two_in = node_ir_set_local(&IrKind::Native(NativeKind::Int));
+        let mut two_in = node_ir_set_local(IrKind::Native(NativeKind::Int));
         two_in.controls_in_num = 2;
         let two = g.insert(two_in); // 下标 2
         // 只连 1 条边,另一个控制入空着
@@ -1138,8 +1186,8 @@ mod tests {
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
         g.push_export_control_in(ExportDecl::new("".into(), None));
         g.push_export_control_out(ExportDecl::new("".into(), None));
-        let entry = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
-        let exit = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        let entry = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        let exit = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         // 外部 -> 入口块
         g.link_control(Link::export(0), Link::node(entry, 0));
         // 返回块 -> 外部
@@ -1187,7 +1235,7 @@ mod tests {
         use rust2genshin::value::NativeKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         let mut t = Target::default();
         t.functions.insert("f".into(), fn_info(g));
         let doc = flatten(t);
@@ -1231,7 +1279,7 @@ mod tests {
             fields: vec![("value".to_string(), NativeKind::Int)],
         };
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        g.insert(node_ir_local(&IrKind::Native(NativeKind::Struct(sref))));
+        g.insert(node_ir_local(IrKind::Native(NativeKind::Struct(sref))));
 
         let mut t = Target::default();
         t.functions.insert("f".into(), fn_info(g));
@@ -1248,8 +1296,8 @@ mod tests {
         use rust2genshin::value::NativeKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        g.insert(node_ir_local(&IrKind::Native(NativeKind::Int)));
-        g.insert(node_ir_local(&IrKind::Native(NativeKind::Bool)));
+        g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        g.insert(node_ir_local(IrKind::Native(NativeKind::Bool)));
         let mut t = Target::default();
         t.functions.insert("f".into(), fn_info(g));
         let doc = flatten(t);
@@ -1267,7 +1315,7 @@ mod tests {
         use rust2genshin::node::NodeGraphKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        g.insert(node_ir_local(&IrKind::Adt("MyStruct".into())));
+        g.insert(node_ir_local(IrKind::Adt("MyStruct".into())));
 
         let mut t = Target::default();
         t.functions.insert("f".into(), fn_info(g));
@@ -1350,7 +1398,7 @@ mod tests {
         use rust2genshin::value::NativeKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "m");
-        let n = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        let n = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         let mut t = Target::default();
         t.main = Some(g);
         let mut doc = flatten(t);
@@ -1382,7 +1430,7 @@ mod tests {
 
         let mk = |name: &str| {
             let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, name);
-            g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+            g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
             g
         };
         let mut doc = Doc::new();
@@ -1483,8 +1531,8 @@ mod tests {
         g.push_export_value_in(ExportDecl::new("param".into(), None));
         g.push_export_value_in(ExportDecl::new("param2".into(), None));
         g.push_export_value_out(ExportDecl::new("ret".into(), None));
-        let s = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
-        let l = g.insert(node_ir_local(&IrKind::Native(NativeKind::Int)));
+        let s = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        let l = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
 
         // 控制流:图外 → s → 图外
         g.link_control(Link::export(0), Link::node(s, 0));
@@ -1526,7 +1574,7 @@ mod tests {
         use rust2genshin::value::NativeKind;
 
         let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
-        let s = g.insert(node_ir_set_local(&IrKind::Native(NativeKind::Int)));
+        let s = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         // 值入 1(值槽)给个字面量,值入 0(LocalRef 槽)不给 —— 两条路都要。
         g.set_default(Link::node(s, 1), Some(5.into()));
 
@@ -1638,22 +1686,22 @@ pub mod fixture {
 
         // `node_ir_local` 是 0 进 0 出的纯值节点,连不了控制边;要接控制流得用
         // `node_ir_set_local`(1 进 1 出)。
-        let entry = g.insert(node_ir_set_local(&int()));
+        let entry = g.insert(node_ir_set_local(int()));
         let branch = g.insert(node_ir_native(NODE_IF.clone()));
-        let a = g.insert(node_ir_set_local(&int()));
-        let b = g.insert(node_ir_set_local(&int()));
-        let join = g.insert(node_ir_set_local(&int()));
-        let tail = g.insert(node_ir_set_local(&int()));
-        let exit = g.insert(node_ir_set_local(&int()));
+        let a = g.insert(node_ir_set_local(int()));
+        let b = g.insert(node_ir_set_local(int()));
+        let join = g.insert(node_ir_set_local(int()));
+        let tail = g.insert(node_ir_set_local(int()));
+        let exit = g.insert(node_ir_set_local(int()));
 
         // 纯值节点:0 控制进出,只走数据流。
         // 注意方向:`node_ir_local` 的 `values_out_types = [LocalRef(T), T]`(**2 个值出**),
         // 而 `node_ir_set_local` 的 `values_out_types` 是**空的**(0 个值出)——
         // 拿 SetLocal 当值边源会索引越界 panic(`node/mod.rs:419`)。
         // 真实的 IR 就是 `GetLocal → SetLocal` 这个方向。
-        let get_a = g.insert(node_ir_local(&int()));
-        let get_b = g.insert(node_ir_local(&int()));
-        let get_join = g.insert(node_ir_local(&int()));
+        let get_a = g.insert(node_ir_local(int()));
+        let get_b = g.insert(node_ir_local(int()));
+        let get_join = g.insert(node_ir_local(int()));
 
         g.link_control(Link::export(0), Link::node(entry, 0));
         g.link_control(Link::node(entry, 0), Link::node(branch, 0));
@@ -1714,7 +1762,7 @@ pub mod fixture {
         let mut prev = None;
         let mut last = None;
         for _ in 0..4 {
-            let n = g.insert(node_ir_set_local(&int()));
+            let n = g.insert(node_ir_set_local(int()));
             if let Some(p) = prev {
                 g.link_control(Link::node(p, 0), Link::node(n, 0));
             }
@@ -1732,9 +1780,9 @@ pub mod fixture {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "has_a_loop");
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
-        let n0 = g.insert(node_ir_set_local(&int()));
-        let n1 = g.insert(node_ir_set_local(&int()));
-        let n2 = g.insert(node_ir_set_local(&int()));
+        let n0 = g.insert(node_ir_set_local(int()));
+        let n1 = g.insert(node_ir_set_local(int()));
+        let n2 = g.insert(node_ir_set_local(int()));
         g.link_control(Link::export(0), Link::node(n0, 0));
         g.link_control(Link::node(n0, 0), Link::node(n1, 0));
         g.link_control(Link::node(n1, 0), Link::node(n2, 0));
@@ -1807,8 +1855,8 @@ pub mod fixture {
         // 方向别看反:`push_export_value_out` 往 `externals.**values_in**`
         // 推(值流向图外 = 返回值),`values_out` 那侧才是函数参数。
         callee.push_export_value_out(ExportDecl::new("ret".into(), None));
-        let cl = callee.insert(node_ir_local(&int()));
-        let c0 = callee.insert(node_ir_set_local(&int()));
+        let cl = callee.insert(node_ir_local(int()));
+        let c0 = callee.insert(node_ir_set_local(int()));
         callee.link_value(Link::node(cl, 0), Link::node(c0, 0));
         // `node_ir_local` 的 `values_out = [LocalRef(T), T]`,T 的下标是 **1**。
         callee.link_value(Link::node(cl, 1), Link::export(0));
@@ -1822,11 +1870,11 @@ pub mod fixture {
         // SetLocal 的 `values_in[0]` 必须连着 Local —— 真实 IR 的不变量
         // (`eliminate_set_local` 会 unwrap 它)。单 link 不跑规则、裸着也没事,
         // 但「一键优化」会把规则链跑到这张图上,少了这一步直接 panic。
-        let le = caller.insert(node_ir_local(&int()));
-        let entry = caller.insert(node_ir_set_local(&int()));
+        let le = caller.insert(node_ir_local(int()));
+        let entry = caller.insert(node_ir_set_local(int()));
         caller.link_value(Link::node(le, 0), Link::node(entry, 0));
-        let lx = caller.insert(node_ir_local(&int()));
-        let exit = caller.insert(node_ir_set_local(&int()));
+        let lx = caller.insert(node_ir_local(int()));
+        let exit = caller.insert(node_ir_set_local(int()));
         caller.link_value(Link::node(lx, 0), Link::node(exit, 0));
         let fnn = caller.insert(NodeKind::new(
             IrNodeId::Fn("callee".to_string()),

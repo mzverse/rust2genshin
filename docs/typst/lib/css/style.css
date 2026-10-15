@@ -1,3 +1,16 @@
+* {
+    scroll-behavior: smooth;
+    scroll-margin-top: 50pt;
+}
+
+.highlight {
+    outline: 2px solid #ff9800;
+    outline-offset: 4px;
+    background: rgba(255, 152, 0, 0.08);
+    transition: background 0.25s, outline-color 0.25s;
+    border-radius: 4px;
+}
+
 ul {
     padding-left: 15pt;
 }

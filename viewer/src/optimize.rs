@@ -32,8 +32,20 @@ pub struct Rule {
 /// (测试 `rules_mirror_eliminate_solo` 会盯着这份名单)。
 pub const RULES: &[Rule] = &[
     Rule {
-        name: "eliminate_if",
-        run: Optimizer::eliminate_if,
+        name: "eliminate_nop",
+        run: Optimizer::eliminate_nop,
+    },
+    Rule {
+        name: "raise_if",
+        run: Optimizer::raise_if,
+    },
+    Rule {
+        name: "eliminate_branches",
+        run: Optimizer::eliminate_branches,
+    },
+    Rule {
+        name: "eliminate_switch",
+        run: Optimizer::eliminate_switch,
     },
     Rule {
         name: "eliminate_set_local",
@@ -457,11 +469,10 @@ fn reposition(
 mod tests {
     use super::*;
 
-    use rust2genshin::compile::func::{NodeGraphIr, node_ir_native};
+    use rust2genshin::compile::func::NodeGraphIr;
     use rust2genshin::compile::ir::{FnInfo, IrKind, node_ir_local, node_ir_set_local};
     use rust2genshin::compile::link::Target;
-    use rust2genshin::node::control::NODE_IF;
-    use rust2genshin::node::{ExportDecl, Link, NodeGraphKind, ValueIn};
+    use rust2genshin::node::{ExportDecl, Link, NodeGraphKind};
     use rust2genshin::value::NativeKind;
 
     use crate::doc::flatten;
@@ -514,10 +525,10 @@ mod tests {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "two_setters");
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
-        let l0 = g.insert(node_ir_local(&int()));
-        let s1 = g.insert(node_ir_set_local(&int()));
-        let l2 = g.insert(node_ir_local(&int()));
-        let s3 = g.insert(node_ir_set_local(&int()));
+        let l0 = g.insert(node_ir_local(int()));
+        let s1 = g.insert(node_ir_set_local(int()));
+        let l2 = g.insert(node_ir_local(int()));
+        let s3 = g.insert(node_ir_set_local(int()));
         g.link_value(Link::node(l0, 0), Link::node(s1, 0));
         g.link_value(Link::node(l2, 0), Link::node(s3, 0));
         g.link_control(Link::export(0), Link::node(s1, 0));
@@ -534,7 +545,10 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "eliminate_if",
+                "eliminate_nop",
+                "raise_if",
+                "eliminate_branches",
+                "eliminate_switch",
                 "eliminate_set_local",
                 "eliminate_local",
                 "eliminate_calc",
@@ -572,8 +586,8 @@ mod tests {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "read_after_write");
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
-        let l0 = g.insert(node_ir_local(&int()));
-        let s1 = g.insert(node_ir_set_local(&int()));
+        let l0 = g.insert(node_ir_local(int()));
+        let s1 = g.insert(node_ir_set_local(int()));
         // l0 的值出口连到 s1 的值入口 => l0.values_out[1] 非空 => s1 不可消
         g.link_value(Link::node(l0, 0), Link::node(s1, 0));
         g.link_value(Link::node(l0, 1), Link::node(s1, 1));
@@ -728,30 +742,28 @@ mod tests {
     /// 会留下那一半改动,这里就会对不上。
     #[test]
     fn panicking_sweep_is_caught_and_rolled_back() {
-        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "boom");
-        g.push_export_control_in(ExportDecl::new("in".into(), None));
-        g.push_export_control_out(ExportDecl::new("out".into(), None));
-        // 0:IF,条件有默认值 => eliminate_if 会把它消掉
-        let if_ok = g.insert(node_ir_native(NODE_IF.clone()));
-        g.get_node_mut(if_ok).links.values_in[0] = ValueIn::value(true.into());
-        // 1:SetLocal 垫在中间
-        let s = g.insert(node_ir_set_local(&int()));
-        // 2:IF,条件既没连线也没默认值 => eliminate_if 在这里 unwrap 到 None
-        let if_bad = g.insert(node_ir_native(NODE_IF.clone()));
-        g.link_control(Link::export(0), Link::node(if_ok, 0));
-        g.link_control(Link::node(if_ok, 0), Link::node(s, 0));
-        g.link_control(Link::node(s, 0), Link::node(if_bad, 0));
-        g.link_control(Link::node(if_bad, 0), Link::export(0));
+        // 规则内容不依赖 core 某条具体规则的 `unwrap`(core 拆分 / 改名规则时
+        // 这个测试会跟着失效),而是自己造一条"先消一个、再炸"的规则 —— 要验的
+        // 是 `sweep_guarded` 的护栏,不是 core 哪条规则会 panic。
+        fn eliminate_then_panic(opt: &mut Optimizer, node: NodeRef) -> Option<()> {
+            if Optimizer::eliminate_set_local(opt, node).is_none() {
+                panic!("boom");
+            }
+            None
+        }
+        let rule = Rule { name: "boom", run: eliminate_then_panic };
 
+        let (g, _, s1, _, s3) = two_setters();
         let mut doc = flatten(target_with(g));
         let pos0 = positions(&doc, 0);
         let refs0 = refs_of(&doc, 0);
         let edges0 = doc.graphs[0].edges.len();
 
-        let r = apply_rule(&mut doc, 0, &refs0, &pos0, rule_named("eliminate_if"));
+        let r = apply_rule(&mut doc, 0, &refs0, &pos0, &rule);
         assert!(r.undo.is_none(), "panic 的一跳不该进撤销栈:{}", r.status);
         assert!(r.status.contains("panic"), "状态栏应说明 panic:{}", r.status);
-        assert_eq!(refs_of(&doc, 0), refs0, "图必须整体回滚 —— if_ok 也不能少");
+        assert_eq!(refs_of(&doc, 0), refs0, "图必须整体回滚 —— s1 / s3 都不能少");
+        assert!(refs0.contains(&s1) && refs0.contains(&s3));
         assert_eq!(doc.graphs[0].edges.len(), edges0, "边也应回到点击前");
         assert_eq!(r.pos, pos0, "坐标不该动");
     }

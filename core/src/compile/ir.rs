@@ -28,7 +28,7 @@ impl NodeKindIr {
         if let IrNodeId::Native(native) = &self.id {
             *native != NODE_RANDOM_INT.id && *native != NODE_RANDOM_FLOAT.id
         } else {
-            false
+            true
         }
     }
 }

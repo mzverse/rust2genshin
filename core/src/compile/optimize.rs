@@ -462,10 +462,10 @@ impl Optimizer {
                     .unwrap_or(true)
             })
             .collect();
-        if reachable.len() == n.links.controls_out.len() {
+        let alive: usize = reachable.iter().copied().map(usize::from).sum();
+        if alive == n.links.controls_out.len() {
             return Some(());
         }
-        let alive: usize = reachable.iter().copied().map(usize::from).sum();
         if alive == 0 {
             let from = n.links.controls_in[0].clone();
             let n1 = self.graph.insert(ir::node_ir_unreachable());
@@ -495,7 +495,7 @@ impl Optimizer {
         let IrNodeId::Switch(values) = &n.kind.id else {
             return Some(());
         };
-        let br = if values.is_empty() {
+        let br = if values.is_empty() || n.links.controls_out.iter().all(|x| *x == n.links.controls_out[0]) {
             0
         } else if let Some(v) = &n.links.values_in[0].default {
             let mut i = 0;
@@ -605,12 +605,12 @@ impl Optimizer {
                 .filter_map(|x| x.target.node().map(|y| (y, x.index)))
             {
                 let n = self.graph.get_node(x);
-                if !n.kind.is_pure() {
-                    return Some(());
-                }
                 if n.kind.id == IrNodeId::Local && i == 1 {
                     setters.extend(n.links.values_out[0].iter());
                 } else if n.kind.is_calc() {
+                    if !n.kind.is_pure() {
+                        return Some(());
+                    }
                     queue.push_back(x);
                 } else {
                     setters.insert(Link::node(x, i));
@@ -684,8 +684,7 @@ impl Optimizer {
                 if now_node == node {
                     return res;
                 } else if setters.contains(&now) {
-                    if self.graph.get_node(now_node).kind.id == IrNodeId::SetLocal && now.index == 0
-                    {
+                    if self.graph.get_node(now_node).kind.id == IrNodeId::SetLocal && now.index == 0 {
                         continue;
                     } else {
                         return res;

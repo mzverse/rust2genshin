@@ -473,9 +473,16 @@ fn build_pins(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f32
                     x,
                     y: spread(p.y, s.height, k, ctrl_num + value_num),
                     ctrl,
-                    // 控制流 pin 没有类型可显示;值流 pin 的 pin 序号是
-                    // `k - ctrl_num`(值流排在控制流下方)。
-                    tip: (!ctrl).then(|| pin_tip(n, is_out, k - ctrl_num)),
+                    // 控制流 pin 一般没有类型可显示 —— 唯一的例外是
+                    // `Switch` 的分支名(`ctrl_out_labels`),出边才标。
+                    tip: if ctrl {
+                        is_out
+                            .then(|| n.ctrl_out_labels.get(k).cloned())
+                            .flatten()
+                    } else {
+                        // 值流 pin 的 pin 序号是 `k - ctrl_num`(值流排在控制流下方)。
+                        Some(pin_tip(n, is_out, k - ctrl_num))
+                    },
                 });
             }
         }
@@ -505,6 +512,36 @@ fn build_defaults(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale:
             out.push(DefaultView {
                 right: p.x - (PIN_D / 2.0 + 3.0) * scale,
                 y: pin_y(p.y, s.height, n.controls_in_num, n.values_in_num, false, pin),
+                text: text.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// 控制出 pin 的分支名文本(容器局部坐标),画在**节点盒子内侧**。
+struct CtrlLabelView {
+    /// 文本框的**右缘** x(框向左展开,文字右对齐)。
+    right: f32,
+    y: f32,
+    text: String,
+}
+
+/// 拍出这一帧要显示的控制出分支名。位置:节点盒内、紧贴控制出引脚左侧。
+///
+/// 画在盒内而不是盒外 —— 盒子外面就是连线,名字压在线上两边都看不清。
+/// 宽度固定(`DEF_W`)且**不裁剪**:分支名长度不定(`default` 短、`"MyStruct"`
+/// 长),宁可伸出去也别只剩尾巴。
+fn build_ctrl_labels(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f32) -> Vec<CtrlLabelView> {
+    let mut out = Vec::new();
+    for (i, n) in g.nodes.iter().enumerate() {
+        let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
+            continue;
+        };
+        for (pin, text) in n.ctrl_out_labels.iter().enumerate() {
+            out.push(CtrlLabelView {
+                right: p.x + s.width - (PIN_D / 2.0 + 3.0) * scale,
+                y: pin_y(p.y, s.height, n.controls_out_num, n.values_out_num, true, pin),
                 text: text.clone(),
             });
         }
@@ -1011,6 +1048,7 @@ impl Render for Viewer {
         let boundaries = build_boundaries(g, pos, origin, scale);
         let pins = build_pins(g, pos, origin, scale);
         let defaults = build_defaults(g, pos, origin, scale);
+        let ctrl_labels = build_ctrl_labels(g, pos, origin, scale);
 
         // ---- 边和图边界桩:canvas 画在最下面 ----
         let record_origin = canvas_origin.clone();
@@ -1178,6 +1216,26 @@ impl Render for Viewer {
                     .text_size(px((BASE_FONT_PX * scale).max(6.0)))
                     .text_color(text_dim())
                     .child(dv.text.clone()),
+            );
+        }
+
+        // ---- 控制出 pin 的分支名(Switch):节点盒内、紧贴引脚,文字右对齐 ----
+        // 画在节点 div **之后**:名字要压在自己的盒子上,不是浮在连线中间。
+        for cv in &ctrl_labels {
+            let (w, h) = (DEF_W * scale, (BASE_FONT_PX + 4.0) * scale);
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(cv.right - w))
+                    .top(px(cv.y - h / 2.0))
+                    .w(px(w))
+                    .h(px(h))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
+                    .text_color(text_dim())
+                    .child(cv.text.clone()),
             );
         }
 
@@ -1594,6 +1652,7 @@ mod tests {
             values_out_num: values_out,
             values_in_types: in_types.iter().map(|s| s.to_string()).collect(),
             values_out_types: out_types.iter().map(|s| s.to_string()).collect(),
+            ctrl_out_labels: vec![],
             ctrl_in_exports: vec![],
             ctrl_out_exports: vec![],
             value_in_exports: vec![],
