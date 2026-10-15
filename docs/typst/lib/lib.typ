@@ -8,16 +8,20 @@
 
 #import "mth.typ";
 
-#let this-doc = state("this-doc", document);
+#let this-doc() = query(document.where().before(here())).last();
+
+#let current-order = state("current-order");
 
 /// use in bundle main.typ
 #let bundle_document(name) = {
     import name + ".typ" as p;
-    let title = dictionary(p).at("title", default: none);
-    let tag = dictionary(p).at("tag", default: none);
+    let dic = dictionary(p);
+    let title = dic.at("title", default: none);
+    let tag = dic.at("tag", default: none);
     name += ".html";
     this-path.update(x => name);
-    [#document(name, title: title, context[#this-doc.update(here());#p;]) #tag]
+    context current-order.update(dic.at("order", default: float.inf));
+    [#document(name, title: title, include p) #tag]
 }
 /// use in bundle main.typ
 #let bundle_asset(name) = {

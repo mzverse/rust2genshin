@@ -62,7 +62,7 @@
 }
 
 #context {
-    let tree = query(document).map(x => to_tree(x.path, x.title)).fold((:), merge);
+    let tree = query(document).sorted(key: x => current-order.at(x.location())).map(x => to_tree(x.path, x.title)).fold((:), merge);
     // 抽屉模式下的关闭按钮 —— 窄屏这一栏才是抽屉,那时它出现在右上角。
     // 显隐由 toc.css 的 media query 决定,点击由 toc.js 接。
     html_elem("button", attrs: (class: "drawer-close"))[✕] + gen(tree)

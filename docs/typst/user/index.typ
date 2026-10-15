@@ -1,6 +1,8 @@
 #import "/lib/lib.typ": *;
-#let title = [使用];
 #show: template;
+
+#let title = [使用];
+#let order = 0;
 
 #set raw(lang: "rust");
 
