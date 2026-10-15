@@ -1,7 +1,7 @@
 #import "/lib/lib.typ": *;
-#let title = [文档站];
 #show: template;
 
+#let title = [文档];
 #set raw(lang: "rust");
 
 本站（就是你现在看的这个）由 Typst 编译成 HTML。Rust 侧的驱动器在 `docs/` 下，负责拼出入口文件、调 Typst、处理路径。装工具链、跑编译、配编辑器这些*动手*的事见#link("/dev/docs/index.html")[文档（开发栏）]，这一栏只讲它*怎么搭起来的*。

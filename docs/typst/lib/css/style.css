@@ -52,8 +52,8 @@ li {
 .inline-flex {
     display: inline-flex;
 }
-.box, .place{
-    display: inline-flex;
+.box, .place {
+    /*display: inline-flex;*/
     align-items: baseline;
     box-sizing: border-box;
 }
