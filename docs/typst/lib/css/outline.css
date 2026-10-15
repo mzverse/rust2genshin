@@ -1,12 +1,14 @@
 /* 页面骨架有两栏可折叠的侧栏,都由本文件管:
  *   - 左栏 `<toc-component>`(全站目录,toc.js 定义的 web component)
  *   - 右栏 `nav.outline`(本页目录,outline.typ 生成)
- * 窄屏下两者都是盖在正文上的抽屉,各有开关按钮,共用一层遮罩。
+ * 顶栏 `.site-header` 是 body grid 的第一行(高 --header-h),两颗开关
+ * 和主题按钮都在里面,抽屉开合在 outline.js。
+ * 窄屏下两栏都是盖在正文上的抽屉,共用一层遮罩。
  * 分三档,窗口收窄时先收左栏:
- *   <768px       两栏都收起成抽屉;☰ 在左上 / 右上
+ *   <768px       两栏都收起成抽屉;☰ 在顶栏左 / 右两端
  *   768–1079px   右栏恢复成常驻列,左栏仍是抽屉
  *   ≥1080px      两栏都常驻,三列
- * 按钮由 outline.typ 输出,抽屉开合在 outline.js。 */
+ * 顶栏与按钮由 outline.typ 输出。 */
 
 /* 左栏。窄屏是抽屉:固定定位、默认推到屏幕外,`.open` 滑进来。
  * 用 transform 而不是 `left` 偏移,因为宽度是 min(85vw, 320px) ——
@@ -14,11 +16,13 @@
 toc-component {
     display: block;
     position: fixed;
-    top: 0;
+    /* 顶栏是 fixed/sticky 的,盖在正文之上。抽屉从它下沿开始,否则打开时
+     * 目录的第一行会被顶栏压住。 */
+    top: var(--header-h);
     left: 0;
-    /* 高度跟着内容走,上限一屏。满屏白底而目录只占顶上一点时,底下
-     * 一大片纯白很扎眼;内容多过一屏才滚。 */
-    max-height: 100vh;
+    /* 高度跟着内容走,上限一屏减去顶栏。满屏白底而目录只占顶上一点时,
+     * 底下一大片纯白很扎眼;内容多过一屏才滚。 */
+    max-height: calc(100vh - var(--header-h));
     width: min(85vw, 320px);
     background-color: var(--bg);
     box-shadow: 6px 0 24px var(--shadow-drawer);
@@ -38,6 +42,10 @@ body {
     display: grid;
     /* 窄屏单列:两栏侧栏都是 fixed 抽屉,脱离文档流,grid 里只剩正文。 */
     grid-template-columns: minmax(0, 600pt);
+    /* 两行:第一行给顶栏(它 grid-column: 1 / -1,横跨全部列),第二行放
+     * 正文。没有这一行的话顶栏会占掉正文那一格,把它顶到下一行、
+     * 或者挤出网格。 */
+    grid-template-rows: auto 1fr;
     /* 窄屏只有一列,这个 gap 用不上;宽屏那份在 media query 里自己设。 */
     gap: 16px;
     justify-content: center;
@@ -49,7 +57,10 @@ body {
 /* 两个抽屉共用的遮罩,由 outline.js 创建。 */
 .drawer-overlay {
     position: fixed;
-    top: 0;
+    /* 遮罩的 z-index(1001)比顶栏(1000)高,所以顶栏不会靠层级豁免,只能
+     * 靠这块遮罩**不铺到它身上**:从顶栏下沿开始铺,开抽屉时顶栏和它那两颗
+     * 按钮照样点得到。 */
+    top: var(--header-h);
     left: 0;
     right: 0;
     bottom: 0;
@@ -62,44 +73,101 @@ body {
     }
 }
 
-/* 两个抽屉的开关按钮。固定定位,不占 grid 格子;只在对应抽屉存在的
- * 那几档出现(宽屏那份在 media query 里 display:none)。
- * 做成 40px 的白底描边方块,配色跟目录里的折叠按钮一致(--hover / --active)。
- * 图标用内联 SVG,不依赖字体里有没有 `☰` 这个字形 ——
- * 按钮里原本的 `☰` 文本用 font-size:0 藏掉。 */
+/* 顶栏。sticky,高度由 --header-h 定死 —— 下面所有抽屉/侧栏的偏移
+ * 都从这一个值算,以后改高度只改一处。 */
+.site-header {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    grid-column: 1 / -1;
+    height: var(--header-h);
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 16px;
+    background-color: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+.header-left, .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+.site-title {
+    color: var(--fg);
+    font-weight: 700;
+    text-decoration-line: none;
+    white-space: nowrap;
+}
+.site-title:hover {
+    text-decoration-line: underline;
+}
+/* 主题按钮。图标走 mask + currentColor,配色自动跟着主题走 —— data URI
+ * 里烤死的十六进制是主题死角,var() 进不去。 */
+.theme-toggle {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background-color: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s ease;
+}
+.theme-toggle::before {
+    content: "";
+    display: block;
+    width: 20px;
+    height: 20px;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z'/%3E%3C/svg%3E");
+}
+.theme-toggle:hover { background-color: var(--hover); }
+.theme-toggle:active { background-color: var(--active); }
+
+/* 两个抽屉的开关。不再 fixed 定位、不占 grid 格子 —— 它们现在在
+ * .site-header 里走常规流,顶栏 sticky 保证滚动时依然够得着;宽屏那两档
+ * 仍然把不需要的那颗 display:none。
+ * 图标用 mask + currentColor:data URI 里烤死的十六进制是主题死角,
+ * var() 进不去,mask 才跟得住。按钮里的 `☰` 文本用 font-size:0 藏掉。 */
 .toc-toggle, .outline-toggle {
-    position: fixed;
-    top: 16px;
     width: 40px;
     height: 40px;
     padding: 0;
     border-radius: 10px;
     background-color: var(--surface);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2319181f' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: 20px 20px;
     border: 1px solid var(--border);
-    box-shadow: 0 1px 4px var(--shadow-float);
-    color: transparent;
+    color: var(--fg);
     font-size: 0;
     cursor: pointer;
-    z-index: 1000;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: background-color .15s ease;
 }
-.toc-toggle { left: 16px; }
-.outline-toggle { right: 16px; }
+.toc-toggle::before, .outline-toggle::before {
+    content: "";
+    display: block;
+    width: 20px;
+    height: 20px;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-position: center;
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
+}
 .toc-toggle:hover, .outline-toggle:hover { background-color: var(--hover); }
 .toc-toggle:active, .outline-toggle:active { background-color: var(--active); }
-
-/* 窄屏正文顶端要给浮动的 ☰ 让位,否则 h1 会被压在按钮底下。
- * 两栏都常驻、按钮消失的宽档在 media query 里把留白收回去。 */
-main {
-    padding-top: 48px;
-}
 
 .outline {
     position: fixed;
@@ -126,9 +194,9 @@ main {
     background-color: var(--bg);
     box-shadow: -6px 0 24px var(--shadow-drawer);
 
-    top: 0;
+    top: var(--header-h);
     /* 同左栏:抽屉高度贴着内容,别撑成一整屏白。 */
-    max-height: 100vh;
+    max-height: calc(100vh - var(--header-h));
     right: 0;
     transform: translateX(100%);
     z-index: 1002;
@@ -176,8 +244,10 @@ main {
      * grid 里其它格子(含正文)跟着 stretch,整页被撑高。 */
     .outline {
         position: sticky;
-        top: 32px;
-        height: calc(100vh - 64px);
+        /* 顶栏 sticky 占着视口顶上 --header-h,这一列从它下面 16px 处开始,
+         * 底部同样留 16px,合起来就是原来的 32px / 64px。 */
+        top: calc(var(--header-h) + 16px);
+        height: calc(100vh - var(--header-h) - 32px);
         /* 基础规则里的 `transform` 是移动端"抽屉藏在屏幕外"的默认位,
          * 常驻列必须清掉。 */
         transform: none;
@@ -185,8 +255,9 @@ main {
          * 里的一格,宽度交给 grid,投影会糊在正文边上,都清掉。 */
         width: auto;
         box-shadow: none;
-        /* 基础规则里上下那圈留白是给抽屉的:常驻列有 `top: 32px`,这 12px
-         * 叠上去会让它比左边目录树低一大截。 */
+        /* 基础规则里上下那圈留白是给抽屉的:常驻列的 `top` 是
+         * calc(var(--header-h) + 16px),这 12px 叠上去会让它比左边目录树
+         * 低一大截。 */
         padding-top: 0;
         padding-bottom: 0;
         /* 同理 z-index:抽屉要压在遮罩(z-index:1001)之上才需要它;常驻列
@@ -219,8 +290,10 @@ main {
     }
     toc-component {
         position: sticky;
-        top: 0;
-        height: 100vh;
+        /* 顶栏也 sticky,占住视口顶上那一截;这一列从它下沿开始,高度相应
+         * 扣掉,整列正好铺满余下的一屏。 */
+        top: var(--header-h);
+        height: calc(100vh - var(--header-h));
         /* 抽屉那套固定宽度 / 实底 / 投影 / 位移在常驻列里都不需要。 */
         width: auto;
         background-color: transparent;
@@ -230,10 +303,6 @@ main {
     }
     .toc-toggle {
         display: none !important;
-    }
-    /* 两栏都常驻,按钮和留白都撤掉。 */
-    main {
-        padding-top: 0;
     }
     /* 遮罩兜底:这档开不出抽屉,不该出现。 */
     .drawer-overlay {

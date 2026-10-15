@@ -107,8 +107,8 @@
     /* 未定义时露出来的说明框,与画布底色刻意不同 */
     --graph-fallback-bg: #f7f8fa;
 
-    /* 顶栏高度。outline.css 的 main { padding-top: 48px } 现在硬写的正是
-     * 这个数(给浮动开关按钮让位),顶栏落地后改成引用它。 */
+    /* 顶栏高度。outline.css 的 .site-header 直接用它定高,两侧抽屉和
+     * 遮罩的 top / 高度也全部从它算 —— 改高度只改这一处。 */
     --header-h: 48px;
 }
 

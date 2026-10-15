@@ -1,4 +1,7 @@
 #import "/lib/lib.typ": *;
+// base_path 定义在 contents.typ。template.typ 的 `import ...: *` 不会把
+// 它的 import 再导出一遍,所以这里要单独引一次。
+#import "contents.typ": *;
 
 #let template(self) = {
     show heading: it => context {
@@ -21,12 +24,24 @@
     import_style("/lib/css/outline.css");
     import_script("/lib/js/outline.js");
 }, {
-    // 两个抽屉的开关:左上开全站目录(toc-component),右上开本页目录。
+    // 顶栏。它是 body 的直接子元素(template.typ 在 main 之外调 outline()),
+    // 所以不落在 Typst 插的 .block/.container 包装里,grid 行位置可预测。
+    // sticky —— ☰ 原来是 position: fixed,滚动时始终够得着;挪进普通顶栏
+    // 会让它们滚没。
     // 左栏按钮也跟着放这儿 —— 本站每页要么 `toc` 和 `with_outline` 一起开、
     // 要么一起关(toc.typ),所以抽屉的样式和脚本在 outline.css / outline.js
-    // 里一份就够。
-    html_elem("button", attrs: (class: "toc-toggle"))[☰]
-    html_elem("button", attrs: (class: "outline-toggle"))[☰]
+    // 里一份就够。aria-label 是给 JS 前的一版静态文案,theme.js 在
+    // DOMContentLoaded 时会按**目标**状态(而不是当前状态)改写它。
+    html_elem("header", attrs: (class: "site-header"), {
+        html_elem("div", attrs: (class: "header-left"), {
+            html_elem("button", attrs: (class: "toc-toggle"))[☰]
+            html_elem("a", attrs: (class: "site-title", href: base_path + "/index.html"))[rust2genshin]
+        })
+        html_elem("div", attrs: (class: "header-right"), {
+            html_elem("button", attrs: (class: "theme-toggle", aria-label: "切换主题"))[]
+            html_elem("button", attrs: (class: "outline-toggle"))[☰]
+        })
+    })
     context {
         let result = ();
         let path = ();
