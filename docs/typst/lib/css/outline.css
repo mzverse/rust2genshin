@@ -74,11 +74,18 @@ body {
 }
 
 /* 顶栏。sticky,高度由 --header-h 定死 —— 下面所有抽屉/侧栏的偏移
- * 都从这一个值算,以后改高度只改一处。 */
+ * 都从这一个值算,以后改高度只改一处。
+ *
+ * grid-row 必须显式写 1。DOM 里顶栏排在 toc-component 和 main **之后**
+ * (outline() 在 template 的最后才调用),而 grid 的自动放置是按文档顺序
+ * 走的:只写 grid-column: 1 / -1 的话,前面的 main / toc-component 先占掉
+ * 第 1 行,顶栏只能被挤到第 2 行 —— 表现是整条顶栏掉到页面最底下。
+ * 有了确定的行号,顶栏先于自动放置的项落位,其余项再依次填第 2 行。 */
 .site-header {
     position: sticky;
     top: 0;
     z-index: 1000;
+    grid-row: 1;
     grid-column: 1 / -1;
     height: var(--header-h);
     box-sizing: border-box;
