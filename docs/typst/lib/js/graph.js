@@ -87,15 +87,15 @@ const NODE_CSS = `
     :host { display: block; position: relative; box-sizing: content-box;
         padding: 0 ${BLEED}px; }
     .g-box { position: relative; width: max-content; min-width: ${NODE_MIN_W}px;
-        height: 100%; box-sizing: border-box; background: #fff;
-        border: 1.5px solid #c9cbd4; border-radius: 7px; overflow: hidden;
+        height: 100%; box-sizing: border-box; background: var(--graph-box);
+        border: 1.5px solid var(--graph-border); border-radius: 7px; overflow: hidden;
         font-family: inherit; font-size: ${TITLE_PX}px; font-weight: 600;
-        line-height: 21px; color: #19181f; white-space: nowrap;
+        line-height: 21px; color: var(--fg); white-space: nowrap;
         /* 标题是投影进来的裸文本节点,没法单独给它设 margin,靠盒子的上内边距
          * 把它压到标题条中间去。 */
         padding: ${NODE_HEAD_PAD}px ${NODE_PAD_X}px 0; }
-    :host(:hover) .g-box { border-color: #11566c; }
-    :host(.hot) .g-box { border-color: #11566c; border-width: 2.5px; }
+    :host(:hover) .g-box { border-color: var(--graph-accent); }
+    :host(.hot) .g-box { border-color: var(--graph-accent); border-width: 2.5px; }
     :host(.dim) { opacity: .28; }
     /* 形状这层 svg 盖在整个节点上,又排在 foreignObject 之后(绘制顺序就是
      * 文档顺序),默认会把标题里的链接整个吃掉 —— 点下去 path0 是 <svg>,
@@ -111,10 +111,10 @@ const NODE_CSS = `
      * 会顺着继承下来 —— 投影进来的引脚文本(含里面的链接)就点不动了。这里
      * 显式开回来。 */
     .g-label { font-family: inherit; font-size: ${PIN_PX}px; line-height: 1.2;
-        color: #7a7c86; white-space: nowrap; width: max-content;
+        color: var(--subtle); white-space: nowrap; width: max-content;
         pointer-events: auto; }
-    .g-ctrl { fill: #11566c; }
-    .g-data { fill: #fff; stroke: #11566c; stroke-width: 1.5; }
+    .g-ctrl { fill: var(--graph-accent); }
+    .g-data { fill: var(--graph-box); stroke: var(--graph-accent); stroke-width: 1.5; }
 `;
 
 /* ------------------------------------------------------------------ *
@@ -470,7 +470,7 @@ customElements.define('ui-graph', class extends HTMLElement {
              * light DOM 那条 grabbing 就够不着了,一开拖光标会弹回箭头。
              * 所以这里照着 .panning 再写一份。 */
             .graph-root.dragging { cursor: grabbing; }
-            .g-edge { fill: none; stroke: #11566c; stroke-width: 1.6; stroke-linecap: round; }
+            .g-edge { fill: none; stroke: var(--graph-accent); stroke-width: 1.6; stroke-linecap: round; }
             .g-edge-hit { fill: none; stroke: transparent; stroke-width: 10; }
             .g-edge.data { stroke-dasharray: 5 4; }
             .g-edge.dim { opacity: .12; }
@@ -479,9 +479,9 @@ customElements.define('ui-graph', class extends HTMLElement {
              * 平移走 —— 一直待在视口右上角,按的就是"忘掉我拖过的一切"。 */
             .g-reset { position: absolute; top: 6px; right: 6px; z-index: 1;
                 width: 22px; height: 22px; padding: 0; border-radius: 6px;
-                border: 1px solid #c9cbd4; background: rgba(255, 255, 255, .9);
-                color: #11566c; font-size: 14px; line-height: 1; cursor: pointer; }
-            .g-reset:hover { background: #fff; }
+                border: 1px solid var(--graph-border); background: var(--graph-reset-bg);
+                color: var(--graph-accent); font-size: 14px; line-height: 1; cursor: pointer; }
+            .g-reset:hover { background: var(--graph-box); }
         `;
         shadow.appendChild(style);
         shadow.appendChild(root);
