@@ -13,6 +13,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// 源码上限 1 MiB。正常一份 `demo/src/lib.rs` 是几 KB;设上限是为了
 /// 一次心跳式的大 payload 不会让服务去分配几百 MB。
+///
+/// **按字节算**(`str::len()`),不是按字符数:UTF-8 下一个中文字符
+/// 占 3 字节。前端若拿 JS 的 `source.length`(UTF-16 code unit)或
+/// `chars().count()` 去比这个上限,中文源码的判定就会和后端对不上。
 pub const MAX_SOURCE_BYTES: usize = 1 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,8 +89,6 @@ impl ErrorCode {
 mod tests {
     use super::*;
 
-    use serde::{Deserialize, Serialize};
-
     fn round_trip<T>(v: &T) -> T
     where
         T: Serialize + for<'de> Deserialize<'de>,
@@ -99,14 +101,29 @@ mod tests {
     fn submit_round_trip_keeps_target_optional() {
         let m = ClientMsg::Submit { source: "fn main() {}".into(), target: None };
         assert_eq!(round_trip(&m), m);
+        // 线格式:`target` 必须**存在且为 null**,不是被省略 —— round-trip
+        // 对 "null" 和 "省略字段" 两种形状都成立,钉不住真正发到线上的样子。
+        // Task 16 的 JS 照这个形状读,`null` 与 `undefined` 在那边不一样。
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "submit", "source": "fn main() {}", "target": null })
+        );
 
         let m = ClientMsg::Submit { source: "x".into(), target: Some("beyond-server".into()) };
         assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "submit", "source": "x", "target": "beyond-server" })
+        );
     }
 
     #[test]
     fn cancel_round_trip() {
         assert_eq!(round_trip(&ClientMsg::Cancel {}), ClientMsg::Cancel {});
+        assert_eq!(
+            serde_json::to_value(&ClientMsg::Cancel {}).unwrap(),
+            serde_json::json!({ "type": "cancel" })
+        );
     }
 
     #[test]
@@ -164,6 +181,19 @@ mod tests {
             download: "/artifact/t1".into(),
         };
         assert_eq!(round_trip(&m), m);
+        // `bytes` 必须是 **JSON 数字**(不是字符串),`ok` 是 bool ——
+        // 前端要拿 `bytes` 显示体积、拿 `ok` 判断成功,类型错了就静默出错。
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({
+                "type": "finished",
+                "task": "t1",
+                "ok": true,
+                "bytes": 15860,
+                "download": "/artifact/t1",
+            })
+        );
+        assert!(serde_json::to_value(&m).unwrap()["bytes"].is_number());
 
         let m = ServerMsg::Failed {
             task: "t1".into(),
@@ -171,7 +201,58 @@ mod tests {
             message: "编译失败".into(),
         };
         assert_eq!(round_trip(&m), m);
-        assert_eq!(serde_json::to_value(&m).unwrap()["exit_code"], 101);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({
+                "type": "failed",
+                "task": "t1",
+                "exit_code": 101,
+                "message": "编译失败",
+            })
+        );
+
+        // `exit_code` 为 `None` 时线上就是 `null`,不是被省略。
+        let m = ServerMsg::Failed {
+            task: "t1".into(),
+            exit_code: None,
+            message: "容器没起来".into(),
+        };
+        assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({
+                "type": "failed",
+                "task": "t1",
+                "exit_code": null,
+                "message": "容器没起来",
+            })
+        );
+    }
+
+    #[test]
+    fn started_json_shape() {
+        let m = ServerMsg::Started {
+            task: "t1".into(),
+            image_commit: "abc1234".into(),
+        };
+        assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "started", "task": "t1", "image_commit": "abc1234" })
+        );
+    }
+
+    #[test]
+    fn error_json_shape_embeds_code() {
+        let m = ServerMsg::Error {
+            code: ErrorCode::IpBusy,
+            message: ErrorCode::ip_busy_message().into(),
+        };
+        assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "error", "code": "ip_busy", "message": "请求过多，请稍后重试" })
+        );
     }
 
     #[test]
