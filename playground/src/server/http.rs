@@ -96,6 +96,17 @@ pub fn router(state: Arc<AppState>) -> Router {
     let cors = if origins.is_empty() {
         // 显式配成空 = 谁都不许。比"不小心开了 Any"安全。
         CorsLayer::new()
+    } else if state.cfg.allowed_origins.iter().any(|o| o == "*") {
+        // `PLAYGROUND_ALLOWED_ORIGINS=*` —— 任意站点可用。WS 那侧
+        // `origin_allowed` 认同一个 `*`,两边不会一松一紧。
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+            .expose_headers([
+                HeaderName::from_static(HEADER_HEAD),
+                HeaderName::from_static(HEADER_BAKED),
+            ])
     } else {
         CorsLayer::new()
             .allow_origin(origins)
@@ -342,6 +353,23 @@ mod tests {
         })
     }
 
+    /// 白名单为 `*` 的 state。`PLAYGROUND_ALLOWED_ORIGINS=*` 时用的就是它。
+    async fn any_origin_state(repo: &Path) -> Arc<AppState> {
+        let st = ready_state(repo).await;
+        let mut c = (*st.cfg).clone();
+        c.allowed_origins = vec!["*".into()];
+        Arc::new(AppState {
+            queue: Queue::new(c.max_jobs, c.max_queue),
+            baker: st.baker.clone(),
+            jobs: st.jobs.clone(),
+            repo: st.repo.clone(),
+            registry: ImageRegistry::new(),
+            runner: st.runner.clone(),
+            started: st.started,
+            cfg: Arc::new(c),
+        })
+    }
+
     /// "已经烘好 aaa1111"的状态,HTTP 面的测试几乎都用它。
     async fn ready_state(repo: &Path) -> Arc<AppState> {
         state(repo, baked(vec![Ok(baked_one("aaa1111"))]).await)
@@ -460,6 +488,28 @@ mod tests {
             .to_string();
         assert!(expose.contains("x-playground-baked"), "expose 里有:{expose}");
         assert!(expose.contains("x-playground-head"), "expose 里有:{expose}");
+    }
+
+    #[tokio::test]
+    async fn a_star_allowlist_reflects_any_origin_back() {
+        // 回的是字面量 `*`,不是回显调用方。`CorsLayer::allow_origin(Any)`
+        // 就是这个行为,这里不用改 —— 因为整条链不开凭证(没有
+        // `allow_credentials`),无凭证请求下 `*` 是合法的,浏览器照认。
+        // 一旦哪天要加 cookie,这里必须改成回显 origin,否则浏览器直接拒绝。
+        let d = tempfile::tempdir().unwrap();
+        let res =
+            get_with_origin(any_origin_state(d.path()).await, "/healthz", "https://any.example").await;
+        assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    }
+
+    #[tokio::test]
+    async fn the_default_allowlist_does_not_reflect_a_foreign_origin() {
+        let d = tempfile::tempdir().unwrap();
+        let res = get_with_origin(ready_state(d.path()).await, "/healthz", "https://evil.example").await;
+        assert!(
+            res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "默认白名单不该给陌生站点回 ACAO",
+        );
     }
 
     #[test]

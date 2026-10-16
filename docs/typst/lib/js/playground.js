@@ -245,7 +245,11 @@ class PlaygroundApp extends HTMLElement {
             onFinished: (m) => {
                 setBusy(false);
                 setStatus(`编译成功 · ${m.bytes} 字节`, "ok");
-                downloadUrl = new URL(m.download, httpOrigin(client.url)).href;
+                // **不能**用 new URL(m.download, base):m.download 是绝对路径
+                // ("/artifact/<id>"),new URL 会把它当 origin 根解析,反代前缀
+                // ("/rust2genshin")会被整个丢掉。去掉开头的斜杠按字符串接上,
+                // 前缀就跟着 httpOrigin 走。
+                downloadUrl = httpOrigin(client.url) + "/" + m.download.replace(/^\/+/, "");
                 dlBtn.hidden = false;
             },
             onFailed: (m) => {
@@ -275,12 +279,13 @@ class PlaygroundApp extends HTMLElement {
         cancelBtn.addEventListener("click", () => client.cancel());
         dlBtn.addEventListener("click", () => {
             if (!downloadUrl) return;
-            // 只校验 scheme,不比较 origin。downloadUrl 已在收到 finished 时以
-            // **后端 origin** 为基准解析过(new URL(m.download, httpOrigin(...))),
-            // 而页面 origin 与后端 origin 本来就不同(本地 3000 vs 后端 8787,
-            // 线上 mzverse.github.io vs 后端),所以按 origin 比会把正常下载
-            // 全挡死。这里只堵 m.download 是 javascript:/data: 之类绝对 URL
-            // 的情况——那样解析出来的 protocol 不是 http(s)。
+            // 只校验 scheme,不比较 origin。downloadUrl 是在 finished 时按
+            // 字符串拼出来的(见上面那处),后端可以完全控制 m.download ——
+            // 传 "javascript:alert(1)" 拼出来就是 javascript: 开头的地址。
+            // 这里用 new URL 反解一遍,protocol 不是 http(s) 就拒。
+            // 不按 origin 比:页面 origin 与后端 origin 本来就不同(本地
+            // 3000 vs 后端 8787,线上 github.io vs mzverse.org),比了就把
+            // 正常下载全挡死。
             const u = new URL(downloadUrl);
             if (u.protocol !== "http:" && u.protocol !== "https:") {
                 appendLog("stderr", "拒绝下载:链接不是 http(s)\n");

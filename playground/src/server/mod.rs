@@ -43,10 +43,14 @@ pub fn client_key_of(headers: &HeaderMap, peer: SocketAddr, trust_proxy: bool) -
 /// WebSocket **不受 CORS 保护**,握手必须自己查 Origin。
 /// 没有 Origin 头(非浏览器客户端:curl、测试)放行 —— 它没有"被第三方
 /// 页面借用身份"的问题,而浏览器一定会带。
+///
+/// 白名单里有一项字面量 `*` 时,任意来源都放行。这让"不写死站点列表"
+/// 成了一种部署选项(`PLAYGROUND_ALLOWED_ORIGINS=*`),默认那份列表
+/// 仍然是精确匹配 —— 见 `config.rs` 的 `DEFAULT_ORIGINS`。
 pub fn origin_allowed(origin: Option<&str>, allowed: &[String]) -> bool {
     match origin {
         None => true,
-        Some(o) => allowed.iter().any(|a| a == o),
+        Some(o) => allowed.iter().any(|a| a == "*" || a == o),
     }
 }
 
@@ -66,6 +70,22 @@ mod tests {
             HeaderValue::from_str(value).unwrap(),
         );
         h
+    }
+
+    #[test]
+    fn a_star_in_the_allowlist_opens_it_to_any_origin() {
+        // `PLAYGROUND_ALLOWED_ORIGINS=*` —— 部署上不想锁死站点列表时的
+        // 那道开关。默认列表里没有 `*`,精确匹配照旧。
+        let allowed = vec!["*".to_string()];
+        assert!(origin_allowed(Some("https://any.example"), &allowed));
+        assert!(origin_allowed(Some("http://evil.example"), &allowed));
+    }
+
+    #[test]
+    fn a_star_does_not_affect_the_default_allowlist() {
+        let allowed = vec!["https://mzverse.github.io".to_string()];
+        assert!(origin_allowed(Some("https://mzverse.github.io"), &allowed));
+        assert!(!origin_allowed(Some("https://evil.example"), &allowed));
     }
 
     #[test]
