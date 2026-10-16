@@ -4,6 +4,7 @@
 
 pub mod http;
 pub mod webhook;
+pub mod ws;
 
 pub use http::AppState;
 
@@ -16,15 +17,16 @@ use axum::http::HeaderMap;
 /// 取**最右一个可解析的 IP**:XFF 是追加式列表,最右那项才是最近的代理
 /// 亲眼看到的对端;取第一跳等于让客户端自己填身份(它能在最前面塞值)。
 pub fn client_ip(headers: &HeaderMap, peer: SocketAddr, trust_proxy: bool) -> IpAddr {
+    // 跨**所有**同名头取值:`get()` 只看得到第一条,而反代可能把客户端
+    // 可控的那条再 append 一条同名头 —— 那条会排在最前、被当成本地身份。
     if trust_proxy
         && let Some(ip) = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                v.split(',')
-                    .filter_map(|s| s.trim().parse::<IpAddr>().ok())
-                    .next_back()
-            })
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+            .next_back()
     {
         return ip;
     }
@@ -90,6 +92,21 @@ mod tests {
         assert_eq!(
             client_ip(&h, peer("1.2.3.4:5000"), true),
             "9.9.9.9".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn with_trust_proxy_appended_duplicate_headers_uses_the_last_value() {
+        // Review Focus(Ruling 30):反代若把客户端可控的那条 XFF **再 append
+        // 一条同名头**(而不是逗号合并),`headers.get()` 只看得到第一条 ——
+        // 于是客户端自己填的值被当成了身份。必须跨所有同名头取最右可解析项。
+        let mut h = HeaderMap::new();
+        let name = "x-forwarded-for".parse::<axum::http::HeaderName>().unwrap();
+        h.append(name.clone(), HeaderValue::from_static("9.9.9.9"));
+        h.append(name, HeaderValue::from_static("8.8.8.8"));
+        assert_eq!(
+            client_ip(&h, peer("1.2.3.4:5000"), true),
+            "8.8.8.8".parse::<IpAddr>().unwrap()
         );
     }
 

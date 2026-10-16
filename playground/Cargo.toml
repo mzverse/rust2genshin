@@ -15,6 +15,7 @@ workspace = true
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 fs4 = "0.6"
+futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
 serde = { version = "1", features = ["derive"] }
@@ -29,4 +30,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3"
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }

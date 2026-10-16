@@ -113,6 +113,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sample", get(sample))
         .route("/artifact/{id}", get(artifact))
         .route("/admin/rebuild", post(admin_rebuild))
+        .route("/ws", get(crate::server::ws::ws_upgrade))
         .layer(cors)
         .with_state(state)
 }
