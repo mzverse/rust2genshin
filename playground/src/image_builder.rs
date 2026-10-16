@@ -32,7 +32,12 @@ pub fn build_args(
         format!("--platform={platform}"),
         "--network=host".into(),
         "--file".into(),
-        "playground/Dockerfile".into(),
+        // **必须是绝对路径**:`--file` 按 docker 客户端的 CWD 解析,不是按
+        // context 解析。context 用的是绝对路径(`repo_dir`),而服务在容器里
+        // 的 CWD 是 `/` 之类的地方,相对 `--file` 会直接报
+        // `unable to evaluate symlinks in Dockerfile path: lstat /playground`。
+        // 过去靠「碰巧在仓库根起服务」才没炸,那是部署姿势在替代码兜底。
+        context.join("playground/Dockerfile").display().to_string(),
         format!("--tag={image_tag}"),
         format!("--label={LABEL_PLAY}=1"),
         format!("--label={LABEL_COMMIT}={commit}"),
@@ -150,7 +155,13 @@ mod tests {
         );
         assert_eq!(a[0], "build");
         assert!(a.contains(&"--file".to_string()));
-        assert!(a.contains(&"playground/Dockerfile".to_string()));
+        assert!(
+            a.contains(&PathBuf::from("/repo")
+                .join("playground/Dockerfile")
+                .display()
+                .to_string()),
+            "--file 必须是绝对路径:它按客户端 CWD 解析,不按 context:{a:?}"
+        );
         assert!(a.contains(&"--tag=rust2genshin-play:abc1234".to_string()));
         assert!(a.contains(&format!("--label={LABEL_PLAY}=1")));
         assert!(a.contains(&format!("--label={LABEL_COMMIT}=abc1234")));

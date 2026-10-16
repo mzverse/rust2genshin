@@ -209,7 +209,13 @@ impl Baker {
         };
 
         let outcome = match self.gate.ensure_free().await {
-            Err(why) => Err((BakeState::NoDisk, why)),
+            // 水位闸失败**也要过 log**:`docker build` 压根没起,日志环会是
+            // 空的。曾经在「开始烘焙」之后一片死寂 —— 状态里只有 note 一句
+            // 「读不到磁盘 X」,日志里一个字节都没有,排查只能靠猜。
+            Err(why) => {
+                log(&format!("烘焙没开始:{why}"));
+                Err((BakeState::NoDisk, why))
+            }
             Ok(()) => match self.builder.build(req.sha.as_deref(), &log).await {
                 Ok(built) => {
                     let mut inner = self.inner.lock().expect("烘焙状态锁中毒");
