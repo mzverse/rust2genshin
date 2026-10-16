@@ -30,12 +30,14 @@ cargo run -p rust2genshin-playground
 
     [`PLAYGROUND_LISTEN`], [`127.0.0.1:8787`], [HTTP / WebSocket 的监听地址。],
     [`PLAYGROUND_REPO_DIR`], [`playground/` 的上一级（即仓库根）], [烘镜像的 docker build context。服务假定仓库就在自己旁边，*不 clone 到临时目录*。],
-    [`PLAYGROUND_DATA_DIR`], [`<repo_dir>/target/playground`], [任务目录、产物、锁都在这底下（见「磁盘」）。],
+    [`PLAYGROUND_DATA_DIR`], [`<repo_dir>/target/playground`], [任务目录、产物、锁都在这底下（见「磁盘」）。*跑在容器里时这个路径必须是 docker daemon 也看得见的那个* —— 任务的源码目录要作为 `-v` 传给 dockerd，容器内的路径它在宿主上不存在时，docker 会在宿主上凭空建一个同名**空目录**挂进去，表现为 `can't find library rust2genshin_demo`（见「容器里跑」）。],
     [`PLAYGROUND_REF`], [`main`], [webhook 到达时 `git pull --ff-only` 的分支。钉成非分支名（比如 sha）时 pull 跳过，只重烘焙。],
     [`PLAYGROUND_REMOTE`], [`origin`], [pull 用的远端名。],
     [`PLAYGROUND_MAX_JOBS`], [`8`], [同时跑的任务数上限。],
     [`PLAYGROUND_MAX_QUEUE`], [`64`], [排队等待的任务数上限；超出后新任务被拒。],
     [`PLAYGROUND_JOB_TIMEOUT`], [`15`], [单个任务的超时，*秒*。],
+    [`PLAYGROUND_JOB_CPUS`], [`2`], [任务容器的 CPU 限额。设成 `0` 或 `none` 则**不加** `--cpus` —— 宿主的 cgroup 没挂 cpu 控制器时，docker 会拒掉整个 `docker run`（`NanoCPUs can not be set…`），退出码 125，一条任务日志都没有。],
+    [`PLAYGROUND_JOB_MEMORY`], [`1536m`], [任务容器的内存限额，同时给 `--memory` 和 `--memory-swap`。设成 `none` 则两个都不加 —— cgroup v1 不支持 `kmem.limit_in_bytes` 时，runc 建容器就会炸（`failed to write 1 to memory.kmem.limit_in_bytes`）。别写 `1.5g`，docker 对小数容量不友好。],
     [`PLAYGROUND_KEEP_IMAGES`], [`2`], [镜像 GC 保留几个最近在用的 tag。],
     [`PLAYGROUND_BUILD_CACHE_MAX`], [`10GB`], [`docker builder prune --keep-storage` 的值 —— 注意是*留到*多少而不是*删到*多少（见「磁盘」）。支持 `10GB` / `512m` / `1024`，倍数一律 1024 进制。],
     [`PLAYGROUND_MIN_FREE_DISK`], [`5GB`], [磁盘水位：低于这个值就不再接新任务。量的是 docker 的 data root（镜像层和 builder cache 都在那），不是数据目录。],
@@ -91,3 +93,20 @@ cargo test -p rust2genshin-playground
 ```
 
 `cargo test` 在*没有 docker 的机器上也能全绿* —— 需要容器的几条标了 `#[ignore]`，只在有 docker 的机器上用 `-- --ignored` 跑。
+
+= 容器里跑服务
+
+服务自己跑在一个容器里、任务容器由它通过 docker socket 拉起 —— 这个套娃有三个坑，都不是代码能兜住的，得在部署时配对。
+
+*数据目录必须是宿主也看得见的路径。* 任务源码目录是拿 `-v <src_dir>:/opt/rust2genshin/demo/src:ro` 传给 dockerd 的，而 dockerd 在**宿主**上解析这个路径。数据目录在容器内（比如 `/opt/rust2genshin/target/playground`）时，宿主上并没有这条路径，docker 不会报错 —— 它会**在宿主根上凭空建一个同名空目录**挂进去。症状是 cargo 报 `can't find library 'rust2genshin_demo', rename file to src/lib.rs`，而文件明明就躺在旁边。做法是把宿主目录挂到**同名**路径再用：
+
+```shell
+-v /mnt/server/r2g-data:/mnt/server/r2g-data
+-e PLAYGROUND_DATA_DIR=/mnt/server/r2g-data
+```
+
+*挂 docker 的 data root 进去。* 烘焙前的水位闸量的是 docker 的 data root（`docker info` 里那个）。容器里看不到它就报「读不到磁盘 /mnt/server/docker 的可用空间」，烘焙在起 `docker build` 之前就短路了（`state: no_disk`）。`-v /mnt/server/docker:/mnt/server/docker:ro` 就够，只读。
+
+*工作目录别丢。* `--file` 是按 docker **客户端**的 CWD 解析的，不是按 context 解析。服务得用 `-w <repo_dir>` 起 —— 代码现在会拼绝对路径，但第三方 Dockerfile 未必。
+
+另外这台宿主上 cgroup 的 cpu 与 kmem 控制器都不可用，`PLAYGROUND_JOB_CPUS=0` 和 `PLAYGROUND_JOB_MEMORY=none` 是必须的，见上面的配置表。
