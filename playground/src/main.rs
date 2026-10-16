@@ -239,6 +239,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         let cfg = Arc::clone(&cfg);
         let jobs = Arc::clone(&jobs);
         let registry = Arc::clone(&registry);
+        let baker = Arc::clone(&baker);
         async move {
             loop {
                 for p in gc_loop::expired_tasks(&jobs, &cfg) {
@@ -246,7 +247,11 @@ async fn run(cfg: Config) -> Result<(), String> {
                         tracing::warn!(path = %p.display(), "删过期任务目录失败:{e}");
                     }
                 }
-                if let Err(e) = gc_loop::sweep_images(&cfg, &registry).await {
+                // 每轮现取 serving 的 tag:服务运行中新烘好的镜像下一轮就受保护。
+                let keep_tag = baker.status().serving_tag;
+                if let Err(e) =
+                    gc_loop::sweep_images(&cfg, &registry, keep_tag.as_deref()).await
+                {
                     tracing::warn!("清镜像失败:{e}");
                 }
                 tokio::time::sleep(gc_loop::GC_INTERVAL).await;

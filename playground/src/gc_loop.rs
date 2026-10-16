@@ -21,12 +21,18 @@ pub fn pick_image_victims(
     images: &[ImageInfo],
     keep: usize,
     registry: &ImageRegistry,
+    keep_tag: Option<&str>,
 ) -> Vec<String> {
-    let protected: Vec<&str> = images
+    let mut protected: Vec<&str> = images
         .iter()
         .filter(|i| registry.count(&i.tag) > 0)
         .map(|i| i.tag.as_str())
         .collect();
+    // 正在服役的镜像(`serving`)也必须永不入选 —— `select_images_to_remove`
+    // 的契约第一条就是它,而它不在 registry 的引用计数里。
+    if let Some(t) = keep_tag {
+        protected.push(t);
+    }
     select_images_to_remove(images, keep, &protected)
 }
 
@@ -52,7 +58,11 @@ pub fn expired_tasks(jobs: &JobStore, cfg: &Config) -> Vec<std::path::PathBuf> {
 /// 列镜像 → 选victim → `docker rmi`。**列的时候一定带 label 过滤**,
 /// 这是"只碰我们自己的镜像"那道锁;`docker image ls` 不带过滤会返回
 /// 宿主上所有镜像,后面再筛就晚了。
-pub async fn sweep_images(cfg: &Config, registry: &ImageRegistry) -> Result<usize, String> {
+pub async fn sweep_images(
+    cfg: &Config,
+    registry: &ImageRegistry,
+    keep_tag: Option<&str>,
+) -> Result<usize, String> {
     let out = tokio::process::Command::new("docker")
         .args(crate::docker::image_ls_args(&crate::image::label_filter(
             &cfg.image,
@@ -82,7 +92,7 @@ pub async fn sweep_images(cfg: &Config, registry: &ImageRegistry) -> Result<usiz
         })
         .collect();
 
-    let victims = pick_image_victims(&images, cfg.keep_images, registry);
+    let victims = pick_image_victims(&images, cfg.keep_images, registry, keep_tag);
     let mut removed = 0;
     for tag in victims {
         let st = tokio::process::Command::new("docker")
@@ -128,7 +138,7 @@ mod tests {
         let reg = ImageRegistry::new();
         let _g = reg.acquire("play:a");
         let images = vec![info("play:a", 0, 1), info("play:b", 0, 2)];
-        let victims = pick_image_victims(&images, 0, &reg);
+        let victims = pick_image_victims(&images, 0, &reg, None);
         assert!(!victims.contains(&"play:a".to_string()), "有引用计数的不能删");
     }
 
@@ -136,8 +146,23 @@ mod tests {
     fn keep_is_honored() {
         let reg = ImageRegistry::new();
         let images = vec![info("play:a", 0, 1), info("play:b", 0, 2), info("play:c", 0, 3)];
-        let victims = pick_image_victims(&images, 2, &reg);
+        let victims = pick_image_victims(&images, 2, &reg, None);
         assert_eq!(victims, vec!["play:a".to_string()], "留两个,删最旧那个");
+    }
+
+    #[test]
+    fn the_serving_image_is_never_picked() {
+        let reg = ImageRegistry::new();
+        let images = vec![
+            info("play:serving", 0, 1),
+            info("play:b", 0, 2),
+            info("play:c", 0, 3),
+        ];
+        let victims = pick_image_victims(&images, 0, &reg, Some("play:serving"));
+        assert!(
+            !victims.contains(&"play:serving".to_string()),
+            "正在服役的镜像一个都不许删:{victims:?}"
+        );
     }
 
     #[test]
