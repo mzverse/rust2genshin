@@ -16,6 +16,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub git_ref: String,
     pub remote: String,
+    /// 任务容器的 CPU 限额;`None` = 不下 `--cpus`。
+    pub job_cpus: Option<u32>,
     pub max_jobs: usize,
     pub max_queue: usize,
     pub job_timeout: Duration,
@@ -122,6 +124,23 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
     v.checked_mul(mult).ok_or_else(|| format!("过大:{t:?}"))
 }
 
+/// 任务容器的 CPU 限额。没设就是 `Some(2)`(保守默认);设成 `0` 或 `none`
+/// 表示**不加** `--cpus` —— 宿主的 cgroup 没挂 cpu 控制器时,加了这个旗标
+/// docker 会拒掉整个 `run`,一个任务都跑不起来。
+fn cpus_var(key: &'static str, get: &dyn Fn(&str) -> Option<String>) -> Result<Option<u32>, ConfigError> {
+    match raw(key, get) {
+        None => Ok(Some(2)),
+        Some(v) => {
+            let lower = v.to_ascii_lowercase();
+            if lower == "none" {
+                return Ok(None);
+            }
+            let n: u32 = lower.parse().map_err(|e| inv(key, &v, e))?;
+            Ok((n > 0).then_some(n))
+        }
+    }
+}
+
 const DEFAULT_ORIGINS: &str =
     "https://mzverse.github.io,http://127.0.0.1:3000,http://localhost:3000";
 
@@ -152,6 +171,7 @@ pub fn resolve(
         git_ref: str_var("PLAYGROUND_REF", get, "main"),
         remote: str_var("PLAYGROUND_REMOTE", get, "origin"),
         max_jobs: num_var("PLAYGROUND_MAX_JOBS", get, 8usize)?,
+        job_cpus: cpus_var("PLAYGROUND_JOB_CPUS", get)?,
         max_queue: num_var("PLAYGROUND_MAX_QUEUE", get, 64usize)?,
         job_timeout: Duration::from_secs(num_var("PLAYGROUND_JOB_TIMEOUT", get, 15u64)?),
         keep_images: num_var("PLAYGROUND_KEEP_IMAGES", get, 2usize)?,
@@ -198,6 +218,7 @@ mod tests {
         assert_eq!(c.git_ref, "main");
         assert_eq!(c.remote, "origin");
         assert_eq!(c.max_jobs, 8);
+        assert_eq!(c.job_cpus, Some(2));
         assert_eq!(c.max_queue, 64);
         assert_eq!(c.job_timeout, Duration::from_secs(15));
         assert_eq!(c.keep_images, 2);
@@ -238,6 +259,19 @@ mod tests {
                 reason: "invalid digit found in string".into(),
             }
         );
+    }
+
+    #[test]
+    fn zero_or_none_drops_the_cpu_limit() {
+        // 宿主 cgroup 不支持 cpu 配额时,`--cpus` 会让 docker 直接拒整个 run。
+        let g = getter(&[("PLAYGROUND_JOB_CPUS", "0")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().job_cpus, None);
+        let g = getter(&[("PLAYGROUND_JOB_CPUS", "none")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().job_cpus, None);
+        let g = getter(&[("PLAYGROUND_JOB_CPUS", "4")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().job_cpus, Some(4));
+        let g = getter(&[("PLAYGROUND_JOB_CPUS", "abc")]);
+        assert!(resolve(&g, Path::new("/repo/playground")).is_err());
     }
 
     #[test]

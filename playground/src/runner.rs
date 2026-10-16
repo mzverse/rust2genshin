@@ -66,7 +66,9 @@ pub trait JobRunner: Send + Sync {
 pub struct DockerOptions {
     pub docker: String,
     pub workdir: String,
-    pub cpus: u32,
+    /// `None` = 不给任务容器加 CPU 限额。见 `docker::RunSpec::cpus` 的
+    /// 注释:宿主的 cgroup 不支持 cpu 配额时,`--cpus` 会让 docker 拒掉整个 `run`。
+    pub cpus: Option<u32>,
     pub memory: String,
     pub pids_limit: u32,
     pub user: String,
@@ -79,7 +81,7 @@ impl Default for DockerOptions {
         Self {
             docker: "docker".into(),
             workdir: "/opt/rust2genshin".into(),
-            cpus: 2,
+            cpus: Some(2),
             memory: "1536m".into(), // 写 1536m 不写 1.5g:docker 对小数容量不友好
             pids_limit: 256,
             user: "1001".into(),

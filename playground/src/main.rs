@@ -203,6 +203,7 @@ async fn run(cfg: Config) -> Result<(), String> {
     let baker = Baker::new(builder, gate);
 
     let runner: Arc<dyn JobRunner> = Arc::new(DockerRunner::new(DockerOptions {
+        cpus: cfg.job_cpus,
         timeout: cfg.job_timeout,
         ..DockerOptions::default()
     }));

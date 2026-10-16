@@ -101,7 +101,12 @@ pub struct RunSpec {
     pub src_dir: PathBuf,
     pub out_dir: PathBuf,
     pub workdir: String,
-    pub cpus: u32,
+    /// `None` = **不下** `--cpus`。有些宿主内核没挂 cgroup 的 cpu 控制器
+    /// (整个系统跑在容器里、或者内核没编 `CFS_BANDWIDTH`),这时 docker 会直接
+    /// 拒掉整个 `run`:`NanoCPUs can not be set, as your kernel does not
+    /// support CPU cfs period/quota or the cgroup is not mounted`。留个
+    /// 能关掉的开关,免得在那种机器上一个任务都跑不起来。
+    pub cpus: Option<u32>,
     pub memory: String,
     pub pids_limit: u32,
     pub user: String,
@@ -125,18 +130,21 @@ pub fn container_command(spec: &RunSpec) -> String {
 /// 9p / virtiofs 共享上最容易出怪问题,而 `demo/src/` 里只有一个文件。
 pub fn run_args(spec: &RunSpec) -> Vec<String> {
     let mut a: Vec<String> = vec!["run".into()];
-    let cpus = spec.cpus.to_string();
     let pids = spec.pids_limit.to_string();
     for s in [
         "--network", "none",
         "--memory", &spec.memory,
         "--memory-swap", &spec.memory,
-        "--cpus", &cpus,
         "--pids-limit", &pids,
         "--user", &spec.user,
         "--tmpfs", "/tmp",
     ] {
         a.push(s.into());
+    }
+    // 限额是有还是没有**由 spec 说了算**,这里只是别把 `None` 拼成 "None"。
+    if let Some(cpus) = spec.cpus {
+        a.push("--cpus".into());
+        a.push(cpus.to_string());
     }
     a.push("--cap-drop".into());
     a.push("ALL".into());
@@ -310,7 +318,7 @@ mod tests {
             src_dir: PathBuf::from("/data/tasks/task1/src"),
             out_dir: PathBuf::from("/data/tasks/task1/out"),
             workdir: "/opt/rust2genshin".into(),
-            cpus: 2,
+            cpus: Some(2),
             memory: "1536m".into(),
             pids_limit: 256,
             user: "1001".into(),
@@ -339,6 +347,16 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["--memory-swap", "1536m"]));
         assert!(!a.contains(&"--read-only".to_string()), "cargo 要写 target/,不能只读");
         assert!(!a.iter().any(|s| s.contains("/var/run/docker.sock")));
+    }
+
+    #[test]
+    fn no_cpu_limit_means_no_cpus_flag() {
+        // `--cpus` 整个旗标都不出现,而不是拼成 `--cpus None` 或 `--cpus 0`。
+        let mut s = spec();
+        s.cpus = None;
+        let a = run_args(&s);
+        assert!(!a.iter().any(|x| x == "--cpus"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "None"), "{a:?}");
     }
 
     #[test]
