@@ -175,7 +175,9 @@ mod tests {
 ///    —— 它反正留着,不该让别的老镜像因此多活一份;
 /// 3. 其余按 `last_used` 从新到旧,填满 `keep` 剩下的额度,更老的删。
 ///
-/// 返回顺序:老的在先(删除顺序无所谓,但测试要确定)。
+/// 返回顺序有实质意义:调用方(Task 14 的 `sweep_images`)在磁盘吃紧时
+/// 只删到水位够就停,所以这个顺序就是删除顺序,直接决定先牺牲哪个镜像。
+/// 必须最旧的最先删 —— 否则会把次新的、其实更常用的镜像错杀。
 pub fn select_images_to_remove(
     images: &[ImageInfo],
     keep: usize,
@@ -259,7 +261,7 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
 impl DiskGate for RealDiskGate {
     async fn ensure_free(&self) -> Result<(), String> {
         let free = free_bytes(&self.path)
-            .ok_or_else(|| format!("读不到 {} 的可用空间", self.path.display()))?;
+            .ok_or_else(|| format!("读不到磁盘 {} 的可用空间", self.path.display()))?;
         if free >= self.min_free {
             Ok(())
         } else {
