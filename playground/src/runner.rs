@@ -89,6 +89,12 @@ impl Default for DockerOptions {
     }
 }
 
+/// 强制停止路径本身的封顶。
+///
+/// "给卡住封顶"的动作自己不能没有顶:daemon 无响应时 `docker kill` 会一直等,
+/// 于是 `run` 永远不返回、永远占着队列额度。
+const FORCED_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct DockerRunner {
     opts: DockerOptions,
 }
@@ -104,6 +110,72 @@ impl DockerRunner {
             .stdin(std::process::Stdio::null())
             .output()
             .await
+    }
+}
+
+/// 容器的兜底守卫:**只要容器没被证实退出,`Drop` 就补一发 `docker kill`**。
+///
+/// 为什么必须有它:任务 future 会被上层 `JoinHandle::abort()` 取消(用户点
+/// cancel / 关标签页)。abort 是**直接把 future 丢掉** —— `run` 里那些
+/// `docker kill` 一行都不会跑,而 `--rm` 只在容器**退出时**清理。一个
+/// `loop {}` 的容器被丢下就会一直跑,一直占着 2 个 CPU + 1.5GB。
+///
+/// 用 `std::process::Command` 而不是 tokio:`Drop` 里没法 await,而这一发
+/// 只要求"发出去、有人收尸",不要求看着它结束。
+struct ContainerGuard {
+    docker: String,
+    name: String,
+    /// 已经确认容器退出了(正常 `wait()` 返回)。
+    exited: std::sync::atomic::AtomicBool,
+}
+
+impl ContainerGuard {
+    fn new(docker: &str, name: &str) -> Self {
+        Self {
+            docker: docker.to_string(),
+            name: name.to_string(),
+            exited: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// 容器确认退出 —— 之后不再补刀。
+    fn mark_exited(&self) {
+        self.exited
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for ContainerGuard {
+    fn drop(&mut self) {
+        use std::process::{Command, Stdio};
+        if self.exited.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        // best-effort:这一步没有第二条路可走,失败只能吭声。
+        match Command::new(&self.docker)
+            .args(crate::docker::kill_args(&self.name))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut c) => {
+                tracing::warn!(
+                    target: "runner",
+                    "容器 {} 未确认退出,已补发 docker kill",
+                    self.name
+                );
+                // 收尸:不 wait 会留僵尸。短命线程,不值得上线程池。
+                std::thread::spawn(move || {
+                    let _ = c.wait();
+                });
+            }
+            Err(e) => tracing::warn!(
+                target: "runner",
+                "容器 {} 未确认退出,补发 docker kill 失败:{e};容器可能残留",
+                self.name
+            ),
+        }
     }
 }
 
@@ -128,7 +200,11 @@ impl JobRunner for DockerRunner {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
+
+        // 从这一刻起容器可能已经活着了,兜底守卫开始值班。
+        let guard = ContainerGuard::new(&self.opts.docker, &name);
 
         // 容器自己的 stdout 是分帧的(8 字节头 + 载荷),docker CLI 自己的
         // stderr 是裸文本 —— 两条分开读。
@@ -153,26 +229,59 @@ impl JobRunner for DockerRunner {
         let started = std::time::Instant::now();
         let mut timed_out = false;
         let status = match tokio::time::timeout(self.opts.timeout, child.wait()).await {
-            Ok(s) => Some(s?),
+            Ok(Ok(s)) => {
+                // 容器确认退出,守卫卸甲 —— Drop 不用再补刀。
+                guard.mark_exited();
+                Some(s)
+            }
+            // `wait()` 自己报错:读不到容器状态,不卸甲,让守卫兜底。
+            Ok(Err(e)) => return Err(RunnerError::Spawn(e)),
             Err(_) => {
                 timed_out = true;
-                // 光 kill CLI 不够:容器会留在那儿跑。先 docker kill。
-                let _ = self.docker(&crate::docker::kill_args(&name)).await;
+                // 光 kill CLI 不够:容器由 daemon 持着,CLI 只是个 attached
+                // client。必须先 `docker kill`,再收 CLI。
+                //
+                // 两层封顶:这一发自己不许无限等;清不掉就**不卸甲**,
+                // 交给守卫的 Drop 再补一发。
+                match tokio::time::timeout(
+                    FORCED_STOP_TIMEOUT,
+                    self.docker(&crate::docker::kill_args(&name)),
+                )
+                .await
+                {
+                    Ok(Ok(out)) if out.status.success() => guard.mark_exited(),
+                    Ok(Ok(out)) => tracing::warn!(
+                        target: "runner",
+                        "docker kill {name} 退出码 {:?};交给兜底守卫重试",
+                        out.status.code()
+                    ),
+                    Ok(Err(e)) => tracing::warn!(
+                        target: "runner",
+                        "docker kill {name} 起不来:{e};交给兜底守卫重试"
+                    ),
+                    Err(_) => tracing::warn!(
+                        target: "runner",
+                        "docker kill {name} 超过 {FORCED_STOP_TIMEOUT:?};交给兜底守卫重试"
+                    ),
+                }
                 let _ = child.kill().await;
-                let _ = child.wait().await;
+                let _ = tokio::time::timeout(FORCED_STOP_TIMEOUT, child.wait()).await;
                 None
             }
         };
+        // `elapsed` 在这里取:报的是"容器跑了多久",**不含**后面两个读任务
+        // 收尾(drain 缓冲)的时间 —— 刻意如此。
         let elapsed = started.elapsed();
         // 取回 stdout 帧读取任务的结果 —— 解码失败要上报,不能像 stderr 那样丢掉。
         let (frames_res, _) = tokio::join!(stdout_task, stderr_task);
 
-        // 判定顺序是**超时 → 解码 → verdict**,不能颠倒,两个理由:
+        // 判定顺序是**超时 → 解码 → verdict**,两个理由:
         // 1. 超时先判:被 kill 的容器会在帧中间截断,若先判解码,一次正常的
         //    超时会被误报成"读容器输出失败"。
-        // 2. 解码排在 verdict 前:写帧的那个 wrapper 同时也是往 `/out` 拷产物的
-        //    那个,帧坏了说明 wrapper 本身坏了,产物也不可信 —— 宁可用一次
-        //    显式失败换掉一份可疑产物。
+        // 2. 解码排在 verdict 前:帧坏意味着**我们与 docker 之间的输出流已经
+        //    失步**(分帧是 docker CLI/daemon 做的,不是容器自己写的),此后
+        //    到达的内容都不该信。产物大小另有校验、失败是 fail-closed,所以
+        //    宁可显式报一次解码错,也不拿"大概对得上"的产物继续。
         if timed_out {
             return Err(RunnerError::Timeout(elapsed));
         }
@@ -184,7 +293,8 @@ impl JobRunner for DockerRunner {
             Err(_join) => {}
         }
 
-        // `--rm` 保证不留僵尸容器;产物已经落在宿主挂进来的 out/ 上。
+        // 产物已经落在宿主挂进来的 out/ 上;容器由上面的守卫保证会被收掉
+        // (`--rm` 只在容器**退出**时清理,杀不掉的容器它管不了)。
         let bytes = std::fs::metadata(&job.paths.artifact).ok().map(|m| m.len());
         let code = status.as_ref().and_then(|s| s.code());
         let n = verdict(code, bytes)?;
