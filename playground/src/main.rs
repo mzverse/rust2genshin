@@ -9,6 +9,9 @@ mod job;
 mod protocol;
 mod queue;
 mod repo;
+mod runner;
+#[cfg(test)]
+mod testing;
 
 fn main() {
     println!("{}", config::load().is_ok());
