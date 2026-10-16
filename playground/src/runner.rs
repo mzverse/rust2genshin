@@ -69,7 +69,9 @@ pub struct DockerOptions {
     /// `None` = 不给任务容器加 CPU 限额。见 `docker::RunSpec::cpus` 的
     /// 注释:宿主的 cgroup 不支持 cpu 配额时,`--cpus` 会让 docker 拒掉整个 `run`。
     pub cpus: Option<u32>,
-    pub memory: String,
+    /// `None` = 不给任务容器加内存限额。见 `docker::RunSpec::memory` 的注释:
+    /// cgroup v1 不支持 kmem 时,`--memory` 会让 docker 整个 run 失败。
+    pub memory: Option<String>,
     pub pids_limit: u32,
     pub user: String,
     pub timeout: Duration,
@@ -82,7 +84,8 @@ impl Default for DockerOptions {
             docker: "docker".into(),
             workdir: "/opt/rust2genshin".into(),
             cpus: Some(2),
-            memory: "1536m".into(), // 写 1536m 不写 1.5g:docker 对小数容量不友好
+            // 写 1536m 不写 1.5g:docker 对小数容量不友好
+            memory: Some("1536m".into()),
             pids_limit: 256,
             user: "1001".into(),
             timeout: Duration::from_secs(15),

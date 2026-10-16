@@ -204,6 +204,8 @@ async fn run(cfg: Config) -> Result<(), String> {
 
     let runner: Arc<dyn JobRunner> = Arc::new(DockerRunner::new(DockerOptions {
         cpus: cfg.job_cpus,
+        // `cfg` 是 Arc<Config>,`job_memory` 不是 Copy,得 clone 一份出来。
+        memory: cfg.job_memory.clone(),
         timeout: cfg.job_timeout,
         ..DockerOptions::default()
     }));

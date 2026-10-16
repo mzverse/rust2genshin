@@ -107,7 +107,12 @@ pub struct RunSpec {
     /// support CPU cfs period/quota or the cgroup is not mounted`。留个
     /// 能关掉的开关,免得在那种机器上一个任务都跑不起来。
     pub cpus: Option<u32>,
-    pub memory: String,
+    /// `None` = **不下** `--memory` / `--memory-swap`。cgroup v1 的 memory
+    /// 控制器不支持 `kmem.limit_in_bytes` 时(常见于内核没编
+    /// `CONFIG_MEMCG_KMEM` 的机器),runc 会在建容器时炸:
+    /// `failed to write 1 to memory.kmem.limit_in_bytes: operation not
+    /// supported`,`docker run` 整个失败,一个任务都跑不起来。
+    pub memory: Option<String>,
     pub pids_limit: u32,
     pub user: String,
     /// 用户代码在仓库里的相对路径(`demo/src/lib.rs`),只写进日志。
@@ -133,13 +138,19 @@ pub fn run_args(spec: &RunSpec) -> Vec<String> {
     let pids = spec.pids_limit.to_string();
     for s in [
         "--network", "none",
-        "--memory", &spec.memory,
-        "--memory-swap", &spec.memory,
         "--pids-limit", &pids,
         "--user", &spec.user,
         "--tmpfs", "/tmp",
     ] {
         a.push(s.into());
+    }
+    // `--memory-swap` 与 `--memory` 同进同出:单给 swap 而不给 memory 的话
+    // docker 会拿 memory 的默认值当上限,那不是部署想表达的意思。
+    if let Some(memory) = &spec.memory {
+        a.push("--memory".into());
+        a.push(memory.clone());
+        a.push("--memory-swap".into());
+        a.push(memory.clone());
     }
     // 限额是有还是没有**由 spec 说了算**,这里只是别把 `None` 拼成 "None"。
     if let Some(cpus) = spec.cpus {
@@ -319,7 +330,7 @@ mod tests {
             out_dir: PathBuf::from("/data/tasks/task1/out"),
             workdir: "/opt/rust2genshin".into(),
             cpus: Some(2),
-            memory: "1536m".into(),
+            memory: Some("1536m".into()),
             pids_limit: 256,
             user: "1001".into(),
             source_file: "demo/src/lib.rs".into(),
@@ -356,6 +367,18 @@ mod tests {
         s.cpus = None;
         let a = run_args(&s);
         assert!(!a.iter().any(|x| x == "--cpus"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "None"), "{a:?}");
+    }
+
+    #[test]
+    fn no_memory_limit_drops_memory_and_its_swap_twin() {
+        // kmem 不被支持时,`--memory` 和 `--memory-swap` 都要消失;留下
+        // `--memory-swap` 一个孤儿旗标毫无意义。
+        let mut s = spec();
+        s.memory = None;
+        let a = run_args(&s);
+        assert!(!a.iter().any(|x| x == "--memory"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--memory-swap"), "{a:?}");
         assert!(!a.iter().any(|x| x == "None"), "{a:?}");
     }
 

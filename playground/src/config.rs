@@ -18,6 +18,8 @@ pub struct Config {
     pub remote: String,
     /// 任务容器的 CPU 限额;`None` = 不下 `--cpus`。
     pub job_cpus: Option<u32>,
+    /// 任务容器的内存限额;`None` = 不下 `--memory`。
+    pub job_memory: Option<String>,
     pub max_jobs: usize,
     pub max_queue: usize,
     pub job_timeout: Duration,
@@ -141,6 +143,21 @@ fn cpus_var(key: &'static str, get: &dyn Fn(&str) -> Option<String>) -> Result<O
     }
 }
 
+/// 任务容器的内存限额。没设是 `1536m`;设成 `none` 表示**不加**
+/// `--memory`(宿主的 cgroup v1 不支持 kmem 时,加了 docker 会拒掉整个 run)。
+/// `PLAYGROUND_JOB_MEMORY=none` 是不限额,别的都按 docker 的写法原样传给 `--memory`
+/// (`1536m` / `2g` —— 一律 1024 进制,别写 `1.5g`,docker 对小数容量不友好)。
+fn memory_var(key: &'static str, get: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>, ConfigError> {
+    match raw(key, get) {
+        None => Ok(Some("1536m".into())),
+        Some(v) if v.eq_ignore_ascii_case("none") => Ok(None),
+        Some(v) => {
+            parse_size(&v).map_err(|reason| inv(key, &v, reason))?;
+            Ok(Some(v))
+        }
+    }
+}
+
 const DEFAULT_ORIGINS: &str =
     "https://mzverse.github.io,http://127.0.0.1:3000,http://localhost:3000";
 
@@ -172,6 +189,7 @@ pub fn resolve(
         remote: str_var("PLAYGROUND_REMOTE", get, "origin"),
         max_jobs: num_var("PLAYGROUND_MAX_JOBS", get, 8usize)?,
         job_cpus: cpus_var("PLAYGROUND_JOB_CPUS", get)?,
+        job_memory: memory_var("PLAYGROUND_JOB_MEMORY", get)?,
         max_queue: num_var("PLAYGROUND_MAX_QUEUE", get, 64usize)?,
         job_timeout: Duration::from_secs(num_var("PLAYGROUND_JOB_TIMEOUT", get, 15u64)?),
         keep_images: num_var("PLAYGROUND_KEEP_IMAGES", get, 2usize)?,
@@ -219,6 +237,7 @@ mod tests {
         assert_eq!(c.remote, "origin");
         assert_eq!(c.max_jobs, 8);
         assert_eq!(c.job_cpus, Some(2));
+        assert_eq!(c.job_memory.as_deref(), Some("1536m"));
         assert_eq!(c.max_queue, 64);
         assert_eq!(c.job_timeout, Duration::from_secs(15));
         assert_eq!(c.keep_images, 2);
@@ -271,6 +290,21 @@ mod tests {
         let g = getter(&[("PLAYGROUND_JOB_CPUS", "4")]);
         assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().job_cpus, Some(4));
         let g = getter(&[("PLAYGROUND_JOB_CPUS", "abc")]);
+        assert!(resolve(&g, Path::new("/repo/playground")).is_err());
+    }
+
+    #[test]
+    fn none_drops_the_memory_limit_and_junk_is_rejected() {
+        // kmem 不被支持时,`--memory` 会让 docker 整个 run 失败,得能关。
+        let g = getter(&[("PLAYGROUND_JOB_MEMORY", "none")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().job_memory, None);
+        let g = getter(&[("PLAYGROUND_JOB_MEMORY", "2g")]);
+        assert_eq!(
+            resolve(&g, Path::new("/repo/playground")).unwrap().job_memory.as_deref(),
+            Some("2g")
+        );
+        // 大小按 1024 进制解析,和 docker 的 --keep-storage 一个理解。
+        let g = getter(&[("PLAYGROUND_JOB_MEMORY", "1.5g")]);
         assert!(resolve(&g, Path::new("/repo/playground")).is_err());
     }
 
