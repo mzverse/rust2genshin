@@ -130,6 +130,15 @@ impl Baker {
         })
     }
 
+    /// 把本地**已经烘好**的镜像直接登记成 serving —— "重启一下服务不该重编
+    /// 几分钟"的实现。不碰 `pending`/`baking`:它不是一次烘焙,只是认领。
+    pub fn adopt(&self, built: BuiltImage) {
+        let mut inner = self.inner.lock().expect("烘焙状态锁中毒");
+        inner.serving = Some(built.sha);
+        inner.serving_tag = Some(built.tag);
+        inner.baking = None;
+    }
+
     pub fn request(&self, req: BakeRequest) {
         self.inner.lock().expect("烘焙状态锁中毒").pending = Some(req);
         self.kick.notify_one();
@@ -295,6 +304,19 @@ mod tests {
         assert!(!k.step().await, "折叠之后只剩一次烘焙");
         assert_eq!(b.calls(), vec![Some("ccc3333".into())]);
         assert_eq!(k.status().serving.as_deref(), Some("ccc3333"));
+    }
+
+    #[tokio::test]
+    async fn adopt_registers_a_locally_baked_image() {
+        let b = FakeBuilder::new(vec![]);
+        let k = baker(Arc::clone(&b), Arc::new(OkGate));
+        k.adopt(image("aaa1111"));
+        assert!(k.ready(), "adopt 之后就算 ready");
+        let s = k.status();
+        assert_eq!(s.serving.as_deref(), Some("aaa1111"));
+        assert_eq!(s.serving_tag.as_deref(), Some("rust2genshin-play:aaa1111"));
+        assert_eq!(s.baking, None, "adopt 不产生 baking 态");
+        assert!(b.calls().is_empty(), "adopt 不该触发烘焙");
     }
 
     #[tokio::test]
