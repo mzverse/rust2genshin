@@ -225,69 +225,10 @@ impl Baker {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Mutex,
-        },
-        time::Duration,
-    };
+    use std::time::Duration;
 
     use super::*;
-
-    struct FakeBuilder {
-        results: Mutex<VecDeque<Result<BuiltImage, String>>>,
-        lines: Vec<String>,
-        calls: Mutex<Vec<Option<String>>>,
-    }
-
-    impl FakeBuilder {
-        fn new(results: Vec<Result<BuiltImage, String>>) -> Arc<Self> {
-            Arc::new(Self {
-                results: Mutex::new(results.into()),
-                lines: vec!["step 1/4".into(), "step 4/4".into()],
-                calls: Mutex::new(Vec::new()),
-            })
-        }
-        fn calls(&self) -> Vec<Option<String>> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ImageBuilder for FakeBuilder {
-        async fn build(
-            &self,
-            sha: Option<&str>,
-            log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
-        ) -> Result<BuiltImage, String> {
-            self.calls.lock().unwrap().push(sha.map(str::to_string));
-            for l in &self.lines {
-                log(l);
-            }
-            self.results
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Err("没有更多预设结果".into()))
-        }
-    }
-
-    struct OkGate;
-    #[async_trait::async_trait]
-    impl DiskGate for OkGate {
-        async fn ensure_free(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    struct LowGate;
-    #[async_trait::async_trait]
-    impl DiskGate for LowGate {
-        async fn ensure_free(&self) -> Result<(), String> {
-            Err("磁盘可用空间 1 字节低于水位".into())
-        }
-    }
+    use crate::testing::{FakeBuilder, LowGate, OkGate};
 
     fn image(sha: &str) -> BuiltImage {
         BuiltImage { sha: sha.into(), tag: format!("rust2genshin-play:{sha}") }

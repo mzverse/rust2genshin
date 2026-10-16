@@ -2,7 +2,10 @@
 //! 反向不成立 —— 将来加 rust-analyzer 的长驻会话,是往这一层加 `session`
 //! 模块,不动下面。
 
+pub mod http;
 pub mod webhook;
+
+pub use http::AppState;
 
 use std::net::{IpAddr, SocketAddr};
 

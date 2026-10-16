@@ -2,6 +2,7 @@
 //! 是为了 HTTP / WS / 整条链路三处用的是同一个行为定义。
 
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -10,10 +11,73 @@ use std::{
 };
 
 use crate::{
+    bake::{BuiltImage, ImageBuilder},
     docker::Stream,
+    gc::DiskGate,
     job::JobPaths,
     runner::{JobRunner, JobSpec, LogSink, RunOutcome, RunnerError},
 };
+
+/// 假的 `ImageBuilder`:按顺序吐出预设结果。没结果了就报错,好让
+/// "多烘了一次"这种 bug 现形而不是静默成功。
+pub struct FakeBuilder {
+    results: Mutex<VecDeque<Result<BuiltImage, String>>>,
+    lines: Vec<String>,
+    calls: Mutex<Vec<Option<String>>>,
+}
+
+impl FakeBuilder {
+    pub fn new(results: Vec<Result<BuiltImage, String>>) -> Arc<Self> {
+        Arc::new(Self {
+            results: Mutex::new(results.into()),
+            lines: vec!["step 1/4".into(), "step 4/4".into()],
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub fn calls(&self) -> Vec<Option<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl ImageBuilder for FakeBuilder {
+    async fn build(
+        &self,
+        sha: Option<&str>,
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<BuiltImage, String> {
+        self.calls.lock().unwrap().push(sha.map(str::to_string));
+        for l in &self.lines {
+            log(l);
+        }
+        self.results
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err("没有更多预设结果".into()))
+    }
+}
+
+/// 水位永远够。`Arc<dyn DiskGate>` 的两个常用替身之一。
+pub struct OkGate;
+
+#[async_trait::async_trait]
+impl DiskGate for OkGate {
+    async fn ensure_free(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// 水位永远不够 —— 用来钉住 `no_disk` 那条路径不需要碰 docker。
+pub struct LowGate;
+
+#[async_trait::async_trait]
+impl DiskGate for LowGate {
+    async fn ensure_free(&self) -> Result<(), String> {
+        Err("磁盘可用空间 1 字节低于水位".into())
+    }
+}
 
 #[derive(Clone)]
 pub enum Behavior {
