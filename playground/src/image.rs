@@ -42,15 +42,16 @@ impl ImageRegistry {
 
     /// 任务起跑前调一次,守卫活到容器退出。
     pub fn acquire(self: &Arc<Self>, tag: &str) -> ImageGuard {
+        let key = tag.to_string();
         *self
             .counts
             .lock()
             .expect("镜像引用计数锁中毒")
-            .entry(tag.to_string())
+            .entry(key.clone())
             .or_insert(0) += 1;
         ImageGuard {
             reg: Arc::clone(self),
-            tag: tag.to_string(),
+            tag: key,
         }
     }
 
@@ -158,5 +159,33 @@ mod tests {
         assert_eq!(reg.count("a:1"), 1, "克隆出去的守卫也算一份引用");
         drop(g2);
         assert_eq!(reg.count("a:1"), 0);
+    }
+
+    #[test]
+    fn guard_count_converges_under_concurrent_drop() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        const N: usize = 16;
+        let reg = ImageRegistry::new();
+        let barrier = std::sync::Arc::new(Barrier::new(N));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let reg = Arc::clone(&reg);
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                let g = reg.acquire("a:1");
+                barrier.wait();
+                drop(g);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            reg.count("a:1"),
+            0,
+            "并发 acquire+drop 后必须收敛回 0,漏一次就让镜像永远删不掉"
+        );
     }
 }
