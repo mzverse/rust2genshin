@@ -3,6 +3,7 @@
 
 mod config;
 mod docker;
+mod gc;
 mod image;
 mod repo;
 
