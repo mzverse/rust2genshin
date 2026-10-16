@@ -3,7 +3,7 @@ document.addEventListener('mouseover', e => {
     let href;
     if(!link || (href = link.getAttribute('href')) === '#')
         return;
-    document.querySelector(href).classList.add('highlight');
+    document.getElementById(href.substring(1)).classList.add('highlight');
 });
 
 document.addEventListener('mouseout', e => {
@@ -11,5 +11,5 @@ document.addEventListener('mouseout', e => {
     let href;
     if(!link || (href = link.getAttribute('href')) === '#')
         return;
-    document.querySelector(href).classList.remove('highlight');
+    document.getElementById(href.substring(1)).classList.remove('highlight');
 });
