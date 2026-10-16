@@ -48,7 +48,7 @@ cargo run -p rust2genshin-playground
     [`GITHUB_WEBHOOK_SECRET`], [无], [校验 GitHub webhook 的 HMAC 签名（`X-Hub-Signature-256`）。和上一个一样，未设则不接受这条路。],
 )
 
-三个布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
+布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
 
 = webhook 怎么配
 
