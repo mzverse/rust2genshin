@@ -16,7 +16,7 @@ fn walk(dir: PathBuf) -> impl Iterator<Item = PathBuf> {
     })
 }
 
-pub static SRC: LazyLock<PathBuf> = LazyLock::new(|| Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("typst"));
+pub static SRC: LazyLock<PathBuf> = LazyLock::new(|| Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("typst"));
 
 pub fn build() {
     let mut file = File::create(SRC.join("main.typ")).unwrap();
