@@ -5,6 +5,7 @@ mod config;
 mod docker;
 mod gc;
 mod image;
+mod protocol;
 mod repo;
 
 fn main() {
