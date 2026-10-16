@@ -7,6 +7,7 @@ mod gc;
 mod image;
 mod job;
 mod protocol;
+mod queue;
 mod repo;
 
 fn main() {
