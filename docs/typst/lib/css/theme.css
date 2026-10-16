@@ -138,6 +138,12 @@
     /* 顶栏高度。header.css 的 .site-header 在 shadow root 里用它定高,
      * 两侧抽屉和遮罩的 top / 高度也全部从它算 —— 改高度只改这一处。 */
     --header-h: 48px;
+
+    /* 摆弄页的状态行。三个值分别沿用 tip 的绿、attention 的黄、
+     * 行内代码的红 —— 那三处已经按 WCAG 算过对比度,不再编新颜色。 */
+    --ok: #155724;
+    --warn: #856404;
+    --err: #d73948;
 }
 
 :root[data-theme="dark"] {
@@ -247,4 +253,8 @@
      * 没变化(hover 目标 --graph-box 恰好就是 rest 的实色)。 */
     --graph-reset-bg: rgba(58, 58, 69, 0.9);
     --graph-fallback-bg: #17171c;
+
+    --ok: #a5e0b0;
+    --warn: #f0cf85;
+    --err: #ff8080;
 }
