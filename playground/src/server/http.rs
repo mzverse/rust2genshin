@@ -56,6 +56,8 @@ pub struct StatusBody {
     pub head: Option<String>,
     pub dirty: Option<bool>,
     pub uptime_secs: u64,
+    /// 最近一次 webhook 触发时 `git pull` 失败的原因;`None` = 没失败(或没触发)。
+    pub pull_failure: Option<String>,
 }
 
 /// 用户源码在仓库里的路径。样例和任务用的是同一个文件 —— 用户点
@@ -149,6 +151,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<StatusBody> {
         head,
         dirty,
         uptime_secs: st.started.elapsed().as_secs(),
+        pull_failure: bake.pull_failure,
     })
 }
 
@@ -196,6 +199,20 @@ async fn artifact(State(st): State<Arc<AppState>>, AxPath(id): AxPath<String>) -
     }
 }
 
+/// webhook 路径上的 `git pull`。返回 `Some(原因)` 表示 pull 没成功(但烘焙
+/// 照常,烘的是当前工作区),`None` 表示没失败 —— 包括 `git_ref` 钉成 sha 时
+/// 整条跳过(定点部署不该被 pull 改掉 ref)。
+async fn webhook_pull(repo: &Repo, cfg: &Config) -> Option<String> {
+    if crate::repo::is_sha_like(&cfg.git_ref) {
+        return None;
+    }
+    match repo.pull_ff_only(&cfg.remote, &cfg.git_ref).await {
+        Ok(crate::repo::Pull::Skipped(why)) => Some(why),
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
+    }
+}
+
 /// 两条进得来:GitHub webhook(HMAC)和运维手工触发(Bearer token)。
 /// 两个都没配 = 403,不做"没配就放行"这种事。
 async fn admin_rebuild(
@@ -240,6 +257,13 @@ async fn admin_rebuild(
             Json(serde_json::json!({ "accepted": false, "reason": "忽略:不是 main 的 push" })),
         )
             .into_response();
+    }
+
+    // 只有 webhook 这条路才 pull —— 手工 /admin/rebuild 烘的是工作区当前
+    // 状态,不该顺手 pull。pull 失败/分叉不阻断,原因记进 /status 的
+    // `pull_failure`(下次 pull 或成功时覆盖),烘焙照常继续。
+    if authed_by_webhook {
+        st.baker.set_pull_failure(webhook_pull(&st.repo, &st.cfg).await);
     }
 
     st.baker.request(BakeRequest {
@@ -528,5 +552,123 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── webhook 路径的 pull ───────────────────────────────────────────
+
+    /// 和 `verify_signature` 用同一套算法签一个 body,好让 webhook 请求过鉴权。
+    fn sign(secret: &str, body: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    /// 带 webhook 配置的 AppState,`builder` 交出来好断言"烘焙确实被触发"。
+    /// `repo` 必须是真 git 仓库(webhook 这条路径要 pull)。
+    fn webhook_state(repo: &Path, secret: &str, git_ref: &str) -> (Arc<AppState>, Arc<FakeBuilder>) {
+        let mut cfg = cfg_of(repo);
+        cfg.webhook_secret = Some(secret.to_string());
+        cfg.git_ref = git_ref.to_string();
+        cfg.remote = "origin".to_string();
+        let cfg = Arc::new(cfg);
+        let builder = FakeBuilder::new(vec![Ok(baked_one("bbb2222"))]);
+        let image_builder: Arc<dyn crate::bake::ImageBuilder> = builder.clone();
+        let baker = Baker::new(image_builder, Arc::new(OkGate) as Arc<dyn DiskGate>);
+        let st = Arc::new(AppState {
+            queue: Queue::new(cfg.max_jobs, cfg.max_queue),
+            baker,
+            jobs: Arc::new(JobStore::new(cfg.data_dir.join("tasks"))),
+            repo: Arc::new(Repo::new(cfg.repo_dir.clone())),
+            registry: ImageRegistry::new(),
+            runner: crate::testing::FakeRunner::new(crate::testing::Behavior::Ok {
+                lines: vec![],
+                bytes: 1,
+            }),
+            started: Instant::now(),
+            cfg,
+        });
+        (st, builder)
+    }
+
+    async fn post_webhook(state: Arc<AppState>, secret: &str) -> Response {
+        let body = br#"{"ref":"refs/heads/main"}"#;
+        router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/rebuild")
+                    .header("x-hub-signature-256", sign(secret, body))
+                    .header("x-github-event", "push")
+                    .body(Body::from(body.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn webhook_pull_skips_a_pinned_sha() {
+        // git_ref 是 sha → 整条跳过,不去 pull。用非 git 目录:若真去 pull,
+        // git 会失败并返回 Some(原因),这里返回 None 才证明 is_sha_like 短路生效。
+        let d = tempfile::tempdir().unwrap();
+        let repo = Repo::new(d.path().to_path_buf());
+        let mut cfg = cfg_of(d.path());
+        cfg.git_ref = "0123456789abcdef".to_string();
+        assert_eq!(webhook_pull(&repo, &cfg).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_still_bakes_and_records_the_reason() {
+        if !crate::testing::git_available() {
+            return;
+        }
+        let secret = "s3cret";
+        let (remote, _a) = crate::testing::git_remote_with_commit("a");
+        let local = crate::testing::git_local_clone(remote.path());
+        // 分叉:本地 + 远端各 commit → `pull --ff-only` 必然 Skipped。
+        std::fs::write(local.path().join("local.txt"), "x").unwrap();
+        crate::testing::git(local.path(), &["add", "."]);
+        crate::testing::git(local.path(), &["commit", "-m", "local"]);
+        std::fs::write(remote.path().join("f.txt"), "b").unwrap();
+        crate::testing::git(remote.path(), &["add", "."]);
+        crate::testing::git(remote.path(), &["commit", "-m", "remote"]);
+
+        let (st, builder) = webhook_state(local.path(), secret, "main");
+        let res = post_webhook(Arc::clone(&st), secret).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        // pull 失败不阻断烘焙,原因要能从 /status 查到。
+        assert!(st.baker.status().pull_failure.is_some(), "pull 失败原因要能查到");
+        assert!(st.baker.step().await, "pull 失败仍该触发烘焙");
+        assert_eq!(builder.calls().len(), 1, "烘焙确实被触发了");
+    }
+
+    #[tokio::test]
+    async fn a_successful_pull_advances_to_the_new_head() {
+        if !crate::testing::git_available() {
+            return;
+        }
+        let secret = "s3cret";
+        let (remote, _a) = crate::testing::git_remote_with_commit("a");
+        let local = crate::testing::git_local_clone(remote.path());
+        let repo = Repo::new(local.path().to_path_buf());
+        let before = repo.head().await.unwrap();
+        // 远端前进一个 commit。
+        std::fs::write(remote.path().join("f.txt"), "b").unwrap();
+        crate::testing::git(remote.path(), &["add", "."]);
+        crate::testing::git(remote.path(), &["commit", "-m", "b"]);
+        let b_sha = crate::testing::git(remote.path(), &["rev-parse", "HEAD"]);
+
+        let (st, _builder) = webhook_state(local.path(), secret, "main");
+        let res = post_webhook(Arc::clone(&st), secret).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        // pull 成功:pull_failure 无,HEAD 前进到远端新 sha。
+        assert_eq!(st.baker.status().pull_failure, None);
+        let after = st.repo.head().await.unwrap();
+        assert_eq!(after, b_sha, "pull 之后 HEAD 要前进到远端");
+        assert_ne!(after, before);
     }
 }

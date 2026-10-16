@@ -105,10 +105,10 @@ impl Repo {
             .is_empty())
     }
 
-    /// `git pull --ff-only`。失败返回 `Skipped`,不返回 `Err`。
-    pub async fn pull_ff_only(&self, remote: &str) -> Result<Pull, RepoError> {
+    /// `git pull --ff-only <remote> <branch>`。失败返回 `Skipped`,不返回 `Err`。
+    pub async fn pull_ff_only(&self, remote: &str, branch: &str) -> Result<Pull, RepoError> {
         let out = tokio::process::Command::new("git")
-            .args(["pull", "--ff-only", remote])
+            .args(["pull", "--ff-only", remote, branch])
             .current_dir(&self.dir)
             .stdin(Stdio::null())
             .output()
@@ -187,5 +187,55 @@ mod tests {
             Pull::Skipped(why) => assert!(!why.is_empty()),
             other => panic!("期望 Skipped,得到 {other:?}"),
         }
+    }
+
+    // ── pull_ff_only 打真 git(有 git 才跑,没 git 环境跳过)─────────────
+
+    #[tokio::test]
+    async fn pull_ff_only_fast_forwards_to_the_new_head() {
+        if !crate::testing::git_available() {
+            return;
+        }
+        let (remote, _a) = crate::testing::git_remote_with_commit("a");
+        let local = crate::testing::git_local_clone(remote.path());
+
+        // 远端再前进一个 commit。
+        std::fs::write(remote.path().join("f.txt"), "b").unwrap();
+        crate::testing::git(remote.path(), &["add", "."]);
+        crate::testing::git(remote.path(), &["commit", "-m", "b"]);
+        let b_sha = crate::testing::git(remote.path(), &["rev-parse", "HEAD"]);
+
+        let repo = Repo::new(local.path().to_path_buf());
+        assert_ne!(repo.head().await.unwrap(), b_sha);
+        let p = repo.pull_ff_only("origin", "main").await.unwrap();
+        assert_eq!(p, Pull::Updated);
+        assert_eq!(repo.head().await.unwrap(), b_sha, "pull 之后 HEAD 要前进到远端");
+    }
+
+    #[tokio::test]
+    async fn pull_ff_only_skips_when_diverged() {
+        if !crate::testing::git_available() {
+            return;
+        }
+        let (remote, _a) = crate::testing::git_remote_with_commit("a");
+        let local = crate::testing::git_local_clone(remote.path());
+
+        // 本地 + 远端各 commit → 分叉。--ff-only 必须 Skipped 而不是把
+        // merge 冲突态丢进工作区。
+        std::fs::write(local.path().join("local.txt"), "x").unwrap();
+        crate::testing::git(local.path(), &["add", "."]);
+        crate::testing::git(local.path(), &["commit", "-m", "local"]);
+        let local_head = crate::testing::git(local.path(), &["rev-parse", "HEAD"]);
+
+        std::fs::write(remote.path().join("f.txt"), "b").unwrap();
+        crate::testing::git(remote.path(), &["add", "."]);
+        crate::testing::git(remote.path(), &["commit", "-m", "remote"]);
+
+        let repo = Repo::new(local.path().to_path_buf());
+        match repo.pull_ff_only("origin", "main").await.unwrap() {
+            Pull::Skipped(why) => assert!(!why.is_empty()),
+            other => panic!("分叉时该 Skipped,得到 {other:?}"),
+        }
+        assert_eq!(repo.head().await.unwrap(), local_head, "快进不了 HEAD 要原地不动");
     }
 }

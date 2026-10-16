@@ -181,6 +181,71 @@ pub fn fake_paths(dir: &std::path::Path, task: &str) -> JobPaths {
     }
 }
 
+/// 在 `dir` 里跑一条 git 命令,断言成功,返回 stdout。
+/// 造 git 环境用(init / commit / fetch / reset …)。要测的 git 操作本身
+/// (比如 `Repo::pull_ff_only`)走 `Repo`,不走这里 —— 这个 helper 只是脚手架。
+pub fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("跑 git 失败");
+    assert!(
+        out.status.success(),
+        "git {args:?} 失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// 环境里有没有 git —— 打真 git 的测试(如 `pull_ff_only`)没 git 就跳过。
+pub fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// 造一个"远端"仓库:init + 写 `f.txt` + commit,返回 (dir, head sha)。
+/// 本地仓库 `remote add origin <remote>` 后即可 `fetch`。
+pub fn git_remote_with_commit(content: &str) -> (tempfile::TempDir, String) {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "--initial-branch=main"]);
+    std::fs::write(d.path().join("f.txt"), content).unwrap();
+    git(d.path(), &["add", "."]);
+    git(d.path(), &["commit", "-m", "commit"]);
+    let sha = git(d.path(), &["rev-parse", "HEAD"]);
+    (d, sha)
+}
+
+/// 把一个本地路径转成 git 认的**本地**路径。Windows 下 `Path::to_str`
+/// 给的是反斜杠(`C:\...`),git 会把 `\` 之后的 `C:` 段当成 scp 式
+/// `host:path` 语法报 "hostname contains invalid characters";`file://` 又会
+/// 被 git-for-windows 的路径转换 mangling 成 `/?/C:...`。正解是把分隔符
+/// 换成正斜杠、不加 scheme —— `C:/Users/...` 直接被当成本地路径。
+fn git_local_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// 造一个"本地"仓库:init main + 把 `origin` 指向 `remote`,fetch 后
+/// `reset --hard origin/main`(本地 HEAD = 远端当前 HEAD)。
+pub fn git_local_clone(remote: &std::path::Path) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    git(d.path(), &["init", "--initial-branch=main"]);
+    // 别 `canonicalize`:Windows 下它会给出 `\\?\` 前缀的 extended-length
+    // 路径,换成正斜杠后 git 也认不得。`TempDir::path()` 本来就是绝对路径。
+    git(d.path(), &["remote", "add", "origin", &git_local_path(remote)]);
+    git(d.path(), &["fetch", "origin"]);
+    git(d.path(), &["reset", "--hard", "origin/main"]);
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

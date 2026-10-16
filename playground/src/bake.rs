@@ -61,6 +61,9 @@ pub struct BakeStatus {
     pub serving: Option<String>,
     pub serving_tag: Option<String>,
     pub baking: Option<BakingStatus>,
+    /// 最近一次 webhook 触发时 `git pull` 失败的原因。`None` = 没失败
+    /// (或没触发过 pull)。持久挂在 `/status` 上,不随某次烘焙结束消失。
+    pub pull_failure: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -116,6 +119,9 @@ pub struct Baker {
     gate: Arc<dyn DiskGate>,
     inner: Mutex<Inner>,
     ring: Mutex<Ring>,
+    /// 最近一次 webhook 触发时 `git pull` 失败的原因。独立于烘焙状态机:
+    /// 不随某次烘焙结束而清空,只在下一次 pull 时被覆盖。挂在 `/status`。
+    pull_failure: Mutex<Option<String>>,
     kick: Notify,
 }
 
@@ -126,6 +132,7 @@ impl Baker {
             gate,
             inner: Mutex::new(Inner::default()),
             ring: Mutex::new(Ring::new(RING_CAPACITY)),
+            pull_failure: Mutex::new(None),
             kick: Notify::new(),
         })
     }
@@ -153,7 +160,14 @@ impl Baker {
                 b.tail = self.ring.lock().expect("烘焙日志锁中毒").snapshot();
                 b
             }),
+            pull_failure: self.pull_failure.lock().expect("pull 状态锁中毒").clone(),
         }
+    }
+
+    /// 记录/清除最近一次 `git pull` 失败的原因。`None` = 成功或没触发。
+    /// 只在 webhook 路径上写:手工重建不走 pull,不碰这个字段。
+    pub fn set_pull_failure(&self, why: Option<String>) {
+        *self.pull_failure.lock().expect("pull 状态锁中毒") = why;
     }
 
     pub fn tail(&self) -> Vec<String> {
