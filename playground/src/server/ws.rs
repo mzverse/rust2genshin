@@ -115,6 +115,15 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                 }
                             }
                             Ok(ClientMsg::Submit { source, target }) => {
+                                // `Error{Internal}` 这类非终结消息发出来之后,spawn 出去
+                                // 的任务可能还在 drop `ticket`/`guard` 的尾巴上 —— 那时
+                                // 读循环里 `is_finished()` 还没翻成 true,槽位仍是 `Some`。
+                                // `is_finished()` 是单调的:一旦 true 就不会回退,所以这里
+                                // 先按它把已结束的槽位收回来,再判断"已有任务在跑",不受
+                                // 调度时序影响。
+                                if job.as_ref().is_some_and(|h| h.is_finished()) {
+                                    job = None;
+                                }
                                 if job.is_some() {
                                     if send(&mut sink, &bad_request("已有任务在跑,先发 cancel")).await.is_err() {
                                         break;
@@ -696,7 +705,7 @@ mod tests {
         assert_eq!(st.queue.snapshot().running, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn an_internal_error_also_frees_the_connection_slot() {
         // `run_one` 在建任务目录 / 写 meta 失败时返回 `Error{Internal}` ——
         // 那个任务其实已经结束、`ticket`/`guard` 也还了,**但消息不是
