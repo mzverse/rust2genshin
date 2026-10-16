@@ -140,10 +140,16 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                     None => break,
                     Some(m) => {
                         let terminal = matches!(m, ServerMsg::Finished { .. } | ServerMsg::Failed { .. });
+                        // 消息的终结性与槽位的可复用性**不是同一个集合**:
+                        // `Error{Internal}`(建目录 / 写 meta 失败)也意味着那个
+                        // 任务已经结束、额度也还了,但消息不是 Finished/Failed。
+                        // 只看 terminal 的话槽位会留着,下一次提交被误判成
+                        // "已有任务在跑"。handle 结束即视为槽位可复用。
+                        let done = terminal || job.as_ref().is_some_and(|h| h.is_finished());
                         if send(&mut sink, &m).await.is_err() {
                             break;
                         }
-                        if terminal {
+                        if done {
                             job = None;
                         }
                     }
@@ -688,6 +694,67 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(st.queue.snapshot().running, 0);
+    }
+
+    #[tokio::test]
+    async fn an_internal_error_also_frees_the_connection_slot() {
+        // `run_one` 在建任务目录 / 写 meta 失败时返回 `Error{Internal}` ——
+        // 那个任务其实已经结束、`ticket`/`guard` 也还了,**但消息不是
+        // `Finished`/`Failed`**。连接若因此把槽位留成 `Some`,下一次提交
+        // 会被误判成"已有任务在跑",与真实状态不符。
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("demo/src")).unwrap();
+        // tasks 根指向一个**普通文件**:`prepare` 里的 `create_dir_all` 必然失败。
+        let tasks_file = d.path().join("tasks");
+        std::fs::write(&tasks_file, b"x").unwrap();
+
+        let mut cfg = resolve(&|_| None, &d.path().join("playground")).unwrap();
+        cfg.repo_dir = d.path().to_path_buf();
+        cfg.data_dir = d.path().join("data");
+        let cfg = Arc::new(cfg);
+        let st = Arc::new(AppState {
+            queue: Queue::new(cfg.max_jobs, cfg.max_queue),
+            baker: Baker::new(
+                FakeBuilder::new(vec![Ok(BuiltImage {
+                    sha: "aaa1111".into(),
+                    tag: "rust2genshin-play:aaa1111".into(),
+                })]),
+                Arc::new(OkGate) as Arc<dyn DiskGate>,
+            ),
+            jobs: Arc::new(JobStore::new(tasks_file)),
+            repo: Arc::new(Repo::new(cfg.repo_dir.clone())),
+            registry: ImageRegistry::new(),
+            runner: FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 }),
+            started: std::time::Instant::now(),
+            cfg,
+        });
+        // baker 必须 ready,否则先回 NotReady、测不到 Internal 这条路径。
+        st.baker.request(BakeRequest::default());
+        st.baker.step().await;
+        let (url, _st) = serve(st).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+
+        send(&mut ws, submit("fn main() {}")).await;
+        // Started 先发,然后才是 run_one 的 Internal。
+        let msgs = read_n(&mut ws, 2).await;
+        assert!(matches!(msgs[0], ServerMsg::Started { .. }), "{:?}", msgs[0]);
+        match msgs[1].clone() {
+            ServerMsg::Error { code, .. } => assert_eq!(code, ErrorCode::Internal),
+            other => panic!("期望 internal,得到 {other:?}"),
+        }
+
+        // 那个任务已经结束了,槽位必须空了:再来一次不该被当成"已有任务在跑"。
+        send(&mut ws, submit("fn main() {}")).await;
+        let first = read_n(&mut ws, 1).await[0].clone();
+        assert!(
+            matches!(first, ServerMsg::Started { .. }),
+            "槽位没清空,第二次提交被误判成:{first:?}"
+        );
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Error { code, .. } => assert_eq!(code, ErrorCode::Internal),
+            other => panic!("期望 internal,得到 {other:?}"),
+        }
     }
 
     #[tokio::test]
