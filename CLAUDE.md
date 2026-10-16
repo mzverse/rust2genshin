@@ -31,6 +31,7 @@
 | **lib API 的约定**：注释风格、命名、句柄类型约束、已踩的坑 | <https://mzverse.github.io/rust2genshin/dev/conventions.html> |
 | 参考项目（节点 ID / proto / `.gia` 格式的依据） | <https://mzverse.github.io/rust2genshin/arch/reference.html> |
 | **viewer**：怎么跑、怎么看中间态 IR、布局与优化的设计取舍 | <https://mzverse.github.io/rust2genshin/dev/viewer.html> |
+| **playground**：怎么跑、配置项、webhook、磁盘怎么算 | <https://mzverse.github.io/rust2genshin/dev/playground.html> |
 | 节点图本身的语义 | <https://mzverse.github.io/rust2genshin/arch/low/index.html> |
 | 怎么用（写节点图、句柄类型、可空性、Entity/Player） | <https://mzverse.github.io/rust2genshin/user/index.html> |
 | 文档站怎么改（含三个 CSS 坑） | <https://mzverse.github.io/rust2genshin/dev/docs/index.html> |
@@ -54,6 +55,9 @@ python tools/diff_gia.py export.gia target/genshin-unknown-beyond-server/release
 
 # 构建 viewer（不在 default-members 里）
 cargo build -p rust2genshin-viewer
+
+# 起 playground 服务（需要本机有 docker 与 git；见站点「playground」页）
+cargo run -p rust2genshin-playground
 ```
 
 产物路径是 `target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia`（`<target 名>/release/<crate 名>.gia`）。
@@ -102,6 +106,8 @@ lib-internal/        proc-macro crate：native / native_calc / native_exec / nat
 demo/                示例目标 crate —— 被后端编译成 .gia 的就是它（节点图写在这里）
 build-demo/          一键构建脚本（bin: beyond-server / classic-server）
 viewer/              ogia-viewer（crate `rust2genshin-viewer`，bin `rust2genshin_viewer`；不在 default-members；见站点「viewer」页）
+playground/          rust2genshin-playground：文档站「摆弄」页的后端（WebSocket +
+                     一次性 docker 容器跑 cargo build；crate `rust2genshin-playground`；不在 default-members；见站点「playground」页）
 docs/                文档站构建器（bin: compile / watch）+ docs/typst/ 站点源码
 tools/               (被 .gitignore) Python 调试工具，需要 protobuf 运行时
 ```

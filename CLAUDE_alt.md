@@ -39,6 +39,7 @@ The output is `target/<target-name>/release/<crate-name>.gia`, e.g. `target/gens
 
 - Backend only: `cargo build -p rust2genshin`
 - The viewer is not a workspace default member (`Cargo.toml:17-23`, because `gpui` needs X11/Wayland/font system libs that CI does not install) — build it explicitly with `cargo build -p rust2genshin-viewer`.
+- The playground backend is likewise not a default member. Start the service with `cargo run -p rust2genshin-playground` — it requires `docker` and `git` on `PATH` and exits at startup if either is missing. See the doc-site page on the playground for the config table, webhook setup, and disk accounting.
 - The CI workflow at `.github/workflows/build.yml` is the canonical reference; it runs exactly `cargo run -p build-demo --bin beyond-server` (`.github/workflows/build.yml:22`).
 
 **Tests:** there are no in-repo tests for the backend itself. The leaf crate `demo` is exercised by the `build-demo` flow.
@@ -58,6 +59,8 @@ lib-internal/        package `rust2genshin-lib-internal` (proc-macro)
 demo/                package `rust2genshin-demo` — the target leaf crate, node graphs live here
 build-demo/          package `build-demo` (bins: beyond-server / classic-server)
 viewer/              package `rust2genshin-viewer`, reads the intermediate `.ogia` (not a default member)
+playground/          package `rust2genshin-playground` — backend for the doc-site "playground" page
+                     (WebSocket + a throwaway docker container running `cargo build`; not a default member)
 docs/                doc-site builder + `docs/typst/` sources
 ```
 

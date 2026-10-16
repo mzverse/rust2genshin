@@ -24,6 +24,7 @@
 
 #list(
     link("/dev/viewer.html", [viewer]) + [ —— 拖入 `.ogia` / `.rlib` 浏览中间态 IR，跑优化规则看它改了什么],
+    link("/dev/playground.html", [playground]) + [ —— 文档站「摆弄」页的后端，一次性 docker 容器里跑 cargo build],
 )
 
 = 文档站
