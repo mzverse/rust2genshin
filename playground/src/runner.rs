@@ -230,8 +230,12 @@ impl JobRunner for DockerRunner {
         let mut timed_out = false;
         let status = match tokio::time::timeout(self.opts.timeout, child.wait()).await {
             Ok(Ok(s)) => {
-                // 容器确认退出,守卫卸甲 —— Drop 不用再补刀。
-                guard.mark_exited();
+                // 只有拿到退出码才算"容器确认退出"。`child.wait()` 成功但
+                // `code()` 为 `None` 时,docker CLI 是被信号杀死的 —— daemon
+                // 侧的容器可能还活着。这时不卸甲,交给守卫的 Drop 去补刀。
+                if s.code().is_some() {
+                    guard.mark_exited();
+                }
                 Some(s)
             }
             // `wait()` 自己报错:读不到容器状态,不卸甲,让守卫兜底。

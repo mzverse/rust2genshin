@@ -176,6 +176,19 @@ pub fn prune_args(keep_storage: u64) -> Vec<String> {
     ]
 }
 
+/// 镜像 prune,只碰带指定 label 的镜像。不带 `-a`(那会连未使用的 tagged
+/// 镜像一起删,可能误删 serving)—— 这里只清 dangling 层,builder prune
+/// 才管得住大头。
+pub fn image_prune_args(filter: &str) -> Vec<String> {
+    vec![
+        "image".into(),
+        "prune".into(),
+        "-f".into(),
+        "--filter".into(),
+        filter.into(),
+    ]
+}
+
 pub fn kill_args(name: &str) -> Vec<String> {
     vec!["kill".into(), name.into()]
 }
@@ -373,6 +386,14 @@ mod tests {
         assert_eq!(
             prune_args(10 * 1024 * 1024 * 1024),
             vec!["builder", "prune", "-f", "--keep-storage", "10737418240"]
+        );
+    }
+
+    #[test]
+    fn image_prune_is_label_scoped() {
+        assert_eq!(
+            image_prune_args("label=rust2genshin.play=1"),
+            vec!["image", "prune", "-f", "--filter", "label=rust2genshin.play=1"]
         );
     }
 

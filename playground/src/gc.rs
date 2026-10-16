@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn real_disk_gate_reports_free() {
-        let d = RealDiskGate::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")), 0);
+        let d = RealDiskGate::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")), 0, 0);
         let free = free_bytes(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
         assert!(free > 0);
         // 水位 0 → 永远够
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn real_disk_gate_refuses_when_watermark_is_absurd() {
-        let d = RealDiskGate::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")), u64::MAX);
+        let d = RealDiskGate::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")), u64::MAX, 0);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt.block_on(d.ensure_free()).unwrap_err();
         assert!(err.contains("磁盘"), "{err}");
@@ -245,11 +245,12 @@ pub trait DiskGate: Send + Sync {
 pub struct RealDiskGate {
     path: PathBuf,
     min_free: u64,
+    build_cache_max: u64,
 }
 
 impl RealDiskGate {
-    pub fn new(path: PathBuf, min_free: u64) -> Self {
-        Self { path, min_free }
+    pub fn new(path: PathBuf, min_free: u64, build_cache_max: u64) -> Self {
+        Self { path, min_free, build_cache_max }
     }
 }
 
@@ -260,15 +261,32 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
 #[async_trait::async_trait]
 impl DiskGate for RealDiskGate {
     async fn ensure_free(&self) -> Result<(), String> {
-        let free = free_bytes(&self.path)
-            .ok_or_else(|| format!("读不到磁盘 {} 的可用空间", self.path.display()))?;
-        if free >= self.min_free {
-            Ok(())
-        } else {
-            Err(format!(
-                "磁盘可用空间 {} 字节低于水位 {} 字节",
-                free, self.min_free
-            ))
+        let read_err = || format!("读不到磁盘 {} 的可用空间", self.path.display());
+        let before = free_bytes(&self.path).ok_or_else(read_err)?;
+        if before >= self.min_free {
+            return Ok(());
+        }
+
+        // 低于水位:先跑一次清理(builder prune 管大头 + label 限定的镜像
+        // prune,不碰别人的镜像),再复测。清理是 best-effort,失败不影响
+        // 复测判定 —— 复测只认磁盘现在还剩多少。
+        let label = format!("label={}=1", crate::image::LABEL_PLAY);
+        let _ = tokio::process::Command::new("docker")
+            .args(crate::docker::prune_args(self.build_cache_max))
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("docker")
+            .args(crate::docker::image_prune_args(&label))
+            .output()
+            .await;
+
+        let after = free_bytes(&self.path).ok_or_else(read_err)?;
+        match judge_disk(before, after, self.min_free) {
+            BakeGate::Proceed | BakeGate::CleanedThenProceed => Ok(()),
+            BakeGate::NoDisk { free } => Err(format!(
+                "磁盘可用空间 {free} 字节低于水位 {} 字节,清理后仍不够",
+                self.min_free
+            )),
         }
     }
 }
