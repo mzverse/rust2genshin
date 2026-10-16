@@ -48,6 +48,7 @@ mod tests {
     #[test]
     fn keeps_newest_beyond_the_protected_ones() {
         // a 最新(serving),b 次新,c/d 更老。keep=2 → 除 a 外还留 b。
+        // 删的顺序 d(最旧)→c(更新)。
         let images = vec![
             img("i:a", 0, 4),
             img("i:b", 0, 3),
@@ -55,7 +56,7 @@ mod tests {
             img("i:d", 0, 1),
         ];
         let got = select_images_to_remove(&images, 2, &["i:a"]);
-        assert_eq!(got, vec!["i:c".to_string(), "i:d".to_string()]);
+        assert_eq!(got, vec!["i:d".to_string(), "i:c".to_string()]);
     }
 
     #[test]
@@ -66,12 +67,13 @@ mod tests {
             img("i:c", 0, 2),
         ];
         let got = select_images_to_remove(&images, 1, &["i:a"]);
-        assert_eq!(got, vec!["i:b".to_string(), "i:c".to_string()]);
+        assert_eq!(got, vec!["i:c".to_string(), "i:b".to_string()]);
     }
 
     #[test]
     fn in_use_images_survive_even_when_old() {
         // 一个长跑任务正拿 d 起容器:它在最老的位置,但 refcount 非零。
+        // 删的顺序 c(2,最旧)→b(3,更新);d 因 refcount > 0 占额度必保。
         let images = vec![
             img("i:a", 0, 4),
             img("i:b", 0, 3),
@@ -79,7 +81,7 @@ mod tests {
             img("i:d", 1, 1),
         ];
         let got = select_images_to_remove(&images, 1, &["i:a"]);
-        assert_eq!(got, vec!["i:b".to_string(), "i:c".to_string()]);
+        assert_eq!(got, vec!["i:c".to_string(), "i:b".to_string()]);
         assert!(!got.contains(&"i:d".to_string()));
     }
 
@@ -92,7 +94,31 @@ mod tests {
             img("i:b", 0, 3),
         ];
         let got = select_images_to_remove(&images, 2, &["i:a"]);
-        assert_eq!(got, vec!["i:c".to_string(), "i:d".to_string()]);
+        assert_eq!(got, vec!["i:d".to_string(), "i:c".to_string()]);
+    }
+
+    #[test]
+    fn doomed_list_is_sorted_oldest_first() {
+        // 五个镜像,last_used 依次 5/4/3/2/1。keep=1 只留 a(最新)。
+        // 待删 e/d/c/b 四个必须按最旧→次旧→新 排,先删最久没用过的:
+        // 调用方只在磁盘吃紧时删到水位够就停,顺序不是装饰。
+        let images = vec![
+            img("i:a", 0, 5),
+            img("i:b", 0, 4),
+            img("i:c", 0, 3),
+            img("i:d", 0, 2),
+            img("i:e", 0, 1),
+        ];
+        let got = select_images_to_remove(&images, 1, &[]);
+        assert_eq!(
+            got,
+            vec![
+                "i:e".to_string(),
+                "i:d".to_string(),
+                "i:c".to_string(),
+                "i:b".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -178,7 +204,7 @@ pub fn select_images_to_remove(
             doomed.push(i);
         }
     }
-    doomed.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    doomed.sort_by(|a, b| a.last_used.cmp(&b.last_used));
     doomed.into_iter().map(|i| i.tag.clone()).collect()
 }
 
