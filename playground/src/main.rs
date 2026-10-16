@@ -6,6 +6,7 @@ mod config;
 mod docker;
 mod gc;
 mod image;
+mod image_builder;
 mod job;
 mod protocol;
 mod queue;

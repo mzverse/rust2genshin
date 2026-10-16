@@ -1,0 +1,13 @@
+# context 越小，push 之后的 docker build 越快。
+target/
+.git/
+.gitignore
+tools/
+export.gia*
+*.ogia
+docs/superpowers/
+.superpowers/
+
+# 注意:**不要**把 docs/ 和 viewer/ 排除掉 —— 它们是 workspace 成员,
+# 少了任何一个 `cargo fetch` 都会因为 "no targets specified in the
+# manifest" 直接失败。这一条是踩过的坑,别"顺手"清理。
