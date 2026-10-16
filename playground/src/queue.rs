@@ -36,13 +36,20 @@ pub struct Snapshot {
 pub fn client_key(ip: IpAddr) -> String {
     match ip {
         IpAddr::V4(v4) => v4.to_string(),
-        IpAddr::V6(v6) => {
-            let mut seg = v6.segments();
-            for s in &mut seg[4..] {
-                *s = 0;
+        // `::ffff:a.b.c.d` 是 IPv4-mapped: dual-stack 监听下内核会把 v4 对端
+        // 报成这个形态。不在这里拆回 v4,清零后 4 段会得到 `"::/64"` ——
+        // 于是全部 v4 客户端坍缩成同一个 key(还会和 `::`/`::1` 撞),
+        // "每 IP 一个"退化成全局串行。
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let mut seg = v6.segments();
+                for s in &mut seg[4..] {
+                    *s = 0;
+                }
+                format!("{}/64", std::net::Ipv6Addr::from(seg))
             }
-            format!("{}/64", std::net::Ipv6Addr::from(seg))
-        }
+        },
     }
 }
 
@@ -203,6 +210,23 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_mapped_v6_keys_like_its_v4_self() {
+        let v4: IpAddr = "1.2.3.4".parse().unwrap();
+        let mapped: IpAddr = "::ffff:1.2.3.4".parse().unwrap();
+        assert_eq!(
+            client_key(mapped),
+            client_key(v4),
+            "mapped 形态必须归到它自己的 v4 上,不能落到 ::/64"
+        );
+        // 不同 v4 不能因为都走 mapped 而一起坍缩
+        let other: IpAddr = "::ffff:1.2.3.5".parse().unwrap();
+        assert_ne!(client_key(other), client_key(v4));
+        // 更不能和未指定地址撞 key
+        let unspecified: IpAddr = "::".parse().unwrap();
+        assert_ne!(client_key(unspecified), client_key(v4));
+    }
+
+    #[test]
     fn under_the_limit_runs_immediately() {
         let q = q(2, 4);
         let a = q.try_acquire("1.1.1.1").unwrap();
@@ -258,6 +282,9 @@ mod tests {
         assert_eq!(q.try_acquire("3.3.3.3").unwrap_err(), SubmitError::QueueFull);
         // 被拒的 IP 不该留下痕迹
         assert_eq!(q.snapshot().waiting, 1);
+        // 被拒的 IP 一个字段都不该留下 —— 再提一次要还是 QueueFull。
+        // (如果它被误插进了 ips 表,这一次会变成 IpBusy,断言就会红。)
+        assert_eq!(q.try_acquire("3.3.3.3").unwrap_err(), SubmitError::QueueFull);
     }
 
     #[test]
