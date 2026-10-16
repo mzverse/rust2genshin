@@ -1,0 +1,30 @@
+[package]
+name = "rust2genshin-playground"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rust2genshin-playground"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+fs4 = "0.6"
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
