@@ -2,7 +2,17 @@
 
 #let this-path = state("this-path");
 
-#let template(con, toc: true, with_outline: true, title: none) = context {
+// with_header / with_outline / toc 是三道独立的开关,各自对应一个运行时
+// 注入的自定义元素:<site-header>(顶栏)、nav.outline(本页目录)、
+// <toc-component>(左栏全站目录)。凡是「自己会被别人抓去渲染」的页面
+// (toc.typ / header.typ)都必须把自己那道关掉,否则元素会去抓自己。
+#let template(
+    con,
+    toc: true,
+    with_outline: true,
+    with_header: true,
+    title: none,
+) = context {
     set text(lang: "zh", font: "Microsoft YaHei", size: 12pt);
     show link: if target() == "html" {
         it => {
@@ -46,12 +56,20 @@
             if toc {
                 import_script("/lib/js/toc.js");
             }
+            if with_header {
+                import_script("/lib/js/header.js");
+            }
             for x in query(<custom-element>).dedup() {
                 (x.value)();
             }
         });
         if toc {
             html_elem("toc-component")[];
+        }
+        // 顶栏得排在 main 之前 —— 它是 body grid 的第 1 行,而正文的
+        // 自动放置在它之后(header.css 里那条 grid-row: 1 是兜底)。
+        if with_header {
+            html_elem("site-header")[];
         }
         import "outline.typ";
         let page_style = if with_outline { outline.template } else { x => x };

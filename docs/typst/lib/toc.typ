@@ -1,10 +1,13 @@
 #import "/lib/lib.typ": *;
 #set raw(lang: "java");
-#show: template.with(toc: false, with_outline: false);
+// with_header: false —— 顶栏是全站的东西,不该在左栏抽屉里再长一条;
+// with_header 默认是 true,不关掉的话 <site-header> 会连着抓自己那页。
+#show: template.with(toc: false, with_outline: false, with_header: false);
 
 #let hides = (
     "/lib",
     "/res",
+    "/play"
 )
 
 #let gen(content, path: "") = {

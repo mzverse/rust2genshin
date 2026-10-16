@@ -42,18 +42,21 @@ Typst 导出 HTML 时，块级内容外面会多包一层 —— `<span class="b
 
 = 四、颜色得走 token，且 token 走的是继承
 
-深色模式把颜色全收进了 `lib/css/theme.css`：浅色值写在 `:root`，深色值只写在 `:root[data-theme="dark"]`（`theme.css:20` 与 `theme.css:142`）这一处，其余文件一律引用 `var(--x)`。这么定不是洁癖，是因为下面四个组件各自渲染在自己的 shadow root 里：
+深色模式把颜色全收进了 `lib/css/theme.css`：浅色值写在 `:root`，深色值只写在 `:root[data-theme="dark"]`（`theme.css:20` 与 `theme.css:142`）这一处，其余文件一律引用 `var(--x)`。这么定不是洁癖，是因为下面五个组件各自渲染在自己的 shadow root 里：
 
 - `toc-component`（`lib/js/toc.js:7`）
+- `site-header`（`lib/js/header.js`）
 - `code-block`（`lib/js/code_block.js:16`）
 - `expand-panel`（`lib/js/expand-panel.js:11`）
 - `ui-graph`（`lib/js/graph.js:210` 与 `graph.js:444`）
 
-页面上写的选择器进不去这些 shadow root。症状是：在 `lib/css/` 的某个页面样式里给目录条目、复制按钮、节点盒子加一条 `color: ...`，构建正常、开发者工具里选择器也能在 Styles 面板搜到，但*元素颜色纹丝不动* —— 因为那个元素根本不在你这条规则的树里。能穿过 shadow 边界的只有*继承的自定义属性*，所以颜色必须在 `:root` 声明一次、在任何深度用 `var()` 取用；连 `--header-h` 这种布局常量也只能住在 `theme.css`，因为两侧抽屉靠它算偏移，而抽屉在 shadow 里（`theme.css:5-8`）。
+页面上写的选择器进不去这些 shadow root。症状是：在 `lib/css/` 的某个页面样式里给目录条目、顶栏按钮、复制按钮、节点盒子加一条 `color: ...`，构建正常、开发者工具里选择器也能在 Styles 面板搜到，但*元素颜色纹丝不动* —— 因为那个元素根本不在你这条规则的树里。能穿过 shadow 边界的只有*继承的自定义属性*，所以颜色必须在 `:root` 声明一次、在任何深度用 `var()` 取用；连 `--header-h` 这种布局常量也只能住在 `theme.css`，因为它在 shadow 里的 `header.css` 定顶栏的高度，而两侧抽屉靠同一个值算偏移（`theme.css:5-8`）。
+
+顶栏这一处还多一层：`header.css` 写的是 shadow *内部*，而 `outline.css` 里的 `site-header { grid-row: 1 }` 写的是 shadow *外面那个宿主元素*。同一条顶栏的样式分了两个文件，是这个边界逼出来的，不是随手分的。
 
 `ui-graph` 的节点盒子、连线、控件还多一层：它们的 CSS 是 `graph.js` 里内联在 shadow root 中的一段 `<style>` 字符串（`graph.js:211-213`、`graph.js:447-486`），同一套 token 两边同名引用。那里 `var()` 照样解析得到 —— 边界挡的是选择器，不是继承。代价是页面*两个方向都覆盖不了*它：既改不动节点盒子的样式，也没法把某些样式从图里摘掉。
 
-`var()` 有个盲区：写不进 `url("data:image/svg+xml,…")`。色值直接烙进 data URI 之后就是一个主题死角。顶栏那两颗 ☰ 按钮原先就是这么画的，深色下纹丝不动；改成 `mask-image` 加 `stroke='currentColor'`（`outline.css:174`、`outline.css:140`）之后 `currentColor` 才把 token 层接进来。想给别的图标上色，先确认它走的是 `mask-image` 还是 `background-image`，后者多半改不动。
+`var()` 有个盲区：写不进 `url("data:image/svg+xml,…")`。色值直接烙进 data URI 之后就是一个主题死角。顶栏那些按钮（☰ / 月牙 / GitHub mark）原先就是这么画的，深色下纹丝不动；改成 `mask-image` 加 `stroke='currentColor'`（`header.css`）之后 `currentColor` 才把 token 层接进来。想给别的图标上色，先确认它走的是 `mask-image` 还是 `background-image`，后者多半改不动。
 
 == 另一个陷阱：Typst 把颜色写成内联 `style`
 

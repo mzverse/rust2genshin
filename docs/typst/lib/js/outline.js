@@ -45,10 +45,10 @@ document.addEventListener('DOMContentLoaded', _ => {
      * `columnAt` 是这个抽屉恢复成 grid 常驻列的断点(跟 outline.css 的
      * media query 对齐)—— 跨过它就把还开着的抽屉关掉,否则遮罩会盖在
      * 常驻列上。 */
-    const drawers = [
-        { panel: document.querySelector('toc-component'), toggle: '.toc-toggle', columnAt: 1080 },
-        { panel: document.querySelector('.outline'), toggle: '.outline-toggle', columnAt: 768 },
-    ].filter(d => d.panel);
+    const drawers = {
+        toc: { panel: document.querySelector('toc-component'), columnAt: 1080 },
+        outline: { panel: document.querySelector('.outline'), columnAt: 768 },
+    };
 
     let overlay = document.querySelector('.drawer-overlay');
     if (!overlay) {
@@ -76,10 +76,12 @@ document.addEventListener('DOMContentLoaded', _ => {
         document.body.style.overflow = 'hidden';
     }
 
-    for (const drawer of drawers) {
-        const toggle = document.querySelector(drawer.toggle);
-        if (toggle) toggle.addEventListener('click', () => openDrawer(drawer));
-    }
+    // 两颗开关都在 <site-header> 的 shadow root 里,这里 querySelector 不到
+    // —— 由 header.js 发 `drawer-toggle` 事件过来,detail.which 指明是哪一栏。
+    document.addEventListener('drawer-toggle', e => {
+        const drawer = drawers[e.detail && e.detail.which];
+        if (drawer && drawer.panel) openDrawer(drawer);
+    });
     // 右栏的 ✕ 在页面里,直接接;左栏的 ✕ 在 toc-component 的 shadow root
     // 里查不到,由 toc.js 发 `drawer-close` 事件过来。
     document.querySelectorAll('.outline-close').forEach(btn => {

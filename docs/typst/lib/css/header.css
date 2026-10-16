@@ -1,0 +1,182 @@
+/* 顶栏的内部样式。它跑在 `<site-header>` 的 shadow root 里(由
+ * lib/js/header.js 抓 lib/header.html 进来渲染),所以:
+ *   - 页面样式表选不到里面的任何东西 —— 这份是唯一的样式来源
+ *   - 但 `var(--x)` 照样解析得到:自定义属性走**继承**,shadow 边界挡的
+ *     是选择器,不是继承(同 theme.css 的文件头)
+ *
+ * 外壳 —— grid 定位、sticky、z-index —— 在 outline.css 的 `site-header`
+ * 元素规则上,因为宿主元素在 light DOM 里。 */
+
+/* Typst 会把内容裹进一层 `<main>`。在 shadow 里它是 header 的父级,
+ * 默认的 block 布局 + 外边距会把顶栏顶出一截空白,`display: contents`
+ * 让它彻底透明(header 直接成为 shadow 根的布局内容)。 */
+main {
+    display: contents;
+}
+
+.site-header {
+    height: var(--header-h);
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 16px;
+    background-color: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+.header-left, .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+/* 右侧那三颗钮和左侧的选项卡都不许被挤掉 —— 先被压的只能是标题。 */
+.header-right, .site-tabs {
+    flex: 0 0 auto;
+}
+.site-title {
+    color: var(--fg);
+    font-weight: 700;
+    text-decoration-line: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.site-title:hover {
+    text-decoration-line: underline;
+}
+
+/* 分区选项卡。选中态由 header.js 按 location 加上 `.active` / aria-current,
+ * 这里是纯外观 —— 页面自己不打这个类。 */
+.site-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 12px;
+    padding: 2px;
+    border-radius: 10px;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+}
+.site-tab {
+    padding: 4px 12px;
+    border-radius: 8px;
+    color: var(--muted);
+    font-weight: 600;
+    text-decoration-line: none;
+    white-space: nowrap;
+    transition: background-color .15s ease, color .15s ease;
+}
+.site-tab:hover {
+    background-color: var(--hover);
+    color: var(--fg);
+}
+/* 选中的那颗从 tab 槽里「浮」起来一点:底色反回 --bg、给一道浅投影,
+ * 免得只靠颜色差在浅色主题下糊成一片。 */
+.site-tab.active {
+    background-color: var(--bg);
+    color: var(--fg);
+    box-shadow: 0 1px 2px var(--shadow-drawer);
+}
+.site-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+/* 本页没有侧栏时(见 header.js),藏掉两颗抽屉开关 —— `:host()` 读的是
+ * 宿主元素自己的属性,正好是 script 能写的那一侧。 */
+:host([data-no-drawers]) .toc-toggle,
+:host([data-no-drawers]) .outline-toggle {
+    display: none;
+}
+
+/* 三颗圆钮 + 顶栏右侧那颗 GitHub 链钮共用一套外观。
+ * 图标一律走 mask + currentColor:data URI 里烤死的十六进制是主题死角,
+ * `var()` 进不去,mask 才跟得住(`background-image` 则多半改不动)。 */
+.theme-toggle, .toc-toggle, .outline-toggle, .github-link {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    /* 按钮里的 `☰` 是给无 CSS 时留的退路,有图标在就把字号压成 0。
+     * `.site-title` 不在这条里,标题的字照常。 */
+    font-size: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color .15s ease;
+}
+.theme-toggle:hover, .toc-toggle:hover,
+.outline-toggle:hover, .github-link:hover {
+    background-color: var(--hover);
+}
+.theme-toggle:active, .toc-toggle:active,
+.outline-toggle:active, .github-link:active {
+    background-color: var(--active);
+}
+
+.theme-toggle::before, .toc-toggle::before,
+.outline-toggle::before, .github-link::before {
+    content: "";
+    display: block;
+    width: 20px;
+    height: 20px;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    mask-size: contain;
+    mask-position: center;
+}
+
+/* 月牙 —— 切到浅色 */
+.theme-toggle::before {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z'/%3E%3C/svg%3E");
+}
+/* 两条抽屉开关共用一根「汉堡」 */
+.toc-toggle::before, .outline-toggle::before {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
+}
+/* GitHub 官方 mark。按钮里的空文本用 font-size:0 藏掉(这里干脆没写文本)。 */
+.github-link::before {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E");
+}
+/* 焦点环。:focus-visible 而不是 :focus —— 鼠标点下去不该留一圈。 */
+.github-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* 宽屏下这一栏是常驻列,开关就没用了。断点与 outline.css 的 media query
+ * 对齐 —— 两边必须同步改,否则会出现「栏常驻着但开关还能点」的空档。 */
+@media (min-width: 1080px) {
+    .toc-toggle {
+        display: none;
+    }
+}
+@media (min-width: 768px) {
+    .outline-toggle {
+        display: none;
+    }
+}
+
+/* 窄到放不下「标题 + 选项卡 + 三颗钮」时,先藏标题。ellipsis 那条
+ * 兜的是中间宽度:标题还没必要整个消失,只是先缩到省略号。 */
+@media (max-width: 620px) {
+    .site-title {
+        display: none;
+    }
+    .site-tabs {
+        margin-left: 0;
+    }
+}
+
+/* shadow root 里也吃得到全局 reset 的 `* { line-height: 0.8 }`
+ * (header.html 把 style.css 也 link 了一份进来),0.8 比字号还小。
+ * 顶栏是 flex 居中,行高塌了会让文字偏上,自己重设一个正常值。 */
+.site-header, .site-header * {
+    line-height: 1.4;
+}

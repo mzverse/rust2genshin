@@ -1,14 +1,19 @@
 /* 页面骨架有两栏可折叠的侧栏,都由本文件管:
  *   - 左栏 `<toc-component>`(全站目录,toc.js 定义的 web component)
  *   - 右栏 `nav.outline`(本页目录,outline.typ 生成)
- * 顶栏 `.site-header` 是 body grid 的第一行(高 --header-h),两颗开关
- * 和主题按钮都在里面,抽屉开合在 outline.js。
+ * 顶栏是 `<site-header>`(header.js 抓 lib/header.html 渲染),只占 body
+ * grid 的第一行;它内部长什么样是 header.css 的事 —— shadow 边界里外
+ * 两侧的样式各管一段,这里只管外壳。
  * 窄屏下两栏都是盖在正文上的抽屉,共用一层遮罩。
  * 分三档,窗口收窄时先收左栏:
  *   <768px       两栏都收起成抽屉;☰ 在顶栏左 / 右两端
  *   768–1079px   右栏恢复成常驻列,左栏仍是抽屉
  *   ≥1080px      两栏都常驻,三列
- * 顶栏与按钮由 outline.typ 输出。 */
+ * 两档宽屏的**列数是按「面板在不在」算的(`body:has(> .outline)` /
+ * `body:has(> toc-component)`),不是按视口 —— 某页把侧栏关了
+ * (`template.with(toc: false, …)`),格子就不能还留着。
+ * 正文那 600pt 的行宽上限跟着常驻列走:没有常驻侧栏列时不设上限
+ * (1fr),铺满整行。 */
 
 /* 左栏。窄屏是抽屉:固定定位、默认推到屏幕外,`.open` 滑进来。
  * 用 transform 而不是 `left` 偏移,因为宽度是 min(85vw, 320px) ——
@@ -40,8 +45,10 @@ body {
     background-color: var(--bg);
     min-height: 100vh;
     display: grid;
-    /* 窄屏单列:两栏侧栏都是 fixed 抽屉,脱离文档流,grid 里只剩正文。 */
-    grid-template-columns: minmax(0, 600pt);
+    /* 窄屏单列:两栏侧栏都是 fixed 抽屉,脱离文档流,grid 里只剩正文。
+     * 唯一的正文列不设上限(1fr)。600pt 那个行宽只在侧栏常驻、真有
+     * 两个格子并排时才用得上,见下面各档 media query。 */
+    grid-template-columns: minmax(0, 1fr);
     /* 两行:第一行给顶栏(它 grid-column: 1 / -1,横跨全部列),第二行放
      * 正文。没有这一行的话顶栏会占掉正文那一格,把它顶到下一行、
      * 或者挤出网格。 */
@@ -73,108 +80,21 @@ body {
     }
 }
 
-/* 顶栏。sticky,高度由 --header-h 定死 —— 下面所有抽屉/侧栏的偏移
- * 都从这一个值算,以后改高度只改一处。
+/* 顶栏的外壳。顶栏本体(`.site-header`)在 `<site-header>` 的 shadow root
+ * 里,页面样式表选不到,它的样式全在 header.css。这个自定义元素是宿主,
+ * 在 light DOM 里,所以 grid 定位、sticky、z-index 都归这里。
  *
- * grid-row 必须显式写 1。DOM 里顶栏排在 toc-component 和 main **之后**
- * (outline() 在 template 的最后才调用),而 grid 的自动放置是按文档顺序
- * 走的:只写 grid-column: 1 / -1 的话,前面的 main / toc-component 先占掉
- * 第 1 行,顶栏只能被挤到第 2 行 —— 表现是整条顶栏掉到页面最底下。
- * 有了确定的行号,顶栏先于自动放置的项落位,其余项再依次填第 2 行。 */
-.site-header {
+ * grid-row 显式写 1,不靠自动放置。宽屏下 toc-component 从 fixed 变回
+ * sticky、重回 grid 流,谁先占掉第 1 行会随导出顺序和 media query 变;
+ * 定死行号,顶栏永远在第 1 行,其余项再依次填第 2 行。 */
+site-header {
+    display: block;
     position: sticky;
     top: 0;
     z-index: 1000;
     grid-row: 1;
     grid-column: 1 / -1;
-    height: var(--header-h);
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 0 16px;
-    background-color: var(--bg);
-    border-bottom: 1px solid var(--border);
 }
-.header-left, .header-right {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-}
-.site-title {
-    color: var(--fg);
-    font-weight: 700;
-    text-decoration-line: none;
-    white-space: nowrap;
-}
-.site-title:hover {
-    text-decoration-line: underline;
-}
-/* 主题按钮。图标走 mask + currentColor,配色自动跟着主题走 —— data URI
- * 里烤死的十六进制是主题死角,var() 进不去。 */
-.theme-toggle {
-    position: relative;
-    width: 40px;
-    height: 40px;
-    padding: 0;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background-color: var(--surface);
-    color: var(--fg);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 0.15s ease;
-}
-.theme-toggle::before {
-    content: "";
-    display: block;
-    width: 20px;
-    height: 20px;
-    background-color: currentColor;
-    mask-repeat: no-repeat;
-    mask-size: contain;
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z'/%3E%3C/svg%3E");
-}
-.theme-toggle:hover { background-color: var(--hover); }
-.theme-toggle:active { background-color: var(--active); }
-
-/* 两个抽屉的开关。不再 fixed 定位、不占 grid 格子 —— 它们现在在
- * .site-header 里走常规流,顶栏 sticky 保证滚动时依然够得着;宽屏那两档
- * 仍然把不需要的那颗 display:none。
- * 图标用 mask + currentColor:data URI 里烤死的十六进制是主题死角,
- * var() 进不去,mask 才跟得住。按钮里的 `☰` 文本用 font-size:0 藏掉。 */
-.toc-toggle, .outline-toggle {
-    width: 40px;
-    height: 40px;
-    padding: 0;
-    border-radius: 10px;
-    background-color: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--fg);
-    font-size: 0;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color .15s ease;
-}
-.toc-toggle::before, .outline-toggle::before {
-    content: "";
-    display: block;
-    width: 20px;
-    height: 20px;
-    background-color: currentColor;
-    mask-repeat: no-repeat;
-    mask-size: contain;
-    mask-position: center;
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3C/svg%3E");
-}
-.toc-toggle:hover, .outline-toggle:hover { background-color: var(--hover); }
-.toc-toggle:active, .outline-toggle:active { background-color: var(--active); }
 
 .outline {
     position: fixed;
@@ -231,20 +151,32 @@ body {
 }
 
 @media (min-width: 768px) {
-    /* 右栏恢复成 grid 里的一格,左栏还是抽屉,所以这档是两列。 */
+    /* 这一档起,列数按「常驻面板实际存在」算,不按视口宽窄 —— 也不按
+     * 元素在不在 DOM 里(`toc-component` 在 768–1079 还是抽屉,不占格)。
+     * 这一档常驻列只有右栏。 */
     body {
-        grid-template-columns: minmax(0, 600pt) minmax(0, auto);
-        gap: 50pt;
+        /* 一个常驻侧栏列都没有的页面(「摆弄」分区是 `template.with(toc:
+         * false, with_outline: false)`,另有 toc / header 两个片段页):
+         * 正文铺满,不设行宽上限。600pt 是配侧栏用的行宽,没有侧栏就不该
+         * 还留着 —— 原来这里无条件写死 minmax(0, 600pt),宽屏下正文被框
+         * 在中间 600pt 里,两边白一大片。
+         * 窄屏那条基础规则本来就是 1fr,不用管。 */
+        grid-template-columns: minmax(0, 1fr);
+        column-gap: 50pt;
     }
-    /* 右栏的开关和关闭按钮在它常驻之后就没用了。
+    /* 右栏(本页目录)常驻时,正文才收进 600pt 的行宽。左栏(全站目录)在
+     * ≥1080 那档常驻,同理由下面那条管。 */
+    body:has(> .outline) {
+        grid-template-columns: minmax(0, 600pt) minmax(0, auto);
+    }
+    /* 右栏的关闭按钮在它常驻之后就没用了(开关在顶栏的 shadow 里,
+     * 由 header.css 自己那份同断点的 media query 管)。
      *
      * 顺带 `p:has(...)` 那两条:历史上 Typst 的 HTML 导出会把按钮包进
      * 一层 `<p>`,`display: none` 掉按钮不够,那层壳还在 grid 流里占一个
      * 格子、顶掉侧栏该在的位置。现在导出的是 body 的直接子元素,规则匹配
      * 不到,留着以防导出行为再变。 */
-    .outline-toggle, .outline-close,
-    .outline-toggle + p,
-    p:has(> .outline-toggle) {
+    .outline-close, p:has(> .outline-close) {
         display: none !important;
     }
     /* 定高一屏 + sticky:不定住的话目录树会把 body 第一行 grid 拉高几千 px,
@@ -288,8 +220,13 @@ body {
 }
 
 @media (min-width: 1080px) {
-    /* 左栏也恢复成常驻列,这档才是完整三列。 */
-    body {
+    /* 左栏也恢复成常驻列。同 768 那档的理由:列数看谁真的在,不看视口。
+     * 左栏和右栏各有各的开关(play 页关了两边,别的页可能只关一边),
+     * 所以两段分开写,而不是「有 toc 就三列」一把梭。 */
+    body:has(> toc-component) {
+        grid-template-columns: minmax(auto, 240pt) minmax(0, 600pt);
+    }
+    body:has(> toc-component):has(> .outline) {
         /* 第一栏 160pt(213px)装不下目录树:树在 `li > .block { width: auto }`
          * 下自然宽度约 289px,右边距折叠按钮(right:0)会被推出可视区,
          * 只能靠 overflow-x: hidden 裁掉。放宽到 240pt。 */
@@ -307,9 +244,6 @@ body {
         box-shadow: none;
         transform: none;
         z-index: auto;
-    }
-    .toc-toggle {
-        display: none !important;
     }
     /* 遮罩兜底:这档开不出抽屉,不该出现。 */
     .drawer-overlay {

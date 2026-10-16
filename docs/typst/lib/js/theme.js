@@ -27,6 +27,10 @@ function stored() {
 
 function apply(theme) {
     root.dataset.theme = theme;
+    // 顶栏那顆按钮在 shadow root 里,只能靠这个事件同步它的 aria-label。
+    // 初次 apply 在 header.js 之前发,那时没人听 —— 无所谓,header.js 建好
+    // shadow 时自己读一次 dataset.theme。
+    document.dispatchEvent(new CustomEvent('theme-applied', { detail: { theme } }));
 }
 
 const saved = stored();
@@ -41,24 +45,19 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
     if (!manual && !stored()) apply(e.matches ? 'dark' : 'light');
 });
 
-// 按钮是 Typst 写进 body 的,脚本在 head 里跑的时候它还不存在。
-const LABEL = { dark: '切换到浅色模式', light: '切换到深色模式' };
-
-document.addEventListener('DOMContentLoaded', () => {
-    const button = document.querySelector('.theme-toggle');
-    if (!button) return;
-    // aria-label 说的是「按下去会变成什么」,不是「现在是什么」。
-    button.setAttribute('aria-label', LABEL[root.dataset.theme]);
-    button.addEventListener('click', () => {
-        // 先记下这次手动选择,哪怕下面写存储失败了。
-        manual = true;
-        const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
-        try {
-            localStorage.setItem(KEY, next);
-        } catch {
-            /* 不持久,下次访问回到系统设置 */
-        }
-        apply(next);
-        button.setAttribute('aria-label', LABEL[next]);
-    });
+// 按钮在 <site-header> 的 shadow root 里(header.js 渲染的那一页),这里
+// 的 document.querySelector 看不见它。所以按钮那边不直接改主题,而是往
+// document 上发一个 `theme-toggle`,由这里接手;每次真的换了主题再发回
+// 一个 `theme-applied`,让按钮去改自己的 aria-label。
+// aria-label 说的是「按下去会变成什么」,不是「现在是什么」。
+document.addEventListener('theme-toggle', () => {
+    // 先记下这次手动选择,哪怕下面写存储失败了。
+    manual = true;
+    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    try {
+        localStorage.setItem(KEY, next);
+    } catch {
+        /* 不持久,下次访问回到系统设置 */
+    }
+    apply(next);
 });
