@@ -175,4 +175,43 @@ mod tests {
         assert!(f.contains("abcdef1234567890"), "按 commit 找镜像要用全长 sha:{f}");
         assert!(t.starts_with("play:abcdef1"), "{t}");
     }
+
+    #[test]
+    fn dockerfile_puts_cargo_on_the_task_containers_path() {
+        // 任务容器的命令是裸 `sh -c "cargo build …"`(见 `docker.rs`),
+        // 非登录非交互 shell 不 source `$HOME/.cargo/env` —— cargo 在不在
+        // PATH 上,全靠镜像里那行 `ENV PATH=`。
+        let dockerfile = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile"),
+        )
+        .expect("读 playground/Dockerfile");
+        let lines: Vec<&str> = dockerfile.lines().collect();
+
+        let env_path = lines
+            .iter()
+            .find(|l| l.starts_with("ENV PATH="))
+            .unwrap_or_else(|| {
+                panic!("Dockerfile 没有 `ENV PATH=` 行,任务容器 sh -c cargo 会以 127 失败")
+            });
+        assert!(
+            env_path.contains("/home/builder/.cargo/bin"),
+            "ENV PATH 必须含 rustup 装工具链的目录:{env_path}"
+        );
+
+        // `rustup show` 靠 CWD 找 `rust-toolchain.toml`,所以 WORKDIR 要在
+        // 它那条 RUN 之前 —— 否则 CWD 是 `/`,看不到工具链文件。
+        let workdir = lines
+            .iter()
+            .position(|l| l.starts_with("WORKDIR /opt/rust2genshin"))
+            .expect("没有 `WORKDIR /opt/rust2genshin`");
+        let rustup = lines
+            .iter()
+            .position(|l| l.contains("sh.rustup.rs"))
+            .expect("没有 rustup 安装那条 RUN");
+        assert!(
+            workdir < rustup,
+            "WORKDIR 落在 rustup RUN 之后(rustup show 的 CWD 是 /,看不到 rust-toolchain.toml):\
+             workdir={workdir} rustup={rustup}"
+        );
+    }
 }

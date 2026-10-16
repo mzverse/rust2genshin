@@ -32,13 +32,21 @@ RUN useradd -u 1001 -m -s /bin/bash builder \
 USER builder
 # 工具链跟着 rust-toolchain.toml 走 —— 它装在 builder 的家目录里,
 # 所以必须在 USER builder 之后跑。
+# WORKDIR 也必须落在 rustup 那条 RUN 之前:`rustup show` 靠 CWD 找
+# `rust-toolchain.toml`(CWD 是 `/` 时看不到文件,工具链会推迟到第 3 层
+# 的 cargo fetch 才靠 shim 惰性装)。它的值要和 `docker.rs` 里
+# `RunSpec.workdir` 的默认值保持一致。
+WORKDIR /opt/rust2genshin
 COPY --chown=builder:builder rust-toolchain.toml /opt/rust2genshin/rust-toolchain.toml
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain none --profile minimal \
  && . "$HOME/.cargo/env" \
  && rustup show
+# 任务容器的命令是裸 `sh -c "cargo build …"`(见 `docker.rs`),非登录
+# shell 既 source 不了 `$HOME/.cargo/env` 也不读 rc 文件 —— cargo 能不能
+# 被找到全靠这行,它对后面所有层和**运行时**都生效。
+ENV PATH=/home/builder/.cargo/bin:$PATH
 
-WORKDIR /opt/rust2genshin
 COPY --chown=builder:builder . .
 # fetch 单独留一条:它让依赖下载和编译在日志里分得开,出问题时一眼看出
 # 是网络慢还是编译慢。
