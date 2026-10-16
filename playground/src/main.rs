@@ -2,6 +2,7 @@
 //! `docs/superpowers/specs/2026-10-16-playground-design.md`。
 
 mod config;
+mod repo;
 
 fn main() {
     println!("{}", config::load().is_ok());
