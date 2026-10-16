@@ -8,11 +8,14 @@
 //! `header[4..8]` 是载荷长度,大端)。不用 `-t` 是因为 `-t` 会把 stderr 并进
 //! stdout、并把行尾变成 `\r\n` —— 前端就拿不到 stream 区分了。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// 容器输出流的种类。正常日志里只会出现 stdout(1) 和 stderr(2);
+/// docker 自己保留的 stream id 3(dockerd 的内部错误流)不在其中,
+/// 会走 `FrameError::BadStream`,按终止处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Stream {
@@ -55,6 +58,13 @@ impl FrameDecoder {
 
     /// 喂一块读到的字节,返回这块里已经完整解出的帧。
     /// 跨 read 边界断开的帧留在内部缓冲里,等下一次 push。
+    ///
+    /// **粘性错误:一旦 `push` 返回 `Err`,这个 decoder 就作废了**。
+    /// `Err` 路径不会清空 `self.buf`,坏字节留在里面,再 push 一次
+    /// 会在同一处原封不动地再失败一次 —— 这是有意的:头被破坏意味
+    /// 着流后续不可信,继续喂就是死循环 `Err`,而静默丢弃后面的日志
+    /// 又太轻率。调用方应当在第一次 `Err` 时停止喂数据,把这条日志流
+    /// 当作终止。
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Frame>, FrameError> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
@@ -151,22 +161,6 @@ pub fn run_args(spec: &RunSpec) -> Vec<String> {
     a.push("-c".into());
     a.push(container_command(spec));
     a
-}
-
-/// 清理只认 label:同一个 daemon 上别人的镜像一个都不碰。
-pub fn build_args(ctx: &Path, dockerfile: &Path, image_tag: &str) -> Vec<String> {
-    let commit = image_tag
-        .rsplit_once(':')
-        .map(|(_, t)| t.trim_end_matches("-dirty").to_string())
-        .unwrap_or_default();
-    vec![
-        "build".into(),
-        "-t".into(), image_tag.into(),
-        "-f".into(), dockerfile.display().to_string(),
-        "--label".into(), format!("{}={}", crate::image::LABEL_PLAY, 1),
-        "--label".into(), format!("{}={}", crate::image::LABEL_COMMIT, commit),
-        ctx.display().to_string(),
-    ]
 }
 
 /// `--keep-storage` 是容量,不是次数:保留最近用到的层,超预算的丢最旧的。
@@ -372,26 +366,6 @@ mod tests {
         assert!(cmd.contains("-Zbuild-std=core"));
         assert!(cmd.contains("cp target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia /out/"));
         assert_eq!(a.len(), img + 4, "命令之后不该再有别的参数");
-    }
-
-    #[test]
-    fn build_args_pass_labels_and_dockerfile() {
-        let a = build_args(
-            Path::new("/repo"),
-            Path::new("/repo/playground/Dockerfile"),
-            "rust2genshin-play:0123456",
-        );
-        assert_eq!(
-            a,
-            vec![
-                "build",
-                "-t", "rust2genshin-play:0123456",
-                "-f", "/repo/playground/Dockerfile",
-                "--label", "rust2genshin.play=1",
-                "--label", "rust2genshin.commit=0123456",
-                "/repo",
-            ]
-        );
     }
 
     #[test]
