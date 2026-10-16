@@ -63,10 +63,20 @@ class PlayClient {
             for (const o of queued) this.#send(o);
         };
         ws.onclose = () => {
+            // 陈旧 socket 守卫:重连后 this.ws 已指向新连接,旧 socket 的
+            // close 随后到达时不能拿它覆盖新连接刚设的状态,也不能重置按钮态。
+            if (ws !== this.ws) return;
+            // 断连就把待发队列清掉,**不**在重连后重放。「编译」是有副作用的
+            // 动作,在用户不知情时静默占一个排队位,比丢一次没送达的点击更坏;
+            // 用户看到「连接已断开」会自己重试。
+            this.pending = [];
             this.handlers.onStatus("连接已断开", "err");
             this.handlers.onIdle();
         };
-        ws.onerror = () => this.handlers.onStatus("连不上后端", "err");
+        ws.onerror = () => {
+            if (ws !== this.ws) return;
+            this.handlers.onStatus("连不上后端", "err");
+        };
         ws.onmessage = (ev) => {
             let m;
             try { m = JSON.parse(ev.data); } catch { return; }
@@ -264,7 +274,15 @@ class PlaygroundApp extends HTMLElement {
         });
         cancelBtn.addEventListener("click", () => client.cancel());
         dlBtn.addEventListener("click", () => {
-            if (downloadUrl) window.location.href = downloadUrl;
+            if (!downloadUrl) return;
+            // 只往本站 origin 跳。downloadUrl 由后端字段拼出(new URL(m.download,
+            // httpOrigin(...))),相对路径拼出来 origin 本来就相等,这条只挡
+            // 后端回了跨站绝对地址的情况。
+            if (new URL(downloadUrl).origin !== location.origin) {
+                appendLog("stderr", "拒绝下载:目标不在本站\n");
+                return;
+            }
+            window.location.href = downloadUrl;
         });
         $("sample").addEventListener("click", async () => {
             try {
