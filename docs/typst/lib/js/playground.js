@@ -275,11 +275,15 @@ class PlaygroundApp extends HTMLElement {
         cancelBtn.addEventListener("click", () => client.cancel());
         dlBtn.addEventListener("click", () => {
             if (!downloadUrl) return;
-            // 只往本站 origin 跳。downloadUrl 由后端字段拼出(new URL(m.download,
-            // httpOrigin(...))),相对路径拼出来 origin 本来就相等,这条只挡
-            // 后端回了跨站绝对地址的情况。
-            if (new URL(downloadUrl).origin !== location.origin) {
-                appendLog("stderr", "拒绝下载:目标不在本站\n");
+            // 只校验 scheme,不比较 origin。downloadUrl 已在收到 finished 时以
+            // **后端 origin** 为基准解析过(new URL(m.download, httpOrigin(...))),
+            // 而页面 origin 与后端 origin 本来就不同(本地 3000 vs 后端 8787,
+            // 线上 mzverse.github.io vs 后端),所以按 origin 比会把正常下载
+            // 全挡死。这里只堵 m.download 是 javascript:/data: 之类绝对 URL
+            // 的情况——那样解析出来的 protocol 不是 http(s)。
+            const u = new URL(downloadUrl);
+            if (u.protocol !== "http:" && u.protocol !== "https:") {
+                appendLog("stderr", "拒绝下载:链接不是 http(s)\n");
                 return;
             }
             window.location.href = downloadUrl;
