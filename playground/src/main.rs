@@ -11,6 +11,7 @@ mod protocol;
 mod queue;
 mod repo;
 mod runner;
+mod server;
 #[cfg(test)]
 mod testing;
 
