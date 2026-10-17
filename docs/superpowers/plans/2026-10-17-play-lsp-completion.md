@@ -619,8 +619,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `exec::RaProcess` + `frame`
-- Produces: `session::Session`，方法 `initialize` / `did_open` / `did_change` / `request_completion`，
-  以及 `enum session::Event { Diagnostic(..), Tokens(Vec<u32>), Completed { request_id, items } }`
+- Produces: `session::Session`，方法 `initialize` / `did_open` / `did_change` /
+  `request_completion(request_id, line, column)`，
+  以及 `enum session::Event { Diagnostic(..), Tokens(Vec<u32>), Completed { request_id, items } }`。
+
+`request_completion` 的 `request_id` 来自前端，服务端**原样用作 JSON-RPC 的 `id`**，
+响应回来时再从 `Event::Completed` 里原样带回。不要在这一层另发一个内部 id 再映射：
+`initialize` 在 `LspReady` 之前就已经 await 完，之后服务端不持有任何未完成的请求，
+客户端 id 撞不上。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -635,6 +641,12 @@ async fn did_change_sends_full_text_not_range() {
     // Review Focus 第 1 条的骨架:didChange 不带 range
     assert!(!written.contains("\"range\""));
     assert!(written.contains("\"text\""));
+}
+
+#[tokio::test]
+async fn completion_request_uses_the_callers_id() {
+    // 前端给 7,写进管道的 JSON-RPC id 就得是 7 —— 服务端不另发内部 id
+    assert!(written.contains(r#""id":7"#));
 }
 
 #[tokio::test]
@@ -678,7 +690,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: 无。
-- Produces: `ClientMsg::{LspOpen, LspChange}`、`ServerMsg::{LspReady, LspTokens, LspDiagnostic, LspCompletion}`、`Hello::lsp_supported`、`PROTOCOL_VERSION = 2`。
+- Produces: `ClientMsg::{LspOpen, LspChange, LspCompletion}`、`ServerMsg::{LspReady, LspTokens, LspDiagnostic, LspCompletion}`、`Hello::lsp_supported`、`PROTOCOL_VERSION = 2`。
+
+**为什么 `ClientMsg` 必须有 `LspCompletion`**：LSP 的补全是请求-应答，而 `ServerMsg` 是单向广播流，
+前面只有 `LspOpen` / `LspChange` 两条客户端消息，服务端没有任何入口知道「用户要补全了」——
+`ServerMsg::LspCompletion` 会永远发不出来。`request_id` 是前端自己产生的序号，服务端原样
+用作 JSON-RPC 的 `id` 并原样回显；`LspOpen` → `LspReady` 之后、补全之前服务端不持有任何
+未完成的 JSON-RPC 请求（`initialize` 已经 await 完），所以客户端的 id 不会和服务端的撞。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -688,6 +706,14 @@ fn lsp_open_roundtrips() {
     let m = ClientMsg::LspOpen {};
     let j = serde_json::to_string(&m).unwrap();
     assert_eq!(j, r#"{"type":"lsp_open"}"#);
+    assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
+}
+
+#[test]
+fn lsp_completion_reports_the_cursor() {
+    let m = ClientMsg::LspCompletion { request_id: 7, line: 3, column: 12 };
+    let j = serde_json::to_string(&m).unwrap();
+    assert_eq!(j, r#"{"type":"lsp_completion","request_id":7,"line":3,"column":12}"#);
     assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
 }
 
@@ -883,6 +909,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 `main.rs::run()` 里：`PLAYGROUND_LSP_DISABLED` 为真时 `AppState::lsp = None`，
 `ws.rs` 见到 `LspOpen` 回一条 `Error` 说明功能已关（前端据此不挂 LSP 客户端）。
+三条客户端消息的分发：`LspOpen` 取池里的会话并发 `didOpen`；`LspChange` 覆盖写盘后发
+`didChange`；`LspCompletion { request_id, line, column }` 把 `request_id` 原样透传给
+`Session::request_completion`，等 `Event::Completed { request_id, items }` 回来再包成
+`ServerMsg::LspCompletion`。
 非空时 `tokio::spawn` 两个后台任务：一个补池（空闲就绪数低于 `POOL_MIN` 时造），
 一个回收（空闲超 `IDLE_TTL` 且超出下限时 `docker rm -f`）。
 
@@ -942,6 +972,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 薄桥：`LspClient` 把 `LspTokens` / `LspDiagnostic` / `LspCompletion` 转成
 CodeMirror 能用的回调，把 CodeMirror 的编辑事件去抖 300ms 后发 `LspChange`。
 去抖 300ms 是 Review Focus 第 1 条的落点 —— 早于此会发出半行代码，晚于此补全体感差。
+
+补全触发走 CodeMirror 的 `CompletionSource`：用户主动呼出补全（或输入触发字符）时，
+前端自己生成一个 `request_id`（单调递增的 `u32`），发 `ClientMsg::LspCompletion
+{ request_id, line, column }`，并在一个 `Map<request_id, resolve>` 里挂起这个 Promise；
+收到 `ServerMsg::LspCompletion` 就按 `request_id` 取出并 resolve。请求发出后不要
+无限等 —— 设一个 2s 的 `setTimeout` 兜底 resolve 空列表，否则 RA 卡住时补全弹窗会一直转圈。
+一个请求在途时用户又敲了键：直接丢弃旧 Promise（resolve 空列表），不要排队。
 
 - [ ] **Step 3: `script.js` 改 ESM，装 CodeMirror**
 

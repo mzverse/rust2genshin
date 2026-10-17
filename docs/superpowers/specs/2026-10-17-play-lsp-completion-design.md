@@ -232,6 +232,9 @@ LSP 的 `didChange` 规范上支持 `range` 增量。这里**用全量替换**�
 ```rust
 LspOpen {},
 LspChange { source: String },
+/// 补全是请求-应答，但 `ServerMsg` 是单向广播流 —— 没有这条消息，服务端
+/// 就没有任何入口知道「用户要补全了」，`ServerMsg::LspCompletion` 永远发不出来。
+LspCompletion { request_id: u32, line: u32, column: u32 },
 ```
 
 `ServerMsg` 加：
