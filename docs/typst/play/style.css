@@ -16,8 +16,28 @@
 .play-toolbar {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
     margin-bottom: 10px;
+}
+
+/* 「示例 + 选 + 载入」这一组自己框起来。 */
+.play-picker {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    border: 1px solid var(--border-soft);
+    border-radius: 7px;
+}
+/* 组里那两个控件的边框去掉 —— 外框已经表达了边界,再套一层就是双线。 */
+.play-picker select,
+.play-picker button {
+    border: 1px solid transparent;
+    background-color: transparent;
+}
+.play-picker select:hover,
+.play-picker button:hover {
+    border-color: var(--border);
 }
 
 /* 「示例」两个字:显式告诉人这个框是干嘛的,不然它跟「载入」并排躺着

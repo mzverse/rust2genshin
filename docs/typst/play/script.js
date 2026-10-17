@@ -381,6 +381,9 @@ function init() {
         }
     };
     $("play-sample-load").addEventListener("click", loadSample);
+    // 进来就填上默认选中的那个(下拉里第一项)。空着一个编辑器让人对着
+    // 空白犯愣,而选都选好了。
+    loadSample();
 
     client.connect();
 }
