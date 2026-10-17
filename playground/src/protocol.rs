@@ -32,6 +32,11 @@ pub enum ClientMsg {
     /// 服务端就没有任何入口知道「用户要补全了」,`ServerMsg::LspCompletion`
     /// 永远发不出来。`request_id` 由前端产生,服务端原样用作 JSON-RPC 的
     /// `id` 并原样回显。
+    ///
+    /// `line` / `column` 是**0 基**坐标(LSP 的 `Position` 就是 0 基);
+    /// `column` 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端
+    /// CodeMirror 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算
+    /// 就会错。
     LspCompletion { request_id: u32, line: u32, column: u32 },
 }
 
@@ -88,13 +93,20 @@ pub enum ServerMsg {
     /// RA 会话就绪。`file` 是 `file://` URI 对应的那个路径。
     LspReady { file: String },
     /// RA 的 semanticTokens delta 数组,原样透传。**不在服务端拆** ——
-    /// 拆成 (start, len, type, modifiers) 是前端高亮扩展的活。
+    /// 拆成 (deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
+    /// 是 Task 10 的 CodeMirror 扩展的活。`tokenType` 是索引,指向
+    /// `lsp/session.rs` 里 `TOKEN_TYPES` 的同一份顺序。
     LspTokens { data: Vec<u32> },
+    /// 一条诊断。坐标是**0 基**(LSP 的 `Position` 就是 0 基),`column`
+    /// 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端 CodeMirror
+    /// 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算就会错。
     LspDiagnostic {
         line: u32,
         column: u32,
         end_line: u32,
         end_column: u32,
+        /// LSP 的 `DiagnosticSeverity`:1=Error、2=Warning、3=Information、
+        /// 4=Hint。`0` 在 LSP 里是未使用值,前端收到 0 应视为 Information。
         severity: u8,
         message: String,
     },
@@ -352,6 +364,24 @@ mod tests {
         let m = ServerMsg::LspTokens { data: vec![0, 0, 3, 6, 0] };
         let j = serde_json::to_string(&m).unwrap();
         assert!(j.contains(r#""data":[0,0,3,6,0]"#), "{j}");
+    }
+
+    #[test]
+    fn lsp_completion_roundtrips() {
+        let m = ServerMsg::LspCompletion {
+            request_id: 7,
+            items: vec![CompletionItem {
+                label: "foo".into(),
+                kind: Some(3),
+                detail: None,
+            }],
+        };
+        assert_eq!(round_trip(&m), m);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["type"], "lsp_completion");
+        assert_eq!(v["items"][0]["label"], "foo");
+        assert_eq!(v["items"][0]["kind"], 3);
+        assert_eq!(v["items"][0]["detail"], serde_json::Value::Null);
     }
 
     #[test]
