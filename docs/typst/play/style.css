@@ -21,15 +21,21 @@
     margin-bottom: 10px;
 }
 
-/* 「示例 + 选 + 载入」这一组自己框起来。
+/* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
+ * 现成代码」,和右边的「编译」是两件事,平铺在一排里看不出来谁管谁。
+ * 「编译」靠 `margin-left: auto` 顶到最右,两组之间那段空白就是分界。
  *
  * 组里的控件是 `<mdui-select>` / `<mdui-button>` —— 它们把样式关在自己的
  * shadow root 里,这里给外面的 div 写规则**进不去**,能给它们调尺寸的只有
- * 自己的盒模型属性(width / min-width / --md-sys-*)。 */
+ * 自己的盒模型属性(width / min-width / --mdui-typescale-*)。 */
 .play-picker {
     display: flex;
     align-items: center;
     gap: 6px;
+    padding: 2px 8px;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    white-space: nowrap;
 }
 /* 「示例：」三个字:显式告诉人这个框是干嘛的。`.play-label` 不带前缀会被
  * 站点全局的 label 规则抓到。 */
@@ -37,6 +43,10 @@
     font-size: 13px;
     opacity: 0.6;
     user-select: none;
+}
+/* 「编译」推到最右,跟左边那一组拉开。 */
+.play-toolbar > #play-run {
+    margin-left: auto;
 }
 /* 摆弄页的行高比 MDUI 默认小一档 —— 默认那套 typescale 是按触屏设计的
  * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」

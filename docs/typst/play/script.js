@@ -365,6 +365,15 @@ function ready() {
             // 后端每 5 秒发一次请求。
             stopPolling();
             setBusy(false);
+            // 断线时**必须**改状态行。`setBusy(false)` 只藏按钮,不动文字 ——
+            // 于是「编译中…」会一直挂着,而 `finished` 已经跟着断掉的连接
+            // 一起没了。用户看到的就是永远编译中、没有下载按钮,完全猜不出
+            // 是断了。`ws.onclose` 里那句「连接已断开」靠不住:重连之后旧
+            // socket 的 close 才到,会被那边的陈旧 socket 守卫吞掉。
+            // 这条是最后一道,不管前面有没有已经报过更好的原因都照实说。
+            if (root.dataset.status === "pending") {
+                setStatus("连接已断开,这次的结果没收到 —— 点「编译」重试", "err");
+            }
         },
     });
 
