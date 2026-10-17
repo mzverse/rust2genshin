@@ -171,7 +171,10 @@ impl SessionMaker {
             // RA 容器只跑 `dd`/`sleep`,不跑 `container_command` ——
             // 目标选择对分析工作区没有意义,给个默认值满足结构体。
             target: "beyond-server".into(),
-            cpus: Some(2),
+            // 走配置,别写死:宿主 cgroup 没挂 cpu 控制器时 `--cpus` 会让
+            // docker 拒掉整个 run(`NanoCPUs can not be set`),待命池就永远
+            // 补不上 —— 症状是编辑框一直「分析中…」而编译功能一切正常。
+            cpus: self.cfg.lsp_cpus,
             memory: self.cfg.lsp_memory.clone(),
             pids_limit: 256,
             user: "1001:1001".into(),

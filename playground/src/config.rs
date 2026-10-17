@@ -59,6 +59,10 @@ pub struct Config {
     /// RA 容器的内存上限。**必须有上限**:0 swap 的机器上 RA 超限就是内核
     /// OOM kill,会直接掉一个活会话。`None` = 不下 `--memory`。
     pub lsp_memory: Option<String>,
+    /// RA 容器的 CPU 限额;`None` = 不下 `--cpus`。与 [`Self::job_cpus`]
+    /// 同一套语义:宿主 cgroup 没挂 cpu 控制器时不传这个旗标,否则 docker
+    /// 直接拒掉整个 `run`,待命池永远补不上。
+    pub lsp_cpus: Option<u32>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -249,6 +253,7 @@ pub fn resolve(
         lsp_idle_ttl: Duration::from_secs(num_var("PLAYGROUND_LSP_IDLE_TTL", get, 90u64)?),
         lsp_boot_timeout: Duration::from_secs(num_var("PLAYGROUND_LSP_BOOT_TIMEOUT", get, 30u64)?),
         lsp_memory: memory_var("PLAYGROUND_LSP_MEMORY", get, "2g")?,
+        lsp_cpus: cpus_var("PLAYGROUND_LSP_CPUS", get)?,
     })
 }
 
@@ -407,6 +412,23 @@ mod tests {
         assert_eq!(c.lsp_idle_ttl, Duration::from_secs(90));
         assert_eq!(c.lsp_boot_timeout, Duration::from_secs(30));
         assert_eq!(c.lsp_memory.as_deref(), Some("2g"));
+    }
+
+    #[test]
+    fn lsp_cpus_never_hardcodes_the_flag() {
+        // RA 容器最初把 `--cpus 2` 写死在 `SessionMaker::make` 里。宿主 cgroup
+        // 没挂 cpu 控制器时 docker 会拒掉整个 run(日志刷 "NanoCPUs can not be
+        // set"),待命池一个会话都起不来。任务容器早有 `PLAYGROUND_JOB_CPUS`
+        // 这个开关,RA 容器必须有同一个 —— 否则同一台机器上能编译、不能编辑。
+        let g = getter(&[("PLAYGROUND_LSP_CPUS", "0")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().lsp_cpus, None);
+        let g = getter(&[("PLAYGROUND_LSP_CPUS", "none")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().lsp_cpus, None);
+        let g = getter(&[("PLAYGROUND_LSP_CPUS", "3")]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().lsp_cpus, Some(3));
+        // 默认与任务容器一致。
+        let g = getter(&[]);
+        assert_eq!(resolve(&g, Path::new("/repo/playground")).unwrap().lsp_cpus, Some(2));
     }
 
     #[test]

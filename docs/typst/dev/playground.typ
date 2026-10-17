@@ -37,7 +37,7 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_MAX_QUEUE`], [`64`], [排队等待的任务数上限；超出后新任务被拒。],
     [`PLAYGROUND_JOB_TIMEOUT`], [`15`], [单个任务的超时，*秒*。],
     [`PLAYGROUND_JOB_CPUS`], [`2`], [任务容器的 CPU 限额。设成 `0` 或 `none` 则*不加* `--cpus` —— 宿主的 cgroup 没挂 cpu 控制器时，docker 会拒掉整个 `docker run`（`NanoCPUs can not be set…`），退出码 125，一条任务日志都没有。],
-    [`PLAYGROUND_KEEPALIVE`], [`25`], [空闲连接多久发一个 WebSocket ping，*秒*。必须**短于**前面那层 nginx stream 的 `proxy_timeout`（部署上是 60s）：排队等镜像时一条业务消息都没有，不主动出声连接会被 nginx 悄悄关掉，`finished` 连同 `.gia` 下载链接一起丢在半路。],
+    [`PLAYGROUND_KEEPALIVE`], [`25`], [空闲连接多久发一个 WebSocket ping，*秒*。必须*短于*前面那层 nginx stream 的 `proxy_timeout`（部署上是 60s）：排队等镜像时一条业务消息都没有，不主动出声连接会被 nginx 悄悄关掉，`finished` 连同 `.gia` 下载链接一起丢在半路。],
     [`PLAYGROUND_JOB_MEMORY`], [`1536m`], [任务容器的内存限额，同时给 `--memory` 和 `--memory-swap`。设成 `none` 则两个都不加 —— cgroup v1 不支持 `kmem.limit_in_bytes` 时，runc 建容器就会炸（`failed to write 1 to memory.kmem.limit_in_bytes`）。别写 `1.5g`，docker 对小数容量不友好。],
     [`PLAYGROUND_KEEP_IMAGES`], [`2`], [镜像 GC 保留几个最近在用的 tag。],
     [`PLAYGROUND_BUILD_CACHE_MAX`], [`10GB`], [`docker builder prune --keep-storage` 的值 —— 注意是*留到*多少而不是*删到*多少（见「磁盘」）。支持 `10GB` / `512m` / `1024`，倍数一律 1024 进制。],
@@ -54,7 +54,8 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_LSP_POOL_MIN`], [`1`], [后台维持几个*待命*的 RA 会话。设 `0` 表示不预热：每个请求现场起一个，冷启动 11 秒（裁剪过 workspace，见「编辑器与 rust-analyzer」）。],
     [`PLAYGROUND_LSP_IDLE_TTL`], [`90`], [空闲会话闲置多久后销毁，*秒*。销毁是 `docker rm -f`，会连 RA 进程一起收掉；下次要用重新冷启动。],
     [`PLAYGROUND_LSP_BOOT_TIMEOUT`], [`30`], [一个 RA 会话从建容器到就绪的上限，*秒*。超时算失败，池会换一个。],
-    [`PLAYGROUND_LSP_MEMORY`], [`2g`], [RA 容器的内存限额。*每个待命会话就吃这么多*，宿主上按 `LSP_POOL_MIN` 线性涨。],
+    [`PLAYGROUND_LSP_MEMORY`], [`2g`], [RA 容器的内存限额。*每个待命会话就吃这么多*，宿主上按 `LSP_POOL_MIN` 线性涨。设成 `none` 则不加 `--memory`。],
+    [`PLAYGROUND_LSP_CPUS`], [`2`], [RA 容器的 CPU 限额。与 `PLAYGROUND_JOB_CPUS` 是同一个限制：设成 `0` 或 `none` 则不加 `--cpus`。两个开关必须配成一样 —— 只关任务容器那一半，`docker run` 会在 RA 容器上失败（`NanoCPUs can not be set`），表现为「能编译、编辑框永远停在分析中」。],
 )
 
 布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
@@ -130,4 +131,4 @@ cargo test -p rust2genshin-playground
 
 *工作目录别丢。* `--file` 是按 docker *客户端*的 CWD 解析的，不是按 context 解析。服务得用 `-w <repo_dir>` 起 —— 代码现在会拼绝对路径，但第三方 Dockerfile 未必。
 
-另外这台宿主上 cgroup 的 cpu 与 kmem 控制器都不可用，`PLAYGROUND_JOB_CPUS=0` 和 `PLAYGROUND_JOB_MEMORY=none` 是必须的，见上面的配置表。
+另外这台宿主上 cgroup 的 cpu 与 kmem 控制器都不可用，`PLAYGROUND_JOB_CPUS=0` 和 `PLAYGROUND_JOB_MEMORY=none` 是必须的，见上面的配置表。两个 `LSP_` 版本（`PLAYGROUND_LSP_CPUS=0`、`PLAYGROUND_LSP_MEMORY=none`）同理 —— 它们控制的是 RA 容器，漏掉的话编译照常、编辑框永远「分析中」。
