@@ -260,6 +260,9 @@ export class LspClient {
         this._pendingSource = null;
         this._nextRequestId = 1;
         this._pendingCompletions = new Map();
+        // 同一帧里攒着的诊断与「要不要刷」的标记,见 _scheduleDiagFlush。
+        this._pendingDiag = [];
+        this._diagFlushScheduled = false;
     }
 
     /** 编辑器建好之后调用一次,会发 `LspOpen`。 */
@@ -291,7 +294,11 @@ export class LspClient {
                 this._applyTokens(msg.data || []);
                 break;
             case "lsp_diagnostic":
-                this._applyDiagnostics([msg]);
+                // **攒一帧再 dispatch。** 服务端一条诊断一条消息发,RA 改一行
+                // 常给五条 —— 直接逐条 dispatch 就是五次 CM 事务、五个中间
+                // 状态(波浪线先亮三条再齐)。rAF 把同一帧里的消息并成一次。
+                this._pendingDiag.push(msg);
+                this._scheduleDiagFlush();
                 break;
             case "lsp_completion":
                 this._resolveCompletion(msg.request_id, msg.items || []);
@@ -337,12 +344,20 @@ export class LspClient {
         });
     }
 
-    /** 销毁:清掉 timer 与挂起的补全 Promise。 */
+    /** 销毁:清掉 timer 与挂起的补全 Promise。
+     *
+     * **连接重连时必须调。** 否则旧实例挂着的去抖 timer 会在新实例已经
+     * `lsp_open` 之后触发,拿旧编辑框的内容发一条 `lsp_change` 过去 ——
+     * 一次多余的 RA 往返,以及一个用户没见过的中间状态。 */
     dispose() {
         if (this._debounceTimer !== null) {
             clearTimeout(this._debounceTimer);
             this._debounceTimer = null;
         }
+        this._pendingSource = null;
+        // 攒着的诊断不再有意义:新连接会重新推一遍文档,RA 会重发。
+        this._pendingDiag = [];
+        this._diagFlushScheduled = false;
         for (const [, entry] of this._pendingCompletions) {
             clearTimeout(entry.timer);
             entry.resolve([]);
@@ -355,8 +370,19 @@ export class LspClient {
         this.view.dispatch({ effects: setTokensEffect.of(data) });
     }
 
+    _scheduleDiagFlush() {
+        if (this._diagFlushScheduled) return;
+        this._diagFlushScheduled = true;
+        requestAnimationFrame(() => {
+            this._diagFlushScheduled = false;
+            const list = this._pendingDiag;
+            this._pendingDiag = [];
+            this._applyDiagnostics(list);
+        });
+    }
+
     _applyDiagnostics(list) {
-        if (!this.view) return;
+        if (!this.view || list.length === 0) return;
         // 累积:服务端按 LSP 语义一次给完整集合,这里按 (line,column,end_line,end_column)
         // 去重 + 后到的覆盖同 range。`LspDiagnostic` 一次只来一条但连接上的同一帧可能多条。
         const map = new Map();

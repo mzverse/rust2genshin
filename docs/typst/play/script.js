@@ -480,6 +480,10 @@ function ready() {
             // 启用 LSP 客户端:hello 里有 lsp_supported 才挂上,否则就当
             // 没有 LSP 客户端,编辑框只走普通 CodeMirror(纯文本、无高亮)。
             if (m.lsp_supported) {
+                // 重连会再走一次这里。上一个实例必须先销毁:它挂着的去抖
+                // timer 会在新会话 lsp_open 之后才触发,拿旧内容发一条
+                // lsp_change 过去。
+                if (lsp) lsp.dispose();
                 lsp = new LspClient({
                     view,
                     send: (msg) => client.send(msg),
@@ -493,6 +497,9 @@ function ready() {
                 const base = ready ? `就绪 · 镜像 ${c}` : "就绪";
                 setStatus(`${base} · 分析中…`, "pending");
             } else {
+                // 服务端这次说没有 LSP(可能这次连的是没开这功能的那台)。
+                // 同理要清掉上一个实例,否则它还在发消息。
+                if (lsp) { lsp.dispose(); lsp = null; client.onLsp = null; }
                 appendLog("stdout", "── 服务端 LSP 关闭,编辑框无高亮 ──\n");
             }
         },
