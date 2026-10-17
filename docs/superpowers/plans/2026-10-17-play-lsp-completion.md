@@ -1663,9 +1663,9 @@ cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
 
 - [ ] **Step 3: 实现**
 
-- `RunSpec` 加 `pub target: String`；两处构造（`docker.rs` 的 `spec()` / `ra_spec()`、`runner.rs:191`）
-  都补上。RA 的 `ra_spec()` 虽然不走 `container_command`，也给个 `"beyond-server"` 并在注释里
-  说明它用不到。
+- `RunSpec` 加 `pub target: String`；**四处**构造都补上：`docker.rs` 的测试 `spec()` /
+  `ra_spec()`、`runner.rs:191`、`lsp/service.rs:165`（Task 9 新增的 RA 容器）。后两处虽然不走
+  `container_command`，也给 `"beyond-server"` 并在注释里说明它用不到。
 - `container_command` 用 `spec.target` 同时替换 `--target ./genshin-unknown-{t}.json` 与
   `cp target/genshin-unknown-{t}/release/rust2genshin_demo.gia /out/` 两处。**两处必须同一个
   变量**，写死其中一处就是产物路径对不上。
