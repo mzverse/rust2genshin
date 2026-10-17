@@ -156,7 +156,10 @@ function decodeTokens(doc, data) {
         const lineObj = doc.line(line + 1);
         const from = lineObj.from + startChar;
         const to = from + length;
-        if (from < 0 || to > doc.length || from > to) continue;
+        // `from >= to` 都丢:CM 的 Mark decoration **不允许空 range**,抛
+        // `RangeError: Mark decorations may not be empty` —— 一抛整个
+        // decoration 字段的事务都失败,后面的高亮/诊断全不显示。
+        if (from < 0 || to > doc.length || from >= to) continue;
         out.push({ from, to, type: tokenType });
     }
     return out;
@@ -170,9 +173,18 @@ function diagnosticRanges(doc, diags) {
         if (d.end_line < 0 || d.end_line >= doc.lines) continue;
         const fromLine = doc.line(d.line + 1);
         const toLine = doc.line(d.end_line + 1);
-        const from = fromLine.from + d.column;
-        const to = toLine.from + d.end_column;
-        if (from < 0 || to > doc.length || from > to) continue;
+        let from = fromLine.from + d.column;
+        let to = toLine.from + d.end_column;
+        if (from < 0 || to > doc.length) continue;
+        // RA 的零长诊断(典型:`unexpected end of input`,位置在文件末尾)
+        // 会让 `Decoration.mark().range(x, x)` 抛 RangeError,整个 decoration
+        // 事务失败。往可用的方向借一个字符,让波浪线至少有地方画;文档为空
+        // 时借不到,只能丢。
+        if (from === to) {
+            if (to < doc.length) to += 1;
+            else if (from > 0) from -= 1;
+            else continue;
+        }
         out.push({ from, to, severity: d.severity });
     }
     return out;
