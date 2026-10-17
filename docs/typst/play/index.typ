@@ -26,20 +26,15 @@
 #html_elem("div", class: "play")[
   #html_elem("div", class: "play-toolbar")[
     // 「示例 + 选 + 载入」框成一组:它是「往编辑器里放段现成代码」,和「编译」
-    // 是两件事,混在一排里看不出来。默认选中第一个样例,进了页面就有东西可
-    // 编译,不用先想「选哪个」。
+    // 是两件事,混在一排里看不出来。
     #html_elem("div", class: "play-picker")[
       #html_elem("label", class: "play-label")[示例]
-      #context {
-        let demos = query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/"))
-        // 默认选中**循环里的第一个**,不写死哪个文件名 —— 写死了就会在样例
-        // 增删改名之后悄悄失效(要么选中的不存在,要么真正的第一个没被选中)。
-        html_elem("select", id: "play-sample")[
-          #for (i, x) in demos.enumerate() {
-            html.option(value: base_path + x, selected: i == 0)[#x.split("/").last().trim(".rs", at: end)]
-          }
-        ]
-      }
+      // `<select>` 本身就选中第一项,不用标 `selected`。
+      #context html_elem("select", id: "play-sample")[
+        #for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")) {
+          html.option(value: base_path + x)[#x.split("/").last().trim(".rs", at: end)]
+        }
+      ]
       #html_elem("button", id: "play-sample-load", type: "button")[载入]
     ]
     #html_elem("button", id: "play-run", type: "button")[编译]
