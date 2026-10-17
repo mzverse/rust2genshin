@@ -1649,9 +1649,18 @@ fn validate_submit_accepts_both_targets() {
     assert!(validate_submit("fn main() {}", Some("nope")).is_err());
 }
 
-#[test]
-fn hello_lists_both_targets() {
-    // 断言 WS 欢迎消息里的 targets 是 ["beyond-server", "classic-server"]
+#[tokio::test]
+async fn hello_lists_both_targets() {
+    // 照 `ws.rs:780` 那条 hello 测试的写法,断言
+    // targets == ["beyond-server", "classic-server"]。
+}
+
+#[tokio::test]
+async fn submit_with_classic_target_reaches_the_runner() {
+    // 用测试里现成的假 Runner,发
+    // `ClientMsg::Submit { source: "fn main(){}".into(), target: Some("classic-server".into()) }`,
+    // 断言两件事:落盘的 JobMeta.target 与交给 Runner 的 JobSpec.target 都是
+    // "classic-server" —— 只改 validate_submit 不改这两处,选经典仍按超限编译。
 }
 ```
 
@@ -1670,6 +1679,11 @@ cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
   `cp target/genshin-unknown-{t}/release/rust2genshin_demo.gia /out/` 两处。**两处必须同一个
   变量**，写死其中一处就是产物路径对不上。
 - `validate_submit` 的白名单加 `classic-server`，错误文案改成「目前只有 beyond-server / classic-server」。
+- **`start()` 里 `target` 现在只被校验、之后就被丢掉**（`ws.rs:412` 之后再没出现过）。在
+  `validate_submit` 之后解析一次：`let target = target.unwrap_or_else(|| "beyond-server".into());`
+  然后把它用到两处硬编码的 `"beyond-server"`：`JobMeta`（`ws.rs:479`）与 `JobSpec`
+  （`ws.rs:495`）。漏掉这两处，下拉框选了经典也仍然按超限编译，而且磁盘上的 meta 还写着错的。
+- `DockerRunner::run` 构造 `RunSpec` 时传 `target: job.target.clone()`（`runner.rs:191`）。
 - `Hello.targets` 改成两条。
 - `Dockerfile` 烘焙段加一行 `cargo run -p build-demo --bin classic-server`（在 beyond 那行之后）。
 
