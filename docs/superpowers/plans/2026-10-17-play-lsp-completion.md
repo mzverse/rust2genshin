@@ -843,50 +843,99 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ### Task 8: 镜像加 RA stage
 
 **Files:**
-- Modify: `playground/src/image_builder.rs`
+- Modify: `playground/Dockerfile`
+- Modify: `playground/src/image_builder.rs`（只加测试断言，**不改构建逻辑**）
 
 **Interfaces:**
 - Consumes: `Config::rustup_dist_server` / `cargo_mirror`（已有）
-- Produces: 第二个镜像 tag `<image>-ra`，里面 `/opt/ra/ws` 是裁过的三成员 workspace。
+- Produces: **同一个镜像里**多出 `/opt/ra/ws`（裁过的三成员 workspace）与 `rust-analyzer` 组件。
+
+**为什么不做第二个镜像 tag**：计划最初写的是 `FROM <play-image> AS ra` 再打一个 `<image>-ra` tag。
+放弃它的理由有三条，每条都能落到代码：
+
+1. Dockerfile 现在最后一段是未命名的默认 stage（`playground/Dockerfile` 末尾是 `CMD`）。在后面追加
+   `FROM … AS ra` 会把**默认构建目标变成 `ra`**，任务容器的镜像就没了。
+2. 多一个 tag 就多一倍镜像数，而 `gc_loop::sweep_images` 按 `keep_images`（默认 2）计数 —— 不一起改
+   就会把 play 镜像挤掉。
+3. 收益只是「RA 镜像里没有 core/build-demo」的观感。RA 的分析范围由 `/opt/ra/ws/Cargo.toml` 决定，
+   不由磁盘上还有别的目录决定；实测 11s 的裁剪效果照旧。
+
+代价：play 镜像多一个 rust-analyzer 组件（约百来 MB）与 `/opt/ra/ws` 那点源码。相对已有的工具链 + `target/`
+是零头。
 
 - [ ] **Step 1: 写失败的测试**
 
-`image_builder.rs` 若有构造 Dockerfile 文本的纯函数，就断言它包含 `rustup component add rust-analyzer`
-与 `COPY lib-internal ./lib-internal`；若无，先把 Dockerfile 生成抽成一个纯函数再测（这一步是测试的前提，
-TDD 里「为了可测而做的最小重构」是允许的）。
+`image_builder.rs` 的 `mod tests` 里已经有一个直接读 Dockerfile 文本的测试
+（`dockerfile_puts_cargo_on_the_task_containers_path`）。照它的写法加一条：
+
+```rust
+#[test]
+fn dockerfile_bakes_the_trimmed_ra_workspace() {
+    let dockerfile = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile"),
+    )
+    .expect("读 playground/Dockerfile");
+    assert!(dockerfile.contains("rustup component add rust-analyzer"), "{dockerfile}");
+    assert!(dockerfile.contains("/opt/ra/ws"), "{dockerfile}");
+    // 裁过的成员表必须只留三个 —— core 进来会把整个 sysroot 拖进分析
+    assert!(dockerfile.contains(r#""demo", "lib", "lib-internal""#), "{dockerfile}");
+    assert!(!dockerfile.contains(r#""core""#), "{dockerfile}");
+    // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
+    assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
+}
+```
 
 - [ ] **Step 2: 跑测试确认它失败**
 
-- [ ] **Step 3: 实现**
-
-Dockerfile 末尾追加：
-
-```dockerfile
-FROM rust2genshin-play:base AS ra
-RUN rustup component add rust-analyzer
-WORKDIR /opt/ra/ws
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY demo ./demo
-COPY lib ./lib
-COPY lib-internal ./lib-internal
-RUN sed -i -e '/^members/,/^]/c\members = ["demo", "lib", "lib-internal"]' \
-          -e '/^default-members/,/^]/c\default-members = ["demo", "lib", "lib-internal"]' Cargo.toml
-RUN cargo metadata --format-version 1 --offline > /dev/null
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground dockerfile_bakes
 ```
 
-最后那行 `cargo metadata` 自检很重要 —— 裁错了会在**烘焙时**炸，而不是在用户第一次编辑时。
-（手写 `Cargo.toml` 漏掉 `workspace.package.authors` 会让 `cargo metadata` 静默失败，
-这是实测踩过的。）
+- [ ] **Step 3: 实现**
+
+在 `playground/Dockerfile` 的 `RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin beyond-server`
+**之后**、`CMD` 之前追加（此时 `USER builder` 已生效，写出来的文件天然属于 1001）：
+
+```dockerfile
+# rust-analyzer 组件。RA 容器与任务容器用同一个镜像 —— 见计划里 Task 8 的说明,
+# 不做第二个 tag(会翻倍镜像数,撞上 gc 的 keep_images)。
+RUN . "$HOME/.cargo/env" && rustup component add rust-analyzer
+
+# RA 的分析工作区。**只放 demo / lib / lib-internal 三个成员**:core 是
+# rustc_private 后端,RA 为解析它要把整个编译器 sysroot 的元数据拉进来,
+# 冷启动从 11s 变成 84s,而 demo 的依赖链上根本没有 core。
+#
+# 手写一份精简 Cargo.toml 会漏掉 workspace.package.* 的继承项,cargo metadata
+# 会静默失败 —— 所以是复制根清单再改 members,不是新写一份。
+RUN mkdir -p /opt/ra/ws \
+ && cp rust-toolchain.toml Cargo.toml Cargo.lock /opt/ra/ws/ \
+ && cp -r demo lib lib-internal /opt/ra/ws/ \
+ && sed -i -e '/^members/,/^]/c\members = ["demo", "lib", "lib-internal"]' \
+          -e '/^default-members/,/^]/c\default-members = ["demo", "lib", "lib-internal"]' \
+          /opt/ra/ws/Cargo.toml \
+ && cd /opt/ra/ws \
+ && . "$HOME/.cargo/env" \
+ && cargo metadata --format-version 1 --offline > /dev/null
+```
+
+`/opt/ra/ws` 由 `builder`（uid 1001）创建，与 `docker.rs` 的 `RA_WORKDIR` 以及 RA 容器的
+`--user 1001` 对得上 —— 否则 RA 写 `target/` 时 EACCES，表现为「一直分析中」。
 
 - [ ] **Step 4: 跑测试确认它过**
+
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground dockerfile_bakes
+```
 
 - [ ] **Step 5: 提交**
 
 ```bash
-cd C:/projects/rust2genshin && git add playground/src/image_builder.rs && git commit -m "feat(play): 镜像加 ra stage(带 rust-analyzer 的裁剪 workspace)
+cd C:/projects/rust2genshin && git add playground/Dockerfile playground/src/image_builder.rs && git commit -m "feat(play): 镜像里烘 rust-analyzer 与裁剪版 workspace
 
-core 不进 RA 镜像:它是 rustc_private 后端,会拖整个 sysroot 进分析(84s vs
-11s),而 demo 的依赖链上本来就没有它。
+core 不进 RA 的分析范围:它是 rustc_private 后端,会拖整个 sysroot 进分析
+(84s vs 11s),而 demo 的依赖链上本来就没有它。
+
+不做第二个镜像 tag:会翻倍镜像数,撞上 gc 的 keep_images。
 
 烘焙时跑一次 cargo metadata 自检 —— 裁错了在烘焙时炸,而不是用户第一次编辑时。
 
