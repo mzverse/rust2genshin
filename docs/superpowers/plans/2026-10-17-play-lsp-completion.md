@@ -621,7 +621,11 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: `exec::RaProcess` + `frame`
 - Produces: `session::Session`，方法 `initialize` / `did_open` / `did_change` /
   `request_completion(request_id, line, column)`，
-  以及 `enum session::Event { Diagnostic(..), Tokens(Vec<u32>), Completed { request_id, items } }`。
+  以及 `enum session::Event { Diagnostics(Vec<Diagnostic>), Tokens(Vec<u32>), Completed { request_id, items } }`。
+
+`Event::Diagnostics` 是**按通知批量**的，且**空 vec 也要发** —— LSP 用空数组表示「该文件的诊断清空」，
+不发的话用户修好错误后红线永远不消失。Session 内部按 `DOC_URI` 过滤，`lib` / `lib-internal` /
+`Cargo.toml` 的诊断不往上抛（单文件编辑器，画到别的行上只会是错的）。
 
 `request_completion` 的 `request_id` 来自前端，服务端**原样用作 JSON-RPC 的 `id`**，
 响应回来时再从 `Event::Completed` 里原样带回。不要在这一层另发一个内部 id 再映射：
