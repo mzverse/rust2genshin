@@ -5,8 +5,19 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::{env, iter};
 
+/// 递归列出 `dir` 下的所有条目,返回**相对路径**,按每个目录内的文件名排序。
+///
+/// 必须排序:`read_dir` 的顺序跟着文件系统走(NTFS 大致是名字的哈希序、ext4 是
+/// 目录项的物理顺序),不同机器、不同文件系统上结果不一样。顺序会一路传到
+/// `main.typ` 的 `#bundle_asset(...)`,最后变成页面上 `query(asset)` 的顺序 ——
+/// 比如「摆弄」页那个样例下拉框取的就是它的第一项当默认值。
+///
+/// 比较用 `as_encoded_bytes()`(WTF-8 字节)而不是 `OsStr: Ord`:后者在 Windows
+/// 上按 WTF-16 码元比,在 Unix 上按字节比,同一份内容跨平台会得出不同顺序。
 fn walk(dir: PathBuf) -> impl Iterator<Item = PathBuf> {
-    dir.read_dir().unwrap().map(Result::unwrap).flat_map(|x| {
+    let mut entries = dir.read_dir().unwrap().map(Result::unwrap).collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|x| x.file_name().as_encoded_bytes().to_vec());
+    entries.into_iter().flat_map(|x| {
         let p = x.path();
         if p.is_dir() {
             Box::new(walk(p).map(move |name| Path::new(&x.file_name()).join(name))) as Box<dyn Iterator<Item = PathBuf>>

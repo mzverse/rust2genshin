@@ -37,7 +37,10 @@
           #context {
             // 键是真路径、值是显示名。`("a/b": …)` 这种带斜杠的键必须加引号。
             let options = (:)
-            for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")) {
+            // bundler(`docs/src/typst.rs` 的 `walk`)已经把资源排好序了,
+            // 这里再排一次是为了不把下拉框的顺序押在它身上。排完才是字典序 ——
+            // 文件名的 `0.` / `1.` 前缀就是靠这个排序生效的。
+            for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted() {
               options.insert(base_path + x, [#x.split("/").last().trim(".rs", at: end)])
             }
             // `<select>` 会自动选中第一个,`<mdui-select>` 不会 —— 它得显式给
