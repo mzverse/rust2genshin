@@ -960,6 +960,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ```
 [ ] 打开摆弄页,编辑框出现,没有横向滚动条(320/400/800px 三个宽度)
+[ ] `Hello.targets` 驱动的下拉框有两个选项:「超限模式」「经典模式」;
+    默认超限,切换后点编译,产物确实按所选目标编译(日志里 --target 路径对得上)
+[ ] 切到经典模式再切回来,两次都能编译成功(镜像里两个目标都烘过)
 [ ] RA 就绪后编辑框有高亮,且**与编译产物一致**:函数名、宏、生命周期标识都染色
 [ ] 输入一个不存在的函数名,1-2 秒内出现红色波浪线,消息是 RA 的原文
 [ ] 删掉那行,波浪线消失
@@ -1066,6 +1069,98 @@ cd C:/projects/rust2genshin && git add docs/typst/dev/playground.typ docs/typst/
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 12: 超限 / 经典目标选择
+
+**执行顺序**：Task 9 之后、Task 10 之前（Task 10 的前端选择器要用这里的 `targets` 列表）。
+
+**Files:**
+- Modify: `playground/src/docker.rs`（`RunSpec` 加 `target`，`container_command` 按它拼路径）
+- Modify: `playground/src/runner.rs`（构造 `RunSpec` 时把 `job.target` 传进去）
+- Modify: `playground/src/server/ws.rs`（`validate_submit` 放行 `classic-server`，`Hello.targets` 两条）
+- Modify: `playground/Dockerfile`（烘焙时两个目标都编一遍）
+
+**Interfaces:**
+- Consumes: `JobSpec.target`（已有）
+- Produces: `Hello.targets = ["beyond-server", "classic-server"]`
+
+**背景**：协议里 `Submit { target: Option<String> }`、`JobSpec.target`、`Runner` 都已经有了，
+只是 `container_command` 把 `beyond-server` 写死，`validate_submit` 也只放行它。
+
+两个目标规格的差别只有 `pre-link-args`（`-gamemode beyond|classic`）和 `llvm-target`
+（`genshin-unknown-{beyond,classic}-server`）。**不同的 target triple 意味着 `target/` 下是
+两个独立目录**，依赖不会共享缓存 —— 所以镜像必须在烘焙时把两个都编一遍，否则第一次选经典
+模式要冷编译整棵依赖树。
+
+- [ ] **Step 1: 写失败的测试**
+
+```rust
+#[test]
+fn container_command_uses_the_selected_target() {
+    let mut s = spec();
+    s.target = "classic-server".into();
+    let cmd = container_command(&s);
+    assert!(cmd.contains("--target ./genshin-unknown-classic-server.json"), "{cmd}");
+    assert!(cmd.contains("cp target/genshin-unknown-classic-server/release/rust2genshin_demo.gia /out/"), "{cmd}");
+    assert!(!cmd.contains("beyond-server"), "{cmd}");
+}
+
+#[test]
+fn validate_submit_accepts_both_targets() {
+    assert!(validate_submit("fn main() {}", Some("beyond-server")).is_ok());
+    assert!(validate_submit("fn main() {}", Some("classic-server")).is_ok());
+    assert!(validate_submit("fn main() {}", Some("nope")).is_err());
+}
+
+#[test]
+fn hello_lists_both_targets() {
+    // 断言 WS 欢迎消息里的 targets 是 ["beyond-server", "classic-server"]
+}
+```
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
+```
+
+- [ ] **Step 3: 实现**
+
+- `RunSpec` 加 `pub target: String`；两处构造（`docker.rs` 的 `spec()` / `ra_spec()`、`runner.rs:191`）
+  都补上。RA 的 `ra_spec()` 虽然不走 `container_command`，也给个 `"beyond-server"` 并在注释里
+  说明它用不到。
+- `container_command` 用 `spec.target` 同时替换 `--target ./genshin-unknown-{t}.json` 与
+  `cp target/genshin-unknown-{t}/release/rust2genshin_demo.gia /out/` 两处。**两处必须同一个
+  变量**，写死其中一处就是产物路径对不上。
+- `validate_submit` 的白名单加 `classic-server`，错误文案改成「目前只有 beyond-server / classic-server」。
+- `Hello.targets` 改成两条。
+- `Dockerfile` 烘焙段加一行 `cargo run -p build-demo --bin classic-server`（在 beyond 那行之后）。
+
+- [ ] **Step 4: 跑测试确认它过**
+
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
+```
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd C:/projects/rust2genshin && git add playground/src/docker.rs playground/src/runner.rs playground/src/server/ws.rs playground/Dockerfile && git commit -m "feat(play): 目标可选超限 / 经典,两个都在镜像里烘好
+
+两个 target spec 的 triple 不同,cargo 在 target/ 下按 triple 分目录 ——
+经典模式无法复用超限模式的依赖缓存。所以镜像烘焙时两个都编一遍,
+否则第一次选经典要冷编译整棵依赖树。
+
+container_command 里 --target 和 cp 的路径必须同一个变量,写死一处就是
+产物路径对不上。
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+**注意**：前端的选择器在 Task 10 做（`Hello.targets` 驱动下拉框，`Submit` 带上选中的值）；
+LSP 链路**不感知目标** —— 分析用的 workspace 与 gamemode 无关。
 
 ---
 
