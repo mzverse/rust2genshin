@@ -83,6 +83,8 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         // MVP 只有服务器节点图,所以这张表只有一个 —— 但它是个表,
         // 加客户端节点图时是往这里 push,不是改协议。
         targets: vec!["beyond-server".to_string()],
+        // Task 9 接池后再按 AppState 判断。
+        lsp_supported: false,
     };
     let (mut sink, mut stream) = socket.split();
     if send(&mut sink, &hello).await.is_err() {
@@ -176,6 +178,8 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                     Ok((task, handle)) => job = Some((task, handle)),
                                 }
                             }
+                            // Task 9 接池后分发;现在先吞掉。
+                            Ok(ClientMsg::LspOpen {} | ClientMsg::LspChange { .. } | ClientMsg::LspCompletion { .. }) => {}
                         }
                     }
                     Some(Ok(_)) => {} // 二进制 / ping / pong:不收,也不回

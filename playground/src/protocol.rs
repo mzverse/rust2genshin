@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::docker::Stream;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// `hello` 里报的路径,将来 LSP 的 `file://` URI 才有对应物。
 pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// 源码上限 1 MiB。正常一份 `demo/src/lib.rs` 是几 KB;设上限是为了
@@ -24,6 +24,15 @@ pub const MAX_SOURCE_BYTES: usize = 1 << 20;
 pub enum ClientMsg {
     Submit { source: String, target: Option<String> },
     Cancel {},
+    /// 请求开一个 RA 会话;服务端就绪后回 `lsp_ready`。
+    LspOpen {},
+    /// 编辑器里的源码变了。服务端据此给 RA 发 `did_change`。
+    LspChange { source: String },
+    /// 补全是请求-应答,而 `ServerMsg` 是单向广播流 —— 没有这条消息,
+    /// 服务端就没有任何入口知道「用户要补全了」,`ServerMsg::LspCompletion`
+    /// 永远发不出来。`request_id` 由前端产生,服务端原样用作 JSON-RPC 的
+    /// `id` 并原样回显。
+    LspCompletion { request_id: u32, line: u32, column: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +45,8 @@ pub enum ServerMsg {
         max_jobs: usize,
         max_queue: usize,
         targets: Vec<String>,
+        /// 旧后端没有 LSP,前端看到 `false` 就退回今天的行为。
+        lsp_supported: bool,
     },
     Queued {
         position: usize,
@@ -74,6 +85,28 @@ pub enum ServerMsg {
         code: ErrorCode,
         message: String,
     },
+    /// RA 会话就绪。`file` 是 `file://` URI 对应的那个路径。
+    LspReady { file: String },
+    /// RA 的 semanticTokens delta 数组,原样透传。**不在服务端拆** ——
+    /// 拆成 (start, len, type, modifiers) 是前端高亮扩展的活。
+    LspTokens { data: Vec<u32> },
+    LspDiagnostic {
+        line: u32,
+        column: u32,
+        end_line: u32,
+        end_column: u32,
+        severity: u8,
+        message: String,
+    },
+    LspCompletion { request_id: u32, items: Vec<CompletionItem> },
+}
+
+/// 补全列表的一项。`insertText` 先不做 —— RA 默认给的与 `label` 一致。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: Option<u32>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,17 +176,19 @@ mod tests {
             max_jobs: 8,
             max_queue: 64,
             targets: vec!["beyond-server".into()],
+            lsp_supported: false,
         };
         assert_eq!(
             serde_json::to_value(&m).unwrap(),
             serde_json::json!({
                 "type": "hello",
-                "protocol": 1,
+                "protocol": 2,
                 "image_commit": "abc1234",
                 "file": "demo/src/lib.rs",
                 "max_jobs": 8,
                 "max_queue": 64,
                 "targets": ["beyond-server"],
+                "lsp_supported": false,
             })
         );
     }
@@ -294,5 +329,33 @@ mod tests {
     #[test]
     fn unknown_type_is_rejected_not_ignored() {
         assert!(serde_json::from_str::<ClientMsg>(r#"{"type":"nope"}"#).is_err());
+    }
+
+    #[test]
+    fn lsp_open_roundtrips() {
+        let m = ClientMsg::LspOpen {};
+        let j = serde_json::to_string(&m).unwrap();
+        assert_eq!(j, r#"{"type":"lsp_open"}"#);
+        assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
+    }
+
+    #[test]
+    fn lsp_completion_reports_the_cursor() {
+        let m = ClientMsg::LspCompletion { request_id: 7, line: 3, column: 12 };
+        let j = serde_json::to_string(&m).unwrap();
+        assert_eq!(j, r#"{"type":"lsp_completion","request_id":7,"line":3,"column":12}"#);
+        assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
+    }
+
+    #[test]
+    fn lsp_tokens_is_a_raw_u32_array() {
+        let m = ServerMsg::LspTokens { data: vec![0, 0, 3, 6, 0] };
+        let j = serde_json::to_string(&m).unwrap();
+        assert!(j.contains(r#""data":[0,0,3,6,0]"#), "{j}");
+    }
+
+    #[test]
+    fn protocol_version_is_2() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 }
