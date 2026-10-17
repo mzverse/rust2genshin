@@ -118,7 +118,12 @@ class PlayEditor {
         // `readonly` 而不是 `disabled`:编译时灰掉整个编辑区,disabled 会连
         // 选中复制都不让,只读还能把报错那几行拷出来。
         this.area.readOnly = !on;
-        this.host.setAttribute(on ? "" : "readonly", on ? null : "");
+        // 解开要**删属性**,不是 `setAttribute("", null)` —— 属性名是空串的
+        // setAttribute 直接抛 InvalidCharacterError。而这个调用在 setBusy
+        // 的最后一步,抛出去会把 onFinished 后面全截掉:取消按钮已经藏了,
+        // 状态行和「下载」却还没更新,界面就永远停在「编译中…」。
+        if (on) this.host.removeAttribute("readonly");
+        else this.host.setAttribute("readonly", "");
     }
 }
 
@@ -172,7 +177,18 @@ class PlayClient {
         ws.onmessage = (ev) => {
             let m;
             try { m = JSON.parse(ev.data); } catch { return; }
-            this.#dispatch(m);
+            // handler 抛出来就到此为止,后面每条消息都还能收,但**这一条**
+            // 的界面更新做了一半 —— 那种半吊子状态最难查(按钮藏了、状态行
+            // 停在旧文案、下载链接没出来)。所以记下来摆到界面上,别只让它
+            // 进 console。
+            try {
+                this.#dispatch(m);
+            } catch (e) {
+                this.handlers.onError({
+                    code: "client",
+                    message: `处理后端消息时出错:${e && e.message ? e.message : e}`,
+                });
+            }
         };
         return true;
     }

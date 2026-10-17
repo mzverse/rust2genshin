@@ -602,6 +602,40 @@ mod tests {
         assert_eq!(st.queue.snapshot().running, 0, "跑完要把额度还回去");
     }
 
+    /// 任务跑完之后连接得**还开着**。
+    ///
+    /// 读循环和任务之间靠一条 mpsc 通道联系着:`run_socket` 建 `(tx, rx)`,
+    /// 把 `tx.clone()` 交给任务。任务结束、手里那份 drop 之后,如果没有任何
+    /// 东西还握着 `tx`,`rx.recv()` 就返回 `None`,读循环当成"没人要再发消息
+    /// 了"直接 break —— socket 被后端自己关掉。表现是浏览器那边 `finished`
+    /// 连同 .gia 下载链接一起收不到,页面永远停在「编译中…」。
+    ///
+    /// 所以这里在 finished 之后再发一次 submit:回不回得来是次要的,关键是
+    /// 这条连接还能不能把消息送出去 —— 能,说明读循环还活着。
+    #[tokio::test]
+    async fn a_finished_job_leaves_the_connection_open() {
+        let runner = FakeRunner::new(Behavior::Ok {
+            lines: vec![(Stream::Stdout, "Compiling\n".into())],
+            bytes: 15860,
+        });
+        let (_d, url, _st) = spawn(Arc::clone(&runner)).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(&mut ws, submit("fn main() {}")).await;
+        let msgs = read_n(&mut ws, 3).await; // started / log / finished
+        assert!(matches!(msgs[2], ServerMsg::Finished { .. }), "{:?}", msgs[2]);
+
+        send(&mut ws, submit("fn main() {}")).await;
+        let back = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("5 秒内该有回音 —— 连接要是被后端关了,这里就超时")
+            .expect("连接断了")
+            .unwrap();
+        let back: ServerMsg =
+            serde_json::from_str(back.to_text().expect("回音应当是文本")).expect("回音应当是 JSON");
+        assert!(matches!(back, ServerMsg::Error { .. }), "得到 {back:?}");
+    }
+
     #[tokio::test]
     async fn a_second_submit_on_the_same_connection_is_rejected() {
         let runner = FakeRunner::new(Behavior::Hang);
