@@ -15,4 +15,4 @@
 第一次编译可能要多等几分钟 —— 后端要先烘一个镜像出来,`/healthz`
 在那之前会报 `not_ready`。
 
-#playground()
+#playground(backend: "wss://www.mzverse.org:6/rust2genshin/ws")

@@ -10,6 +10,9 @@
  * rust2genshin-playground` 就能直接用。地址存在 localStorage 里。
  */
 
+// 只是兜底:站点在 `playground.typ` 里给 `playground-app` 挂 `data-backend`,
+// 那里才是「这个页面该连哪个后端」的唯一出处。本机跑 `cargo run -p
+// rust2genshin-playground`、页面没有 `data-backend` 时才用这个。
 const DEFAULT_BACKEND = "ws://127.0.0.1:8787/ws";
 const LS_KEY = "playground.backend";
 
@@ -154,7 +157,10 @@ class PlaygroundApp extends HTMLElement {
         const cancelBtn = $("cancel");
         const dlBtn = $("download");
         const backendInput = $("backend-input");
-        backendInput.value = localStorage.getItem(LS_KEY) || DEFAULT_BACKEND;
+        // localStorage > 宿主的 data-backend > 兜底。用户改过就还他改的,
+        // 没改过就用页面给的那个 —— 别拿兜底的 localhost 盖掉站点配置。
+        backendInput.value =
+            localStorage.getItem(LS_KEY) || this.dataset.backend || DEFAULT_BACKEND;
 
         const setStatus = (text, kind) => {
             status.textContent = text;
