@@ -495,7 +495,9 @@ mod tests {
         let p = RaProcess::start(Arc::clone(&fake) as Arc<dyn RaCommand>, "r2g-ra-1").await.unwrap();
         p.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#).await.unwrap();
         let w = fake.written.lock().unwrap();
-        assert!(w[0].starts_with("Content-Length: 61\r\n\r\n"), "实际:{}", &w[0][..40]);
+        // 那条 JSON 是 58 字节 —— 手数容易错,别写死一个猜的数,
+        // 否则失败会被误读成「拆帧算错了字节」。
+        assert!(w[0].starts_with("Content-Length: 58\r\n\r\n"), "实际:{}", &w[0][..40]);
     }
 
     #[tokio::test]
