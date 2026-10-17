@@ -38,16 +38,26 @@
     opacity: 0.45;
 }
 
-/* ---- 主体:编辑器和日志两栏 ---- */
+/* ---- 主体:编辑器和日志两栏,占满「视口减去上面那些」的剩余高度 ----
+ *
+ * 高度只能自己算:`main` 不再是 `min-height: 100vh`(见 template.css 的
+ * 注释),于是没有一个「剩余高度」可以 flex-grow 出来。`22rem` 是顶栏 + 页头
+ * + 那两段说明的大致高度 —— 是拍的,但下面有 `min-height` 兜底,拍偏了也
+ * 不会把面板压扁。
+ *
+ * 用 `100dvh` 而不是 `100vh`:移动端浏览器的地址栏收起/展开时 `vh` 不变,
+ * 面板会跟着多出一截或者少一截。 */
 .play-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 10px;
+    height: calc(100dvh - 22rem);
+    min-height: 26rem;
 }
 
 .play-editor {
     width: 100%;
-    min-height: 26rem;
+    height: 100%;
     box-sizing: border-box;
     padding: 10px 12px;
     /* 不用 `font: inherit` 把字号也继承了 —— <textarea> 的默认值跟 body
@@ -137,7 +147,7 @@
      * 一条缝。之前写死 22rem 而编辑框是 26rem,两栏底部永远差一截,靠 rem
      * 硬凑还会随状态栏字号变化。 */
     flex: 1;
-    min-height: 18rem;
+    min-height: 0;
     margin: 0;
     padding: 10px 12px;
     overflow: auto;
@@ -154,11 +164,9 @@
 
 /* 窄屏上下摞起来。两个面板各 26rem 高,横着塞不下。 */
 @media (max-width: 900px) {
+    /* 窄屏上下摞起来:两栏各占一半高度,不然两屏才放得下。 */
     .play-layout {
         grid-template-columns: minmax(0, 1fr);
-    }
-    .play-editor,
-    .play-log {
-        min-height: 18rem;
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     }
 }

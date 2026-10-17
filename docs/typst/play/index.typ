@@ -27,6 +27,7 @@
   #html_elem("div", class: "play-toolbar")[
     #html_elem("input", id: "play-sample", attrs: (list: "play-samples"), placeholder: "样例")
     #html_elem("button", id: "play-sample-load", type: "button")[载入]
+    #html_elem("button", id: "play-run", type: "button")[编译]
     // 样例是**静态资产**(`play/demo/*.rs` 会被当 asset 拷进输出目录),
     // 不从后端取 —— 页面挂了样例也还在,不用等后端起来。
     // 下拉框里只显示文件名(去掉目录和 `.rs`),真路径塞进 `label`:
@@ -44,7 +45,6 @@
       #html_elem("div", class: "play-head")[
         #html_elem("span", id: "play-status", class: "play-status")[]
         #html_elem("span", class: "play-actions")[
-          #html_elem("button", id: "play-run", type: "button")[编译]
           #html_elem("button", id: "play-cancel", type: "button", hidden: "")[取消]
           #html_elem("button", id: "play-download", type: "button", hidden: "")[下载 .gia]
         ]
