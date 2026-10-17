@@ -261,10 +261,13 @@ pub fn exec_args(name: &str, cmd: &str) -> Vec<String> {
 /// 把 `cargo build` 的产物灌进去;不挂出 `target/` 也意味着容器不会有宿主机
 /// 路径 —— 全程容器内文件系统,挂载少一份故障面。
 ///
-/// 末尾的 `sleep` 是必须的:容器必须有前台常驻进程才不会被判定退出
+/// 末尾的 `sleep infinity` 是必须的:容器必须有前台常驻进程才不会被判定退出
 /// (镜像的 CMD 是 bash,不显式给命令的话它会起一个没有 tty 的 bash 然后
 /// 立刻 exit 0 —— 看起来「起来了」,实际什么都没跑)。RA 本身由
 /// `exec_args` 在这个容器里另起。
+///
+/// 参数 `infinity` 不是可有可无的:裸 `sleep` 缺操作数,coreutils 会立刻
+/// 报错退出,`--rm` 随即将容器删掉 —— 后续 `docker exec` 全都打不进去。
 pub fn run_detached_args(spec: &RunSpec) -> Vec<String> {
     let mut a: Vec<String> = vec!["run".into()];
     a.extend(limit_args(spec));
@@ -276,6 +279,7 @@ pub fn run_detached_args(spec: &RunSpec) -> Vec<String> {
     a.push("-d".into());
     a.push(spec.image.clone());
     a.push("sleep".into());
+    a.push("infinity".into());
     a
 }
 
@@ -558,14 +562,16 @@ mod tests {
     }
 
     #[test]
-    fn run_detached_drops_the_compile_command() {
+    fn run_detached_keeps_the_container_alive() {
         let a = run_detached_args(&ra_spec());
         let img_pos = a.iter().position(|x| x == "img:tag").unwrap();
         let after: Vec<&String> = a.iter().skip(img_pos + 1).collect();
+        // 必须是 `sleep infinity`:裸 `sleep` 缺操作数会立刻退出,`--rm`
+        // 随即删掉容器,后续 docker exec 全部打不进去。
         assert_eq!(
             after,
-            vec![&"sleep".to_string()],
-            "image 之后只能有 sleep,实际:{after:?}"
+            vec![&"sleep".to_string(), &"infinity".to_string()],
+            "image 之后必须是 sleep infinity,实际:{after:?}"
         );
         assert!(
             !a.iter().any(|s| s.contains("cargo build")),

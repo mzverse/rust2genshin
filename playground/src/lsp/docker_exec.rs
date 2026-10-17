@@ -56,7 +56,9 @@ impl RaCommand for DockerExec {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            // 不接 stderr:没人读它,管道写满(RA 打日志 / panic 回溯)会让
+            // 子进程阻塞在我们的管道上,表现为「分析器卡死」。
+            .stderr(Stdio::null())
             // T3 的契约:运行时关闭 / 任务被 abort 时,只有这条兜底能
             // 保证 RA 不留在容器里。
             .kill_on_drop(true)
