@@ -36,6 +36,13 @@ pub struct Config {
     pub trust_proxy: bool,
     pub force_rebake: bool,
     pub image: String,
+    /// 烘焙时给 Dockerfile 的 rustup / crates.io 镜像,留空 = 官方源。
+    ///
+    /// 部署机在国内,裸连官方源要几十分钟;但公开仓库不该把第三方镜像
+    /// 写死给所有人 —— 由部署方在环境里显式打开。
+    pub rustup_dist_server: Option<String>,
+    pub rustup_update_root: Option<String>,
+    pub cargo_mirror: Option<String>,
     pub webhook_secret: Option<String>,
     pub admin_token: Option<String>,
 }
@@ -214,6 +221,9 @@ pub fn resolve(
         trust_proxy: bool_var("PLAYGROUND_TRUST_PROXY", get)?,
         force_rebake: bool_var("PLAYGROUND_FORCE_REBAKE", get)?,
         image: str_var("PLAYGROUND_IMAGE", get, "rust2genshin-play"),
+        rustup_dist_server: raw("PLAYGROUND_RUSTUP_DIST_SERVER", get),
+        rustup_update_root: raw("PLAYGROUND_RUSTUP_UPDATE_ROOT", get),
+        cargo_mirror: raw("PLAYGROUND_CARGO_MIRROR", get),
         webhook_secret: raw("GITHUB_WEBHOOK_SECRET", get),
         admin_token: raw("PLAYGROUND_ADMIN_TOKEN", get),
     })

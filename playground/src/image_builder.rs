@@ -26,8 +26,9 @@ pub fn build_args(
     image_tag: &str,
     commit: &str,
     context: &std::path::Path,
+    mirrors: &Mirrors,
 ) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "build".into(),
         format!("--platform={platform}"),
         "--network=host".into(),
@@ -41,26 +42,53 @@ pub fn build_args(
         format!("--tag={image_tag}"),
         format!("--label={LABEL_PLAY}=1"),
         format!("--label={LABEL_COMMIT}={commit}"),
-        context.display().to_string(),
-    ]
+    ];
+    // 镜像源是**可选的**:不传这些 --build-arg,Dockerfile 里的 ARG 就是空,
+    // 走官方源。公开仓库不该把某个第三方镜像写死给所有克隆者。
+    for (key, value) in [
+        ("RUSTUP_DIST_SERVER", &mirrors.rustup_dist_server),
+        ("RUSTUP_UPDATE_ROOT", &mirrors.rustup_update_root),
+        ("CARGO_MIRROR", &mirrors.cargo_mirror),
+    ] {
+        if let Some(v) = value {
+            args.push(format!("--build-arg={key}={v}"));
+        }
+    }
+    // context 必须留在最后。
+    args.push(context.display().to_string());
+    args
+}
+
+/// 烘焙时传给 Dockerfile 的镜像源。全 `None` = 官方源。
+///
+/// 这台部署机在国内,官方源要几十分钟;由部署方在环境变量里显式打开
+/// (`PLAYGROUND_RUSTUP_DIST_SERVER` / `PLAYGROUND_RUSTUP_UPDATE_ROOT` /
+/// `PLAYGROUND_CARGO_MIRROR`),换台机器也不用改代码。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mirrors {
+    pub rustup_dist_server: Option<String>,
+    pub rustup_update_root: Option<String>,
+    pub cargo_mirror: Option<String>,
 }
 
 pub struct DockerImageBuilder {
     repo_dir: PathBuf,
     image: String,
     platform: String,
+    mirrors: Mirrors,
     repo: Repo,
 }
 
 impl DockerImageBuilder {
     /// `build_cache_max` 不在这里 —— 它是 gc 那边 `docker builder prune`
     /// 的参数(见 `gc_loop::sweep_images`),builder 自己不管预算。
-    pub fn new(repo_dir: PathBuf, image: String) -> Self {
+    pub fn new(repo_dir: PathBuf, image: String, mirrors: Mirrors) -> Self {
         Self {
             repo: Repo::new(repo_dir.clone()),
             repo_dir,
             image,
             platform: "linux/amd64".into(),
+            mirrors,
         }
     }
 }
@@ -98,6 +126,7 @@ impl ImageBuilder for DockerImageBuilder {
                 &built_tag,
                 &head,
                 self.repo_dir.as_path(),
+                &self.mirrors,
             ))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -152,6 +181,7 @@ mod tests {
             "rust2genshin-play:abc1234",
             "abc1234",
             PathBuf::from("/repo").as_path(),
+            &Mirrors::default(),
         );
         assert_eq!(a[0], "build");
         assert!(a.contains(&"--file".to_string()));
@@ -175,6 +205,41 @@ mod tests {
             "legacy builder 不认 --progress:{a:?}"
         );
         assert_eq!(a.last().unwrap(), "/repo", "最后一个参数是 context");
+    }
+
+    #[test]
+    fn build_args_carry_optional_mirrors() {
+        let m = Mirrors {
+            rustup_dist_server: Some("https://mirror.example".into()),
+            rustup_update_root: Some("https://mirror.example/rustup".into()),
+            cargo_mirror: Some("https://mirror.example/index/".into()),
+        };
+        let a = build_args(
+            "linux/amd64",
+            "t",
+            "abc",
+            PathBuf::from("/repo").as_path(),
+            &m,
+        );
+        for arg in [
+            "--build-arg=RUSTUP_DIST_SERVER=https://mirror.example",
+            "--build-arg=RUSTUP_UPDATE_ROOT=https://mirror.example/rustup",
+            "--build-arg=CARGO_MIRROR=https://mirror.example/index/",
+        ] {
+            assert!(a.contains(&arg.to_string()), "少了 {arg}:{a:?}");
+        }
+        assert_eq!(a.last().unwrap(), "/repo", "context 必须留在最后");
+
+        // 不配镜像时一个 --build-arg 都不该发:Dockerfile 里的 ARG 默认空,
+        // 空值等于官方源。
+        let d = build_args(
+            "linux/amd64",
+            "t",
+            "abc",
+            PathBuf::from("/repo").as_path(),
+            &Mirrors::default(),
+        );
+        assert!(!d.iter().any(|x| x.starts_with("--build-arg")), "{d:?}");
     }
 
     #[test]
@@ -223,6 +288,21 @@ mod tests {
             workdir < rustup,
             "WORKDIR 落在 rustup RUN 之后(rustup show 的 CWD 是 /,看不到 rust-toolchain.toml):\
              workdir={workdir} rustup={rustup}"
+        );
+
+        // build_args 会发这三个 --build-arg;Dockerfile 不声明 ARG 的话
+        // docker 只警告不报错,镜像会悄悄继续走官方源 —— 部署方以为配了
+        // 镜像,实际还是慢的。钉住声明和消费两边都在。
+        for arg in ["RUSTUP_DIST_SERVER", "RUSTUP_UPDATE_ROOT", "CARGO_MIRROR"] {
+            assert!(
+                lines.iter().any(|l| l.trim() == format!("ARG {arg}=")),
+                "Dockerfile 没有声明 `ARG {arg}=`:{dockerfile}"
+            );
+        }
+        assert!(
+            dockerfile.contains("RUSTUP_DIST_SERVER:-")
+                && dockerfile.contains("RUSTUP_UPDATE_ROOT:-"),
+            "rustup 那条 RUN 必须把镜像变量 export 出去"
         );
     }
 }

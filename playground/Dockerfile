@@ -21,6 +21,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base
+# 可选的镜像源。默认空 = 官方源;部署方在国内时由服务端通过
+# `--build-arg` 传进来(见 `image_builder::build_args` 和
+# `PLAYGROUND_RUSTUP_DIST_SERVER` 等环境变量)。不写死在这里,是因为
+# 克隆这个仓库的人不一定在国内。
+ARG RUSTUP_DIST_SERVER=
+ARG RUSTUP_UPDATE_ROOT=
+ARG CARGO_MIRROR=
 # uid 1001 是任务容器 `--user 1001` 指的那个。宿主上的 out/ 由服务端
 # chmod 0777,容器才能把产物写出去。
 # /opt/rust2genshin 也在这里一并建好并 chown:下面 `COPY --chown` 只改
@@ -38,7 +45,11 @@ USER builder
 # `RunSpec.workdir` 的默认值保持一致。
 WORKDIR /opt/rust2genshin
 COPY --chown=builder:builder rust-toolchain.toml /opt/rust2genshin/rust-toolchain.toml
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+# RUSTUP_DIST_SERVER / RUSTUP_UPDATE_ROOT 是 rustup 自己认的环境变量,
+# 空串等于不设(回落到 static.rust-lang.org)。
+RUN export RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-}" \
+           RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-}" \
+ && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --default-toolchain none --profile minimal \
  && . "$HOME/.cargo/env" \
  && rustup show
@@ -46,6 +57,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # shell 既 source 不了 `$HOME/.cargo/env` 也不读 rc 文件 —— cargo 能不能
 # 被找到全靠这行,它对后面所有层和**运行时**都生效。
 ENV PATH=/home/builder/.cargo/bin:$PATH
+
+# crates.io 镜像(可选)。cargo 没有「索引镜像」的环境变量,只能写
+# source replacement;空值时不写文件,行为和不加这段完全一样。
+RUN if [ -n "$CARGO_MIRROR" ]; then \
+      mkdir -p "$HOME/.cargo" \
+      && printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_MIRROR" \
+           > "$HOME/.cargo/config.toml"; \
+    fi
 
 COPY --chown=builder:builder . .
 # fetch 单独留一条:它让依赖下载和编译在日志里分得开,出问题时一眼看出

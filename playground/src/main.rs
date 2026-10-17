@@ -187,7 +187,15 @@ async fn run(cfg: Config) -> Result<(), String> {
     let queue = Queue::new(cfg.max_jobs, cfg.max_queue);
 
     let builder: Arc<dyn bake::ImageBuilder> = Arc::new(
-        crate::image_builder::DockerImageBuilder::new(cfg.repo_dir.clone(), cfg.image.clone()),
+        crate::image_builder::DockerImageBuilder::new(
+            cfg.repo_dir.clone(),
+            cfg.image.clone(),
+            crate::image_builder::Mirrors {
+                rustup_dist_server: cfg.rustup_dist_server.clone(),
+                rustup_update_root: cfg.rustup_update_root.clone(),
+                cargo_mirror: cfg.cargo_mirror.clone(),
+            },
+        ),
     );
     // 水位量 docker 的 data root,不是数据目录 —— 会长的是镜像那块的盘。
     // 读不出 docker info 时退回数据目录(至少还有个数),见 `docker_root`。
