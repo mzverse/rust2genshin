@@ -84,9 +84,9 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         file: SOURCE_FILE.to_string(),
         max_jobs: state.cfg.max_jobs,
         max_queue: state.cfg.max_queue,
-        // 服务器节点图的两个目标。这张表驱动前端的选择器 —— 加客户端
-        // 节点图时是往这里 push,不是改协议。
-        targets: vec!["beyond-server".to_string(), "classic-server".to_string()],
+        // 服务器节点图的目标。由 `protocol::TARGETS` 生成 —— 加目标只改
+        // 那张表,不是在这里 push,也不是改协议。
+        targets: crate::protocol::TARGETS.iter().map(|s| s.to_string()).collect(),
         // 装了 RA 运行时才有;DISABLED 时前端退回纯编译界面。
         lsp_supported: state.lsp.is_some(),
     };
@@ -392,10 +392,11 @@ pub fn validate_submit(source: &str, target: Option<&str>) -> Result<(), ServerM
         )));
     }
     if let Some(t) = target
-        && !matches!(t, "beyond-server" | "classic-server")
+        && !crate::protocol::is_valid_target(t)
     {
         return Err(bad_request(format!(
-            "不认识的目标 {t},目前只有 beyond-server / classic-server"
+            "不认识的目标 {t},目前只有 {}",
+            crate::protocol::TARGETS.join(" / ")
         )));
     }
     Ok(())
@@ -412,7 +413,8 @@ fn start(
     validate_submit(&source, target.as_deref())?;
     // 校验过一次就把它定下来:下面 meta 与 JobSpec 都要用它。漏掉任何
     // 一处,下拉框选了经典也会按超限编译。
-    let target = target.unwrap_or_else(|| "beyond-server".into());
+    let target = target
+        .unwrap_or_else(|| crate::protocol::DEFAULT_TARGET.to_string());
 
     let bake = state.baker.status();
     let (Some(commit), Some(tag)) = (bake.serving.clone(), bake.serving_tag.clone()) else {
@@ -733,10 +735,27 @@ mod tests {
 
     #[test]
     fn validate_submit_accepts_both_targets() {
-        assert!(validate_submit("fn main() {}", Some("beyond-server")).is_ok());
-        assert!(validate_submit("fn main() {}", Some("classic-server")).is_ok());
+        for t in crate::protocol::TARGETS {
+            assert!(
+                validate_submit("fn main() {}", Some(t)).is_ok(),
+                "{t} 应该在白名单里 —— 它在 protocol::TARGETS 上"
+            );
+        }
         assert!(validate_submit("fn main() {}", None).is_ok());
-        assert!(validate_submit("fn main() {}", Some("nope")).is_err());
+    }
+
+    #[test]
+    fn validate_submit_names_the_rejected_value_and_the_whitelist() {
+        // 拒绝时必须说清「不认识哪个」和「只有哪几个」,否则前端只能把
+        // 这句话原样甩给用户。
+        let Err(ServerMsg::Error { message, .. }) = validate_submit("fn main() {}", Some("nope"))
+        else {
+            panic!("nope 应该被拒")
+        };
+        assert!(message.contains("nope"), "{message}");
+        for t in crate::protocol::TARGETS {
+            assert!(message.contains(t), "{message} 应该提到 {t}");
+        }
     }
 
     #[test]

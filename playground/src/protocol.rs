@@ -19,6 +19,23 @@ pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// `chars().count()` 去比这个上限,中文源码的判定就会和后端对不上。
 pub const MAX_SOURCE_BYTES: usize = 1 << 20;
 
+/// 可选的目标平台。**这张表是唯一真源**:`hello.targets` 由它生成,
+/// `validate_submit` 的白名单问它。加一个目标只改这一处 —— 写成两份
+/// 手工维护的列表,漏一处就是「下拉框能选、编译不认」。
+///
+/// 顺序即前端下拉框的显示顺序,`beyond-server`(超限)在前。
+pub const TARGETS: [&str; 2] = ["beyond-server", "classic-server"];
+
+/// `Submit.target` 的白名单。`None`(不传)是允许的,调用方自己填
+/// [`DEFAULT_TARGET`]。
+pub fn is_valid_target(t: &str) -> bool {
+    TARGETS.contains(&t)
+}
+
+/// `Submit` 不带 target 时用的目标。必须是 [`TARGETS`] 里的第一项 ——
+/// 单测 `the_default_target_is_in_the_table` 钉住这条。
+pub const DEFAULT_TARGET: &str = "beyond-server";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
@@ -141,6 +158,42 @@ impl ErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_target_is_in_the_table() {
+        // DEFAULT_TARGET 与 TARGETS 是两处字面量,不同步就意味着不传 target
+        // 时编译的目标不在白名单里 —— 直接编译失败。
+        assert!(
+            is_valid_target(DEFAULT_TARGET),
+            "默认目标 {DEFAULT_TARGET} 不在 TARGETS {TARGETS:?} 里"
+        );
+        // 不传 target 时的选择必须是第一项:前端默认选中下拉框第一项,
+        // 两边默认不同会让用户「什么都不选」却编出另一个目标。
+        assert_eq!(TARGETS[0], DEFAULT_TARGET);
+    }
+
+    #[test]
+    fn the_table_has_no_duplicates() {
+        // 重复项会让下拉框出现两个同名选项,而白名单却看不出差别。
+        for (i, a) in TARGETS.iter().enumerate() {
+            assert!(
+                !TARGETS[..i].contains(a),
+                "{a} 在 TARGETS {TARGETS:?} 里出现多次"
+            );
+        }
+    }
+
+    #[test]
+    fn the_table_matches_the_baked_specs() {
+        // 每张表项都要有对应的 target spec 模板,否则镜像里没烘那个目标,
+        // 用户选了才发现编译不了。spec 文件名带 `genshin-unknown-` 前缀 ——
+        // 与 `build-demo` 和 `container_command` 的拼法一致。
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for t in TARGETS {
+            let spec = root.join(format!("../genshin-unknown-{t}.json.template"));
+            assert!(spec.exists(), "目标 {t} 没有对应的 spec 模板 {}", spec.display());
+        }
+    }
 
     fn round_trip<T>(v: &T) -> T
     where
