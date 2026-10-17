@@ -38,8 +38,17 @@
     opacity: 0.6;
     user-select: none;
 }
+/* 摆弄页的行高比 MDUI 默认小一档 —— 默认那套 typescale 是按触屏设计的
+ * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
+ * 还高一截,看着不成一条线。
+ *
+ * 只能动 typescale 变量:MDAI 的样式在自己的 shadow root 里,外面写
+ * `height` 是写不到那个 text-field 上的(设了也不生效,内层还是 56px)。
+ * 自定义属性倒是能穿过分层边界,所以这是唯一能缩的旋钮。56 → 48。 */
 .play-picker mdui-select {
     min-width: 10rem;
+    --mdui-typescale-body-large-size: 0.8125rem;
+    --mdui-typescale-body-large-line-height: 1rem;
 }
 
 /* ---- 主体:编辑器和日志两栏,占满「视口减去上面那些」的剩余高度 ----

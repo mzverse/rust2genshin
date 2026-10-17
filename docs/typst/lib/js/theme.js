@@ -27,6 +27,11 @@ function stored() {
 
 function apply(theme) {
     root.dataset.theme = theme;
+    // MDUI(摆弄页那套组件)不认 data-theme,只认自己那个 `mdui-theme-dark`
+    // class —— 它的深色配色全挂在 `:host-context(.mdui-theme-dark)` 下面,
+    // class 不加就是一套浅色,组件在自己的 shadow 里,站点的 CSS 变量管不到。
+    // 放在 <html> 上,整页的 MDUI 组件一起生效。
+    root.classList.toggle('mdui-theme-dark', theme === 'dark');
     // 顶栏那顆按钮在 shadow root 里,只能靠这个事件同步它的 aria-label。
     // 初次 apply 在 header.js 之前发,那时没人听 —— 无所谓,header.js 建好
     // shadow 时自己读一次 dataset.theme。
