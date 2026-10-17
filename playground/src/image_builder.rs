@@ -319,15 +319,25 @@ mod tests {
         assert!(!dockerfile.contains(r#""core""#), "{dockerfile}");
         // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
         assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
-        // 两条顺序/结构不变量 —— 文字断言拦不住它们,但改错了行为全变:
+        // 两条顺序/结构不变量 —— 文字断言拦不住它们,但改错了行为全变。
+        // 必须**按行匹配指令**,不能用 `find("USER builder")`:文件里的注释
+        // 也含这串字,按子串找会绑到注释上,真把指令挪到 RA RUN 之后测试照样绿。
         // RA 的 RUN 必须在 USER builder 之后,否则 /opt/ra/ws 归 root,--user 1001 写 target/ 会 EACCES;
-        assert!(
-            dockerfile.find("USER builder").unwrap() < dockerfile.find("/opt/ra/ws").unwrap(),
-            "RA workspace 必须在 USER builder 之后创建"
-        );
+        let user_line = dockerfile
+            .lines()
+            .position(|l| l.trim() == "USER builder")
+            .expect("Dockerfile 里必须有 USER builder 指令");
+        let ra_run_line = dockerfile
+            .lines()
+            .position(|l| l.trim_start().starts_with("RUN ") && l.contains("/opt/ra/ws"))
+            .expect("必须有建 /opt/ra/ws 的 RUN");
+        assert!(user_line < ra_run_line, "RA workspace 必须在 USER builder 之后创建");
         // 末尾不许再出现 FROM:追加 stage 会让默认构建目标变成它,任务容器的镜像就没了。
         assert!(
-            !dockerfile[dockerfile.find("/opt/ra/ws").unwrap()..].contains("\nFROM "),
+            !dockerfile
+                .lines()
+                .skip(ra_run_line)
+                .any(|l| l.trim_start().starts_with("FROM ")),
             "RA 相关指令之后不许再开 stage"
         );
         // `/opt` 在 debian:bookworm-slim 里是 root:root 755,builder 自己
