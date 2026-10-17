@@ -10,8 +10,10 @@
 
 #set raw(lang: "rust");
 
-#import_style("/play/style.css");
-#import_script("/play/script.js");
+#custom_element(() => {
+    import_style("/play/style.css");
+    import_script("/play/script.js");
+})[]
 
 左半边写 Rust,右半边是编译日志。点「编译」把源码发到后端,后端在一个
 一次性容器里跑 `cargo build`,回来的 `.gia` 可以直接下载进游戏。
@@ -32,7 +34,7 @@
     // 不从后端取 —— 页面挂了样例也还在,不用等后端起来。
     #context html_elem("datalist", attrs: (id: "play-samples"))[
       #for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")) {
-        html.option(value: base_path + x);
+        html.option(value: x.split("/").last().trim(".rs"), label: base_path + x);
       }
     ]
   ]

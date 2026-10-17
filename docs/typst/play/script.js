@@ -150,6 +150,13 @@ function init() {
     const cancelBtn = $("play-cancel");
     const dlBtn = $("play-download");
     const sampleSel = $("play-sample");
+    // 下拉框里显示的是文件名(去掉目录和 `.rs`),真路径在 `label` 上 ——
+    // 这里按 label 建表。**不要**去拼 `/play/demo/${值}.rs`:那样一改目录
+    // 约定就断,而且两个子目录里同名文件会互相顶掉。
+    const SAMPLES = new Map(
+        [...root.querySelectorAll("#play-samples option")].map(
+            (o) => [o.value, o.getAttribute("label") || o.value])
+    );
     const backendInput = $("play-backend");
     backendInput.value = localStorage.getItem(LS_KEY) || root.dataset.backend || DEFAULT_BACKEND;
 
@@ -291,8 +298,10 @@ function init() {
     // 过滤的,change 就去 fetch 会在打字的每个字符上发一次请求,所以点
     // 「载入」才取。
     const loadSample = async () => {
-        const path = sampleSel.value;
-        if (!path) return;
+        const picked = sampleSel.value;
+        if (!picked) return;
+        // 直接粘完整路径进来的(label 查不到),照用。
+        const path = SAMPLES.get(picked) || picked;
         try {
             const r = await fetch(path);
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
