@@ -1,71 +1,129 @@
 /* 摆弄页。样式是**全局**的 —— 这一页没有 shadow root 挡着,所以每条选择器
  * 都带 `.play-` 前缀。之前是 `playground-app::part(x)`,拆掉自定义组件后
- * 那层前缀没了,不加就等于给整站文档写规则(button / textarea / pre 全中)。 */
+ * 那层前缀没了,不加就等于给整站文档写规则(button / textarea / pre 全中)。
+ *
+ * 配色一律走站点已有的 CSS 变量(见 lib/css/),不另起一套:深浅色主题
+ * 是站点切一次就全站生效的,这里硬编码颜色会在深色下瞎掉。 */
 
 .play {
     display: block;
-    margin: 1rem 0;
-    font-family: ui-monoospace, SFMono-Regular, Menlo, Consolas, monospace;
+    margin: 1rem 0 2rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px;
 }
 
+/* ---- 顶栏:只有样例。编译相关的按钮在右栏,和它操作的东西在一起 ---- */
 .play-toolbar {
     display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-}
-.play-toolbar button,
-.play-toolbar input,
-.play-toolbar select {
-    font: inherit;
-    font-size: 13px;
-    padding: 4px 12px;
-    cursor: pointer;
-}
-.play-toolbar input {
-    cursor: text;
-}
-.play-toolbar button:disabled {
-    cursor: default;
-    opacity: 0.5;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
 }
 
+.play-toolbar input,
+.play-toolbar button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background-color: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 10px;
+}
+.play-toolbar input {
+    min-width: 9rem;
+}
+.play-toolbar input::placeholder {
+    color: var(--fg);
+    opacity: 0.45;
+}
+
+/* ---- 主体:编辑器和日志两栏 ---- */
 .play-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 12px;
+    gap: 10px;
 }
 
 .play-editor {
     width: 100%;
-    min-height: 24rem;
+    min-height: 26rem;
     box-sizing: border-box;
-    padding: 8px;
-    font: inherit;
+    padding: 10px 12px;
+    /* 不用 `font: inherit` 把字号也继承了 —— <textarea> 的默认值跟 body
+     * 差好几号,继承之后源码会显得比旁边的日志大一号。 */
+    font-family: inherit;
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.55;
     tab-size: 4;
+    color: var(--fg);
+    background-color: var(--code-bg);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     resize: vertical;
 }
+.play-editor:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
 
-/* 右栏:状态行 + 日志盒。flex 让日志盒把剩下的高度吃干净,和左边的编辑框
- * 底边对齐 —— 格子高度由两者中高的那个定(编辑框 24rem)。 */
+/* 右栏:状态行 + 按钮 + 日志盒。flex 让日志盒把剩下的高度吃干净,和左边
+ * 的编辑框底边对齐 —— 格子高度由两者中高的那个定。 */
 .play-right {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    gap: 6px;
+}
+
+.play-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 26px;
 }
 
 .play-status {
-    min-height: 1.6em;
     font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .play[data-status="ok"] .play-status { color: var(--ok); }
 .play[data-status="err"] .play-status { color: var(--err); }
 .play[data-status="warn"] .play-status { color: var(--warn); }
-.play[data-status="pending"] .play-status { opacity: 0.75; }
+.play[data-status="pending"] .play-status { opacity: 0.6; }
+
+.play-actions {
+    display: flex;
+    gap: 6px;
+    flex: none;
+}
+.play-actions button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background-color: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 12px;
+    cursor: pointer;
+}
+.play-actions button:hover:not(:disabled) {
+    border-color: var(--fg);
+}
+/* 主操作(编译)给一点重音,别的都不抢戏。 */
+.play-actions #play-run {
+    color: var(--bg);
+    background-color: var(--fg);
+    border-color: var(--fg);
+}
+.play-actions #play-run:hover:not(:disabled) { opacity: 0.85; }
+.play-actions button:disabled {
+    cursor: default;
+    opacity: 0.4;
+}
 
 .play-log {
     /* 必须显式写 `display: block`。code_block.css:111 有一条全局的
@@ -75,43 +133,32 @@
      * 渲染出来 208px、列宽 716px 而实际 372px)。
      * 拆掉 shadow root 之前这些站点全局规则进不来,所以没这个坑。 */
     display: block;
-    /* 高度交给 .play-right 的 flex 去撑(见下),这里只保底:格子被压扁时
-     * 不至于缩成一条缝。之前写死 22rem 而编辑框是 24rem,两栏底部永远差
-     * 一截,靠 rem 硬凑还会随状态栏字号变化。 */
+    /* 高度交给 .play-right 的 flex 去撑,这里只保底:格子被压扁时不至于缩成
+     * 一条缝。之前写死 22rem 而编辑框是 26rem,两栏底部永远差一截,靠 rem
+     * 硬凑还会随状态栏字号变化。 */
     flex: 1;
-    min-height: 16rem;
+    min-height: 18rem;
     margin: 0;
-    padding: 8px;
+    padding: 10px 12px;
     overflow: auto;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    font-family: inherit;
     font-size: 12px;
-    line-height: 1.4;
+    line-height: 1.5;
+    color: var(--fg);
     background-color: var(--code-bg);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
-.play-backend {
-    margin-top: 12px;
-    font-size: 12px;
-}
-.play-backend input {
-    margin-left: 6px;
-    font: inherit;
-}
-.play-hint {
-    margin-left: 8px;
-    opacity: 0.7;
-}
-
-/* 窄屏上下摞起来。两个面板各 24rem 高,横着塞不下。 */
+/* 窄屏上下摞起来。两个面板各 26rem 高,横着塞不下。 */
 @media (max-width: 900px) {
     .play-layout {
         grid-template-columns: minmax(0, 1fr);
     }
     .play-editor,
     .play-log {
-        min-height: 16rem;
+        min-height: 18rem;
     }
 }

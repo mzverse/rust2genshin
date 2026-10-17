@@ -11,8 +11,75 @@
  * (站点在 index.typ 里给),再没有才退回本机的 8787。
  */
 
-const DEFAULT_BACKEND = "ws://127.0.0.1:8787/ws";
-const LS_KEY = "playground.backend";
+/* 后端地址表。**页面里不给看也不给改** —— 写死在这儿,原因有三个:
+ *   - 地址一改就要重新构建页面,不是访客该管的事;
+ *   - 之前那个 localStorage 输入框让人能把自己页面指到任意 wss:// 上,
+ *     编译日志和 .gia 都从那儿取,等于开了一条任意地址的抓取通道;
+ *   - 多后端轮询要的是「一组」地址,单个可编辑框表达不了。
+ *
+ * 打乱 + 挨个试是为了把负载摊开:谁都优先连自己列表里的第一个,列表尾部
+ * 的后端会一直没人用。 */
+const BACKENDS = [
+    "wss://www.mzverse.org:6/rust2genshin/ws",
+    "ws://127.0.0.1:8787/ws",
+];
+
+/* Fisher–Yates。每次加载都重新打乱,所以刷新页面就是在换一条起点。 */
+function shuffled(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
+/* 挨个地址试,连上就 resolve。**不管排不排队** —— 排上队的后端也是活的后端,
+ * 为此丢掉一个排队位不划算。
+ * 一个都没连上就 reject,原因取最后一个(也就是最接近能用)的那个。 */
+function pickBackend(urls) {
+    let last = new Error("没有配后端");
+    return urls
+        .reduce(
+            (chain, url) =>
+                chain.then((hit) => hit || tryConnect(url).catch((e) => {
+                    last = e;
+                    return null;
+                })),
+            Promise.resolve(null)
+        )
+        .then((hit) => {
+            if (!hit) throw last;
+            return hit;
+        });
+}
+
+/* WebSocket 的 open/error/close 都是异步的,这里包一层「只认第一次结果」的
+ * 壳,第一个 settle 赢。握手本身没有超时机制,光等 ws 自己报错要几十秒
+ * (TCP 层面),所以另起一个定时器主动收摊。 */
+function tryConnect(url, timeoutMs = 4000) {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        let done = false;
+        const finish = (fn, arg) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            fn(arg);
+        };
+        const timer = setTimeout(() => {
+            finish(reject, new Error("连接超时"));
+            try {
+                ws.close();
+            } catch {
+                /* 已经断了,close 抛了也没关系 */
+            }
+        }, timeoutMs);
+        ws.onopen = () => finish(resolve, ws);
+        ws.onerror = () => finish(reject, new Error("连不上"));
+        ws.onclose = () => finish(reject, new Error("连接被关上了"));
+    });
+}
 
 /* 把 ws:// 的地址换成同一个服务的 http:// 地址。`/artifact/<id>` 和
  * `/sample` 都挂在同一个 origin 上。 */
@@ -45,31 +112,40 @@ class PlayClient {
         this.url = url;
         this.handlers = handlers;
         this.ws = null;
-        // 还没连上时想发的消息。首连握手 / 断线重连期间点「编译」都会
-        // 落到这里,onopen 一冲就发出去 —— 不能丢,丢了界面会永远停在
-        // 「排队中…」而没有任何解释。
+        this.url = null;
+        // 还没连上时想发的消息。断线重连期间点「编译」会落到这里,
+        // onopen 一冲就发出去 —— 不能丢,丢了界面会永远停在「排队中…」。
         this.pending = [];
     }
 
-    connect() {
-        if (this.ws && this.ws.readyState <= 1) return;
-        this.handlers.onStatus("连接中…", "pending");
-        const ws = new WebSocket(this.url);
+    /* 从后端池里挑一个连上,把这个 socket 接过来用。
+     * 返回 true/false,不抛 —— 调用方(按钮点击)要的是「成没成」,不是异常。
+     * 池子每次用之前重新打乱,顺序由 pickBackend 那边的 shuffled 给。 */
+    async connect() {
+        if (this.ws && this.ws.readyState <= 1) return true;
+        this.handlers.onStatus("找后端…", "pending");
+        let ws;
+        let url;
+        try {
+            ws = await pickBackend(shuffled(BACKENDS));
+            url = ws.url;
+        } catch (e) {
+            this.ws = null;
+            this.handlers.onStatus(`连不上后端:${e.message}`, "err");
+            return false;
+        }
+        // pickBackend 建 socket 时没挂 handler,这里补上。
+        this.url = url;
         this.ws = ws;
         ws.onopen = () => {
             this.handlers.onStatus("已连接", "ok");
-            // 冲刷握手中/重连期间攒下的消息。
-            const queued = this.pending;
-            this.pending = [];
-            for (const o of queued) this.#send(o);
         };
         ws.onclose = () => {
             // 陈旧 socket 守卫:重连后 this.ws 已指向新连接,旧 socket 的
             // close 随后到达时不能拿它覆盖新连接刚设的状态,也不能重置按钮态。
             if (ws !== this.ws) return;
             // 断连就把待发队列清掉,**不**在重连后重放。「编译」是有副作用的
-            // 动作,在用户不知情时静默占一个排队位,比丢一次没送达的点击更坏;
-            // 用户看到「连接已断开」会自己重试。
+            // 动作,在用户不知情时静默占一个排队位,比丢一次没送达的点击更坏。
             this.pending = [];
             this.handlers.onStatus("连接已断开", "err");
             this.handlers.onIdle();
@@ -83,10 +159,13 @@ class PlayClient {
             try { m = JSON.parse(ev.data); } catch { return; }
             this.#dispatch(m);
         };
+        return true;
     }
 
-    submit(source) {
-        this.connect();
+    /* 点一次「编译」= 重扫一遍池子。断线之后也走这条,所以「连接已断开」
+     * 之后直接再点编译就能换个后端,不用刷新页面。 */
+    async submit(source) {
+        if (!(await this.connect())) return;
         // 回包之前按"排队中"显示,免得点了没反应。
         this.handlers.onStatus("排队中…", "pending");
         this.#send({ type: "submit", source, target: "beyond-server" });
@@ -157,9 +236,6 @@ function init() {
         [...root.querySelectorAll("#play-samples option")].map(
             (o) => [o.value, o.getAttribute("label") || o.value])
     );
-    const backendInput = $("play-backend");
-    backendInput.value = localStorage.getItem(LS_KEY) || root.dataset.backend || DEFAULT_BACKEND;
-
     const setStatus = (text, kind) => {
         status.textContent = text;
         root.dataset.status = kind || "";
@@ -200,6 +276,7 @@ function init() {
         bakeTimer = setInterval(async () => {
             let j;
             try {
+                if (!client.url) return;
                 const r = await fetch(`${httpOrigin(client.url)}/status`);
                 if (!r.ok) return;
                 j = await r.json();
@@ -222,7 +299,7 @@ function init() {
         }, 5000);
     };
 
-    const client = new PlayClient(backendInput.value, {
+    const client = new PlayClient(null, {
         onStatus: setStatus,
         onHello: (m) => {
             ready = !!m.image_commit;
@@ -311,11 +388,6 @@ function init() {
         }
     };
     $("play-sample-load").addEventListener("click", loadSample);
-
-    backendInput.addEventListener("change", () => {
-        localStorage.setItem(LS_KEY, backendInput.value);
-        window.location.reload();
-    });
 
     client.connect();
 }
