@@ -25,19 +25,23 @@
 // `BACKENDS` 里,页面唯一给后端的是 `data-*` 的静态资产路径约定。
 #html_elem("div", class: "play")[
   #html_elem("div", class: "play-toolbar")[
-    #html_elem("input", id: "play-sample", attrs: (list: "play-samples"), placeholder: "样例")
-    #html_elem("button", id: "play-sample-load", type: "button")[载入]
-    #html_elem("button", id: "play-run", type: "button")[编译]
-    // 样例是**静态资产**(`play/demo/*.rs` 会被当 asset 拷进输出目录),
-    // 不从后端取 —— 页面挂了样例也还在,不用等后端起来。
-    // 下拉框里只显示文件名(去掉目录和 `.rs`),真路径塞进 `label`:
-    // 浏览器渲染 datalist 时 `value` 是主文本、`label` 是次要文本,路径不会
-    // 顶在前面刷屏;script.js 从 `label` 取回真路径(见 `SAMPLES` 那张表)。
-    #context html_elem("datalist", attrs: (id: "play-samples"))[
+    #html_elem("label", class: "play-label")[示例]
+    // 用 `<select>` 而不是 `<input list>` + datalist:datalist 是个**随键入
+    // 过滤**的输入框,选过一次之后列表里就只剩匹配的那一项,另外三个样例得
+    // 先清空输入才看得见;`<select>` 永远把全部选项列出来。
+    //
+    // `value` 放真路径、显示名(去掉目录和 `.rs`)做标签正文 —— script.js 直接
+    // 拿 `value` 去 fetch,不用再维护一张名字到路径的映射表。
+    // 名字写在正文里而不是 `label` 属性上:`<option label>` 的显示文本各浏览器
+    // 行为不统一(Chrome 有内容时以内容为准),正文是确定的。
+    #context html_elem("select", id: "play-sample")[
+      #html.option(value: "", selected: true)[选一个…]
       #for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")) {
-        html.option(value: x.split("/").last().trim(".rs", at: end), label: base_path + x);
+        html.option(value: base_path + x)[#x.split("/").last().trim(".rs", at: end)]
       }
     ]
+    #html_elem("button", id: "play-sample-load", type: "button")[载入]
+    #html_elem("button", id: "play-run", type: "button")[编译]
   ]
   #html_elem("div", class: "play-layout")[
     #html_elem("textarea", class: "play-editor", id: "play-editor", spellcheck: "false", autocomplete: "off")

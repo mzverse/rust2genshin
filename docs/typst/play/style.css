@@ -20,22 +20,34 @@
     margin-bottom: 10px;
 }
 
-.play-toolbar input,
+/* 「示例」两个字:显式告诉人这个框是干嘛的,不然它跟「载入」并排躺着
+ * 看着像个装饰。`.play-label` 不带 class 会被站点全局的 label 规则抓到。 */
+.play-toolbar .play-label {
+    font-size: 13px;
+    opacity: 0.6;
+    user-select: none;
+}
+
+.play-toolbar select,
 .play-toolbar button {
     font: inherit;
     font-size: 13px;
     color: var(--fg);
-    background-color: transparent;
+    /* 站点深色主题下 `background-color: transparent` + `color: var(--fg)`
+     * 的组合在 macOS Chrome 上会渲染成「黑字白底」的原生 select,底下那块
+     * 白比周围都亮。显式给背景色。 */
+    background-color: var(--bg);
     border: 1px solid var(--border);
     border-radius: 5px;
     padding: 3px 10px;
 }
-.play-toolbar input {
+.play-toolbar select {
     min-width: 9rem;
+    cursor: pointer;
 }
-.play-toolbar input::placeholder {
-    color: var(--fg);
-    opacity: 0.45;
+.play-toolbar select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
 }
 
 /* ---- 主体:编辑器和日志两栏,占满「视口减去上面那些」的剩余高度 ----
