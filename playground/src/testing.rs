@@ -92,6 +92,9 @@ pub enum Behavior {
 pub struct FakeRunner {
     behavior: Mutex<Behavior>,
     calls: Mutex<Vec<String>>,
+    /// 每次 `run` 收到的 `JobSpec.target`。`calls` 只存 task,而目标
+    /// 选择要单独钉住 —— 校验放行不等于真的传到了 Runner。
+    targets: Mutex<Vec<String>>,
     running: AtomicUsize,
 }
 
@@ -110,6 +113,7 @@ impl FakeRunner {
         Arc::new(Self {
             behavior: Mutex::new(behavior),
             calls: Mutex::new(Vec::new()),
+            targets: Mutex::new(Vec::new()),
             running: AtomicUsize::new(0),
         })
     }
@@ -125,6 +129,10 @@ impl FakeRunner {
         self.calls.lock().unwrap().clone()
     }
 
+    pub fn targets(&self) -> Vec<String> {
+        self.targets.lock().unwrap().clone()
+    }
+
     pub fn running(&self) -> usize {
         self.running.load(Ordering::SeqCst)
     }
@@ -134,6 +142,7 @@ impl FakeRunner {
 impl JobRunner for FakeRunner {
     async fn run(&self, job: &JobSpec, log: LogSink) -> Result<RunOutcome, RunnerError> {
         self.calls.lock().unwrap().push(job.task.clone());
+        self.targets.lock().unwrap().push(job.target.clone());
         self.running.fetch_add(1, Ordering::SeqCst);
         // 计数借 Drop guard 归还:`Behavior::Hang` 的 future 被上层丢掉时,
         // 函数体后半段不会执行,只有 Drop 能在 abort 路径上把计数减回去。

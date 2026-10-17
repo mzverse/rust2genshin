@@ -101,6 +101,10 @@ pub struct RunSpec {
     pub src_dir: PathBuf,
     pub out_dir: PathBuf,
     pub workdir: String,
+    /// 目标平台:`beyond-server`(超限)或 `classic-server`(经典)。
+    /// 两个 spec 的 triple 不同,cargo 在 `target/` 下按 triple 分目录,
+    /// 所以路径里的这一段必须跟着它走。
+    pub target: String,
     /// `None` = **不下** `--cpus`。有些宿主内核没挂 cgroup 的 cpu 控制器
     /// (整个系统跑在容器里、或者内核没编 `CFS_BANDWIDTH`),这时 docker 会直接
     /// 拒掉整个 `run`:`NanoCPUs can not be set, as your kernel does not
@@ -122,11 +126,14 @@ pub struct RunSpec {
 /// 容器里跑的那条命令。`--offline` 是关键:依赖在烘焙时 fetch 齐了,
 /// 容器又是 `--network none`,让"万一要联网"变成一个明确的错误而不是超时。
 pub fn container_command(spec: &RunSpec) -> String {
+    // `--target` 与 `cp` 的路径必须来自同一个变量:写死其中一处,选经典
+    // 时就会去超限的目录里拷产物,cp 失败、任务判失败。
+    let t = &spec.target;
     format!(
         "cargo build --release --offline -p rust2genshin-demo \
-         --target ./genshin-unknown-beyond-server.json \
+         --target ./genshin-unknown-{t}.json \
          -Zunstable-options -Zjson-target-spec -Zbuild-std=core \
-         && cp target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia /out/"
+         && cp target/genshin-unknown-{t}/release/rust2genshin_demo.gia /out/"
     )
 }
 
@@ -400,12 +407,36 @@ mod tests {
             src_dir: PathBuf::from("/data/tasks/task1/src"),
             out_dir: PathBuf::from("/data/tasks/task1/out"),
             workdir: "/opt/rust2genshin".into(),
+            target: "beyond-server".into(),
             cpus: Some(2),
             memory: Some("1536m".into()),
             pids_limit: 256,
             user: "1001".into(),
             source_file: "demo/src/lib.rs".into(),
         }
+    }
+
+    #[test]
+    fn container_command_uses_the_selected_target() {
+        let mut s = spec();
+        s.target = "classic-server".into();
+        let cmd = container_command(&s);
+        assert!(cmd.contains("--target ./genshin-unknown-classic-server.json"), "{cmd}");
+        assert!(
+            cmd.contains("cp target/genshin-unknown-classic-server/release/rust2genshin_demo.gia /out/"),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("beyond-server"), "{cmd}");
+    }
+
+    #[test]
+    fn container_command_defaults_to_beyond() {
+        let cmd = container_command(&spec());
+        assert!(cmd.contains("--target ./genshin-unknown-beyond-server.json"), "{cmd}");
+        assert!(
+            cmd.contains("cp target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia /out/"),
+            "{cmd}"
+        );
     }
 
     #[test]
@@ -545,6 +576,7 @@ mod tests {
             src_dir: PathBuf::from("/src"),
             out_dir: PathBuf::from("/out"),
             workdir: "/w".into(),
+            target: "beyond-server".into(),
             cpus: Some(2),
             memory: Some("2g".into()),
             pids_limit: 128,

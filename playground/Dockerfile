@@ -76,6 +76,10 @@ RUN . "$HOME/.cargo/env" && cargo fetch
 # 烘一次 demo。这一遍把一百多个 crate 都编进 target/,任务容器自己不挂
 # target/,用的就是这个缓存 —— 这是"15 秒能编完一份节点图"的全部原因。
 RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin beyond-server
+# 经典目标也要烘。两个 target spec 的 triple 不同,cargo 在 target/ 下按
+# triple 分目录 —— 经典模式无法复用超限模式的依赖缓存,不烘的话第一次
+# 选经典要冷编译整棵依赖树,必然撞上任务超时。
+RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin classic-server
 
 # rust-analyzer 组件。RA 容器与任务容器用同一个镜像 —— 见计划里 Task 8 的说明,
 # 不做第二个 tag(会翻倍镜像数,撞上 gc 的 keep_images)。

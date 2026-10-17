@@ -194,6 +194,7 @@ impl JobRunner for DockerRunner {
             src_dir: job.paths.src_dir.clone(),
             out_dir: job.paths.out_dir.clone(),
             workdir: self.opts.workdir.clone(),
+            target: job.target.clone(),
             cpus: self.opts.cpus,
             memory: self.opts.memory.clone(),
             pids_limit: self.opts.pids_limit,

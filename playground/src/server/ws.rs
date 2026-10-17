@@ -84,9 +84,9 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         file: SOURCE_FILE.to_string(),
         max_jobs: state.cfg.max_jobs,
         max_queue: state.cfg.max_queue,
-        // MVP 只有服务器节点图,所以这张表只有一个 —— 但它是个表,
-        // 加客户端节点图时是往这里 push,不是改协议。
-        targets: vec!["beyond-server".to_string()],
+        // 服务器节点图的两个目标。这张表驱动前端的选择器 —— 加客户端
+        // 节点图时是往这里 push,不是改协议。
+        targets: vec!["beyond-server".to_string(), "classic-server".to_string()],
         // 装了 RA 运行时才有;DISABLED 时前端退回纯编译界面。
         lsp_supported: state.lsp.is_some(),
     };
@@ -392,10 +392,10 @@ pub fn validate_submit(source: &str, target: Option<&str>) -> Result<(), ServerM
         )));
     }
     if let Some(t) = target
-        && t != "beyond-server"
+        && !matches!(t, "beyond-server" | "classic-server")
     {
         return Err(bad_request(format!(
-            "不认识的目标 {t},目前只有 beyond-server"
+            "不认识的目标 {t},目前只有 beyond-server / classic-server"
         )));
     }
     Ok(())
@@ -410,6 +410,9 @@ fn start(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) -> Result<(String, JoinHandle<()>), ServerMsg> {
     validate_submit(&source, target.as_deref())?;
+    // 校验过一次就把它定下来:下面 meta 与 JobSpec 都要用它。漏掉任何
+    // 一处,下拉框选了经典也会按超限编译。
+    let target = target.unwrap_or_else(|| "beyond-server".into());
 
     let bake = state.baker.status();
     let (Some(commit), Some(tag)) = (bake.serving.clone(), bake.serving_tag.clone()) else {
@@ -453,7 +456,7 @@ fn start(
             image_commit: commit.clone(),
         });
 
-        let outcome = run_one(&state, &task, &source, &tag, &commit, &tx).await;
+        let outcome = run_one(&state, &task, &source, &tag, &commit, &target, &tx).await;
         let _ = tx.send(outcome);
         // _guard 与 ticket 在这里 drop:额度、IP、镜像计数一起还。
     });
@@ -466,6 +469,7 @@ async fn run_one(
     source: &str,
     tag: &str,
     commit: &str,
+    target: &str,
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) -> ServerMsg {
     let paths = match state.jobs.prepare(task, source) {
@@ -476,7 +480,7 @@ async fn run_one(
     };
     let meta = JobMeta {
         task: task.to_string(),
-        target: "beyond-server".to_string(),
+        target: target.to_string(),
         image_tag: tag.to_string(),
         image_commit: commit.to_string(),
         created_unix: std::time::SystemTime::now()
@@ -492,7 +496,7 @@ async fn run_one(
     let spec = JobSpec {
         task: task.to_string(),
         source: source.to_string(),
-        target: "beyond-server".to_string(),
+        target: target.to_string(),
         image_tag: tag.to_string(),
         image_commit: commit.to_string(),
         paths,
@@ -728,14 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_an_unknown_target() {
+    fn validate_submit_accepts_both_targets() {
         assert!(validate_submit("fn main() {}", Some("beyond-server")).is_ok());
+        assert!(validate_submit("fn main() {}", Some("classic-server")).is_ok());
         assert!(validate_submit("fn main() {}", None).is_ok());
-        let m = validate_submit("fn main() {}", Some("classic-server")).unwrap_err();
-        match m {
-            ServerMsg::Error { message, .. } => assert!(message.contains("classic-server"), "{message}"),
-            other => panic!("期望 error,得到 {other:?}"),
-        }
+        assert!(validate_submit("fn main() {}", Some("nope")).is_err());
     }
 
     #[test]
@@ -782,9 +783,26 @@ mod tests {
                 assert_eq!(image_commit.as_deref(), Some("aaa1111"));
                 assert_eq!(file, SOURCE_FILE);
                 assert_eq!(max_jobs, 8);
-                assert_eq!(targets, vec!["beyond-server".to_string()]);
+                assert_eq!(
+                    targets,
+                    vec!["beyond-server".to_string(), "classic-server".to_string()]
+                );
             }
             other => panic!("第一条必须是 hello,得到 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hello_lists_both_targets() {
+        // Task 10 的下拉框由这张表驱动:少一条,前端就选不到经典模式。
+        let (_d, url, _st) = spawn(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
+        let mut ws = connect(&url).await;
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Hello { targets, .. } => assert_eq!(
+                targets,
+                vec!["beyond-server".to_string(), "classic-server".to_string()]
+            ),
+            other => panic!("期望 hello,得到 {other:?}"),
         }
     }
 
@@ -947,6 +965,36 @@ mod tests {
         assert_eq!(runner.calls(), vec![task.clone()], "任务 id 要和 runner 收到的一致");
         assert!(st.jobs.artifact_of(&task).is_some(), "产物要真落在盘上");
         assert_eq!(st.queue.snapshot().running, 0, "跑完要把额度还回去");
+    }
+
+    #[tokio::test]
+    async fn submit_with_classic_target_reaches_the_runner() {
+        // 光放行 `classic-server` 不够:落盘的 meta 和交给 Runner 的 JobSpec
+        // 也得带上它,否则下拉框选了经典仍按超限编译,磁盘上还写着错的。
+        let runner = FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 42 });
+        let (_d, url, st) = spawn(Arc::clone(&runner)).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(
+            &mut ws,
+            ClientMsg::Submit {
+                source: "fn main(){}".into(),
+                target: Some("classic-server".into()),
+            },
+        )
+        .await;
+        let msgs = read_n(&mut ws, 2).await; // started / finished
+        let task = match &msgs[1] {
+            ServerMsg::Finished { task, .. } => task.clone(),
+            other => panic!("期望 finished,得到 {other:?}"),
+        };
+        let meta: JobMeta = st.jobs.read_meta(&task).unwrap();
+        assert_eq!(meta.target, "classic-server");
+        assert_eq!(
+            runner.targets(),
+            vec!["classic-server".to_string()],
+            "Runner 收到的 JobSpec.target 必须是选中的那个"
+        );
     }
 
     /// 任务跑完之后连接得**还开着**。

@@ -168,6 +168,9 @@ impl SessionMaker {
             src_dir: PathBuf::new(),
             out_dir: PathBuf::new(),
             workdir: RA_WORKDIR.into(),
+            // RA 容器只跑 `dd`/`sleep`,不跑 `container_command` ——
+            // 目标选择对分析工作区没有意义,给个默认值满足结构体。
+            target: "beyond-server".into(),
             cpus: Some(2),
             memory: self.cfg.lsp_memory.clone(),
             pids_limit: 256,
