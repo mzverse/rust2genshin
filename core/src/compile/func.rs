@@ -455,7 +455,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.graph.link_control(block.end, Link::export(0));
                 block.begin
             }),
-            TerminatorKind::Goto { target } => {
+            TerminatorKind::Goto { target, .. } => {
                 let result = Block::nop(self.graph);
                 self.graph.link_control(result.end, blocks.get(*target).unwrap().begin);
                 result.begin
