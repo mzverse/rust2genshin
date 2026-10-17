@@ -45,6 +45,20 @@ pub struct Config {
     pub cargo_mirror: Option<String>,
     pub webhook_secret: Option<String>,
     pub admin_token: Option<String>,
+    /// 一键关掉整条 LSP 链路(回到纯 cargo build + 诊断)。
+    pub lsp_disabled: bool,
+    /// 热池里常驻的 rust-analyzer 进程数。一个 RA 常驻 839 MB,服务器 0 swap,
+    /// 所以默认只留 1 个;设成 0 = 不预留待命,每次会话现造 —— 省下内存,
+    /// 代价是每次多等 6–11s 冷启动。
+    pub lsp_pool_min: usize,
+    /// 空闲的 RA 进程在池里待多久。热池已经省掉了冷启动,这个 TTL 纯粹是
+    /// **内存策略**而不是性能策略:调小早点把 839 MB 还给系统。
+    pub lsp_idle_ttl: Duration,
+    /// 从 `LspOpen` 到 `LspReady` 的上限,超时按启动失败处理。
+    pub lsp_boot_timeout: Duration,
+    /// RA 容器的内存上限。**必须有上限**:0 swap 的机器上 RA 超限就是内核
+    /// OOM kill,会直接掉一个活会话。`None` = 不下 `--memory`。
+    pub lsp_memory: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -155,13 +169,17 @@ fn cpus_var(key: &'static str, get: &dyn Fn(&str) -> Option<String>) -> Result<O
     }
 }
 
-/// 任务容器的内存限额。没设是 `1536m`;设成 `none` 表示**不加**
+/// 容器的内存限额。没设用 `default`;设成 `none` 表示**不加**
 /// `--memory`(宿主的 cgroup v1 不支持 kmem 时,加了 docker 会拒掉整个 run)。
-/// `PLAYGROUND_JOB_MEMORY=none` 是不限额,别的都按 docker 的写法原样传给 `--memory`
+/// `none` 是不限额,别的都按 docker 的写法原样传给 `--memory`
 /// (`1536m` / `2g` —— 一律 1024 进制,别写 `1.5g`,docker 对小数容量不友好)。
-fn memory_var(key: &'static str, get: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>, ConfigError> {
+fn memory_var(
+    key: &'static str,
+    get: &dyn Fn(&str) -> Option<String>,
+    default: &str,
+) -> Result<Option<String>, ConfigError> {
     match raw(key, get) {
-        None => Ok(Some("1536m".into())),
+        None => Ok(Some(default.into())),
         Some(v) if v.eq_ignore_ascii_case("none") => Ok(None),
         Some(v) => {
             parse_size(&v).map_err(|reason| inv(key, &v, reason))?;
@@ -201,7 +219,7 @@ pub fn resolve(
         remote: str_var("PLAYGROUND_REMOTE", get, "origin"),
         max_jobs: num_var("PLAYGROUND_MAX_JOBS", get, 8usize)?,
         job_cpus: cpus_var("PLAYGROUND_JOB_CPUS", get)?,
-        job_memory: memory_var("PLAYGROUND_JOB_MEMORY", get)?,
+        job_memory: memory_var("PLAYGROUND_JOB_MEMORY", get, "1536m")?,
         max_queue: num_var("PLAYGROUND_MAX_QUEUE", get, 64usize)?,
         job_timeout: Duration::from_secs(num_var("PLAYGROUND_JOB_TIMEOUT", get, 15u64)?),
         keepalive: Duration::from_secs(num_var("PLAYGROUND_KEEPALIVE", get, 25u64)?),
@@ -226,6 +244,11 @@ pub fn resolve(
         cargo_mirror: raw("PLAYGROUND_CARGO_MIRROR", get),
         webhook_secret: raw("GITHUB_WEBHOOK_SECRET", get),
         admin_token: raw("PLAYGROUND_ADMIN_TOKEN", get),
+        lsp_disabled: bool_var("PLAYGROUND_LSP_DISABLED", get)?,
+        lsp_pool_min: num_var("PLAYGROUND_LSP_POOL_MIN", get, 1usize)?,
+        lsp_idle_ttl: Duration::from_secs(num_var("PLAYGROUND_LSP_IDLE_TTL", get, 90u64)?),
+        lsp_boot_timeout: Duration::from_secs(num_var("PLAYGROUND_LSP_BOOT_TIMEOUT", get, 30u64)?),
+        lsp_memory: memory_var("PLAYGROUND_LSP_MEMORY", get, "2g")?,
     })
 }
 
@@ -373,6 +396,32 @@ mod tests {
         let c = resolve(&g, Path::new("/repo/playground")).unwrap();
         assert_eq!(c.webhook_secret.as_deref(), Some("s3cret"));
         assert!(c.admin_token.is_none());
+    }
+
+    #[test]
+    fn lsp_defaults() {
+        let g = getter(&[]);
+        let c = resolve(&g, Path::new("/repo/playground")).unwrap();
+        assert!(!c.lsp_disabled);
+        assert_eq!(c.lsp_pool_min, 1);
+        assert_eq!(c.lsp_idle_ttl, Duration::from_secs(90));
+        assert_eq!(c.lsp_boot_timeout, Duration::from_secs(30));
+        assert_eq!(c.lsp_memory.as_deref(), Some("2g"));
+    }
+
+    #[test]
+    fn lsp_zero_pool_min_is_allowed() {
+        // 0 = 不预留待命,每次现造(省 839 MB,代价是每次会话等 6-11s)
+        let g = getter(&[("PLAYGROUND_LSP_POOL_MIN", "0")]);
+        let c = resolve(&g, Path::new("/repo/playground")).unwrap();
+        assert_eq!(c.lsp_pool_min, 0);
+    }
+
+    #[test]
+    fn lsp_disabled_flag() {
+        let g = getter(&[("PLAYGROUND_LSP_DISABLED", "1")]);
+        let c = resolve(&g, Path::new("/repo/playground")).unwrap();
+        assert!(c.lsp_disabled);
     }
 
     #[test]
