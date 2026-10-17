@@ -783,38 +783,47 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写失败的测试**
 
-照 `config.rs` 既有 `mod tests` 的路子：
+照 `config.rs` 既有 `mod tests` 的路子（`getter` + `resolve`；**`Config` 没有 `Default`，
+`resolve` 的第一个参数是环境查表函数，第二个是 `manifest_dir`**）：
 
 ```rust
 #[test]
 fn lsp_defaults() {
-    let c = resolve(&Config::default(), &|_| None).unwrap();
+    let g = getter(&[]);
+    let c = resolve(&g, Path::new("/repo/playground")).unwrap();
+    assert!(!c.lsp_disabled);
     assert_eq!(c.lsp_pool_min, 1);
     assert_eq!(c.lsp_idle_ttl, Duration::from_secs(90));
+    assert_eq!(c.lsp_boot_timeout, Duration::from_secs(30));
+    assert_eq!(c.lsp_memory.as_deref(), Some("2g"));
 }
 
 #[test]
 fn lsp_zero_pool_min_is_allowed() {
     // 0 = 不预留待命,每次现造(省 839 MB,代价是每次会话等 6-11s)
-    let c = resolve(&Config::default(), &|k| (k == "PLAYGROUND_LSP_POOL_MIN").then(|| "0".into())).unwrap();
+    let g = getter(&[("PLAYGROUND_LSP_POOL_MIN", "0")]);
+    let c = resolve(&g, Path::new("/repo/playground")).unwrap();
     assert_eq!(c.lsp_pool_min, 0);
 }
 
 #[test]
 fn lsp_disabled_flag() {
-    let c = resolve(&Config::default(), &|k| (k == "PLAYGROUND_LSP_DISABLED").then(|| "1".into())).unwrap();
+    let g = getter(&[("PLAYGROUND_LSP_DISABLED", "1")]);
+    let c = resolve(&g, Path::new("/repo/playground")).unwrap();
     assert!(c.lsp_disabled);
 }
 ```
-
-签名与 `config.rs:241` 的 `getter` 辅助对齐。
 
 - [ ] **Step 2: 跑测试确认它失败**
 
 - [ ] **Step 3: 实现**
 
-用既有的 `raw` / `num_var` / `bool_var` / `str_var`。**默认值只写在 `Config` 的 `Default` 一处**，
-其余引用字段（照 `config.rs:1` 的文件头要求）。
+用既有的 `raw` / `num_var` / `bool_var`。**默认值只写在 `resolve` 这一处**（`config.rs:1`
+的文件头要求），`Config` 本身没有 `Default`。
+
+`PLAYGROUND_LSP_MEMORY` 需要 `memory_var` 的语义但默认值不同：把 `memory_var` 改成
+`memory_var(key, get, default: &str)`，既有调用传 `"1536m"`，LSP 的传 `"2g"`。
+`none` 仍然表示不下 `--memory`。
 
 - [ ] **Step 4: 跑测试确认它过**
 
