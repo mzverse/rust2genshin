@@ -319,5 +319,27 @@ mod tests {
         assert!(!dockerfile.contains(r#""core""#), "{dockerfile}");
         // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
         assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
+        // 两条顺序/结构不变量 —— 文字断言拦不住它们,但改错了行为全变:
+        // RA 的 RUN 必须在 USER builder 之后,否则 /opt/ra/ws 归 root,--user 1001 写 target/ 会 EACCES;
+        assert!(
+            dockerfile.find("USER builder").unwrap() < dockerfile.find("/opt/ra/ws").unwrap(),
+            "RA workspace 必须在 USER builder 之后创建"
+        );
+        // 末尾不许再出现 FROM:追加 stage 会让默认构建目标变成它,任务容器的镜像就没了。
+        assert!(
+            !dockerfile[dockerfile.find("/opt/ra/ws").unwrap()..].contains("\nFROM "),
+            "RA 相关指令之后不许再开 stage"
+        );
+        // `/opt` 在 debian:bookworm-slim 里是 root:root 755,builder 自己
+        // `mkdir -p /opt/ra` 会 Permission denied、整个构建失败 —— 必须由
+        // 建用户那条 RUN(root)预建并 chown,`/opt/ra/ws` 才天然归 1001。
+        assert!(
+            dockerfile.contains("mkdir -p /opt/rust2genshin /opt/ra"),
+            "{dockerfile}"
+        );
+        assert!(
+            dockerfile.contains("chown builder:builder /opt/rust2genshin /opt/ra"),
+            "{dockerfile}"
+        );
     }
 }

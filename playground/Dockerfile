@@ -33,9 +33,12 @@ ARG CARGO_MIRROR=
 # /opt/rust2genshin 也在这里一并建好并 chown:下面 `COPY --chown` 只改
 # 拷进去的文件,不改目标目录本身的属主 —— 留成 root:root(755)的话,
 # 最后 `cargo run -p build-demo` 以 builder 在里面建 target/ 会 EACCES。
+# /opt/ra 同理,而且**必须由 root 建**:`/opt` 在 debian:bookworm-slim 里
+# 是 root:root 755,`USER builder` 之后 `mkdir -p /opt/ra` 会
+# Permission denied、镜像直接构建失败。
 RUN useradd -u 1001 -m -s /bin/bash builder \
- && mkdir -p /opt/rust2genshin \
- && chown builder:builder /opt/rust2genshin
+ && mkdir -p /opt/rust2genshin /opt/ra \
+ && chown builder:builder /opt/rust2genshin /opt/ra
 USER builder
 # 工具链跟着 rust-toolchain.toml 走 —— 它装在 builder 的家目录里,
 # 所以必须在 USER builder 之后跑。
