@@ -49,6 +49,12 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_IMAGE`], [`rust2genshin-play`], [烘出来的镜像名（tag 里会再带 short sha 和 `-dirty`）。],
     [`PLAYGROUND_ADMIN_TOKEN`], [无], [`/admin/rebuild` 的运维手工触发凭证（`Authorization: Bearer <token>`）。与 `GITHUB_WEBHOOK_SECRET` 一起决定这条路由能不能被调用 —— 两个都没配就是 403，不做「没配就放行」。],
     [`GITHUB_WEBHOOK_SECRET`], [无], [校验 GitHub webhook 的 HMAC 签名（`X-Hub-Signature-256`）。和上一个一样，未设则不接受这条路。],
+
+    [`PLAYGROUND_LSP_DISABLED`], [`false`], [*整个关掉代码分析。* 为真时服务端不建任何 rust-analyzer 容器，`hello.lsp_supported` 报 false，编辑框退化成纯文本 —— 页面其余部分照常能用。],
+    [`PLAYGROUND_LSP_POOL_MIN`], [`1`], [后台维持几个*待命*的 RA 会话。设 `0` 表示不预热：每个请求现场起一个，冷启动 11 秒（裁剪过 workspace，见「编辑器与 rust-analyzer」）。],
+    [`PLAYGROUND_LSP_IDLE_TTL`], [`90`], [空闲会话闲置多久后销毁，*秒*。销毁是 `docker rm -f`，会连 RA 进程一起收掉；下次要用重新冷启动。],
+    [`PLAYGROUND_LSP_BOOT_TIMEOUT`], [`30`], [一个 RA 会话从建容器到就绪的上限，*秒*。超时算失败，池会换一个。],
+    [`PLAYGROUND_LSP_MEMORY`], [`2g`], [RA 容器的内存限额。*每个待命会话就吃这么多*，宿主上按 `LSP_POOL_MIN` 线性涨。],
 )
 
 布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
@@ -79,6 +85,20 @@ cargo run -p rust2genshin-playground
 - *镜像和 builder cache* —— 走 docker 自己的 data root（不是项目里的 `target/`）。镜像按 label 清，只认本服务烘的那些，*绝不碰宿主上别人的镜像*。
 
 一条要紧的副作用：`docker builder prune` 是*全局*的 —— builder cache 没有 label、在这台机器上被所有项目共享，所以那一下清的是*所有* builder 的缓存，不只是我们的（`playground/src/docker.rs:166-169`）。还有 `PLAYGROUND_BUILD_CACHE_MAX` 传的是 `--keep-storage`，语义是*留到*多少，超预算的丢最旧的。
+
+= 编辑器与 rust-analyzer
+
+「摆弄」页的编辑框是 CodeMirror 6，但它*不带任何 Rust 解析器* —— 不用 `@codemirror/lang-rust`，也不用别的本地语法分析。语法高亮、红色波浪线、补全列表，三样全部来自容器里的 `rust-analyzer`，经 LSP 过一道 WebSocket 回来。本地零解析，所以不存在「高亮好看但与分析结论不一致」这种偏差。
+
+*高亮和诊断是两个独立的 decoration 层*，可以叠在同一个 range 上：一个字既是函数名（高亮）又是错误位置（波浪线）时，两个 class 一起生效，不是二选一。
+
+*RA 的分析范围裁到三个成员。* 镜像里除了任务容器要用的完整源码，另烘了一份 `/opt/ra/ws` —— 只有 `demo` / `lib` / `lib-internal`，没有 `core`。`core` 是 `rustc_private` 后端，RA 为了解析它要把整个编译器 sysroot 的元数据拖进来，冷启动从 11 秒涨到 84 秒，而 `demo` 的依赖链上根本没有它。裁剪在烘焙时用一次 `cargo metadata --offline` 自检，裁错了在烘焙时就炸，而不是用户第一次编辑时才发现。
+
+*会话池是有代价的。* 一个待命的 RA 会话在 `did_open` 之后吃 839 MB；`PLAYGROUND_LSP_POOL_MIN` 乘以这个数就是这部分常驻内存。空闲超过 `PLAYGROUND_LSP_IDLE_TTL` 会话被 `docker rm -f` 收掉，RA 进程随之消失 —— 不靠谁的 `Drop`，也不靠连接断开。
+
+*待命会话里已经有文档了。* 补池建会话时会先 `did_open` 一行占位内容，所以用户第一次连接时*不该再 didOpen 一遍*（同一个 URI 重复 didOpen 是协议违规）；用户的源码走 `LspChange` 全文替换。
+
+*目标选择只影响编译。* 顶部的「目标」下拉框列的是 `hello.targets`，由服务端那张表驱动（`playground/src/protocol.rs` 的 `TARGETS`）；超限与经典模式的差别只在 `--target` 指向哪份 spec、`-gamemode` 传什么，LSP 链路完全不感知。切换目标后要重新编译才生效（它改的是编译产物，不是编辑器状态）。重连 WebSocket 会把下拉框重置回第一项。
 
 = `cargo clean` 与锁
 
