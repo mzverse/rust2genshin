@@ -88,23 +88,38 @@ function httpOrigin(wsUrl) {
 }
 
 class PlayEditor {
-    constructor(textarea) {
-        this.textarea = textarea;
-        this.textarea.addEventListener("keydown", (e) => {
+    /* `host` 是 `<mdui-text-field textarea>`,真正的 `<textarea>` 在它的
+     * shadow 里。keydown / 光标这些必须在**内层**元素上处理 —— host 上没有
+     * `selectionStart`。mdui 的 `.value` 会代理到内层 textarea,所以读写都
+     * 走 host 也行,但统一走内层,少一个「能不能代理」的假设。 */
+    constructor(host) {
+        this.host = host;
+        this.area = (host.shadowRoot && host.shadowRoot.querySelector("textarea")) || host;
+        this.area.addEventListener("keydown", (e) => {
             // Tab 在 textarea 里默认是切焦点,写 Rust 的人会疯。
             if (e.key === "Tab") {
                 e.preventDefault();
-                const s = this.textarea.selectionStart;
-                const e2 = this.textarea.selectionEnd;
-                const v = this.textarea.value;
-                this.textarea.value = v.slice(0, s) + "    " + v.slice(e2);
-                this.textarea.selectionStart = this.textarea.selectionEnd = s + 4;
+                const s = this.area.selectionStart;
+                const e2 = this.area.selectionEnd;
+                const v = this.area.value;
+                this.area.value = v.slice(0, s) + "    " + v.slice(e2);
+                this.area.selectionStart = this.area.selectionEnd = s + 4;
             }
         });
     }
-    getText() { return this.textarea.value; }
-    setText(t) { this.textarea.value = t; }
-    setEnabled(on) { this.textarea.readOnly = !on; }
+    getText() { return this.area.value; }
+    setText(t) {
+        this.area.value = t;
+        // mdui 的 text-field 不会因为你改了内层 textarea 的值就更新它内部的
+        // 状态(计数、dirty 标记),补一个 input 事件让它自己同步一次。
+        this.area.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    setEnabled(on) {
+        // `readonly` 而不是 `disabled`:编译时灰掉整个编辑区,disabled 会连
+        // 选中复制都不让,只读还能把报错那几行拷出来。
+        this.area.readOnly = !on;
+        this.host.setAttribute(on ? "" : "readonly", on ? null : "");
+    }
 }
 
 class PlayClient {
@@ -220,6 +235,19 @@ class PlayClient {
 function init() {
     const root = document.querySelector(".play");
     if (!root) return;
+    // MDUI 是 web component:`.value` 之类的属性要等组件 upgrade 之后才同步,
+    // 在那之前读到的都是空。整段初始化挂到 `whenDefined` 后面。
+    if (customElements.get("mdui-select")) ready();
+    else customElements.whenDefined("mdui-select").then(ready, (e) => {
+        // mdui.js 没加载出来(unpkg 挂了/被墙)时页面就废了 —— 至少把话说明白。
+        const log = root.querySelector("#play-log");
+        if (log) log.textContent = `界面组件没加载出来:${e}
+`;
+    });
+}
+
+function ready() {
+    const root = document.querySelector(".play");
 
     const $ = (id) => root.querySelector(`#${id}`);
     const editor = new PlayEditor($("play-editor"));

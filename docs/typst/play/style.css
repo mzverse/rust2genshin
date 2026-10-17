@@ -8,7 +8,8 @@
 .play {
     display: block;
     margin: 1rem 0 2rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* 不给整页挂等宽字体:MDUI 的按钮 / 下拉是按 UI 字体设计的,强制等宽会
+     * 让它们跟旁边的正文对不上。只给真正是代码的两块(log)用等宽。 */
     font-size: 14px;
 }
 
@@ -20,54 +21,25 @@
     margin-bottom: 10px;
 }
 
-/* 「示例 + 选 + 载入」这一组自己框起来。 */
+/* 「示例 + 选 + 载入」这一组自己框起来。
+ *
+ * 组里的控件是 `<mdui-select>` / `<mdui-button>` —— 它们把样式关在自己的
+ * shadow root 里,这里给外面的 div 写规则**进不去**,能给它们调尺寸的只有
+ * 自己的盒模型属性(width / min-width / --md-sys-*)。 */
 .play-picker {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 6px;
-    border: 1px solid var(--border-soft);
-    border-radius: 7px;
 }
-/* 组里那两个控件的边框去掉 —— 外框已经表达了边界,再套一层就是双线。 */
-.play-picker select,
-.play-picker button {
-    border: 1px solid transparent;
-    background-color: transparent;
-}
-.play-picker select:hover,
-.play-picker button:hover {
-    border-color: var(--border);
-}
-
-/* 「示例」两个字:显式告诉人这个框是干嘛的,不然它跟「载入」并排躺着
- * 看着像个装饰。`.play-label` 不带 class 会被站点全局的 label 规则抓到。 */
-.play-toolbar .play-label {
+/* 「示例：」三个字:显式告诉人这个框是干嘛的。`.play-label` 不带前缀会被
+ * 站点全局的 label 规则抓到。 */
+.play-picker .play-label {
     font-size: 13px;
     opacity: 0.6;
     user-select: none;
 }
-
-.play-toolbar select,
-.play-toolbar button {
-    font: inherit;
-    font-size: 13px;
-    color: var(--fg);
-    /* 站点深色主题下 `background-color: transparent` + `color: var(--fg)`
-     * 的组合在 macOS Chrome 上会渲染成「黑字白底」的原生 select,底下那块
-     * 白比周围都亮。显式给背景色。 */
-    background-color: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 10px;
-}
-.play-toolbar select {
-    min-width: 9rem;
-    cursor: pointer;
-}
-.play-toolbar select:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+.play-picker mdui-select {
+    min-width: 10rem;
 }
 
 /* ---- 主体:编辑器和日志两栏,占满「视口减去上面那些」的剩余高度 ----
@@ -87,26 +59,14 @@
     min-height: 26rem;
 }
 
-.play-editor {
+/* 左栏的编辑框。
+ *
+ * `<mdui-text-field textarea>` 的样子全在 shadow root 里,外面写 `border`
+ * 之类是不生效的;能调的只有它自己的盒子。所以这里只管**占满格子**。
+ * `height: 100%` 让它跟右栏的日志盒一样被 `.play-layout` 的行高拉满。 */
+.play-layout > mdui-text-field {
     width: 100%;
     height: 100%;
-    box-sizing: border-box;
-    padding: 10px 12px;
-    /* 不用 `font: inherit` 把字号也继承了 —— <textarea> 的默认值跟 body
-     * 差好几号,继承之后源码会显得比旁边的日志大一号。 */
-    font-family: inherit;
-    font-size: 13px;
-    line-height: 1.55;
-    tab-size: 4;
-    color: var(--fg);
-    background-color: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    resize: vertical;
-}
-.play-editor:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
 }
 
 /* 右栏:状态行 + 按钮 + 日志盒。flex 让日志盒把剩下的高度吃干净,和左边
@@ -142,29 +102,11 @@
     gap: 6px;
     flex: none;
 }
-.play-actions button {
-    font: inherit;
-    font-size: 13px;
-    color: var(--fg);
-    background-color: transparent;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 12px;
-    cursor: pointer;
-}
-.play-actions button:hover:not(:disabled) {
-    border-color: var(--fg);
-}
-/* 主操作(编译)给一点重音,别的都不抢戏。 */
-.play-actions #play-run {
-    color: var(--bg);
-    background-color: var(--fg);
-    border-color: var(--fg);
-}
-.play-actions #play-run:hover:not(:disabled) { opacity: 0.85; }
-.play-actions button:disabled {
-    cursor: default;
-    opacity: 0.4;
+/* 「取消 / 下载」在没东西可取消、可下载的时候要藏起来。`<mdui-button>` 是
+ * 自定义元素,`[hidden]` 对它不像对原生按钮那样默认生效(display 被组件自己
+ * 设成了 inline-flex),所以显式补一条。 */
+.play-actions [hidden] {
+    display: none;
 }
 
 .play-log {
@@ -185,7 +127,7 @@
     overflow: auto;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    font-family: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
     line-height: 1.5;
     color: var(--fg);
