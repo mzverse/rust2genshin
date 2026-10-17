@@ -38,7 +38,7 @@
   ]
   #html_elem("div", class: "play-layout")[
     #html_elem("textarea", class: "play-editor", id: "play-editor", spellcheck: "false", autocomplete: "off")
-    #html_elem("div")[
+    #html_elem("div", class: "play-right")[
       #html_elem("div", id: "play-status", class: "play-status")[]
       #html_elem("pre", id: "play-log", class: "play-log")
     ]

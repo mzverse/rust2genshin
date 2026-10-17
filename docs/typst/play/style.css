@@ -50,6 +50,14 @@
     resize: vertical;
 }
 
+/* 右栏:状态行 + 日志盒。flex 让日志盒把剩下的高度吃干净,和左边的编辑框
+ * 底边对齐 —— 格子高度由两者中高的那个定(编辑框 24rem)。 */
+.play-right {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
 .play-status {
     min-height: 1.6em;
     font-size: 13px;
@@ -60,8 +68,18 @@
 .play[data-status="pending"] .play-status { opacity: 0.75; }
 
 .play-log {
-    min-height: 22rem;
-    max-height: 22rem;
+    /* 必须显式写 `display: block`。code_block.css:111 有一条全局的
+     * `pre { display: inline }` —— 那是 Typst 的约定,代码块的 `<pre>` 是包着
+     * 内联内容的,要跟着段落流动,改不得。日志面板是真的块级 `<pre>`,被它盖成
+     * inline 之后宽度按内容收缩、高度直接被忽略(实测 min-height 352px 而
+     * 渲染出来 208px、列宽 716px 而实际 372px)。
+     * 拆掉 shadow root 之前这些站点全局规则进不来,所以没这个坑。 */
+    display: block;
+    /* 高度交给 .play-right 的 flex 去撑(见下),这里只保底:格子被压扁时
+     * 不至于缩成一条缝。之前写死 22rem 而编辑框是 24rem,两栏底部永远差
+     * 一截,靠 rem 硬凑还会随状态栏字号变化。 */
+    flex: 1;
+    min-height: 16rem;
     margin: 0;
     padding: 8px;
     overflow: auto;
