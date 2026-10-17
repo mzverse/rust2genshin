@@ -1,14 +1,30 @@
 /* 摆弄页。
  *
- * 拆掉自定义组件之前是 <playground-app> + shadow root,现在就是普通的
- * DOM:`.play` 容器 + 一堆 id。分成两个对象还是刻意的:
- *   - PlayEditor  只认「取文本 / 显示文本」几个方法,将来换 CodeMirror
- *                 或加 rust-analyzer 的补全,只动它。
- *   - PlayClient  只认「连上 / 发 submit / 收消息」,不知道编辑器存在。
- * 两者在 `init()` 里通过那几个回调接起来。
+ * 编辑器从 `<mdui-text-field textarea>` 换成了 CodeMirror 6;语义高亮 / 诊断 /
+ * 补全都由 RA 经后端 WebSocket 给,本地零解析 —— 不存在「高亮和分析结论
+ * 不一致」(Review Focus 第 5 条)。
+ *
+ * 与 `lsp-client.js` 的分工:
+ *   - script.js 管「WS 连上 / 发 submit / 收消息」+ UI 状态(target 选择器、
+ *     日志面板、拖动条、选项卡、样例载入);
+ *   - lsp-client.js 管「LspTokens / LspDiagnostic / LspCompletion → CodeMirror
+ *     编辑器 → LspChange / LspCompletion」的具体实现(去抖 300 ms、2 s 兜底、
+ *     在途替换)。CodeMirror 的 effects / fields 也定义在那儿,这一个文件
+ *     集中 LSP 相关的内容。
  *
  * 后端地址不归页面管 —— 见下面 `BACKENDS` 的注释。
  */
+
+import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
+import { EditorState, Prec, Compartment } from "https://esm.sh/@codemirror/state@6";
+import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
+import {
+    LspClient,
+    kindToType,
+    tokensField,
+    diagnosticsField,
+    decorationField,
+} from "./lsp-client.js";
 
 /* 后端地址表。**页面里不给看也不给改** —— 写死在这儿,原因有三个:
  *   - 地址一改就要重新构建页面,不是访客该管的事;
@@ -22,6 +38,17 @@ const BACKENDS = [
     "wss://www.mzverse.org:6/rust2genshin/ws",
     "ws://127.0.0.1:8787/ws",
 ];
+
+/* target 真值 → 显示名。前端负责把 `Hello.targets` 里那一串 `beyond-server` /
+ * `classic-server` 翻成「超限模式」/「经典模式」。这张表只在前端维护
+ * (后端不在意谁是什么模式),不在表里的目标降级到原值 —— 加新目标时改这里一行。
+ *
+ * 顺序由 `Hello.targets` 决定(`protocol::TARGETS`,协议侧唯一真源),
+ * 前端不写死顺序。 */
+const TARGET_LABELS = {
+    "beyond-server": "超限模式",
+    "classic-server": "经典模式",
+};
 
 /* Fisher–Yates。每次加载都重新打乱,所以刷新页面就是在换一条起点。 */
 function shuffled(list) {
@@ -86,46 +113,6 @@ function httpOrigin(wsUrl) {
     return wsUrl.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
 }
 
-class PlayEditor {
-    /* `host` 是 `<mdui-text-field textarea>`,真正的 `<textarea>` 在它的
-     * shadow 里。keydown / 光标这些必须在**内层**元素上处理 —— host 上没有
-     * `selectionStart`。mdui 的 `.value` 会代理到内层 textarea,所以读写都
-     * 走 host 也行,但统一走内层,少一个「能不能代理」的假设。 */
-    constructor(host) {
-        this.host = host;
-        this.area = (host.shadowRoot && host.shadowRoot.querySelector("textarea")) || host;
-        this.area.addEventListener("keydown", (e) => {
-            // Tab 在 textarea 里默认是切焦点,写 Rust 的人会疯。
-            if (e.key === "Tab") {
-                e.preventDefault();
-                const s = this.area.selectionStart;
-                const e2 = this.area.selectionEnd;
-                const v = this.area.value;
-                this.area.value = v.slice(0, s) + "    " + v.slice(e2);
-                this.area.selectionStart = this.area.selectionEnd = s + 4;
-            }
-        });
-    }
-    getText() { return this.area.value; }
-    setText(t) {
-        this.area.value = t;
-        // mdui 的 text-field 不会因为你改了内层 textarea 的值就更新它内部的
-        // 状态(计数、dirty 标记),补一个 input 事件让它自己同步一次。
-        this.area.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    setEnabled(on) {
-        // `readonly` 而不是 `disabled`:编译时灰掉整个编辑区,disabled 会连
-        // 选中复制都不让,只读还能把报错那几行拷出来。
-        this.area.readOnly = !on;
-        // 解开要**删属性**,不是 `setAttribute("", null)` —— 属性名是空串的
-        // setAttribute 直接抛 InvalidCharacterError。而这个调用在 setBusy
-        // 的最后一步,抛出去会把 onFinished 后面全截掉:取消按钮已经藏了,
-        // 状态行和「下载」却还没更新,界面就永远停在「编译中…」。
-        if (on) this.host.removeAttribute("readonly");
-        else this.host.setAttribute("readonly", "");
-    }
-}
-
 class PlayClient {
     constructor(handlers) {
         this.handlers = handlers;
@@ -136,6 +123,9 @@ class PlayClient {
         // 还没连上时想发的消息。断线重连期间点「编译」会落到这里,
         // onopen 一冲就发出去 —— 不能丢,丢了界面会永远停在「排队中…」。
         this.pending = [];
+        // LSP 消息路由回调。脚本在收到 hello 并决定启用 LSP 后才设上;
+        // 在此之前 LSP 消息一律不处理 —— 服务端不应该发,但保险起见。
+        this.onLsp = null;
     }
 
     /* 从后端池里挑一个连上,把这个 socket 接过来用。
@@ -194,19 +184,22 @@ class PlayClient {
     }
 
     /* 点一次「编译」= 重扫一遍池子。断线之后也走这条,所以「连接已断开」
-     * 之后直接再点编译就能换个后端,不用刷新页面。 */
-    async submit(source) {
+     * 之后直接再点编译就能换个后端,不用刷新页面。
+     *
+     * `target` 是 `Hello.targets` 里的一项 —— 不传就让服务端走 DEFAULT_TARGET。 */
+    async submit(source, target) {
         if (!(await this.connect())) return;
         // 回包之前按"排队中"显示,免得点了没反应。
         this.handlers.onStatus("排队中…", "pending");
-        this.#send({ type: "submit", source, target: "beyond-server" });
+        this.send({ type: "submit", source, target: target ?? null });
     }
 
-    cancel() { this.#send({ type: "cancel" }); }
+    cancel() { this.send({ type: "cancel" }); }
 
-    #send(o) {
-        // readyState 不是 1 就先入队 —— 首连握手和断线重连两条路径都靠它,
-        // 否则消息静默消失,界面卡在「排队中…」。
+    /* 公开的发消息接口 —— LSP / 提交 / 取消都走它。
+     * readyState 不是 1 就先入队 —— 首连握手和断线重连两条路径都靠它,
+     * 否则消息静默消失,界面卡在「排队中…」。 */
+    send(o) {
         if (this.ws && this.ws.readyState === 1) {
             this.ws.send(JSON.stringify(o));
         } else {
@@ -246,12 +239,34 @@ class PlayClient {
             case "error":
                 this.handlers.onError(m);
                 break;
+            case "lsp_ready":
+            case "lsp_tokens":
+            case "lsp_diagnostic":
+            case "lsp_completion":
+                // LSP 消息路由到客户端(若已挂上)。`onLsp` 默认 null,
+                // 脚本在 hello 决定启用 LSP 之后才设上。
+                if (this.onLsp) this.onLsp(m);
+                break;
             default:
                 // 认不出来的消息不忽略 —— 记一行。将来加 lsp 消息时,
                 // 老前端就是靠这一行走过去的。
                 this.handlers.onLog({ stream: "stderr", text: `未知消息 ${m.type}\n` });
         }
     }
+}
+
+/* `setEditorText` / `getEditorText` —— 把 CodeMirror 视图包成现有 UI 期望的
+ * 「取文本 / 显示文本」一对方法,其它地方不用关心编辑器细节。
+ * `loadSample` 和「编译」按钮都走它。 */
+function makeEditorOps(view) {
+    return {
+        getText() { return view.state.doc.toString(); },
+        setText(s) {
+            view.dispatch({
+                changes: { from: 0, to: view.state.doc.length, insert: s },
+            });
+        },
+    };
 }
 
 function init() {
@@ -272,13 +287,18 @@ function ready() {
     const root = document.querySelector(".play");
 
     const $ = (id) => root.querySelector(`#${id}`);
-    const editor = new PlayEditor($("play-editor"));
+    const editorHost = $("play-editor");
+    /* `editable` 是 CM 的 facet,写死之后只能用 Compartment 切回。
+     * 「编译中…」「还在烘」两种情况都需要把编辑器冻住 —— 写成 Compartment
+     * 让 setBusy() 直接 dispatch 一行就能切换,不用重建视图。 */
+    const editableCompartment = new Compartment();
     const status = $("play-status");
     const log = $("play-log");
     const runBtn = $("play-run");
     const cancelBtn = $("play-cancel");
     const dlBtn = $("play-download");
     const sampleSel = $("play-sample");
+    const targetSel = $("play-target");
     const setStatus = (text, kind) => {
         status.textContent = text;
         root.dataset.status = kind || "";
@@ -294,11 +314,96 @@ function ready() {
         // 的情况下被错误地恢复成可点。
         runBtn.disabled = busy || !ready;
         cancelBtn.hidden = !busy;
-        editor.setEnabled(!busy);
+        // 编辑器只读:不锁定整个组件,这样选中复制还能用。
+        // `editableCompartment` 是动态开关 —— `EditorView.editable` 是 facet,
+        // 在 `EditorState.create({...})` 里写死之后再 dispatch `reconfigure`
+        // 才能切换。
+        if (view) view.dispatch({
+            effects: editableCompartment.reconfigure(
+                EditorView.editable.of(!busy)
+            ),
+        });
     };
 
+    /* LSP 客户端 —— 在 hello 之前不创建,初始为 null。
+     * updateListener / completionProvider 都通过这个闭包变量访问,
+     * null 时两个回调都安全地 no-op。 */
+    let lsp = null;
+    /* CodeMirror 视图 —— 总是创建,LSP 关掉时就是纯文本编辑器。 */
+    let view = null;
+    /* 编辑器上的文本操作句柄,外部(loadSample / runBtn click)用它。 */
+    let editor = null;
+
+    /* 补全触发时算位置:context.pos 是 CodeMirror 的绝对字符偏移;
+     * 转成 LSP 的 0 基 (line, column) —— column 按 UTF-16 code unit,
+     * 与 CodeMirror 默认一致,直接相减。 */
+    const completionProvider = async (context) => {
+        if (!lsp) return null;
+        const lineObj = context.state.doc.lineAt(context.pos);
+        const line = lineObj.number - 1;
+        const column = context.pos - lineObj.from;
+        const items = await lsp.requestCompletion(line, column);
+        if (!items || items.length === 0) return null;
+        return {
+            from: context.pos,
+            options: items.map((item) => ({
+                label: item.label,
+                type: kindToType(item.kind),
+                detail: item.detail || undefined,
+            })),
+            validFor: /^[\w]*$/,
+        };
+    };
+
+    view = new EditorView({
+        state: EditorState.create({
+            doc: "",
+            extensions: [
+                lineNumbers(),
+                highlightActiveLine(),
+                closeBrackets(),
+                // 初始为可编辑;setBusy() 用 editableCompartment.reconfigure 切。
+                editableCompartment.of(EditorView.editable.of(true)),
+                tokensField,
+                diagnosticsField,
+                decorationField,
+                // 启用补全;override 让 completionProvider 完全控制,不被
+                // 默认的 keyword/word-based 完成污染。
+                autocompletion({
+                    override: [completionProvider],
+                    activateOnTyping: true,
+                    closeOnBlur: true,
+                }),
+                // Tab 在 textarea 里默认是切焦点,写 Rust 的人会疯。
+                // 这里复刻旧版的「选 → 4 空格」:Prec.high 抢在补全默认
+                // keymap 之前,补全弹窗没开时插入 4 空格;弹窗开了时
+                // completionProvider 的弹出靠 Ctrl-Space / Enter,Tab 不
+                // 需要抢走。Shift-Tab 不绑 —— 旧 textarea 也没处理。
+                Prec.high(keymap.of([{
+                    key: "Tab",
+                    run: (v) => {
+                        const { from, to } = v.state.selection.main;
+                        const spaces = "    ";
+                        v.dispatch({
+                            changes: { from, to, insert: spaces },
+                            selection: { anchor: from + spaces.length },
+                        });
+                        return true;
+                    },
+                }])),
+                // 文档变化 → LspClient 去抖 300 ms 后发 LspChange。
+                // `lsp` 可能为 null,check 一下避免无谓调用。
+                EditorView.updateListener.of((u) => {
+                    if (u.docChanged && lsp) lsp.onDocChanged(u.state.doc.toString());
+                }),
+            ],
+        }),
+        parent: editorHost,
+    });
+    editor = makeEditorOps(view);
+
     // 下载地址在收到 finished 时才算得出来:后端给的是**服务端相对**
-    // 路径(`/artifact/xxx`),而这一页在 GitHub Pages 上,直接用相对
+    // 路径(`/artifact/<id>`),而这一页在 GitHub Pages 上,直接用相对
     // 路径会去文档站找那个文件、必然 404。
     let downloadUrl = null;
     // 第一次连上时镜像往往还在烘。这时要每 5 秒看一眼 /status 把烘焙
@@ -342,6 +447,20 @@ function ready() {
         }, 5000);
     };
 
+    /* 用 `Hello.targets` 填下拉框,默认选第一项;unknown 显示名走原值。 */
+    const populateTargetSelect = (targets) => {
+        if (!targetSel) return;
+        targetSel.textContent = "";
+        for (const t of targets) {
+            const opt = document.createElement("option");
+            opt.value = t;
+            opt.textContent = TARGET_LABELS[t] || t;
+            targetSel.appendChild(opt);
+        }
+        // 默认第一项。下拉框列表为空时不改 value,避免 `null` 进 submit。
+        if (targets.length > 0) targetSel.value = targets[0];
+    };
+
     const client = new PlayClient({
         onStatus: setStatus,
         onHello: (m) => {
@@ -354,6 +473,27 @@ function ready() {
             if (!ready) {
                 appendLog("stderr", "后端还在烘焙镜像,第一次可能要几分钟。\n");
                 pollBake();
+            }
+            // 目标选择器由 hello 驱动 ——
+            // 先把它填好,目标选择就发生在这一刻,而不是页面加载时。
+            populateTargetSelect(m.targets || []);
+            // 启用 LSP 客户端:hello 里有 lsp_supported 才挂上,否则就当
+            // 没有 LSP 客户端,编辑框只走普通 CodeMirror(纯文本、无高亮)。
+            if (m.lsp_supported) {
+                lsp = new LspClient({
+                    view,
+                    send: (msg) => client.send(msg),
+                    onStatus: (text) => setStatus(text, "ok"),
+                });
+                client.onLsp = (msg) => lsp.onMessage(msg);
+                // 发 LspOpen —— 服务端在池里建一个 RA 会话,准备好了回 LspReady。
+                lsp.open();
+                // 高亮要等 RA 就绪才出现,这之前给一条「分析中…」让用户
+                // 知道编辑框不是坏了 —— 空黑框会让人以为是 bug。
+                const base = ready ? `就绪 · 镜像 ${c}` : "就绪";
+                setStatus(`${base} · 分析中…`, "pending");
+            } else {
+                appendLog("stdout", "── 服务端 LSP 关闭,编辑框无高亮 ──\n");
             }
         },
         onStarted: (m) => {
@@ -409,8 +549,9 @@ function ready() {
     runBtn.addEventListener("click", () => {
         log.textContent = "";
         dlBtn.hidden = true;
-        downloadUrl = null;
-        client.submit(editor.getText());
+        downloadUrl = "";
+        const target = targetSel ? targetSel.value : null;
+        client.submit(editor.getText(), target);
     });
     cancelBtn.addEventListener("click", () => client.cancel());
     dlBtn.addEventListener("click", () => {
@@ -524,8 +665,6 @@ function ready() {
     client.connect();
 }
 
-if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-} else {
-    init();
-}
+// ESM 模块加载时 init() 由模板里的 `<script type="module">` 触发 ——
+// 模块本身就是 defer,DOM 就绪在执行前已经完成。直接跑,不再等 DOMContentLoaded。
+init();

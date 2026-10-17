@@ -111,13 +111,190 @@ body:has(main > .play) main {
     --mdui-typescale-body-large-line-height: 1rem;
 }
 
-/* 左栏的编辑框。`<mdui-text-field textarea>` 的样子全在 shadow root 里,
- * 外面写 `border` 之类是不生效的;能调的只有它自己的盒子。所以这里只管
- * **占满剩下的格子**。 */
-.play-left > mdui-text-field {
+/* 左栏的编辑框:CodeMirror 6 的挂载点。CodeMirror 自己管滚动、光标、IME,
+ * 这里只负责把 `.play-editor` 这一栏撑满左栏的剩余高度 ——`.cm-editor`
+ * 在里面再 flex 一遍把高度传下去。 */
+.play-editor {
     width: 100%;
     flex: 1 1 0;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* CodeMirror 6 主题:跟着站点的深浅色走 —— 不写死颜色,全用
+ * `--code-*` token,变深色时 `theme.css` 改一处就全局生效。 */
+.play-editor .cm-editor {
+    flex: 1 1 0;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background-color: var(--code-bg);
+    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+.play-editor .cm-editor.cm-focused {
+    /* 焦点环用 `--accent`,别让默认那个系统色在深色下变成看不见的纯白;
+     * outline 不能交给 --border 那种 1px 实色 —— 编辑框 1.5rem 高的行,
+     * 整圈 1px 实色看着像浏览器默认 focus,不是这个页面的设计语言。 */
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.play-editor .cm-scroller {
+    line-height: 1.5;
+    font-family: inherit;
+}
+/* 当前行高亮:与 `--hover` 同色 —— 同样的「鼠标移过」语义,只不过这次
+ * 是「光标所在」。`--active` 太重,会盖住诊断波浪线的视觉。 */
+.play-editor .cm-activeLine {
+    background-color: var(--hover);
+}
+.play-editor .cm-activeLineGutter,
+.play-editor .cm-gutters {
+    background-color: var(--code-bg);
+    color: var(--muted);
+    border-right: none;
+}
+.play-editor .cm-content {
+    padding: 6px 0;
+}
+/* 选区:用 `--accent` 半透明,既能在浅色下读得清也能在深色下不抢镜;
+ * CM 自带 selectionBackground 默认是浏览器 selected-text 那个色,深色
+ * 下灰底看不见。 */
+.play-editor .cm-selectionBackground,
+.play-editor .cm-content ::selection {
+    background-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.play-editor .cm-cursor,
+.play-editor .cm-dropCursor {
+    border-left-color: var(--fg);
+}
+/* 不可编辑时(setBusy 时只读):光标淡掉,但还允许选中复制。 */
+.play-editor .cm-editor[contenteditable="false"] .cm-cursor {
+    border-left-color: transparent;
+}
+
+/* ---- LSP semanticTokens 高亮 ----
+ *
+ * 颜色复用 `theme.css` 里那一组 `--code-syn-*` —— 那 8 个角色是为 Typst
+ * 高亮挑的,但语义大体对得上 LSP 的 23 个类型:
+ *   - 关键字 / 修饰符 / 装饰器 / typeParameter → attribute(深色读得清)
+ *   - 函数 / 方法 / 类型 / 接口 / struct       → symbol(蓝)
+ *   - 字符串 / 注释 / 数字                    → string / comment / literal
+ *   - 命名空间 / 宏                          → markup / macro
+ *   - 类 / 枚举 / 枚举成员 / 属性             → member(紫)
+ *   - 变量 / 参数 / 属性 / 操作符 / value     → plain(与正文同色,不抢)
+ *
+ * 不在映射里的类型(method / event / regexp / operator ...)就近复用:
+ * method 与 function 同色,event 偏红,regexp 沿 literal。
+ * 复用而不是另开一组 token,深色覆盖就一处管。 */
+.play-editor .cm-tok-namespace      { color: var(--code-syn-markup); }
+.play-editor .cm-tok-type           { color: var(--code-syn-symbol); }
+.play-editor .cm-tok-class          { color: var(--code-syn-member); }
+.play-editor .cm-tok-enum           { color: var(--code-syn-member); }
+.play-editor .cm-tok-interface      { color: var(--code-syn-symbol); }
+.play-editor .cm-tok-struct         { color: var(--code-syn-symbol); }
+.play-editor .cm-tok-typeParameter  { color: var(--code-syn-attribute); font-style: italic; }
+.play-editor .cm-tok-parameter      { color: var(--code-syn-plain); }
+.play-editor .cm-tok-variable       { color: var(--code-syn-plain); }
+.play-editor .cm-tok-property       { color: var(--code-syn-member); }
+.play-editor .cm-tok-enumMember     { color: var(--code-syn-member); }
+.play-editor .cm-tok-event          { color: var(--code-syn-attribute); }
+.play-editor .cm-tok-function       { color: var(--code-syn-symbol); }
+.play-editor .cm-tok-method         { color: var(--code-syn-symbol); }
+.play-editor .cm-tok-macro          { color: var(--code-syn-macro); }
+.play-editor .cm-tok-keyword        { color: var(--code-syn-attribute); font-weight: 600; }
+.play-editor .cm-tok-modifier       { color: var(--code-syn-attribute); }
+.play-editor .cm-tok-comment        { color: var(--code-syn-comment); font-style: italic; }
+.play-editor .cm-tok-string         { color: var(--code-syn-string); }
+.play-editor .cm-tok-number         { color: var(--code-syn-literal); }
+.play-editor .cm-tok-regexp         { color: var(--code-syn-literal); }
+.play-editor .cm-tok-operator       { color: var(--code-syn-plain); }
+.play-editor .cm-tok-decorator      { color: var(--code-syn-attribute); }
+
+/* ---- 诊断波浪线 ----
+ *
+ * RA 给的 severity:1=Error / 2=Warning / 3=Information / 4=Hint,
+ * 0 视为 Information(协议注释里说服务端允许这么发)。
+ *
+ * wavy 是 CSS 标准 `text-decoration-style` 的值;Chrome 87+ / Firefox 70+
+ * / Safari 12.1+ 都支持,早于这个的就当普通下划线 —— 不会因此报错,
+ * 只是少一个波浪。 */
+.play-editor .cm-diag-error {
+    text-decoration: underline wavy var(--err);
+    text-decoration-skip-ink: none;
+}
+.play-editor .cm-diag-warning {
+    text-decoration: underline wavy var(--warn);
+    text-decoration-skip-ink: none;
+}
+.play-editor .cm-diag-info {
+    text-decoration: underline var(--link);
+    text-decoration-skip-ink: none;
+}
+.play-editor .cm-diag-hint {
+    text-decoration: underline dotted var(--muted);
+    text-decoration-skip-ink: none;
+}
+
+/* ---- 目标选择器(原生 <select>) ----
+ *
+ * 用原生 select 而不是 `<mdui-select>`:这个选择器只两三个选项,mdui
+ * 那一坨样式成本没必要。配色用站点 token,与 `.play-picker` 同一种
+ * 灰底框;高度对齐旁边的「示例」下拉。 */
+.play-target {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    padding: 5px 28px 5px 10px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.2;
+    /* 右侧画一个下拉箭头(用 currentColor 与 fg 同色,不另开 SVG 文件):
+     *   ▼ 形,用两段 linear-gradient 拼出来,8x6px,贴近右边沿 8px。 */
+    background-image:
+        linear-gradient(45deg, transparent 50%, currentColor 50%),
+        linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position:
+        right 10px center,
+        right 5px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    min-width: 7rem;
+}
+.play-target:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: transparent;
+}
+/* play-picker-target 与示例的 picker 共享样式,但稍短 —— 它的内容本来就少。 */
+.play-picker.play-picker-target {
+    padding: 2px 6px;
+}
+
+/* ---- 补全弹窗(autocomplete) ----
+ *
+ * CM 自动完成默认是浅色硬编码背景,与站点的深色主题撞色 —— 深色下弹窗
+ * 还是白底黑字,文字读了还行但 hover 高亮 (灰色) 与正文分不清。覆写
+ * 关键几条让弹窗跟主题走。 */
+.play-editor .cm-tooltip-autocomplete {
+    background-color: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-rest);
+}
+.play-editor .cm-tooltip-autocomplete > ul {
+    font-family: inherit;
+    font-size: 12px;
+}
+.play-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+    background-color: var(--hover);
+    color: var(--fg);
 }
 
 /* ---- 中间的拖动条 ----

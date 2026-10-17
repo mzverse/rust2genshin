@@ -6,15 +6,22 @@
 // 顶栏的「摆弄」已经标明了身份,再占一行标题只是把编辑器往下挤。
 #show: template.with(toc: false, with_outline: false, with_title: false);
 // MDUI 的封装都在这儿。
-#import "/lib/mdui.typ": mdui-select, mdui-button, mdui-text-field
+#import "/lib/mdui.typ": mdui-select, mdui-button
 
 #let title = [摆弄];
 
 #set raw(lang: "rust");
 
+// script 标签要 `type="module"`:`script.js` 里有 ESM 的 `import … from "https://esm.sh/..."`,
+// 普通脚本会被解析成「未声明的 import 语句」直接报错。`import_script` 助手发的是
+// `<script src="...">`,不带 `type`,所以**不能**用它 —— 直接走 `html_elem`,
+// 顺手加上 `./lsp-client.js` 也在同一目录下,模块 base 解析会把它正确指向。
 #custom_element(() => {
     import_style("/play/style.css");
-    import_script("/play/script.js");
+    html_elem("script", attrs: (
+        "type": "module",
+        "src": base_path + "/play/script.js",
+    ))[]
 })[]
 
 // 页面里**不出现**后端地址,也不给改:地址表写死在 script.js 的
@@ -49,6 +56,15 @@
           }
           #mdui-button(id: "play-sample-load", variant: "outlined", icon: "download")[载入]
         ]
+        // 「目标」选择器由 `Hello.targets` 驱动 —— 不写死选项,后端报什么就
+        // 渲染什么;显示名(`超限模式` / `经典模式`)在 script.js 里查
+        // TARGET_LABELS。默认选第一项(`Hello.targets` 的顺序就是显示顺序)。
+        // 用原生 `<select>` 而不是 `<mdui-select>`:这个选择器只有两三行,
+        // mdui 的样式包袱反而让头部多出一截高度,不值。
+        #html_elem("div", class: "play-picker play-picker-target")[
+          #html_elem("span", class: "play-label")[目标：]
+          #html_elem("select", id: "play-target", class: "play-target")[]
+        ]
         // 「取消」和「编译」是一对动作 —— 取消取消的就是正在跑的那次编译,
         // 所以贴在它旁边;「下载」属于右栏的结果,不在这组里。
         #html_elem("span", class: "play-run-group")[
@@ -56,7 +72,10 @@
           #mdui-button(id: "play-run", variant: "filled", icon: "play_arrow")[编译]
         ]
       ]
-      #mdui-text-field(id: "play-editor", variant: "outlined", textarea: true, rows: "20")
+      // CodeMirror 6 挂载点。`<mdui-text-field textarea>` 的内层 textarea 在 shadow
+      // root 里,JS 取不到 `selectionStart`、dispatch 也得绕一圈;直接挂到普通 div
+      // 上省事,而且 CodeMirror 自己管光标、IME、composition event。
+      #html_elem("div", id: "play-editor", class: "play-editor")[]
     ]
 
     // 拖动它改左右宽度。role/aria 只是让读屏知道这是个分隔条。
