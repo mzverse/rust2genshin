@@ -212,6 +212,36 @@ pub fn kill_args(name: &str) -> Vec<String> {
     vec!["kill".into(), name.into()]
 }
 
+/// RA 会话的 exec 参数。
+///
+/// **`-i` 必须在、`-t` 必须不在。** `-i` 开 stdin/stdout 管道 —— 而这条管道
+/// 和 `docker run` 的 attach 协议不一样:exec 走的是**裸字节管道**,宿主机到
+/// 容器之间不套那 8 字节复用头,所以 LSP 的 `Content-Length` 帧能原样穿过
+/// (实测回包头完好)。`-t` 会分配伪终端、输出带 `\r\n`,拆帧就废了。
+pub fn exec_args(name: &str, cmd: &str) -> Vec<String> {
+    vec![
+        "exec".into(),
+        "-i".into(),
+        name.into(),
+        "sh".into(),
+        "-c".into(),
+        cmd.into(),
+    ]
+}
+
+/// 待命 RA 容器:`-d` 后台,不 attach。
+///
+/// 末尾的 `sleep` 是必须的:容器必须有前台常驻进程才不会被判定退出
+/// (镜像的 CMD 是 bash,不显式给命令的话它会起一个没有 tty 的 bash 然后
+/// 立刻 exit 0 —— 看起来「起来了」,实际什么都没跑)。RA 本身由
+/// `exec_args` 在这个容器里另起。
+pub fn run_detached_args(spec: &RunSpec) -> Vec<String> {
+    let mut a = run_args(spec);
+    a.push("-d".into());
+    a.push("sleep".into());
+    a
+}
+
 pub fn image_ls_args(filter: &str) -> Vec<String> {
     vec![
         "image".into(),
@@ -449,5 +479,43 @@ mod tests {
             ]
         );
         assert_eq!(system_df_args(), vec!["system", "df", "--format", "{{json .}}"]);
+    }
+
+    #[test]
+    fn exec_has_i_and_not_t() {
+        let a = exec_args("r2g-ra-1", "rust-analyzer");
+        assert!(a.contains(&"-i".to_string()));
+        assert!(!a.contains(&"-t".to_string()));
+    }
+
+    #[test]
+    fn exec_shape_is_run_subcommand() {
+        let a = exec_args("r2g-ra-1", "rust-analyzer");
+        assert_eq!(
+            a,
+            vec!["exec", "-i", "r2g-ra-1", "sh", "-c", "rust-analyzer"]
+        );
+    }
+
+    #[test]
+    fn run_detached_has_no_attach_flags() {
+        let spec = RunSpec {
+            name: "r2g-ra-1".into(),
+            image: "img:tag".into(),
+            src_dir: PathBuf::from("/src"),
+            out_dir: PathBuf::from("/out"),
+            workdir: "/w".into(),
+            cpus: Some(2),
+            memory: Some("2g".into()),
+            pids_limit: 128,
+            user: "1001".into(),
+            source_file: "demo/src/lib.rs".into(),
+        };
+        let a = run_detached_args(&spec);
+        assert!(a.contains(&"-d".to_string()));
+        assert!(!a.contains(&"-i".to_string()));
+        assert!(!a.contains(&"-t".to_string()));
+        // 待命容器不跑任务,最后一段必须是常驻命令而不是 cargo
+        assert_eq!(a.last().unwrap(), "sleep");
     }
 }
