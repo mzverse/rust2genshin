@@ -74,6 +74,26 @@ RUN . "$HOME/.cargo/env" && cargo fetch
 # target/,用的就是这个缓存 —— 这是"15 秒能编完一份节点图"的全部原因。
 RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin beyond-server
 
+# rust-analyzer 组件。RA 容器与任务容器用同一个镜像 —— 见计划里 Task 8 的说明,
+# 不做第二个 tag(会翻倍镜像数,撞上 gc 的 keep_images)。
+RUN . "$HOME/.cargo/env" && rustup component add rust-analyzer
+
+# RA 的分析工作区。**只放 demo / lib / lib-internal 三个成员**:core 是
+# rustc_private 后端,RA 为解析它要把整个编译器 sysroot 的元数据拉进来,
+# 冷启动从 11s 变成 84s,而 demo 的依赖链上根本没有 core。
+#
+# 手写一份精简 Cargo.toml 会漏掉 workspace.package.* 的继承项,cargo metadata
+# 会静默失败 —— 所以是复制根清单再改 members,不是新写一份。
+RUN mkdir -p /opt/ra/ws \
+ && cp rust-toolchain.toml Cargo.toml Cargo.lock /opt/ra/ws/ \
+ && cp -r demo lib lib-internal /opt/ra/ws/ \
+ && sed -i -e '/^members/,/^]/c\members = ["demo", "lib", "lib-internal"]' \
+          -e '/^default-members/,/^]/c\default-members = ["demo", "lib", "lib-internal"]' \
+          /opt/ra/ws/Cargo.toml \
+ && cd /opt/ra/ws \
+ && . "$HOME/.cargo/env" \
+ && cargo metadata --format-version 1 --offline > /dev/null
+
 # 任务容器从这一层起。镜像自己的 CMD 不会被用到(服务端总是显式给
 # `sh -c "..."`),留着只为了 `docker run <image>` 手工排查时能进去看看。
 CMD ["/bin/bash"]

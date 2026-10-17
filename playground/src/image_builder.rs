@@ -305,4 +305,19 @@ mod tests {
             "rustup 那条 RUN 必须把镜像变量 export 出去"
         );
     }
+
+    #[test]
+    fn dockerfile_bakes_the_trimmed_ra_workspace() {
+        let dockerfile = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile"),
+        )
+        .expect("读 playground/Dockerfile");
+        assert!(dockerfile.contains("rustup component add rust-analyzer"), "{dockerfile}");
+        assert!(dockerfile.contains("/opt/ra/ws"), "{dockerfile}");
+        // 裁过的成员表必须只留三个 —— core 进来会把整个 sysroot 拖进分析
+        assert!(dockerfile.contains(r#""demo", "lib", "lib-internal""#), "{dockerfile}");
+        assert!(!dockerfile.contains(r#""core""#), "{dockerfile}");
+        // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
+        assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
+    }
 }
