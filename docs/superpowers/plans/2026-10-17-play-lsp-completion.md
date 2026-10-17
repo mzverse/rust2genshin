@@ -293,25 +293,52 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
     }
 
     #[test]
-    fn run_detached_has_no_attach_flags() {
-        let spec = RunSpec {
+    fn run_detached_puts_d_before_the_image() {
+        // `-d` 必须在 image **之前**。追加到末尾的话它落在 image 之后，成了
+        // `sh -c ...` 的 `$0`（不是 docker 的 flag），容器反而以前台跑 cargo
+        // —— 而待命容器要跑的恰恰是 sleep。
+        let a = run_detached_args(&ra_spec());
+        let d = a.iter().position(|s| s == "-d").expect("要有 -d");
+        let img = a.iter().position(|s| s == "img:tag").expect("要有 image");
+        assert!(d < img, "-d 在 {} 位，image 在 {} 位", d, img);
+    }
+
+    #[test]
+    fn run_detached_drops_the_compile_command() {
+        // image 之后只剩 sleep：编译任务那条 `sh -c cargo build ...` 必须整个
+        // 去掉，否则待命容器会真去编译一遍。
+        let a = run_detached_args(&ra_spec());
+        let img = a.iter().position(|s| s == "img:tag").unwrap();
+        assert_eq!(&a[img + 1..], &["sleep".to_string()]);
+        assert!(!a.iter().any(|s| s.contains("cargo build")));
+    }
+
+    #[test]
+    fn run_detached_has_no_attach_flags_and_no_mounts() {
+        // -i 会占住管道（RA 由 exec 另起），-t 是伪终端。待命容器自己不需要
+        // demo/src 与 /out —— 它的 workspace 在镜像里，源码由 exec 写进去。
+        let a = run_detached_args(&ra_spec());
+        assert!(!a.iter().any(|s| s == "-i" || s == "-t"));
+        assert!(!a.iter().any(|s| s.contains("demo/src")));
+        assert!(!a.iter().any(|s| s.contains("/out")));
+    }
+
+    /// 共用的 spec 工厂 —— 三个 run_detached 测试都只关心 argv 形状。
+    /// 字段以 `docker.rs:98-124` 的 `RunSpec` 实际定义为准（`src_dir` /
+    /// `out_dir` 是 `PathBuf`，可能要 `PathBuf::from(...)`）。
+    fn ra_spec() -> RunSpec {
+        RunSpec {
             name: "r2g-ra-1".into(),
             image: "img:tag".into(),
             src_dir: "/src".into(),
             out_dir: "/out".into(),
-            workdir: "/w".into(),
+            workdir: "/opt/ra/ws".into(),
             cpus: Some(2),
             memory: Some("2g".into()),
             pids_limit: 128,
             user: "1001".into(),
             source_file: "demo/src/lib.rs".into(),
-        };
-        let a = run_detached_args(&spec);
-        assert!(a.contains(&"-d".to_string()));
-        assert!(!a.contains(&"-i".to_string()));
-        assert!(!a.contains(&"-t".to_string()));
-        // 待命容器不跑任务,最后一段必须是常驻命令而不是 cargo
-        assert_eq!(a.last().unwrap(), "sleep");
+        }
     }
 ```
 
@@ -346,15 +373,38 @@ pub fn exec_args(name: &str, cmd: &str) -> Vec<String> {
     ]
 }
 
-/// 待命 RA 容器:`-d` 后台,不 attach。
+/// RA 容器里的裁剪 workspace 根。镜像的 ra stage 就装在这儿。
+pub const RA_WORKDIR: &str = "/opt/ra/ws";
+
+/// 待命 RA 容器：`-d` 后台、不 attach、末尾跑 `sleep`。
 ///
-/// 末尾的 `sleep` 是必须的:容器必须有前台常驻进程才不会被判定退出
-/// (镜像的 CMD 是 bash,不显式给命令的话它会起一个没有 tty 的 bash 然后
-/// 立刻 exit 0 —— 看起来「起来了」,实际什么都没跑)。RA 本身由
-/// `exec_args` 在这个容器里另起。
+/// **不能靠 `run_args` 拼。** `run_args` 的结尾是
+/// `image, sh, -c, container_command`，把 `-d` 追加到末尾的话：`-d` 落在
+/// image 之后，就成了 `sh` 的 `$0`（不是 docker 的 flag），容器反而**前台跑
+/// cargo build** —— 而待命容器要跑的恰恰是 sleep。
+///
+/// 所以这里从 `limit_args` 起手自己拼：
+///   - `--workdir` 给 `/opt/ra/ws`（RA 镜像里的裁剪 workspace），不是 demo 的；
+///   - **不挂** `demo/src` 与 `/out` —— RA 的源码由 `exec` 写进容器自己的
+///     文件系统，挂宿主目录既没必要又要多一份目录簿记；
+///   - `--rm` 保留：待命容器只在被 kill 时退出，退出即清，不留残容器。
+///
+/// 顺带要求：把 `run_args` 里「资源限额」那几段（`--network` / `--pids-limit`
+/// / `--user` / `--tmpfs` / `--memory` / `--cpus` / `--cap-drop` /
+/// `--security-opt`）抽成一个私有 `fn limit_args(spec) -> Vec<String>`，两个
+/// 函数共用。限额必须一致 —— 否则 RA 容器拿不到和编译任务同样的保护，而它
+/// 常驻 839 MB，比编译容器危险得多。`run_args` 的行为一个字都不能变（它有
+/// 既有的测试在盯着）。
 pub fn run_detached_args(spec: &RunSpec) -> Vec<String> {
-    let mut a = run_args(spec);
+    let mut a = vec!["run".into()];
+    a.extend(limit_args(spec));
+    a.push("--rm".into());
+    a.push("--name".into());
+    a.push(spec.name.clone());
+    a.push("--workdir".into());
+    a.push(RA_WORKDIR.to_string());
     a.push("-d".into());
+    a.push(spec.image.clone());
     a.push("sleep".into());
     a
 }
