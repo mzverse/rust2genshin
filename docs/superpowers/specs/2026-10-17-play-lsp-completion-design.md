@@ -50,16 +50,60 @@ $ printf 'Content-Length: 92\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize
 
 除非将来要「多个会话共享一个 RA 进程」，否则没有理由选 IP。
 
-## 与 exec 传输的耦合（决定了池的形态）
+## 待命池把管道一起待命
 
-RA 一旦在容器里跑起来，它的 stdio 就绑在当初拉起它的那条管道上。后来的
-`docker exec -i` **接不进一个已在运行的 RA 的 stdio**。所以：
+RA 一旦跑起来，它的 stdio 就绑死在当初拉起它的那条管道上，后来的 `docker exec -i`
+**接不进去**。但这不构成障碍——**拉起它的是服务自己**，服务可以一直攥着那个 exec
+子进程和它的 stdin/stdout 句柄不放：
 
-- 会话开始时，在**空闲容器**上 `docker exec -i` 起 RA；
-- 会话结束时，这个 exec 进程被杀掉，RA 随之死；
-- 容器回到空闲池，但**它没被预热过**——下次会话仍要重付 RA 启动开销。
+- 待命时：`docker run -d` 起容器 → 立刻 `docker exec -i` 起 RA → 驱动它走完
+  `initialize` / `initialized` / `didOpen` → RA 把 crate graph 拉完 → **管道保持开着**，
+  标记为就绪；
+- 会话来了：直接把消息写进**这条已经开着的管道**，不新建 exec。RA 的 crate graph 已经是热的，
+  6–11s 的冷启动整段从用户的关键路径上消失；
+- 会话结束：`didClose`（或留着一个 stale 的 didOpen，见下），管道**不关**，容器回池；
+- 回收：`docker rm -f` 同时干掉 exec 和 RA。
 
-这条约束是「待命池」能预热到的上限，别在文档或 UI 里把它写成「秒开」。
+所以「接不上」的准确表述是「**新 exec 接不上**」，不是「热不起来」。池预热到的是
+「容器在 + RA 在 + crate graph 已加载 + 管道开着」。
+
+### 待命 RA 的内存代价（实测）
+
+| 阶段 | RSS |
+|---|---|
+| 刚起，未 `initialize` | 29 MB |
+| `initialize` 后 | 158 MB |
+| `didOpen`（拉 crate graph）后 4s | 755 MB |
+| +12s 稳定 | **839 MB** |
+
+部署机 15 GiB 内存、**0 swap**、当前可用 7.8 GiB。一个热 RA 是 839 MB，约为一个编译任务
+容器默认配额（`--memory 1536m`）的 55%，而后者只在编译的几秒里活着，前者是常驻的。
+
+`POOL_MIN = 1` 稳妥。**不建议按 `MAX_JOBS` 等量预热**：n=3 就是 2.5 GB 常驻，而默认
+`PLAYGROUND_MAX_JOBS = 3`。要跟着涨就调 `POOL_MIN`，不要让池自动等于上限。
+
+**RA 容器必须下 `--memory`**（默认 2g）。没有 swap 的话，RA 膨胀到 cgroup 上限时的后果是
+内核直接 OOM kill —— 用户的会话会在敲键盘的间隙当场断掉。限额把它变成一次可归因的失败，
+而不是随机断线。CPU 给 `--cpus 2`：RA 是在人敲键盘的间隙跑的，压狠了补全会迟钝。
+
+### 就绪信号与存活性
+
+待命容器不能只看「进程起来了」——`initialize` 返回时 crate graph 还没加载完。
+判据用 **`demo/src/lib.rs` 的 `publishDiagnostics` 到达**：这份诊断必然发生在 RA 把该 crate
+解析进 graph 之后（此时内容可能是空的，无所谓，待命期间收到的诊断一律丢弃）。没等到就在
+`PLAYGROUND_LSP_BOOT_TIMEOUT`（默认 30s）后判这个容器不合格，直接丢弃重来。
+
+取用时还要做一次**存活性检查**：往管道里发一个廉价请求（比如
+`$/memoryUsage`，或任意一个自定义 id 的 ping），超时没回就说明这个热 RA 卡死了 —— 不能
+把它交给用户。检查失败就丢弃该容器、从池里再取一个。
+
+### 跨会话复用同一个 URI
+
+同一个 RA 连着服务多个会话时，`demo/src/lib.rs` 这个 URI 是复用的。因为每次 `LspChange`
+都是**全文替换**，内容不会串；而且复用 URI 让 RA 保住已有的分析结果，比换 URI 重解析更快。
+
+代价是上一个会话的文档状态会留在 RA 里（若它没走 `didClose`）。全文替换已经覆盖了这一点，
+不必为它单独清理。
 
 ## Workspace：只分析三个成员
 
@@ -98,8 +142,8 @@ RA 的 salsa 查询缓存严格在进程内。`prime-caches` 不落盘、`--pers
 
 ### 语义
 
-- **下限**：空闲容器数不低于 `PLAYGROUND_LSP_POOL_MIN`（默认 **1**）。会话未占满时，服务
-  保证有这一个容器在位待命。
+- **下限**：空闲**已就绪**容器数不低于 `PLAYGROUND_LSP_POOL_MIN`（默认 **1**）。服务确保随时
+  有这一个容器在位待命。
 - **上限**：并发 RA 会话数 = `PLAYGROUND_MAX_JOBS`。
 - **回收**：会话释放 → 容器回池 → 若此时空闲数 **超过** `POOL_MIN`，才 `docker rm -f` 掉超出
   的部分。
@@ -108,16 +152,24 @@ RA 的 salsa 查询缓存严格在进程内。`prime-caches` 不落盘、`--pers
 > 释放就会把池打到 `n-1`，待命就没了，与前半句「预留 n 个待命」自相矛盾。故取**下限语义**：
 > 销毁发生在空闲数**超过** n 时。
 
-### 池是插补，不是预热
+### 补池的时机
 
-容器创建（`docker run -d`）约 1s。**空闲时不预先起 RA**（起了也接不上，见「耦合」一节），
-池里就是「容器在、没进程」。
+池的补齐是**后台**的，不能挡在用户前面：
+
+- 服务起来时先拉起一个；
+- 一个就绪容器被取走后，后台立刻开始补下一个（下限是 1，不是 2）；
+- 待命容器在 `POOL_MIN` 被抬高、或当前空闲数已达标时，才停止补。
+
+一个待命容器从零到就绪是「docker run ~1s + RA 冷启动 6–11s」，全程在后台，不计入任何用户
+请求的延迟。
 
 ### 空闲回收
 
 - `PLAYGROUND_LSP_IDLE_TTL`，默认 **90s**。0 = 永不回收。
-- 上限不是拍出来的：RA 重热要 6–11s（见上表），窗口太短会让每次会话都白等一次分析。
-- 回收动作 = `docker rm -f`，不留残容器。`gc_loop.rs` 已有类似的周期任务骨架。
+- 因为待命是热的（管道开着、graph 已加载），这个 TTL 纯粹是**内存策略**，不是性能策略：
+  90s 没人用就省下 839 MB，有人来了再花 6–11s 重热。取值权衡的是内存与重建延迟。
+- 回收动作 = `docker rm -f`，同时干掉 exec 和 RA，不留残容器。`gc_loop.rs` 已有类似的
+  周期任务骨架。
 
 ### 命名
 
@@ -127,23 +179,33 @@ RA 的 salsa 查询缓存严格在进程内。`prime-caches` 不落盘、`--pers
 ## 会话生命周期
 
 ```
+(后台，与用户无关)
+  └─ 补池 → docker run -d 起容器 → docker exec -i 起 RA → initialize/initialized
+       → didOpen(占位内容) → 收到 demo/src/lib.rs 的 publishDiagnostics
+       → 标记就绪，管道保持开着
+
 前端 WebSocket 建立
-  └─ hello 里带 lsp: {supported: true}          ← 前端据此决定要不要挂 LSP 客户端
+  └─ hello 里带 lsp_supported                    ← 前端据此决定要不要挂 LSP 客户端
 用户首次编辑 / 聚焦编辑框
-  └─ ClientMsg::LspOpen                          ← 后端取一个空闲容器(或新建)
-       ├─ docker exec -i 起 rust-analyzer
-       ├─ LSP: initialize / initialized
+  └─ ClientMsg::LspOpen
+       ├─ 取一个就绪容器；池空且未达上限 → 现建一个(用户要等 6–11s)
+       ├─ 存活性检查(超时则弃用该容器)
        ├─ 写入用户的当前源码到容器内 demo/src/lib.rs
-       ├─ textDocument/didOpen(内容 = 当前源码)
+       ├─ textDocument/didOpen(内容 = 当前源码)  ← 复用同一 URI
        └─ workspace/didChangeWatchedFiles(把 demo/src/lib.rs 标脏)
 每次编辑(去抖 300ms)
   └─ ClientMsg::LspChange { source }
-       └─ textDocument/didChange(增量或全量)
+       └─ textDocument/didChange(全文替换)
 每次按键后
   └─ 后端在 RA 侧收 publishDiagnostics → 转发成 ServerMsg::LspDiagnostic
-前端 WebSocket 关闭 / 空闲超时
-  └─ 杀掉 exec 进程(RA 随之死)→ 容器回池 → 按上限规则决定是否 docker rm -f
+前端 WebSocket 关闭
+  └─ 容器回池(管道不断)→ 按下限规则决定是否 docker rm -f
+池内空闲超过 PLAYGROUND_LSP_IDLE_TTL
+  └─ docker rm -f
 ```
+
+注意 `LspOpen` 那一步**通常不付冷启动**：池里已经有一个就绪容器在等着。付出 6–11s 的只有
+「池空 + 正在现建」这一种情况（比如服务刚起来、或刚被一次回收打空）。
 
 ### 源码怎么进容器
 
@@ -233,9 +295,11 @@ LSP 的 completion 是**请求-应答**（`textDocument/completion` → 带 id �
   多个帧在一个 chunk 三种切法。
 - `lsp::Pool` —— 池下限/上限/回收的纯状态机测试（用假容器，不碰真 docker）：
   取空池 → 建一个；再取 → 建第二个；放回 → 空闲 2 > 1 → 销毁一个；再取 → 复用。
+  外加：取用时存活性检查失败 → 该容器被丢弃且**不**退回池。
 - `protocol` —— 新消息的 serde 往返。
 - 集成（`testing.rs` 里那套）：真起一个容器，走完 `LspOpen` → `didOpen` →
-  `didChange` → 收到 `LspDiagnostic`。
+  `didChange` → 收到 `LspDiagnostic`；再走一遍「待命 → 复用同一个 RA 跨两个会话」，
+  断言第二个会话拿到的是**同一个** RA 进程（对比 `/proc/<pid>` 或 RA 报的 pid）。
 
 ## 风险
 
@@ -244,7 +308,10 @@ LSP 的 completion 是**请求-应答**（`textDocument/completion` → 带 id �
   `LspChange` 必须整串替换并 await 写盘成功再发 `didChange`。
 - **容器里没有 core**，所以 RA 不认识 `core` 里的类型。`demo` 源码不该引用它们，引用了
   RA 报 unresolved——这与真实编译一致，可以接受。
-- **待命容器占内存**。空闲容器只是 `sleep`，占用很小；但 RA 起来后是几百 MB 量级。
-  容器要不要下 `--memory` / `--cpus` 限额：RA 是在人敲键盘的间隙跑的，超限会让 RA 被 OOM
-  kill。建议下 `--cpus 2`，`--memory` 先不给（与服务端 cgroup 的已知限制一致，见
-  `config.rs::memory_var` 的注释）。
+- **内存是本设计的主要成本**，不是 CPU。一个热 RA 常驻 839 MB，部署机只有 15 GiB 且无 swap。
+  把 `POOL_MIN` 调大前先算这笔账。
+- **待命容器长期持有未关闭的 exec 管道**。若服务的 exec 子进程泄漏（`Child` 被 drop 而没
+  `kill_on_drop`），docker exec 进程会一直占着容器里的槽位。要么给 exec 子进程设
+  `kill_on_drop(true)`，要么在 `Drop` 里补 `docker rm -f`——`runner.rs:129-185` 的
+  `ContainerGuard` 就是这个模式的现成写法，照抄一份给 RA 池。
+- **RA 卡死会把坏管道交给下一个用户**。存活性检查（见上）是唯一的防线，不能省。
