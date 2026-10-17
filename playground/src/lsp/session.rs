@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, oneshot};
 
 use crate::docker::RA_WORKDIR;
 use crate::lsp::exec::RaProcess;
@@ -140,9 +140,11 @@ enum Pending {
 
 pub struct Session {
     proc: Arc<RaProcess>,
-    /// 事件接收端只取一次。`Mutex<Option<..>>` 是为了 `events(&self)`
-    /// 能把它「拿走」交给单个消费者。
-    events_rx: Mutex<Option<mpsc::UnboundedReceiver<Event>>>,
+    /// 事件广播端。池里的会话要跨多条 WebSocket 连接复用,单消费者的
+    /// `mpsc` 做不到 —— 第一条连接断开时接收端被 drop,第二条就再也
+    /// 收不到任何东西。`broadcast` 允许任意多个 `subscribe()`;没有
+    /// 接收者时 `send` 返回 `Err`,那是正常的(会话在池里待命)。
+    events_tx: broadcast::Sender<Event>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
     /// reader 看到 `ChildExited` 时置 false。`is_alive` 只看它 ——
     /// 每次询问都去 ping 一下会把 RA 打慢。
@@ -160,20 +162,20 @@ pub struct Session {
 impl Session {
     /// 包住一个已经起好的 RA 进程,并启动后台 reader。
     pub fn new(proc: Arc<RaProcess>) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = broadcast::channel(64);
         let alive = Arc::new(AtomicBool::new(true));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let next_internal_id = Arc::new(AtomicU64::new(INTERNAL_ID_BASE));
         let reader = tokio::spawn(reader_loop(
             Arc::clone(&proc),
-            tx,
+            tx.clone(),
             Arc::clone(&alive),
             Arc::clone(&pending),
             Arc::clone(&next_internal_id),
         ));
         Self {
             proc,
-            events_rx: Mutex::new(Some(rx)),
+            events_tx: tx,
             pending,
             alive,
             next_internal_id,
@@ -319,14 +321,38 @@ impl Session {
         Ok(())
     }
 
-    /// 事件接收端。**只能调一次** —— channel 只有一个接收端,
-    /// 第二次调用会 panic。
-    pub fn events(&self) -> mpsc::UnboundedReceiver<Event> {
-        self.events_rx
+    /// 订阅事件。每次调用都拿到一个独立的接收端 —— 会话在池里跨连接
+    /// 复用时,前后两条连接各自订阅,互不影响。
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
+        self.events_tx.subscribe()
+    }
+
+    /// 存活性检查。**必须走 pending 表**:直接读 `RaProcess` 会和后台
+    /// reader 抢同一根管道,把 token/诊断帧偷走,或让健康会话被误判死亡。
+    /// RA 对未知方法回 `error` 响应 —— 有响应就是活着。
+    pub async fn ping(&self, timeout: Duration) -> Result<(), LspError> {
+        let id = self.next_id();
+        let (tx, rx) = oneshot::channel();
+        self.pending
             .lock()
             .expect("Mutex 不该中毒:持锁段不 panic")
-            .take()
-            .expect("Session::events() 只能调用一次")
+            .insert(id, Pending::Response(tx));
+        let req = json!({
+            "jsonrpc": "2.0", "id": id, "method": "r2g/ping", "params": Value::Null
+        });
+        if let Err(e) = self.send_json(&req).await {
+            self.unregister(id);
+            return Err(e);
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            // 有响应就活着 —— 错误响应也算。
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(_)) => Err(LspError::Closed),
+            Err(_) => {
+                self.unregister(id);
+                Err(LspError::Timeout)
+            }
+        }
     }
 
     pub fn is_alive(&self) -> bool {
@@ -404,7 +430,7 @@ async fn request_tokens_impl(
 /// 后台读循环:把 RA 的每一帧分到 pending 表或事件里。
 async fn reader_loop(
     proc: Arc<RaProcess>,
-    tx: mpsc::UnboundedSender<Event>,
+    tx: broadcast::Sender<Event>,
     alive: Arc<AtomicBool>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
     next_id: Arc<AtomicU64>,
@@ -435,13 +461,13 @@ async fn reader_loop(
         .lock()
         .expect("Mutex 不该中毒:持锁段不 panic")
         .clear();
-    // `tx` 在这里 drop —— 事件 channel 关闭,上层据此知道会话没了。
+    // `tx` 在这里 drop —— 事件广播端关闭,订阅者据此知道会话没了。
 }
 
 async fn dispatch(
     v: Value,
     proc: &RaProcess,
-    tx: &mpsc::UnboundedSender<Event>,
+    tx: &broadcast::Sender<Event>,
     pending: &Mutex<HashMap<u64, Pending>>,
     next_id: &AtomicU64,
 ) {
@@ -515,7 +541,7 @@ async fn dispatch(
     }
 }
 
-fn emit_diagnostics(v: &Value, tx: &mpsc::UnboundedSender<Event>) {
+fn emit_diagnostics(v: &Value, tx: &broadcast::Sender<Event>) {
     let Some(params) = v.get("params") else {
         return;
     };
@@ -655,17 +681,32 @@ mod tests {
                 .expect("Mutex 不该中毒:持锁段不 panic") = None;
         }
 
-        /// 等某条消息真的写出去。主要给「后台任务要先看到请求才回帧」用,
-        /// 避免回帧早于 pending 登记被 reader 丢掉。
-        async fn wait_until_written(&self, needle: &str) {
+        /// 等某条消息真的写出去,返回那条请求的 `id`(没有 id 的返回 `None`)。
+        /// 主要给「后台任务要先看到请求才回帧」用,避免回帧早于 pending
+        /// 登记被 reader 丢掉。
+        ///
+        /// 返回 id 是为了回响应时不必猜 id —— 内部 id 由会话分配,测试
+        /// 写死 `INTERNAL_ID_BASE` 只在「第一次请求」时成立。
+        async fn wait_until_written(&self, needle: &str) -> Option<u64> {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
             loop {
-                let hit = String::from_utf8_lossy(
-                    &self.written.lock().expect("Mutex 不该中毒:持锁段不 panic"),
-                )
-                .contains(needle);
-                if hit {
-                    return;
+                let bytes = self
+                    .written
+                    .lock()
+                    .expect("Mutex 不该中毒:持锁段不 panic")
+                    .clone();
+                if String::from_utf8_lossy(&bytes).contains(needle) {
+                    // 从后往前找:同一 suffix 的方法可能被写过多次(比如
+                    // didChange 触发的重复 token 请求),要的是最后一条。
+                    let mut dec = frame::FrameDecoder::new();
+                    let frames = dec.push(&bytes).expect("测试写出的都是完整帧");
+                    return frames.iter().rev().find_map(|b| {
+                        let v: serde_json::Value = serde_json::from_slice(b).ok()?;
+                        if !v.to_string().contains(needle) {
+                            return None;
+                        }
+                        v.get("id").and_then(serde_json::Value::as_u64)
+                    });
                 }
                 assert!(
                     tokio::time::Instant::now() < deadline,
@@ -691,11 +732,16 @@ mod tests {
 
     /// 从事件 channel 收一条,1s 收不到就判失败 —— 裸 `recv().await` 挂死
     /// 会变成整个测试超时,看不出是哪一条断言。
-    async fn next_event(rx: &mut mpsc::UnboundedReceiver<Event>) -> Event {
-        tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("1s 内该收到事件")
-            .expect("事件 channel 不该被关")
+    async fn next_event(rx: &mut broadcast::Receiver<Event>) -> Event {
+        match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            // 测试里消费得足够快,落后说明 channel 容量或测试本身有问题。
+            Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                panic!("测试里不该落后,丢了 {n} 条事件")
+            }
+            Ok(Err(broadcast::error::RecvError::Closed)) => panic!("事件 channel 不该被关"),
+            Ok(Ok(e)) => e,
+            Err(_) => panic!("1s 内该收到事件"),
+        }
     }
 
     #[tokio::test]
@@ -707,7 +753,7 @@ mod tests {
         let feeder = tokio::spawn({
             let fake = Arc::clone(&fake);
             async move {
-                fake.wait_until_written("\"method\":\"initialize\"").await;
+                let _ = fake.wait_until_written("\"method\":\"initialize\"").await;
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": INTERNAL_ID_BASE,
@@ -819,7 +865,7 @@ mod tests {
     #[tokio::test]
     async fn publish_diagnostics_becomes_an_event() {
         let (fake, session) = setup().await;
-        let mut events = session.events();
+        let mut events = session.subscribe();
         let tx = fake.sender();
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
@@ -857,7 +903,7 @@ mod tests {
     #[tokio::test]
     async fn diagnostics_are_filtered_by_uri_and_empty_clears() {
         let (fake, session) = setup().await;
-        let mut events = session.events();
+        let mut events = session.subscribe();
         let tx = fake.sender();
 
         let foreign = serde_json::json!({
@@ -925,7 +971,7 @@ mod tests {
     async fn semantic_tokens_pass_through_untouched() {
         // 服务端不拆 delta:Event::Tokens 拿到的就是 RA 给的那串
         let (fake, session) = setup().await;
-        let mut events = session.events();
+        let mut events = session.subscribe();
         // didChange 会主动要 semanticTokens/full;这是会话的第一个内部
         // 请求,id = INTERNAL_ID_BASE。
         session
@@ -964,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_token_data_emits_no_event() {
         let (fake, session) = setup().await;
-        let mut events = session.events();
+        let mut events = session.subscribe();
         session
             .did_change("fn main() {}")
             .await
@@ -999,7 +1045,7 @@ mod tests {
     #[tokio::test]
     async fn server_requests_are_answered_and_refresh_refetches_tokens() {
         let (fake, session) = setup().await;
-        let _events = session.events();
+        let _events = session.subscribe();
         let tx = fake.sender();
 
         let refresh = serde_json::json!({
@@ -1010,7 +1056,7 @@ mod tests {
         });
         tx.send(frame::encode(&refresh.to_string()))
             .expect("UnboundedSender 不该 send 失败");
-        fake.wait_until_written("\"id\":42").await;
+        let _ = fake.wait_until_written("\"id\":42").await;
 
         let bodies = fake.written_bodies();
         let resp = bodies
@@ -1038,7 +1084,7 @@ mod tests {
         });
         tx.send(frame::encode(&register.to_string()))
             .expect("UnboundedSender 不该 send 失败");
-        fake.wait_until_written("\"id\":9").await;
+        let _ = fake.wait_until_written("\"id\":9").await;
 
         let bodies = fake.written_bodies();
         let resp = bodies
@@ -1056,7 +1102,7 @@ mod tests {
         let disconnect = tokio::spawn({
             let fake = Arc::clone(&fake);
             async move {
-                fake.wait_until_written("\"method\":\"initialize\"").await;
+                let _ = fake.wait_until_written("\"method\":\"initialize\"").await;
                 fake.disconnect_stdout();
             }
         });
@@ -1080,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn completion_request_uses_the_callers_id() {
         let (fake, session) = setup().await;
-        let mut events = session.events();
+        let mut events = session.subscribe();
         session
             .request_completion(7, 3, 5)
             .await
@@ -1142,5 +1188,41 @@ mod tests {
                 ],
             }
         );
+    }
+
+    /// `ping` 必须走 pending 表,而不是直接读 `RaProcess` —— 后者会和
+    /// 后台 reader 抢同一根管道。这里让 reader 正常吃响应,ping 只负责
+    /// 登记 + 等 oneshot:能拿到就说明它没有去抢管道。
+    #[tokio::test]
+    async fn session_ping_goes_through_the_pending_map() {
+        let (fake, session) = setup().await;
+        let feeder = tokio::spawn({
+            let fake = Arc::clone(&fake);
+            async move {
+                // 等 ping 请求真的写出去,再按它的 id 回一条 **error** 响应:
+                // 未知方法 RA 就是这么回的 —— 有响应即证明活着。
+                let id = fake
+                    .wait_until_written("\"method\":\"r2g/ping\"")
+                    .await
+                    .expect("ping 请求该带 id");
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32601, "message": "method not found" }
+                });
+                fake.sender()
+                    .send(frame::encode(&resp.to_string()))
+                    .expect("UnboundedSender 不该 send 失败");
+            }
+        });
+        session
+            .ping(Duration::from_secs(1))
+            .await
+            .expect("error 响应也算活着");
+        feeder.await.expect("feeder 不该 panic");
+
+        // 沉默必须超时,不能 hang。
+        let (fake2, session2) = setup().await;
+        assert!(session2.ping(Duration::from_millis(50)).await.is_err());
+        drop(fake2);
     }
 }

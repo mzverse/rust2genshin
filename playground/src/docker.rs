@@ -228,6 +228,12 @@ pub fn kill_args(name: &str) -> Vec<String> {
     vec!["kill".into(), name.into()]
 }
 
+/// 删掉一个容器。RA 会话的销毁钩子用它:容器一没,里面的 exec 和
+/// rust-analyzer 一起走。
+pub fn rm_args(name: &str) -> Vec<String> {
+    vec!["rm".into(), "-f".into(), name.into()]
+}
+
 /// RA 会话的 exec 参数。
 ///
 /// **`-i` 必须在、`-t` 必须不在。** `-i` 开 stdin/stdout 管道 —— 而这条管道
