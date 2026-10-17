@@ -882,6 +882,17 @@ fn dockerfile_bakes_the_trimmed_ra_workspace() {
     assert!(!dockerfile.contains(r#""core""#), "{dockerfile}");
     // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
     assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
+    // 两条顺序/结构不变量 —— 文字断言拦不住它们,但改错了行为全变:
+    // RA 的 RUN 必须在 USER builder 之后,否则 /opt/ra/ws 归 root,--user 1001 写 target/ 会 EACCES;
+    assert!(
+        dockerfile.find("USER builder").unwrap() < dockerfile.find("/opt/ra/ws").unwrap(),
+        "RA workspace 必须在 USER builder 之后创建"
+    );
+    // 末尾不许再出现 FROM:追加 stage 会让默认构建目标变成它,任务容器的镜像就没了。
+    assert!(
+        !dockerfile[dockerfile.find("/opt/ra/ws").unwrap()..].contains("\nFROM "),
+        "RA 相关指令之后不许再开 stage"
+    );
 }
 ```
 
@@ -893,8 +904,22 @@ cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground dockerfile_
 
 - [ ] **Step 3: 实现**
 
-在 `playground/Dockerfile` 的 `RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin beyond-server`
-**之后**、`CMD` 之前追加（此时 `USER builder` 已生效，写出来的文件天然属于 1001）：
+先把**已有的**建用户那条 RUN（`Dockerfile:36-38`）补上 `/opt/ra` 的预建：
+
+```dockerfile
+RUN useradd -u 1001 -m -s /bin/bash builder \
+ && mkdir -p /opt/rust2genshin /opt/ra \
+ && chown builder:builder /opt/rust2genshin /opt/ra
+```
+
+> **必须由 root 建 `/opt/ra`。** `/opt` 在 `debian:bookworm-slim` 里是
+> `root:root 755`，`USER builder`（uid 1001）在其中 `mkdir` 会
+> `Permission denied`，镜像直接构建失败。`/opt/ra` 一旦归 builder，下面
+> `mkdir -p /opt/ra/ws` 建出来的 `ws` 天然也是 1001 的，RA 容器
+> `--user 1001` 才能写 `target/`。
+
+然后在 `playground/Dockerfile` 的 `RUN . "$HOME/.cargo/env" && cargo run -p build-demo --bin beyond-server`
+**之后**、`CMD` 之前追加：
 
 ```dockerfile
 # rust-analyzer 组件。RA 容器与任务容器用同一个镜像 —— 见计划里 Task 8 的说明,
@@ -944,44 +969,354 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ---
 
-### Task 9: 服务端接线
+### Task 9: RA 服务运行时（真实 exec + 可复用会话）
+
+> **预检改写了这一节。** 原稿只有一句「接池」，但代码里缺三块真的会炸的东西：
+>
+> 1. **没有真实的 `RaCommand` 实现**。`RaCommand` 只在 `exec.rs` / `pool.rs` / `session.rs`
+>    的 `#[cfg(test)]` 里有假实现；`RaProcess::start` 需要 `Arc<dyn RaCommand>`，
+>    服务端没有任何东西能交出真的。
+> 2. **`Session::events()` 只能调一次**（`session.rs:322-330` 的 `take()`）。池的语义是
+>    一个会话跨多条 WebSocket 连接复用，第一条连接断开时 receiver 被 drop，第二条连接
+>    再取就是 `panic`（或事件无处可去）。
+> 3. **池的存活性检查会和 reader 抢同一根管道**。`Pool::acquire` 调
+>    `handle.process.ping()`（`pool.rs:138-142`），而 `Session` 的后台 reader 在同一个
+>    `RaProcess` 上循环 `recv`。`ping` 的响应可能被 reader 吃掉 → 健康会话被误判死亡；
+>    reader 也可能被 ping 抢走一帧 token/诊断。
+>
+> 因此本节先做「可复用的 RA 运行时」，Task 9b 才接 `AppState` / `ws.rs`。
 
 **Files:**
-- Modify: `playground/src/server/mod.rs`（`AppState`）
-- Modify: `playground/src/server/ws.rs`
-- Modify: `playground/src/main.rs`
+- Create: `playground/src/lsp/docker_exec.rs`
+- Create: `playground/src/lsp/service.rs`
+- Modify: `playground/src/lsp/mod.rs`
+- Modify: `playground/src/lsp/session.rs`
+- Modify: `playground/src/lsp/pool.rs`
+- Modify: `playground/src/docker.rs`
 
 **Interfaces:**
-- Consumes: Task 4/5/6/7 的全部产物
-- Produces: 端到端的 `LspOpen` → `LspReady` / `LspTokens` / `LspDiagnostic` / `LspCompletion`
+- Consumes: Task 3 的 `RaProcess`、Task 4 的 `Pool`、Task 5 的 `Session`、Task 7 的配置项
+- Produces（Task 9b 要用）：
+  - `LspService::new(cfg: Arc<Config>, baker: Arc<Baker>) -> Arc<LspService>`
+  - `LspService::acquire(&self) -> Result<Acquire, PoolError>`
+  - `LspService::write_source(&self, container: &str, source: &str) -> Result<(), String>`
+  - `LspService::spawn_background(self: &Arc<Self>)`（补池 + 回收）
+  - `Acquire::session(&self) -> &Arc<Session>`、`Session::subscribe() -> broadcast::Receiver<Event>`
+  - `Handle::new(process, destroy)` + `Handle::with_liveness(...)`
 
 - [ ] **Step 1: 写失败的测试**
 
-`testing.rs` 里那套集成测试加一条：
+三组，都不碰真 docker：
+
+**(a) `Session::ping` 走 pending 表，不碰裸管道**（`session.rs` 的测试里）：
 
 ```rust
-// 真起一个容器,走完 LspOpen → LspTokens
+#[tokio::test]
+async fn session_ping_goes_through_the_pending_map() {
+    let (fake, session) = setup().await;
+    let feeder = tokio::spawn({
+        let fake = Arc::clone(&fake);
+        async move {
+            // 等 ping 请求真的写出去,再按它的 id 回一条 **error** 响应:
+            // 未知方法 RA 就是这么回的 —— 有响应即证明活着。
+            let id = fake.wait_until_written("\"method\":\"r2g/ping\"").await;
+            let resp = serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32601, "message": "method not found" }
+            });
+            fake.sender().send(frame::encode(&resp.to_string())).unwrap();
+        }
+    });
+    session.ping(Duration::from_secs(1)).await.expect("error 响应也算活着");
+    feeder.await.unwrap();
+
+    // 沉默必须超时,不能 hang。
+    let (fake2, session2) = setup().await;
+    assert!(session2.ping(Duration::from_millis(50)).await.is_err());
+    drop(fake2);
+}
 ```
 
-以及一条纯逻辑的：断开连接后 RA 进程被杀掉（Review Focus 第 4 条）。
+`wait_until_written` 现在只返回 `()`，把它改成返回**写出去的那条请求的 `id`**
+（`Option<u64>`）：在攒下来的字节里 `FrameDecoder` 解帧、从后往前找包含 needle 的那条 JSON。
+这是本任务唯一对测试夹具的改动。
 
-- [ ] **Step 2: 跑测试确认它失败**
+**(b) 池的存活性检查可替换，且 `acquire` 能报失败**（`pool.rs` 的测试里）：
+
+```rust
+#[tokio::test]
+async fn acquire_uses_the_handles_liveness_probe() {
+    let state = FakeState::new();
+    let pool = new_pool(Arc::clone(&state), true);
+    let h = make_handle(&state, true).await;             // 裸管道 ping 会失败(没人回)
+    let probed = Arc::new(AtomicUsize::new(0));
+    let p = Arc::clone(&probed);
+    let h = h.with_liveness(move || {
+        let p = Arc::clone(&p);
+        Box::pin(async move { p.fetch_add(1, Ordering::SeqCst); true })
+    });
+    pool.idle.lock().await.push_back(h);
+
+    let acq = pool.acquire().await.expect("liveness 说活就该拿到");
+    assert_eq!(probed.load(Ordering::SeqCst), 1, "必须用 handle 自己的探针");
+    assert_eq!(state.created(), 1, "不该因为裸管道 ping 不通就重造");
+    acq.release(true).await;
+}
+
+#[tokio::test]
+async fn acquire_reports_a_failed_creation() {
+    // new_session 返回 None(镜像没就绪 / docker 起不来)时,acquire 必须
+    // 报错而不是交出一个假的会话。
+    let pool = Pool::new(|| async { None });
+    assert!(pool.acquire().await.is_err());
+}
+```
+
+**(c) 回收只动空闲且超龄的，且保留下限**（`pool.rs`）：
+
+```rust
+#[tokio::test]
+async fn sweep_idle_destroys_only_expired_entries_above_the_minimum() {
+    let state = FakeState::new();
+    let pool = new_pool(Arc::clone(&state), true);
+    pool.idle.lock().await.push_back(make_handle(&state, true).await);
+    pool.idle.lock().await.push_back(make_handle(&state, true).await);
+    assert_eq!(state.created(), 2);
+
+    // TTL = 0 也一个都不删:空闲数 == POOL_MIN 时没有「超出」的部分。
+    assert_eq!(pool.sweep_idle(Duration::ZERO).await, 0);
+    assert_eq!(pool.idle.lock().await.len(), 2);
+
+    // 给两条都标成很久以前,再放一条新的 —— 超出 POOL_MIN=1 的那条才被删。
+    {
+        let mut idle = pool.idle.lock().await;
+        for h in idle.iter_mut() { h.idle_since = Instant::now() - Duration::from_secs(3600); }
+    }
+    let fresh = make_handle(&state, true).await;
+    {
+        let mut idle = pool.idle.lock().await;
+        idle.push_back(fresh);
+    }
+    assert_eq!(pool.sweep_idle(Duration::from_secs(90)).await, 2);
+    assert_eq!(pool.idle.lock().await.len(), 1, "至少留 POOL_MIN 个");
+    assert_eq!(state.destroyed(), 2);
+}
+```
+
+- [ ] **Step 2: 跑测试确认它们失败**
+
+```
+cd C:/projects/r2genshin && cargo test -p rust2genshin-playground lsp::
+```
+
+（在仓库根跑：`cd C:/projects/rust2genshin`。）
 
 - [ ] **Step 3: 实现**
 
-`main.rs::run()` 里：`PLAYGROUND_LSP_DISABLED` 为真时 `AppState::lsp = None`，
-`ws.rs` 见到 `LspOpen` 回一条 `Error` 说明功能已关（前端据此不挂 LSP 客户端）。
-三条客户端消息的分发：`LspOpen` 取池里的会话并发 `didOpen`；`LspChange` 覆盖写盘后发
-`didChange`；`LspCompletion { request_id, line, column }` 把 `request_id` 原样透传给
-`Session::request_completion`，等 `Event::Completed { request_id, items }` 回来再包成
-`ServerMsg::LspCompletion`。
-非空时 `tokio::spawn` 两个后台任务：一个补池（空闲就绪数低于 `POOL_MIN` 时造），
-一个回收（空闲超 `IDLE_TTL` 且超出下限时 `docker rm -f`）。
+**3.1 `session.rs`：事件改成 broadcast，加 `ping`。**
 
-**连接断开时的清理**要在 `ws.rs` 的连接处理函数末尾挂一个 guard，仿 `runner.rs:129-185`
-的 `ContainerGuard`：`Drop` 里释放池里的 RA 会话。
+- `events_rx: Mutex<Option<UnboundedReceiver<Event>>>` 换成
+  `events_tx: tokio::sync::broadcast::Sender<Event>`（容量 64）。
+  `Session::new` 里 `let (events_tx, _) = broadcast::channel(64);`，reader 拿到
+  `Sender` 的 clone，`dispatch` / `emit_diagnostics` 把 `tx.send(e)` 改成
+  `let _ = tx.send(e)`（无接收者时是正常的：会话在池里待命）。
+- `pub fn subscribe(&self) -> broadcast::Receiver<Event> { self.events_tx.subscribe() }`，
+  删掉 `events()`。所有测试里的 `session.events()` 改成 `session.subscribe()`。
+- `broadcast::Receiver::recv` 的错误是 `RecvError::Lagged`（消费者慢了）与
+  `Closed`（reader 退出）。测试辅助 `next_event` 遇到 `Lagged` 直接 panic 并打印
+  「测试里不该落后」。
+- `Session::ping`：
 
-- [ ] **Step 4: 跑测试确认它过**
+  ```rust
+  /// 存活性检查。**必须走 pending 表**：直接读 `RaProcess` 会和后台 reader
+  /// 抢同一根管道,把 token/诊断帧偷走,或让健康会话被误判死亡。
+  /// RA 对未知方法回 `error` 响应 —— 有响应就是活着。
+  pub async fn ping(&self, timeout: Duration) -> Result<(), LspError> {
+      let id = self.next_id();
+      let (tx, rx) = oneshot::channel();
+      self.pending.lock().expect("Mutex 不该中毒:持锁段不 panic")
+          .insert(id, Pending::Response(tx));
+      let req = json!({
+          "jsonrpc": "2.0", "id": id, "method": "r2g/ping", "params": Value::Null
+      });
+      if let Err(e) = self.send_json(&req).await {
+          self.unregister(id);
+          return Err(e);
+      }
+      match tokio::time::timeout(timeout, rx).await {
+          Ok(Ok(_)) => Ok(()),
+          Ok(Err(_)) => Err(LspError::Closed),
+          Err(_) => { self.unregister(id); Err(LspError::Timeout) }
+      }
+  }
+  ```
+
+**3.2 `pool.rs`：Handle 带可替换的存活性探针、会话、idle 时间戳；`acquire` 返回 Result。**
+
+```rust
+type Liveness =
+    Box<dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync + 'static>;
+
+pub struct Handle {
+    process: Arc<RaProcess>,
+    session: Arc<Session>,
+    liveness: Liveness,
+    pub(crate) idle_since: Instant,
+    destroy: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl Handle {
+    /// 默认探针是 ping 裸管道 —— 只给 pool 的单元测试用(那条管道上没有
+    /// reader 竞争)。**真实会话必须 `with_liveness` 换成 `Session::ping`。**
+    pub fn new(
+        process: Arc<RaProcess>,
+        session: Arc<Session>,
+        destroy: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Self {
+        let p = Arc::clone(&process);
+        Self {
+            process, session,
+            liveness: Box::new(move || {
+                let p = Arc::clone(&p);
+                Box::pin(async move { p.ping(Duration::from_secs(1)).await.is_ok() })
+            }),
+            idle_since: Instant::now(),
+            destroy: Some(destroy),
+        }
+    }
+
+    pub fn with_liveness(mut self, f: impl Fn() -> Pin<Box<dyn Future<Output = bool> + Send>>
+        + Send + Sync + 'static) -> Self { self.liveness = Box::new(f); self }
+    pub fn session(&self) -> &Arc<Session> { &self.session }
+    pub fn process(&self) -> &Arc<RaProcess> { &self.process }
+}
+```
+
+- `Acquire::process()` → `Acquire::session()`。
+- `Pool::new` 的闭包类型改成 `Future<Output = Option<Handle>>`；
+  `acquire` 返回 `Result<Acquire, PoolError>`，空闲全坏/没有时
+  `(self.new_session)().await.ok_or(PoolError::Create)?`。
+- `acquire` 的探针调用改成 `(handle.liveness)().await`。
+- `release_handle` 里 push 之前 `handle.idle_since = Instant::now();`。
+- 新增：
+
+  ```rust
+  pub async fn idle_count(&self) -> usize { self.idle.lock().await.len() }
+
+  /// 销毁空闲超过 `ttl` 的会话,但至少留 `POOL_MIN` 个。返回销毁数。
+  pub async fn sweep_idle(&self, ttl: Duration) -> usize {
+      let mut doomed = Vec::new();
+      {
+          let mut idle = self.idle.lock().await;
+          let mut i = 0;
+          while i < idle.len() {
+              if idle.len() - doomed.len() <= POOL_MIN
+                  || idle[i].idle_since.elapsed() < ttl {
+                  i += 1;
+              } else {
+                  doomed.push(idle.remove(i).expect("i 在界内"));
+              }
+          }
+      }
+      let n = doomed.len();
+      drop(doomed);          // 触发 destroy
+      n
+  }
+  ```
+
+  `POOL_MIN` 从写死改成 `Pool` 的字段 `min: usize`，`Pool::new(min, f)`；
+  现有测试传 `1`。Task 7 的 `cfg.lsp_pool_min` 从这里接进来。
+
+- `PoolError`：
+
+  ```rust
+  #[derive(Debug, thiserror::Error)]
+  pub enum PoolError {
+      #[error("起不了 RA 会话(镜像未就绪或 docker 不可用)")]
+      Create,
+  }
+  ```
+
+**3.3 新建 `playground/src/lsp/docker_exec.rs`：真实的 `RaCommand`。**
+
+要点（每一条都对应一个已知坑）：
+
+- `tokio::process::Command::new("docker").args(args)`，
+  `.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())`，
+  **`.kill_on_drop(true)`**（T3 的契约）。
+- `spawn` 后立刻 `take()` 走 `stdin` / `stdout`；起一个任务把 stdout 读成 8 KiB 块
+  塞进 `mpsc::UnboundedSender<Vec<u8>>`（`take_stdout` 返回它的接收端）。
+  读端返回 `Ok(0)` 或 `Err` = 子进程结束 → drop sender（`RaProcess` 据此得到
+  `ChildExited`）。
+- `write`：`stdin.write_all(bytes)` + `flush`；stdin 已被取走或写失败 → `ExecError::Write`。
+- `kill`：`child.start_kill()`，然后 `child.wait().await` 收尸（避免僵尸）。
+- 三段共享状态用 `tokio::sync::Mutex`（`write` / `kill` 要 await）。
+
+```rust
+pub struct DockerExec {
+    stdin: tokio::sync::Mutex<Option<tokio::process::ChildStdin>>,
+    child: tokio::sync::Mutex<Option<tokio::process::Child>>,
+    stdout_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
+}
+
+impl DockerExec {
+    pub fn new() -> Self { ... }
+}
+```
+
+**3.4 `docker.rs` 加 `rm_args`：**
+
+```rust
+pub fn rm_args(name: &str) -> Vec<String> {
+    vec!["rm".into(), "-f".into(), name.into()]
+}
+```
+
+**3.5 新建 `playground/src/lsp/service.rs`。**
+
+```rust
+pub struct LspService {
+    cfg: Arc<Config>,
+    baker: Arc<Baker>,
+    pool: Arc<Pool>,
+    next: AtomicU64,
+}
+```
+
+- `new(cfg, baker)`：`Pool::new(cfg.lsp_pool_min, move || { /* 见下 */ })`。
+  闭包捕获 `Weak`/`Arc<LspService>` 会循环；改用一个小结构：
+  `let maker = Arc::new(SessionMaker { cfg, baker, next });`，闭包只捕获 `maker`。
+- `SessionMaker::make()`：
+  1. `let tag = self.baker.status().serving_tag?;`
+  2. `let name = format!("r2g-ra-{}", self.next.fetch_add(1, SeqCst));`
+  3. `RunSpec { name, image: tag, src_dir: PathBuf::new(), out_dir: PathBuf::new(),
+     workdir: RA_WORKDIR.into(), cpus: Some(2), memory: cfg.lsp_memory.clone(),
+     pids_limit: 256, user: "1001:1001".into(), source_file: SOURCE_FILE.into() }`
+     → `docker` + `run_detached_args(&spec)`，失败返回 `None`。
+  4. `DockerExec::new()` → `RaProcess::start(exec, &name)`，失败 → `docker rm -f` 后 `None`。
+  5. `Session::new` → `initialize()`，失败 → 清理后 `None`。
+  6. `let mut ev = session.subscribe();` → `did_open(PLACEHOLDER)`，
+     `PLACEHOLDER = "// playground: waiting for user source\n"`。
+  7. 就绪判据：在 `cfg.lsp_boot_timeout` 内收到**第一条 `Event::Diagnostics` 或
+     `Event::Tokens`** 即为就绪（谁先到都算）。收不到 → 清理后 `None`。
+     > 计划原先只认 Diagnostics；占位内容零错误时 RA 未必发这条通知。Tokens 在
+     > `did_open` 里被主动请求，是更可靠的兜底。若判断错了，代价是偶尔多等
+     > 一个 boot timeout 再重建一次。
+  8. `Some(Handle::new(proc, session, destroy).with_liveness({
+         let s = Arc::clone(&session);
+         move || { let s = Arc::clone(&s);
+                   Box::pin(async move { s.ping(Duration::from_secs(2)).await.is_ok() }) }
+     }))`
+     `destroy` = `tokio::spawn` 跑 `docker rm -f <name>`（容器一删，exec 与 RA 一起没）。
+- `acquire`：`self.pool.acquire().await`。
+- `write_source(container, source)`：`docker exec -i <container> sh -c 'cat > /opt/ra/ws/demo/src/lib.rs'`，
+  写 stdin 后等退出码；非 0 → `Err`。**必须在 `did_change` 之前 await 完成**。
+- `spawn_background`：两个 `tokio::spawn`：
+  - 补池：`loop { while pool.idle_count().await < cfg.lsp_pool_min { match pool.acquire().await { Ok(a) => a.release(true).await, Err(_) => sleep(5s).await } } sleep(500ms).await }`
+    —— 走 `acquire` + `release` 就不需要给池加「直接塞一个进去」的口子。
+  - 回收：`loop { sleep(30s); pool.sweep_idle(cfg.lsp_idle_ttl).await; }`（`ttl == 0` 时跳过）。
+
+- [ ] **Step 4: 跑测试确认它们过**
 
 ```
 cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
@@ -990,10 +1325,139 @@ cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
 - [ ] **Step 5: 提交**
 
 ```bash
-cd C:/projects/rust2genshin && git add playground/src/server/mod.rs playground/src/server/ws.rs playground/src/main.rs playground/src/testing.rs && git commit -m "feat(play): LSP 接线 —— AppState、ws 分发、后台补池与回收
+cd C:/projects/rust2genshin && git add playground/src/lsp/ playground/src/docker.rs && git commit -m "feat(play): RA 服务运行时 —— 真实 exec、可复用会话、池的回收
 
-连接断开时必须释放池里的 RA 会话,否则 839 MB 挂在容器里不放。清理靠 guard
-的 Drop(仿 runner.rs 的 ContainerGuard),不依赖任何一条手工路径。
+三处集成缺口:
+- RaCommand 之前只有测试里的假实现,补上真正起 docker exec 的 DockerExec。
+- Session::events() 只能取一次,而池要跨连接复用;改成 broadcast::subscribe。
+- 池的存活性检查直接 ping 裸管道,会和会话的 reader 抢同一根输出流;改成
+  Handle::with_liveness 注入 Session::ping(走 pending 表)。
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+```
+
+---
+
+### Task 9b: 服务端接线
+
+**Files:**
+- Modify: `playground/src/server/http.rs`（`AppState` + 测试装配点）
+- Modify: `playground/src/server/ws.rs`
+- Modify: `playground/src/main.rs`
+- Modify: `playground/src/testing.rs`（需要时）
+
+**Interfaces:**
+- Consumes: Task 9 的 `LspService` / `Acquire` / `Session::subscribe`
+- Produces: 端到端的 `LspOpen` → `LspReady` / `LspTokens` / `LspDiagnostic` / `LspCompletion`
+
+- [ ] **Step 1: 写失败的测试**
+
+**(a) 纯逻辑：LSP 关掉时 `LspOpen` 回错误、`hello` 报 `lsp_supported: false`。**
+
+```rust
+#[tokio::test]
+async fn lsp_open_is_rejected_when_lsp_is_disabled() {
+    let (_d, url, _st) = spawn(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
+    let mut ws = connect(&url).await;
+    match read_n(&mut ws, 1).await[0].clone() {
+        ServerMsg::Hello { lsp_supported, .. } => assert!(!lsp_supported),
+        other => panic!("期望 hello,得到 {other:?}"),
+    }
+    send(&mut ws, ClientMsg::LspOpen {}).await;
+    match read_n(&mut ws, 1).await[0].clone() {
+        ServerMsg::Error { message, .. } => assert!(message.contains("分析"), "{message}"),
+        other => panic!("期望 error,得到 {other:?}"),
+    }
+}
+```
+
+**(b) `hello.lsp_supported` 随 `AppState.lsp` 变化。** 用 `LspService::new` 造一个
+（它此刻不碰 docker），断言 `lsp_supported == true`。
+
+**(c) 集成（`#[ignore = "需要本机有 docker 与烘好的镜像"]`）**：真起一个会话，走
+`LspOpen` → 收 `LspReady` → `LspChange` → 收 `LspDiagnostic`；断开后池里的会话
+可被第二条连接复用。
+
+- [ ] **Step 2: 跑测试确认它们失败**
+
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground lsp_open_is_rejected
+```
+
+- [ ] **Step 3: 实现**
+
+**3.1 `http.rs`：** `AppState` 加 `pub lsp: Option<Arc<crate::lsp::service::LspService>>`。
+**所有** `AppState { .. }` 构造点补字段：`http.rs` 里 4 处（`state` / `any_origin_state` /
+`webhook_state`）、`ws.rs` 里 2 处、`main.rs` 1 处。测试里默认 `lsp: None`。
+
+**3.2 `ws.rs`：**
+
+- `hello` 的 `lsp_supported: state.lsp.is_some()`（删掉那句 `// Task 9 接池后再按 AppState 判断`）。
+- 连接内状态：
+
+  ```rust
+  struct LspConn {
+      acq: crate::lsp::pool::Acquire,
+      forwarding: JoinHandle<()>,
+  }
+  ```
+
+- `LspOpen {}`：
+  - `let Some(svc) = state.lsp.clone() else { send Error{Internal, "代码分析功能已关闭"} }`。
+  - 已经有 `lsp_conn` → 忽略（幂等，不要重复取会话）。
+  - `tokio::time::timeout(cfg.lsp_boot_timeout, svc.acquire())`；超时/失败 →
+    `Error{Internal, "分析器起不来,稍后再试"}`。
+  - `let mut ev = acq.session().subscribe();`，起转发任务：
+    `loop { match ev.recv().await { Ok(Event::Tokens(d)) => tx.send(ServerMsg::LspTokens{data:d}),
+       Ok(Event::Diagnostics(list)) => for d in list { tx.send(ServerMsg::LspDiagnostic{..}) },
+       Ok(Event::Completed{request_id, items}) => tx.send(ServerMsg::LspCompletion{request_id, items}),
+       Err(broadcast::error::RecvError::Lagged(_)) => continue, Err(Closed) => break } }`
+  - **不在这里 didOpen**：待命会话在补池时已经 didOpen 过占位内容，同一个 URI
+    再 didOpen 是 LSP 协议违规。用户的源码走 `LspChange` 的 `did_change`（全文替换）。
+    > 设计稿的时序图写的是 LspOpen 时 didOpen(用户源码)；实现取「规范化」的
+    > didChange。两者都达到「用用户源码替换文档」的效果，didChange 不违反协议。
+  - 回 `ServerMsg::LspReady { file: SOURCE_FILE.to_string() }`。
+- `LspChange { source }`：
+  - 没有会话 → `Error{BadRequest, "先发 lsp_open"}`。
+  - `svc.write_source(&name, &source).await` —— 名字来自 `acq` 所在的容器。给
+    `Acquire` 加 `pub fn container(&self) -> &str`（`Handle` 里存名字），或者
+    `Session` 存容器名。**统一放 Handle**：`Handle::new(process, session, container, destroy)`。
+  - 写盘成功后再 `acq.session().did_change(&source).await`；失败 → `Error{Internal}`。
+- `LspCompletion { request_id, line, column }`：`session.request_completion(...)`，
+  错误 → `Error{Internal}`。
+- 循环末尾（与 job 的 abort 同一处）：`if let Some(c) = lsp_conn.take() {
+      c.forwarding.abort();
+      let alive = c.acq.session().is_alive();
+      c.acq.release(alive).await;
+  }`
+  —— 会话死就销毁，活着就回池。
+
+**3.3 `main.rs`：**
+
+```rust
+let lsp = if cfg.lsp_disabled {
+    None
+} else {
+    let svc = crate::lsp::service::LspService::new(Arc::clone(&cfg), Arc::clone(&baker));
+    Some(Arc::clone(&svc))
+};
+```
+（`svc.spawn_background()` 在 `LspService::new` 里**不要**自动起 —— 测试要能造一个
+不起后台任务的实例。在 `main.rs` 里显式调一次。）
+
+- [ ] **Step 4: 跑测试确认它们过**
+
+```
+cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground
+```
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd C:/projects/rust2genshin && git add playground/src/server/http.rs playground/src/server/ws.rs playground/src/main.rs playground/src/testing.rs playground/src/lsp/ && git commit -m "feat(play): LSP 接线 —— AppState、ws 分发、后台补池与回收
+
+连接断开时必须释放池里的 RA 会话,否则 839 MB 挂在容器里不放。会话死
+(alive=false)就销毁,活着回池。
 
 DISABLED 时 AppState::lsp 为 None,ws 回 Error 让前端不挂 LSP 客户端。
 
