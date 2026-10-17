@@ -883,14 +883,20 @@ fn dockerfile_bakes_the_trimmed_ra_workspace() {
     // 烘焙时自检:裁错了在烘焙时炸,而不是用户第一次编辑时
     assert!(dockerfile.contains("cargo metadata"), "{dockerfile}");
     // 两条顺序/结构不变量 —— 文字断言拦不住它们,但改错了行为全变:
-    // RA 的 RUN 必须在 USER builder 之后,否则 /opt/ra/ws 归 root,--user 1001 写 target/ 会 EACCES;
-    assert!(
-        dockerfile.find("USER builder").unwrap() < dockerfile.find("/opt/ra/ws").unwrap(),
-        "RA workspace 必须在 USER builder 之后创建"
-    );
+    // RA 的 RUN 必须在 USER builder 之后,否则 /opt/ra/ws 归 root,--user 1001 写 target/ 会 EACCES。
+    // 必须匹配**指令行**:Dockerfile 的注释里也出现 "USER builder",直接 find 会命中注释而空转。
+    let user_line = dockerfile
+        .lines()
+        .position(|l| l.trim() == "USER builder")
+        .expect("Dockerfile 里必须有 USER builder 指令");
+    let ra_run_line = dockerfile
+        .lines()
+        .position(|l| l.trim_start().starts_with("RUN ") && l.contains("/opt/ra/ws"))
+        .expect("必须有建 /opt/ra/ws 的 RUN");
+    assert!(user_line < ra_run_line, "RA workspace 必须在 USER builder 之后创建");
     // 末尾不许再出现 FROM:追加 stage 会让默认构建目标变成它,任务容器的镜像就没了。
     assert!(
-        !dockerfile[dockerfile.find("/opt/ra/ws").unwrap()..].contains("\nFROM "),
+        !dockerfile.lines().skip(ra_run_line).any(|l| l.trim_start().starts_with("FROM ")),
         "RA 相关指令之后不许再开 stage"
     );
 }
@@ -1344,6 +1350,8 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Modify: `playground/src/server/http.rs`（`AppState` + 测试装配点）
 - Modify: `playground/src/server/ws.rs`
 - Modify: `playground/src/main.rs`
+- Modify: `playground/src/lsp/pool.rs`（`container` 字段与访问器）
+- Modify: `playground/src/lsp/service.rs`（建 Handle 时链上容器名）
 - Modify: `playground/src/testing.rs`（需要时）
 
 **Interfaces:**
@@ -1371,8 +1379,10 @@ async fn lsp_open_is_rejected_when_lsp_is_disabled() {
 }
 ```
 
-**(b) `hello.lsp_supported` 随 `AppState.lsp` 变化。** 用 `LspService::new` 造一个
-（它此刻不碰 docker），断言 `lsp_supported == true`。
+**(b) `hello.lsp_supported` 随 `AppState.lsp` 变化。** 用
+`LspService::new(Arc::clone(&cfg), Baker::new(fake_builder, fake_gate))` 造一个
+（它此刻不碰 docker），断言 `lsp_supported == true`。`Baker::new` 的签名是
+`(Arc<dyn ImageBuilder>, Arc<dyn DiskGate>)`（`bake.rs:129`），测试里已有现成的假实现。
 
 **(c) 集成（`#[ignore = "需要本机有 docker 与烘好的镜像"]`）**：真起一个会话，走
 `LspOpen` → 收 `LspReady` → `LspChange` → 收 `LspDiagnostic`；断开后池里的会话
@@ -1419,9 +1429,12 @@ cd C:/projects/rust2genshin && cargo test -p rust2genshin-playground lsp_open_is
   - 回 `ServerMsg::LspReady { file: SOURCE_FILE.to_string() }`。
 - `LspChange { source }`：
   - 没有会话 → `Error{BadRequest, "先发 lsp_open"}`。
-  - `svc.write_source(&name, &source).await` —— 名字来自 `acq` 所在的容器。给
-    `Acquire` 加 `pub fn container(&self) -> &str`（`Handle` 里存名字），或者
-    `Session` 存容器名。**统一放 Handle**：`Handle::new(process, session, container, destroy)`。
+  - `svc.write_source(acq.container(), &source).await` —— 名字来自 `acq` 所在的容器。
+    Task 9 的 `Handle` 没有存这个名字，**用一个不打扰现有测试的加法**：
+    `Handle` 加 `container: String` 字段（默认空串）、
+    `pub fn with_container(mut self, name: impl Into<String>) -> Self` 与
+    `Acquire::container(&self) -> &str`；`SessionMaker::make` 里建 Handle 时链上
+    `.with_container(name)`。不改 `Handle::new` 的签名，池的现有测试零改动。
   - 写盘成功后再 `acq.session().did_change(&source).await`；失败 → `Error{Internal}`。
 - `LspCompletion { request_id, line, column }`：`session.request_completion(...)`，
   错误 → `Error{Internal}`。
