@@ -57,6 +57,14 @@ pub enum ServerMsg {
         bytes: u64,
         download: String,
     },
+    /// 客户端点了「取消」,服务端已经把那一单 abort 掉了。
+    ///
+    /// **这条不能省**:取消在服务端就是 `abort`,而 abort 不会产生任何
+    /// 消息。不发这一条,前端会一直停在「编译中…」,取消按钮也一直亮着
+    /// —— 它只在 `finished`/`failed`/`error` 时才收摊。
+    Cancelled {
+        task: String,
+    },
     Failed {
         task: String,
         exit_code: Option<i32>,
@@ -226,6 +234,16 @@ mod tests {
                 "exit_code": null,
                 "message": "容器没起来",
             })
+        );
+    }
+
+    #[test]
+    fn cancelled_json_shape() {
+        let m = ServerMsg::Cancelled { task: "t1".into() };
+        assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "cancelled", "task": "t1" })
         );
     }
 

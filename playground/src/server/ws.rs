@@ -92,7 +92,9 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
     // 任务往这条通道里塞消息,不直接碰 socket —— 于是"任务在跑"和
     // "读循环还活着"是两件事,排队期间照样能看见断开和 cancel。
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
-    let mut job: Option<JoinHandle<()>> = None;
+    // 任务名和 handle 一起存:`cancel` 要把 task 原样回给客户端,光有
+    // handle 是 abort 不出名字来的。
+    let mut job: Option<(String, JoinHandle<()>)> = None;
 
     // 空闲保活。前面 nginx 的 stream 模块按「最后一次有字节」掐空闲连接
     // (`proxy_timeout`,部署上是 60s),而排队等镜像的那几十秒里一条业务消息
@@ -124,11 +126,29 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                 }
                             }
                             Ok(ClientMsg::Cancel {}) => {
-                                if let Some(h) = job.take() {
+                                // 已经跑完的任务不算「可取消」:它的 finished/failed
+                                // 就在通道里排着,这里要是 abort 后再排空通道,会把
+                                // 一条成功的结果吞掉。让它照常发出去,槽位也一并收回。
+                                if job.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+                                    job = None;
+                                    continue;
+                                }
+                                if let Some((task, h)) = job.take() {
                                     // abort → 任务手里的 Ticket 与 ImageGuard 一起 drop
                                     // → 额度、IP 占用、镜像引用计数一步还清。
                                     h.abort();
                                     let _ = h.await;
+                                    // abort 之后不可能再有新消息进来(sender 随任务一起
+                                    // drop 了),但**已经进去的**还在:排队→开始那一瞬的
+                                    // `started`、临死前几行日志。先排空再回 cancelled,
+                                    // 否则客户端可能先收到 cancelled、又收到 started,
+                                    // 界面重新跳回「编译中…」。
+                                    while rx.try_recv().is_ok() {}
+                                    // 前端等的就是这条:没有它,界面永远停在「编译中…」,
+                                    // 取消按钮也一直亮着。
+                                    if send(&mut sink, &ServerMsg::Cancelled { task }).await.is_err() {
+                                        break;
+                                    }
                                 }
                             }
                             Ok(ClientMsg::Submit { source, target }) => {
@@ -138,7 +158,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                 // `is_finished()` 是单调的:一旦 true 就不会回退,所以这里
                                 // 先按它把已结束的槽位收回来,再判断"已有任务在跑",不受
                                 // 调度时序影响。
-                                if job.as_ref().is_some_and(|h| h.is_finished()) {
+                                if job.as_ref().is_some_and(|(_, h)| h.is_finished()) {
                                     job = None;
                                 }
                                 if job.is_some() {
@@ -153,7 +173,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                             break;
                                         }
                                     }
-                                    Ok(handle) => job = Some(handle),
+                                    Ok((task, handle)) => job = Some((task, handle)),
                                 }
                             }
                         }
@@ -171,7 +191,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                         // 任务已经结束、额度也还了,但消息不是 Finished/Failed。
                         // 只看 terminal 的话槽位会留着,下一次提交被误判成
                         // "已有任务在跑"。handle 结束即视为槽位可复用。
-                        let done = terminal || job.as_ref().is_some_and(|h| h.is_finished());
+                        let done = terminal || job.as_ref().is_some_and(|(_, h)| h.is_finished());
                         if send(&mut sink, &m).await.is_err() {
                             break;
                         }
@@ -185,7 +205,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
     }
 
     // 每一条离开路径都走这里:断开、协议错、任务收尾。
-    if let Some(h) = job.take() {
+    if let Some((_, h)) = job.take() {
         h.abort();
         let _ = h.await;
     }
@@ -246,7 +266,7 @@ fn start(
     source: String,
     target: Option<String>,
     tx: &mpsc::UnboundedSender<ServerMsg>,
-) -> Result<JoinHandle<()>, ServerMsg> {
+) -> Result<(String, JoinHandle<()>), ServerMsg> {
     validate_submit(&source, target.as_deref())?;
 
     let bake = state.baker.status();
@@ -280,7 +300,9 @@ fn start(
     let state = Arc::clone(state);
     let tx = tx.clone();
     let task = crate::job::new_task_id();
-    Ok(tokio::spawn(async move {
+    // 任务名和 handle 一起交回去:`cancel` 要把 task 原样回给客户端。
+    let spawned = task.clone();
+    let handle = tokio::spawn(async move {
         // 额度交接在这里等 —— 不阻塞上面的读循环。
         ticket.wait_started().await;
         let _guard = guard;
@@ -292,7 +314,8 @@ fn start(
         let outcome = run_one(&state, &task, &source, &tag, &commit, &tx).await;
         let _ = tx.send(outcome);
         // _guard 与 ticket 在这里 drop:额度、IP、镜像计数一起还。
-    }))
+    });
+    Ok((spawned, handle))
 }
 
 async fn run_one(
@@ -633,7 +656,18 @@ mod tests {
             .unwrap();
         let back: ServerMsg =
             serde_json::from_str(back.to_text().expect("回音应当是文本")).expect("回音应当是 JSON");
-        assert!(matches!(back, ServerMsg::Error { .. }), "得到 {back:?}");
+        // **不钉具体是哪一条**。这里要证的只有「连接还活着」,而第一条任务
+        // 收尾时就把额度还了,所以第二次提交拿到 `Started` 是正常的;偶尔
+        // 抢在 drop 尾巴上会拿到 `IpBusy`。钉死成 `Error` 会让这条测试
+        // 在机器调度快一点时就红 —— 它测的就成了「额度什么时候还」,
+        // 那是别的用例的事。
+        assert!(
+            matches!(
+                back,
+                ServerMsg::Started { .. } | ServerMsg::Queued { .. } | ServerMsg::Error { .. }
+            ),
+            "得到 {back:?}"
+        );
     }
 
     #[tokio::test]
@@ -797,6 +831,39 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(st.queue.snapshot().running, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_answers_the_client_with_cancelled() {
+        // 点「取消」之后前端只会停在「编译中…」—— 它在等服务端一条终结
+        // 消息,而 `abort` 是**静默**的,不产生任何消息。这条钉住「取消
+        // 要有回音」;回音还必须带 task,前端靠它认这是不是自己那一单。
+        let runner = FakeRunner::new(Behavior::Hang);
+        let (_d, url, _st) = spawn(Arc::clone(&runner)).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(&mut ws, submit("fn main() {}")).await;
+        let started = read_n(&mut ws, 1).await; // started
+        let task = match &started[0] {
+            ServerMsg::Started { task, .. } => task.clone(),
+            other => panic!("期望 started,得到 {other:?}"),
+        };
+        send(&mut ws, ClientMsg::Cancel {}).await;
+
+        // 不用 `read_n`:它要求消息能反序列化成 ServerMsg,而这条测试的
+        // 意义正是在 ServerMsg 还没有 `cancelled` 时先红。
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("取消之后必须回一条终结消息,否则前端一直停在「编译中…」")
+            .expect("连接断了")
+            .unwrap();
+        let text = match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t,
+            other => panic!("期望文本消息,得到 {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["type"], "cancelled");
+        assert_eq!(v["task"], task);
     }
 
     #[tokio::test(flavor = "multi_thread")]

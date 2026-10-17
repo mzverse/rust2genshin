@@ -234,6 +234,12 @@ class PlayClient {
             case "finished":
                 this.handlers.onFinished(m);
                 break;
+            case "cancelled":
+                // 取消**也会回一条消息**。服务端那边是直接 abort 任务的,
+                // 原本什么都不发 —— 于是界面永远停在「编译中…」、取消按钮
+                // 一直亮着。别把这条当成可选的消息悄悄忽略掉。
+                this.handlers.onCancelled(m);
+                break;
             case "failed":
                 this.handlers.onFailed(m);
                 break;
@@ -365,6 +371,13 @@ function ready() {
             // 前缀就跟着 httpOrigin 走。
             downloadUrl = httpOrigin(client.url) + "/" + m.download.replace(/^\/+/, "");
             dlBtn.hidden = false;
+        },
+        onCancelled: () => {
+            // 和 finished/failed 一样收摊。状态不标红:取消是用户自己按的,
+            // 不是错误。
+            setBusy(false);
+            setStatus("已取消", "");
+            appendLog("stdout", "── 已取消 ──\n");
         },
         onFailed: (m) => {
             setBusy(false);
