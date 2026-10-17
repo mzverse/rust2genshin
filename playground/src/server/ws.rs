@@ -94,8 +94,25 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
     let mut job: Option<JoinHandle<()>> = None;
 
+    // 空闲保活。前面 nginx 的 stream 模块按「最后一次有字节」掐空闲连接
+    // (`proxy_timeout`,部署上是 60s),而排队等镜像的那几十秒里一条业务消息
+    // 都没有 —— 不主动出声连接会被悄悄关掉,`finished` 连同 .gia 下载链接一起
+    // 丢在半路。ping/pong 由 WebSocket 协议本身保证对端会回,浏览器自动就回,
+    // 所以这里不需要自己处理 Pong 分支。
+    //
+    // 周期必须**短于**上游那个超时,留出余量:默认 25s vs 上游 60s。
+    let mut beat = tokio::time::interval(state.cfg.keepalive);
+    // interval 的第一次 tick 是立即触发的,那样一连上就发一个没必要的 ping。
+    beat.tick().await;
+
     loop {
         tokio::select! {
+            _ = beat.tick() => {
+                // Ping 帧不进 `send`:那个函数发的是 ServerMsg 的 JSON。
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
             incoming = stream.next() => {
                 match incoming {
                     None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
@@ -359,9 +376,20 @@ mod tests {
 
     /// 一个"已经烘好 aaa1111"的后端,`runner` 顶掉真容器。
     fn ready_state(root: &std::path::Path, runner: Arc<FakeRunner>) -> Arc<AppState> {
+        ready_state_with(root, runner, |_| {})
+    }
+
+    /// `ready_state` 加一个改配置的口子 —— `cfg` 是起服务**之前**定死的,
+    /// 服务跑起来之后就动不了了,想测短周期只能在这时候改。
+    fn ready_state_with(
+        root: &std::path::Path,
+        runner: Arc<FakeRunner>,
+        tweak: impl FnOnce(&mut crate::config::Config),
+    ) -> Arc<AppState> {
         let mut cfg = resolve(&|_| None, &root.join("playground")).unwrap();
         cfg.repo_dir = root.to_path_buf();
         cfg.data_dir = root.join("data");
+        tweak(&mut cfg);
         let cfg = Arc::new(cfg);
         Arc::new(AppState {
             queue: Queue::new(cfg.max_jobs, cfg.max_queue),
@@ -401,10 +429,18 @@ mod tests {
     /// 建一个临时工作区 + 后端的组合。返回的 `TempDir` 必须活到测试结束,
     /// 别 `mem::forget`(那样每次测试都往 %TEMP% 里漏目录)。
     async fn spawn(runner: Arc<FakeRunner>) -> (tempfile::TempDir, String, Arc<AppState>) {
+        spawn_tweaked(runner, |_| {}).await
+    }
+
+    /// 同 `spawn`,但能在**起服务之前**改配置。
+    async fn spawn_tweaked(
+        runner: Arc<FakeRunner>,
+        tweak: impl FnOnce(&mut crate::config::Config),
+    ) -> (tempfile::TempDir, String, Arc<AppState>) {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("demo/src")).unwrap();
         std::fs::write(d.path().join(SOURCE_FILE), "fn sample() {}").unwrap();
-        let state = ready_state(d.path(), runner);
+        let state = ready_state_with(d.path(), runner, tweak);
         // 先把 baker 烘好,不然每个用例都得先处理一条 not_ready。
         state.baker.request(BakeRequest::default());
         state.baker.step().await;
@@ -617,6 +653,30 @@ mod tests {
         assert!(runner.calls().is_empty(), "空源码不该起容器");
         assert_eq!(st.queue.snapshot().running, 0);
         assert_eq!(st.queue.snapshot().waiting, 0);
+    }
+
+    /// 空闲连接要自己出声。前面 nginx stream 层按「最后一次有字节」掐空闲,
+    /// 排队等镜像的那几十秒里一条业务消息都没有 —— 不 ping 的话连接会被悄悄
+    /// 关掉,`finished` 连同 .gia 下载链接一起丢在半路(2026-10-17 实测)。
+    #[tokio::test]
+    async fn an_idle_connection_gets_pings() {
+        let (_d, url, _state) = spawn_tweaked(FakeRunner::new(Behavior::Hang), |cfg| {
+            // 周期调到 100ms,不用真等默认的 25s。
+            cfg.keepalive = Duration::from_millis(100);
+        })
+        .await;
+        let mut ws = connect(&url).await;
+        // 先吃掉 hello,再等 ping。
+        assert_eq!(read_n(&mut ws, 1).await.len(), 1);
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("5 秒内该有 ping")
+            .expect("连接断了")
+            .unwrap();
+        assert!(
+            matches!(msg, tokio_tungstenite::tungstenite::Message::Ping(_)),
+            "空闲时收到的是 {msg:?},不是 Ping"
+        );
     }
 
     #[tokio::test]

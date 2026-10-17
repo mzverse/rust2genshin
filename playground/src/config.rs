@@ -23,6 +23,11 @@ pub struct Config {
     pub max_jobs: usize,
     pub max_queue: usize,
     pub job_timeout: Duration,
+    /// 多久给连接发一个 WebSocket ping。**别关掉**:前面那层 nginx 的 stream
+    /// 模块按「最后一次有字节」掐空闲连接(`proxy_timeout`),排队等镜像的
+    /// 那几十秒里一条业务消息都没有,不给它续命连接就被悄悄关掉,`finished`
+    /// 连同 .gia 下载链接一起丢在半路。
+    pub keepalive: Duration,
     pub keep_images: usize,
     pub build_cache_max: u64,
     pub min_free_disk: u64,
@@ -192,6 +197,7 @@ pub fn resolve(
         job_memory: memory_var("PLAYGROUND_JOB_MEMORY", get)?,
         max_queue: num_var("PLAYGROUND_MAX_QUEUE", get, 64usize)?,
         job_timeout: Duration::from_secs(num_var("PLAYGROUND_JOB_TIMEOUT", get, 15u64)?),
+        keepalive: Duration::from_secs(num_var("PLAYGROUND_KEEPALIVE", get, 25u64)?),
         keep_images: num_var("PLAYGROUND_KEEP_IMAGES", get, 2usize)?,
         build_cache_max: size_var(
             "PLAYGROUND_BUILD_CACHE_MAX",
@@ -240,6 +246,9 @@ mod tests {
         assert_eq!(c.job_memory.as_deref(), Some("1536m"));
         assert_eq!(c.max_queue, 64);
         assert_eq!(c.job_timeout, Duration::from_secs(15));
+        // 必须短于 nginx stream 层的 proxy_timeout(部署上是 60s),否则
+        // 保活还没发出去连接先被关了。
+        assert_eq!(c.keepalive, Duration::from_secs(25));
         assert_eq!(c.keep_images, 2);
         assert_eq!(c.build_cache_max, 10 * 1024 * 1024 * 1024);
         assert_eq!(c.min_free_disk, 5 * 1024 * 1024 * 1024);

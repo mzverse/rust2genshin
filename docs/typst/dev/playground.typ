@@ -37,6 +37,7 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_MAX_QUEUE`], [`64`], [排队等待的任务数上限；超出后新任务被拒。],
     [`PLAYGROUND_JOB_TIMEOUT`], [`15`], [单个任务的超时，*秒*。],
     [`PLAYGROUND_JOB_CPUS`], [`2`], [任务容器的 CPU 限额。设成 `0` 或 `none` 则*不加* `--cpus` —— 宿主的 cgroup 没挂 cpu 控制器时，docker 会拒掉整个 `docker run`（`NanoCPUs can not be set…`），退出码 125，一条任务日志都没有。],
+    [`PLAYGROUND_KEEPALIVE`], [`25`], [空闲连接多久发一个 WebSocket ping，*秒*。必须**短于**前面那层 nginx stream 的 `proxy_timeout`（部署上是 60s）：排队等镜像时一条业务消息都没有，不主动出声连接会被 nginx 悄悄关掉，`finished` 连同 `.gia` 下载链接一起丢在半路。],
     [`PLAYGROUND_JOB_MEMORY`], [`1536m`], [任务容器的内存限额，同时给 `--memory` 和 `--memory-swap`。设成 `none` 则两个都不加 —— cgroup v1 不支持 `kmem.limit_in_bytes` 时，runc 建容器就会炸（`failed to write 1 to memory.kmem.limit_in_bytes`）。别写 `1.5g`，docker 对小数容量不友好。],
     [`PLAYGROUND_KEEP_IMAGES`], [`2`], [镜像 GC 保留几个最近在用的 tag。],
     [`PLAYGROUND_BUILD_CACHE_MAX`], [`10GB`], [`docker builder prune --keep-storage` 的值 —— 注意是*留到*多少而不是*删到*多少（见「磁盘」）。支持 `10GB` / `512m` / `1024`，倍数一律 1024 进制。],
