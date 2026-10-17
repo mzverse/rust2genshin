@@ -1,6 +1,6 @@
 /* 摆弄页。样式是**全局**的 —— 这一页没有 shadow root 挡着,所以每条选择器
- * 都带 `.play-` 前缀。之前是 `playground-app::part(x)`,拆掉自定义组件后
- * 那层前缀没了,不加就等于给整站文档写规则(button / textarea / pre 全中)。
+ * 都带 `.play` / `.play-` 前缀。之前是 `playground-app::part(x)`,拆掉自定义
+ * 组件后那层前缀没了,不加就等于给整站文档写规则(button / textarea / pre 全中)。
  *
  * 配色一律走站点已有的 CSS 变量(见 lib/css/),不另起一套:深浅色主题
  * 是站点切一次就全站生效的,这里硬编码颜色会在深色下瞎掉。 */
@@ -13,17 +13,47 @@
     font-size: 14px;
 }
 
-/* ---- 顶栏:只有样例。编译相关的按钮在右栏,和它操作的东西在一起 ---- */
-.play-toolbar {
+/* ---- 主体:左 | 拖动条 | 右 ----
+ *
+ * 三列用 grid,中间那列是固定 8px 的拖动条。左列宽度由 script.js 拖动时
+ * 写进 `--play-left`(px);没拖过的时候是 `1fr`,也就是两栏等分。
+ *
+ * 高度只能自己算:`main` 不再是 `min-height: 100vh`(见 template.css 的
+ * 注释),于是没有一个「剩余高度」可以 flex-grow 出来。`19rem` 是页头 +
+ * 那两段说明的大致高度 —— 是拍的,但下面有 `min-height` 兜底,拍偏了也
+ * 不会把面板压扁。用 `100dvh` 而不是 `100vh`:移动端浏览器的地址栏收起/
+ * 展开时 `vh` 不变,面板会跟着多出一截或者少一截。
+ *
+ * 工具条现在在左栏里面(以前在面板上方),所以这里比旧值少减了 3rem。 */
+.play-layout {
+    --play-left: 1fr;
+    display: grid;
+    grid-template-columns: var(--play-left) 8px minmax(0, 1fr);
+    gap: 0;
+    height: calc(100dvh - 19rem);
+    min-height: 26rem;
+}
+
+/* ---- 左栏:工具条在上,编辑框吃掉剩下的高度 ---- */
+.play-left {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    gap: 6px;
+}
+
+.play-left-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 10px;
+    /* 工具条高度按里面最高的控件定;给个下限,mdui 组件还没 upgrade 时
+     * 不至于塌成一条线再跳一下。 */
+    min-height: 36px;
 }
 
 /* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
- * 现成代码」,和右边的「编译」是两件事,平铺在一排里看不出来谁管谁。
- * 「编译」靠 `margin-left: auto` 顶到最右,两组之间那段空白就是分界。
+ * 现成代码」,和右边的「取消 / 编译」是两件事,平铺在一排里看不出来谁管谁。
  *
  * 组里的控件是 `<mdui-select>` / `<mdui-button>` —— 它们把样式关在自己的
  * shadow root 里,这里给外面的 div 写规则**进不去**,能给它们调尺寸的只有
@@ -44,15 +74,19 @@
     opacity: 0.6;
     user-select: none;
 }
-/* 「编译」推到最右,跟左边那一组拉开。 */
-.play-toolbar > #play-run {
+/* 「取消 / 编译」推到最右。取消在编译左边:它是「撤掉正在跑的那次」。 */
+.play-run-group {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
 }
 /* 摆弄页的行高比 MDUI 默认小一档 —— 默认那套 typescale 是按触屏设计的
  * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
  * 还高一截,看着不成一条线。
  *
- * 只能动 typescale 变量:MDAI 的样式在自己的 shadow root 里,外面写
+ * 只能动 typescale 变量:MDUI 的样式在自己的 shadow root 里,外面写
  * `height` 是写不到那个 text-field 上的(设了也不生效,内层还是 56px)。
  * 自定义属性倒是能穿过分层边界,所以这是唯一能缩的旋钮。56 → 48。 */
 .play-picker mdui-select {
@@ -61,52 +95,103 @@
     --mdui-typescale-body-large-line-height: 1rem;
 }
 
-/* ---- 主体:编辑器和日志两栏,占满「视口减去上面那些」的剩余高度 ----
- *
- * 高度只能自己算:`main` 不再是 `min-height: 100vh`(见 template.css 的
- * 注释),于是没有一个「剩余高度」可以 flex-grow 出来。`22rem` 是顶栏 + 页头
- * + 那两段说明的大致高度 —— 是拍的,但下面有 `min-height` 兜底,拍偏了也
- * 不会把面板压扁。
- *
- * 用 `100dvh` 而不是 `100vh`:移动端浏览器的地址栏收起/展开时 `vh` 不变,
- * 面板会跟着多出一截或者少一截。 */
-.play-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 10px;
-    height: calc(100dvh - 22rem);
-    min-height: 26rem;
-}
-
-/* 左栏的编辑框。
- *
- * `<mdui-text-field textarea>` 的样子全在 shadow root 里,外面写 `border`
- * 之类是不生效的;能调的只有它自己的盒子。所以这里只管**占满格子**。
- * `height: 100%` 让它跟右栏的日志盒一样被 `.play-layout` 的行高拉满。 */
-.play-layout > mdui-text-field {
+/* 左栏的编辑框。`<mdui-text-field textarea>` 的样子全在 shadow root 里,
+ * 外面写 `border` 之类是不生效的;能调的只有它自己的盒子。所以这里只管
+ * **占满剩下的格子**。 */
+.play-left > mdui-text-field {
     width: 100%;
-    height: 100%;
+    flex: 1 1 0;
+    min-height: 0;
 }
 
-/* 右栏:状态行 + 按钮 + 日志盒。flex 让日志盒把剩下的高度吃干净,和左边
- * 的编辑框底边对齐 —— 格子高度由两者中高的那个定。 */
+/* ---- 中间的拖动条 ----
+ *
+ * 可点区域是整条 8px,可见的那道线用 ::after 画在中间 2px —— 直接给整条
+ * 上色会太粗。`touch-action: none` 让触屏拖动不被浏览器的滚动手势抢走。 */
+.play-splitter {
+    position: relative;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+}
+.play-splitter::after {
+    content: "";
+    position: absolute;
+    inset: 0 3px;
+    border-radius: 1px;
+    /* `--border-soft` 在深色下几乎和背景同色,拖动条等于不存在;用 `--border`
+     * 就够看出这条线是可以抓的,又不至于抢镜。 */
+    background: var(--border);
+    transition: background 0.15s;
+}
+.play-splitter:hover::after,
+.play-splitter[data-dragging]::after {
+    background: var(--accent);
+}
+
+/* ---- 右栏:选项卡条 + 内容 ---- */
 .play-right {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
-    gap: 6px;
 }
 
-.play-head {
+/* 选项卡条。底边那条线一路铺满,选项卡自己的下边框压在它上面 —— 选中的
+ * 那个就「接上」了下面的内容。 */
+.play-tabs-bar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
-    min-height: 26px;
+    padding: 0 0 0 2px;
+    border-bottom: 1px solid var(--border-soft);
+    min-height: 34px;
 }
 
-.play-status {
+.play-tabs {
+    display: flex;
+    gap: 2px;
+    flex: none;
+}
+
+/* 原生 button,样式得自己抹平(appearance / 边框 / 字体)。没选中的压在
+ * 下面一档透明度,选中的 1.0 加一条主色底边。 */
+.play-tab {
+    appearance: none;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    /* 和选项卡条那条分隔线对齐:把选项卡自己往下推 1px,选中时的底边
+     * 正好盖在上面的线上,看着是连通的。 */
+    margin-bottom: -1px;
+    padding: 6px 10px 5px;
+    font: inherit;
     font-size: 13px;
+    color: var(--fg);
+    opacity: 0.55;
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+}
+.play-tab:hover {
+    background: var(--hover);
+    opacity: 0.85;
+}
+.play-tab[data-active] {
+    opacity: 1;
+    border-bottom-color: var(--accent);
+}
+/* 键盘 Tab 到选项卡上时要看得见焦点,`:focus-visible` 不会在鼠标点击后亮。 */
+.play-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+/* 状态行占掉选项卡和下载按钮之间的空白;太长就省略号,不能把下载按钮挤走。 */
+.play-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    text-align: right;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -121,10 +206,34 @@
     gap: 6px;
     flex: none;
 }
-/* 「取消 / 下载」在没东西可取消、可下载的时候要藏起来。`<mdui-button>` 是
+/* 「取消」「下载」在没东西可取消 / 可下载的时候要藏起来。`<mdui-button>` 是
  * 自定义元素,`[hidden]` 对它不像对原生按钮那样默认生效(display 被组件自己
- * 设成了 inline-flex),所以显式补一条。 */
+ * 设成了 inline-flex),所以显式补一条 —— 两个按钮分属左栏和右栏,**两处都
+ * 要包到**,漏一个它就一直亮着。 */
+.play-run-group [hidden],
 .play-actions [hidden] {
+    display: none;
+}
+
+/* ---- 选项卡内容 ----
+ *
+ * 两个面板叠在同一个格子里,靠 `hidden` 切换 —— 这样切换时不会因为「另一个
+ * 面板此刻多高」把布局顶得跳一下。`.play-panel[hidden]` 必须显式写:下面
+ * 那条 `display: flex` 会把 `hidden` 的默认 `display: none` 盖掉。 */
+.play-panels {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+    padding-top: 6px;
+}
+.play-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+}
+.play-panel[hidden] {
     display: none;
 }
 
@@ -136,10 +245,7 @@
      * 渲染出来 208px、列宽 716px 而实际 372px)。
      * 拆掉 shadow root 之前这些站点全局规则进不来,所以没这个坑。 */
     display: block;
-    /* 高度交给 .play-right 的 flex 去撑,这里只保底:格子被压扁时不至于缩成
-     * 一条缝。之前写死 22rem 而编辑框是 26rem,两栏底部永远差一截,靠 rem
-     * 硬凑还会随状态栏字号变化。 */
-    flex: 1;
+    flex: 1 1 0;
     min-height: 0;
     margin: 0;
     padding: 10px 12px;
@@ -155,11 +261,27 @@
     border-radius: 6px;
 }
 
-/* 窄屏上下摞起来。两个面板各 26rem 高,横着塞不下。 */
+/* 预览页现在只是个占位。用和日志盒一样的外框,免得一切过去时整块区域
+ * 突然空掉、像是坏了。 */
+.play-preview {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px 12px;
+    color: var(--muted);
+    background-color: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+/* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标
+ * 会误导),直接藏掉,两栏各占一半高度。 */
 @media (max-width: 900px) {
-    /* 窄屏上下摞起来:两栏各占一半高度,不然两屏才放得下。 */
     .play-layout {
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .play-splitter {
+        display: none;
     }
 }

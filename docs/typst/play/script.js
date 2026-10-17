@@ -417,6 +417,76 @@ function ready() {
         window.location.href = downloadUrl;
     });
 
+    // ---- 选项卡:日志 / 预览 ----
+    // 两个面板都留在 DOM 里,切换只动 `hidden` —— 这样切走再切回来,日志
+    // 里已经滚出来的内容还在,不用重跑就能对着报错看代码。
+    const tabs = root.querySelectorAll(".play-tab");
+    const panels = {
+        log: $("play-panel-log"),
+        preview: $("play-panel-preview"),
+    };
+    tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+            const want = tab.dataset.tab;
+            tabs.forEach((t) => t.toggleAttribute("data-active", t === tab));
+            for (const [name, panel] of Object.entries(panels)) {
+                panel.hidden = name !== want;
+            }
+        });
+    });
+
+    // ---- 拖动中间那条改左右宽度 ----
+    const layout = $("play-layout");
+    const splitter = $("play-splitter");
+    // 两边都不许窄过这个值:拖到底时要是能压成 0 宽,那一栏就再也抓不回来
+    // 了(拖动条还贴在最边上,但滑块本身也只剩 8px)。
+    const MIN_PANE = 220;
+    const SPLITTER_W = 8;
+    let dragging = false;
+
+    const clampLeft = (x) => {
+        const total = layout.getBoundingClientRect().width;
+        return Math.max(MIN_PANE, Math.min(x, total - MIN_PANE - SPLITTER_W));
+    };
+    splitter.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        splitter.setAttribute("data-dragging", "");
+        // 指针捕获之后,即使拖出拖动条本身,pointermove 也还发到这上面 ——
+        // 否则手一快滑出去就断了。
+        splitter.setPointerCapture(e.pointerId);
+        // 不然整页文字会被框选,光标也变成插入符。
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+    });
+    splitter.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const left = e.clientX - layout.getBoundingClientRect().left;
+        layout.style.setProperty("--play-left", `${Math.round(clampLeft(left))}px`);
+    });
+    const endDrag = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        splitter.removeAttribute("data-dragging");
+        document.body.style.userSelect = "";
+        try {
+            splitter.releasePointerCapture(e.pointerId);
+        } catch {
+            /* 指针已经释放过了,抛了也无所谓 */
+        }
+    };
+    splitter.addEventListener("pointerup", endDrag);
+    splitter.addEventListener("pointercancel", endDrag);
+    // 窗口缩小之后那个固定像素宽会把右边挤没,重新夹一次。没拖过时
+    // `--play-left` 还是默认的 `1fr`,不该被改写成 px。
+    window.addEventListener("resize", () => {
+        const cur = layout.style.getPropertyValue("--play-left");
+        if (!cur.endsWith("px")) return;
+        layout.style.setProperty(
+            "--play-left",
+            `${Math.round(clampLeft(parseFloat(cur)))}px`
+        );
+    });
+
     // 样例是**静态资产**(play/demo/*.rs),不从后端取。datalist 是随键入
     // 过滤的,change 就去 fetch 会在打字的每个字符上发一次请求,所以点
     // 「载入」才取。
