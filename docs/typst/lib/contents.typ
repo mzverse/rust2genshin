@@ -38,10 +38,16 @@
 
 #let base_path = sys.inputs.at("base_path", default: "");
 #let import_style(src) = {
-    return html_elem("link", attrs: (href: base_path + src, rel: "stylesheet"))[];
+    if src.starts-with("/") {
+        src = base_path + src;
+    }
+    html_elem("link", attrs: (href: src, rel: "stylesheet"))[]
 }
 #let import_script(src) = {
-    return html_elem("script", attrs: (src: base_path + src))[]
+    if src.starts-with("/") {
+        src = base_path + src;
+    }
+    html_elem("script", attrs: (src: src))[]
 }
 
 #let path_to_str(p) = {
