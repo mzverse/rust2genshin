@@ -14,6 +14,7 @@ mod gc_loop;
 mod image;
 mod image_builder;
 mod job;
+mod lsp;
 mod protocol;
 mod queue;
 mod repo;
