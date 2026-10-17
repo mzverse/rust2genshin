@@ -6,11 +6,28 @@
  * 是站点切一次就全站生效的,这里硬编码颜色会在深色下瞎掉。 */
 
 .play {
-    display: block;
+    /* 撑满 `main` 剩下的高度:body 是 `grid-template-rows: auto 1fr`,`main`
+     * 作为第 2 行的格子会被拉伸到一屏余下的高度,这里再 flex 一次把这份
+     * 高度传给 `.play-layout`。以前是给 `.play-layout` 写死
+     * `calc(100dvh - 19rem)`,19rem 是照「页头 + 两段说明」拍出来的;
+     * 说明文字一删,减出来的高度就小于实际剩余空间,底下空出一大块。 */
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
     margin: 1rem 0 2rem;
     /* 不给整页挂等宽字体:MDUI 的按钮 / 下拉是按 UI 字体设计的,强制等宽会
      * 让它们跟旁边的正文对不上。只给真正是代码的两块(log)用等宽。 */
     font-size: 14px;
+}
+
+/* `main` 默认是 block。摆弄页要把「一屏余下的高度」一路传到 `.play`,
+ * 所以这一页的 main 改成纵向 flex。只在这个页面生效 —— 别的页面没有
+ * `.play`,不该被顺手改成 flex(那会改掉正文里块级元素的布局)。 */
+body:has(main > .play) main {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 /* ---- 主体:左 | 拖动条 | 右 ----
@@ -18,19 +35,18 @@
  * 三列用 grid,中间那列是固定 8px 的拖动条。左列宽度由 script.js 拖动时
  * 写进 `--play-left`(px);没拖过的时候是 `1fr`,也就是两栏等分。
  *
- * 高度只能自己算:`main` 不再是 `min-height: 100vh`(见 template.css 的
- * 注释),于是没有一个「剩余高度」可以 flex-grow 出来。`19rem` 是页头 +
- * 那两段说明的大致高度 —— 是拍的,但下面有 `min-height` 兜底,拍偏了也
- * 不会把面板压扁。用 `100dvh` 而不是 `100vh`:移动端浏览器的地址栏收起/
- * 展开时 `vh` 不变,面板会跟着多出一截或者少一截。
+ * 高度不自己算:`.play` 是 `main` 里的 flex 项,拿到了 body grid 第 2 行
+ * 拉伸出来的一屏余量,这里 `flex: 1` 接着吃。以前写死
+ * `calc(100dvh - 19rem)`,那个 19rem 是照页头 + 说明文字拍的 —— 页面上
+ * 的文字一变,底下就会空出或者溢出一截。
  *
- * 工具条现在在左栏里面(以前在面板上方),所以这里比旧值少减了 3rem。 */
+ * 工具条现在在左栏里面(以前在面板上方)。 */
 .play-layout {
     --play-left: 1fr;
     display: grid;
     grid-template-columns: var(--play-left) 8px minmax(0, 1fr);
     gap: 0;
-    height: calc(100dvh - 19rem);
+    flex: 1 1 auto;
     min-height: 26rem;
 }
 
@@ -272,6 +288,19 @@
     background-color: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
+}
+
+/* 手机上工具条一行放不下:「示例 + 下拉 + 载入」本身就要约 290px,
+ * 再加右边的「编译」就超过可用的宽度,不换行会横向撑出 40 多 px 的
+ * 滚动条。让这一行允许折行:示例组占第一行,编译/取消落到第二行
+ * 靠右(`.play-run-group` 的 `margin-left: auto` 在折行后照样生效)。 */
+@media (max-width: 560px) {
+    .play-left-head {
+        flex-wrap: wrap;
+    }
+    .play-picker mdui-select {
+        min-width: 7rem;
+    }
 }
 
 /* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标

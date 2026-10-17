@@ -2,24 +2,20 @@
 // base_path 定义在 contents.typ,lib.typ 的 `import …: *` 不会把它再导出来。
 #import "/lib/contents.typ": *;
 // 顶栏左侧那两个选项卡的另一半。toc / with_outline 都关掉:这一页没有
-// 目录可列,`#let title` 已经由 template 渲染成 <h1> 了。
-#show: template.with(toc: false, with_outline: false);
+// 目录可列。`with_title: false` 也关掉页面里那行 <h1>:这一页就是一块工具,
+// 顶栏的「摆弄」已经标明了身份,再占一行标题只是把编辑器往下挤。
+#show: template.with(toc: false, with_outline: false, with_title: false);
 // MDUI 的封装都在这儿。
-#import "/lib/mdui.typ": mdui-select, mdui-button, mdui-text-field, mdui-icon
+#import "/lib/mdui.typ": mdui-select, mdui-button, mdui-text-field
 
 #let title = [摆弄];
 
 #set raw(lang: "rust");
 
-#import_style("/play/style.css");
-#import_script("/play/script.js")
-
-左半边写 Rust,右半边是编译日志和预览两个选项卡(中间那条可以拖动改宽度)。
-点「编译」把源码发到后端,后端在一个一次性容器里跑 `cargo build`,回来的
-`.gia` 可以直接下载进游戏。
-
-第一次编译可能要多等几分钟 —— 后端要先烘一个镜像出来,`/healthz`
-在那之前会报 `not_ready`。有多个后端,页面会挨个试,连上哪个用哪个。
+#custom_element(() => {
+    import_style("/play/style.css");
+    import_script("/play/script.js");
+})[]
 
 // 页面里**不出现**后端地址,也不给改:地址表写死在 script.js 的
 // `BACKENDS` 里。
@@ -94,7 +90,7 @@
         ]
         #html_elem("div", class: "play-panel", id: "play-panel-preview", attrs: ("hidden": ""))[
           #html_elem("div", class: "play-preview")[
-            尽情期待
+            节点图预览还在做,敬请期待。
           ]
         ]
       ]

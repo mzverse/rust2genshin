@@ -9,3 +9,6 @@
 
 # viewer 的合成夹具是生成物,用 `cargo run -p rust2genshin-viewer -- --emit-fixture <路径>` 重新产出
 viewer/fixtures/
+
+# superpowers 技能的工作区(计划/SDD 台账/评审 diff)。会话产物,不进仓库
+/.superpowers/

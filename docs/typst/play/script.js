@@ -7,8 +7,7 @@
  *   - PlayClient  只认「连上 / 发 submit / 收消息」,不知道编辑器存在。
  * 两者在 `init()` 里通过那几个回调接起来。
  *
- * 后端地址在 localStorage 里;没有就用 `.play` 上的 `data-backend`
- * (站点在 index.typ 里给),再没有才退回本机的 8787。
+ * 后端地址不归页面管 —— 见下面 `BACKENDS` 的注释。
  */
 
 /* 后端地址表。**页面里不给看也不给改** —— 写死在这儿,原因有三个:
@@ -128,10 +127,11 @@ class PlayEditor {
 }
 
 class PlayClient {
-    constructor(url, handlers) {
-        this.url = url;
+    constructor(handlers) {
         this.handlers = handlers;
         this.ws = null;
+        // 连上之前是 null —— `httpOrigin(client.url)` 只在收到 hello /
+        // finished 之后用,那时 connect() 已经把它填好了。
         this.url = null;
         // 还没连上时想发的消息。断线重连期间点「编译」会落到这里,
         // onopen 一冲就发出去 —— 不能丢,丢了界面会永远停在「排队中…」。
@@ -342,7 +342,7 @@ function ready() {
         }, 5000);
     };
 
-    const client = new PlayClient(null, {
+    const client = new PlayClient({
         onStatus: setStatus,
         onHello: (m) => {
             ready = !!m.image_commit;

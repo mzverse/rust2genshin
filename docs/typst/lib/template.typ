@@ -11,7 +11,7 @@
     toc: true,
     with_outline: true,
     with_header: true,
-    title: none,
+    with_title: true,
 ) = context {
     set text(lang: "zh", font: "Microsoft YaHei", size: 12pt);
     show link: if target() == "html" {
@@ -75,7 +75,7 @@
         let page_style = if with_outline { outline.template } else { x => x };
         html_elem("main")[
             #show: page_style;
-            #if document.title != none {
+            #if with_title and document.title != none {
                 html_elem("h1", document.title)
             }
             #con;
