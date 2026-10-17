@@ -8,7 +8,9 @@
 //! - `exec::RaProcess` 只会「发一帧 / 收一帧」;
 //! - 这里起一个后台 reader 任务,把收到的帧按 JSON-RPC 的 id / method
 //!   分流:带 id 且命中 pending 表的是响应,`publishDiagnostics` 是诊断,
-//!   其余(日志、progress)忽略。
+//!   服务端发来的请求统一回 `result: null`(其中
+//!   `workspace/semanticTokens/refresh` 还要重新拉一次 token),其余通知
+//!   (日志、progress)忽略。
 //!
 //! 两种请求共用一条 JSON-RPC id 空间:内部请求(`initialize`、
 //! `semanticTokens/full`)从 [`INTERNAL_ID_BASE`] 起单调递增,补全请求
@@ -79,18 +81,25 @@ pub struct CompletionItem {
     pub detail: Option<String>,
 }
 
+/// 一条诊断。位置是 LSP 的 0 基行列。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub severity: u8,
+    pub message: String,
+}
+
 /// 会话推给上层的事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// 一条 `publishDiagnostics` 里的诊断。位置是 LSP 的 0 基行列。
-    Diagnostic {
-        line: u32,
-        column: u32,
-        end_line: u32,
-        end_column: u32,
-        severity: u8,
-        message: String,
-    },
+    /// 当前编辑文件(`DOC_URI`)的一次完整诊断集合。
+    ///
+    /// **空 vec 有意义**:LSP 用空数组表示「该 uri 的诊断清空」,
+    /// 上层据此把红线擦掉。
+    Diagnostics(Vec<Diagnostic>),
     /// `semanticTokens/full` 的 delta 数组,**原样透传**,不拆。
     Tokens(Vec<u32>),
     /// 补全响应。`request_id` 是前端自己的 id。
@@ -138,8 +147,9 @@ pub struct Session {
     /// reader 看到 `ChildExited` 时置 false。`is_alive` 只看它 ——
     /// 每次询问都去 ping 一下会把 RA 打慢。
     alive: Arc<AtomicBool>,
-    /// 内部请求 id,从 [`INTERNAL_ID_BASE`] 单调递增。
-    next_internal_id: AtomicU64,
+    /// 内部请求 id,从 [`INTERNAL_ID_BASE`] 单调递增。reader 处理
+    /// `workspace/semanticTokens/refresh` 时也要分配,所以共享 `Arc`。
+    next_internal_id: Arc<AtomicU64>,
     /// didOpen / didChange 共用的文档版本号。
     version: AtomicU64,
     /// 后台读任务。`Drop` 时 abort —— 否则它会攥着 `Arc<RaProcess>`
@@ -153,18 +163,20 @@ impl Session {
         let (tx, rx) = mpsc::unbounded_channel();
         let alive = Arc::new(AtomicBool::new(true));
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let next_internal_id = Arc::new(AtomicU64::new(INTERNAL_ID_BASE));
         let reader = tokio::spawn(reader_loop(
             Arc::clone(&proc),
             tx,
             Arc::clone(&alive),
             Arc::clone(&pending),
+            Arc::clone(&next_internal_id),
         ));
         Self {
             proc,
             events_rx: Mutex::new(Some(rx)),
             pending,
             alive,
-            next_internal_id: AtomicU64::new(INTERNAL_ID_BASE),
+            next_internal_id,
             version: AtomicU64::new(0),
             reader,
         }
@@ -233,7 +245,10 @@ impl Session {
         .await
     }
 
-    /// 打开文档(全文),版本从 1 起。
+    /// 打开文档(全文),版本从 1 起,随后主动要一次 token。
+    ///
+    /// `didOpen` 之后就要请求:RA 不会「打开后自动推 token」,不主动要
+    /// 的话用户不敲键盘就永远没有高亮。
     pub async fn did_open(&self, text: &str) -> Result<(), LspError> {
         self.version.store(1, Ordering::SeqCst);
         self.send_json(&json!({
@@ -248,7 +263,8 @@ impl Session {
                 }
             }
         }))
-        .await
+        .await?;
+        self.request_tokens().await
     }
 
     /// 全文替换(不带 `range`),然后主动要一次 `semanticTokens/full`。
@@ -266,23 +282,7 @@ impl Session {
             }
         }))
         .await?;
-
-        let id = self.next_id();
-        self.pending
-            .lock()
-            .expect("Mutex 不该中毒:持锁段不 panic")
-            .insert(id, Pending::Tokens);
-        let req = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "textDocument/semanticTokens/full",
-            "params": { "textDocument": { "uri": DOC_URI } },
-        });
-        if let Err(e) = self.send_json(&req).await {
-            self.unregister(id);
-            return Err(e);
-        }
-        Ok(())
+        self.request_tokens().await
     }
 
     /// 发一个补全请求。**id 用前端给的 `request_id` 原样当 JSON-RPC id**,
@@ -319,7 +319,8 @@ impl Session {
         Ok(())
     }
 
-    /// 事件接收端。**只能调一次** —— channel 只有一个接收端。
+    /// 事件接收端。**只能调一次** —— channel 只有一个接收端,
+    /// 第二次调用会 panic。
     pub fn events(&self) -> mpsc::UnboundedReceiver<Event> {
         self.events_rx
             .lock()
@@ -336,6 +337,12 @@ impl Session {
     pub async fn shutdown(&self) {
         self.proc.shutdown().await;
         self.alive.store(false, Ordering::SeqCst);
+    }
+
+    /// 主动要一次 `textDocument/semanticTokens/full`。响应由 reader
+    /// 转成 [`Event::Tokens`]。
+    async fn request_tokens(&self) -> Result<(), LspError> {
+        request_tokens_impl(&self.proc, &self.pending, &self.next_internal_id).await
     }
 
     fn next_id(&self) -> u64 {
@@ -364,19 +371,50 @@ impl Drop for Session {
     }
 }
 
+/// 登记 `Pending::Tokens` 并发出 `semanticTokens/full`。
+///
+/// 抽成自由函数是因为 reader 处理 `workspace/semanticTokens/refresh` 时
+/// 也要发一次,而 reader 手里只有 `Arc<RaProcess>` / pending 表 / id 计数器。
+async fn request_tokens_impl(
+    proc: &RaProcess,
+    pending: &Mutex<HashMap<u64, Pending>>,
+    next_id: &AtomicU64,
+) -> Result<(), LspError> {
+    let id = next_id.fetch_add(1, Ordering::SeqCst);
+    pending
+        .lock()
+        .expect("Mutex 不该中毒:持锁段不 panic")
+        .insert(id, Pending::Tokens);
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "textDocument/semanticTokens/full",
+        "params": { "textDocument": { "uri": DOC_URI } },
+    });
+    if let Err(e) = proc.send(&req.to_string()).await {
+        pending
+            .lock()
+            .expect("Mutex 不该中毒:持锁段不 panic")
+            .remove(&id);
+        return Err(LspError::Exec(e.to_string()));
+    }
+    Ok(())
+}
+
 /// 后台读循环:把 RA 的每一帧分到 pending 表或事件里。
 async fn reader_loop(
     proc: Arc<RaProcess>,
     tx: mpsc::UnboundedSender<Event>,
     alive: Arc<AtomicBool>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
+    next_id: Arc<AtomicU64>,
 ) {
     while alive.load(Ordering::SeqCst) {
         match proc.recv(RECV_TIMEOUT).await {
             Ok(Some(raw)) => {
                 // 不是 JSON 的帧:忽略。RA 的 stdout 上只该有 LSP 帧。
                 if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                    dispatch(v, &tx, &pending);
+                    dispatch(v, &proc, &tx, &pending, &next_id).await;
                 }
             }
             // 沉默(RA 还活着只是没回):继续等。
@@ -390,17 +428,50 @@ async fn reader_loop(
             }
         }
     }
+    // 清空 pending:正在 `await` 的调用方(比如 `initialize`)会立刻
+    // 拿到 oneshot 断开(= `Closed`),不必等满 `INIT_TIMEOUT`。
+    // 不清的话 `Session` 还持着这颗 `Arc`,sender 一直不 drop。
+    pending
+        .lock()
+        .expect("Mutex 不该中毒:持锁段不 panic")
+        .clear();
     // `tx` 在这里 drop —— 事件 channel 关闭,上层据此知道会话没了。
 }
 
-fn dispatch(v: Value, tx: &mpsc::UnboundedSender<Event>, pending: &Mutex<HashMap<u64, Pending>>) {
-    // 带 method 的是通知或服务端发来的请求。诊断是唯一要转发的;
-    // window/logMessage、$/progress 以及服务端请求(注册能力、刷新
-    // token 等)一律忽略。
+async fn dispatch(
+    v: Value,
+    proc: &RaProcess,
+    tx: &mpsc::UnboundedSender<Event>,
+    pending: &Mutex<HashMap<u64, Pending>>,
+    next_id: &AtomicU64,
+) {
+    // 带 method 的是通知或服务端发来的请求。
     if let Some(method) = v.get("method").and_then(Value::as_str) {
         if method == "textDocument/publishDiagnostics" {
             emit_diagnostics(&v, tx);
+            return;
         }
+        // 服务端**请求**(带 id)必须回响应:静默丢弃会让 RA 以为
+        // 客户端挂了,后续分析可能停摆。请求的参数我们都不需要,
+        // 统一回 `result: null`。
+        if let Some(id) = v.get("id") {
+            let resp = json!({
+                "jsonrpc": "2.0",
+                "id": id.clone(),
+                "result": Value::Null,
+            });
+            if let Err(e) = proc.send(&resp.to_string()).await {
+                tracing::warn!("回复 RA 的服务端请求失败:{e}");
+            }
+            // RA 要求客户端重新拉 token(冷启动时第一次拿到的可能
+            // 不完整)。这是高亮能补齐的关键一步。
+            if method == "workspace/semanticTokens/refresh"
+                && let Err(e) = request_tokens_impl(proc, pending, next_id).await
+            {
+                tracing::warn!("刷新 semanticTokens 失败:{e}");
+            }
+        }
+        // 其余通知(window/logMessage、$/progress 等)忽略。
         return;
     }
 
@@ -420,19 +491,22 @@ fn dispatch(v: Value, tx: &mpsc::UnboundedSender<Event>, pending: &Mutex<HashMap
         }
         Pending::Tokens => {
             // `delta` 数组原样透传:拆成 (start, len, type, modifiers)
-            // 是前端 CodeMirror 扩展的活。
-            let data = v
-                .get("result")
-                .and_then(|r| r.get("data"))
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_u64)
-                        .map(|n| n as u32)
-                        .collect::<Vec<u32>>()
-                })
-                .unwrap_or_default();
-            let _ = tx.send(Event::Tokens(data));
+            // 是前端 CodeMirror 扩展的活。整体按 `Vec<u32>` 解析 ——
+            // 逐元素 `filter_map` 会静默丢元素/截断。
+            let Some(data) = v.get("result").and_then(|r| r.get("data")) else {
+                tracing::warn!("semanticTokens/full 响应里没有 data,丢弃");
+                return;
+            };
+            match serde_json::from_value::<Vec<u32>>(data.clone()) {
+                Ok(data) => {
+                    let _ = tx.send(Event::Tokens(data));
+                }
+                Err(e) => {
+                    // 不能发一个空 Tokens 假装正常 —— 前端会据此把
+                    // 整份高亮擦掉。
+                    tracing::warn!("semanticTokens/full 的 data 解析失败,丢弃:{e}");
+                }
+            }
         }
         Pending::Completion { request_id } => {
             let items = parse_completion_items(v.get("result"));
@@ -442,25 +516,27 @@ fn dispatch(v: Value, tx: &mpsc::UnboundedSender<Event>, pending: &Mutex<HashMap
 }
 
 fn emit_diagnostics(v: &Value, tx: &mpsc::UnboundedSender<Event>) {
-    let Some(list) = v
-        .get("params")
-        .and_then(|p| p.get("diagnostics"))
-        .and_then(Value::as_array)
-    else {
+    let Some(params) = v.get("params") else {
         return;
     };
-    for d in list {
-        if let Some(event) = diagnostic_from(d) {
-            let _ = tx.send(event);
-        }
+    // 工作区里还有 lib / lib-internal / Cargo.toml 的诊断;只认当前
+    // 编辑文件的,否则前端会把别处的问题画在这份源码上。
+    if params.get("uri").and_then(Value::as_str) != Some(DOC_URI) {
+        return;
     }
+    let Some(list) = params.get("diagnostics").and_then(Value::as_array) else {
+        return;
+    };
+    // 空数组也要发:它表示「该 uri 的诊断清空」,上层据此擦红线。
+    let diagnostics: Vec<Diagnostic> = list.iter().filter_map(diagnostic_from).collect();
+    let _ = tx.send(Event::Diagnostics(diagnostics));
 }
 
-fn diagnostic_from(d: &Value) -> Option<Event> {
+fn diagnostic_from(d: &Value) -> Option<Diagnostic> {
     let range = d.get("range")?;
     let start = range.get("start")?;
     let end = range.get("end")?;
-    Some(Event::Diagnostic {
+    Some(Diagnostic {
         line: start.get("line")?.as_u64()? as u32,
         column: start.get("character")?.as_u64()? as u32,
         end_line: end.get("line")?.as_u64()? as u32,
@@ -571,6 +647,14 @@ mod tests {
                 .collect()
         }
 
+        /// drop 掉 stdout 的 sender,模拟 RA 死掉 / 管道关闭。
+        fn disconnect_stdout(&self) {
+            *self
+                .stdout_tx
+                .lock()
+                .expect("Mutex 不该中毒:持锁段不 panic") = None;
+        }
+
         /// 等某条消息真的写出去。主要给「后台任务要先看到请求才回帧」用,
         /// 避免回帧早于 pending 登记被 reader 丢掉。
         async fn wait_until_written(&self, needle: &str) {
@@ -673,13 +757,13 @@ mod tests {
             init["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
             false
         );
-        let token_types =
-            init["params"]["capabilities"]["textDocument"]["semanticTokens"]["tokenTypes"]
-                .as_array()
-                .expect("必须声明 semanticTokens.tokenTypes,否则 RA 不给高亮");
-        assert_eq!(token_types.len(), 23);
-        assert_eq!(token_types[0], "namespace");
-        assert_eq!(token_types[22], "decorator");
+        // tokenTypes 的**顺序**必须整体钉死:前端按同一顺序把索引映射成
+        // 样式 class,只钉首尾/长度挡不住中间 21 项被重排。
+        assert_eq!(
+            init["params"]["capabilities"]["textDocument"]["semanticTokens"]["tokenTypes"],
+            serde_json::json!(TOKEN_TYPES),
+            "tokenTypes 顺序必须与前端一致"
+        );
 
         let open = &bodies[did_open]["params"]["textDocument"];
         assert_eq!(open["uri"], DOC_URI);
@@ -757,15 +841,84 @@ mod tests {
 
         assert_eq!(
             next_event(&mut events).await,
-            Event::Diagnostic {
+            Event::Diagnostics(vec![Diagnostic {
                 line: 3,
                 column: 7,
                 end_line: 3,
                 end_column: 12,
                 severity: 2,
                 message: "unresolved import".into(),
-            }
+            }])
         );
+    }
+
+    /// 别的文件(工作区里的 lib / Cargo.toml)的诊断不能冒充当前文件;
+    /// 空数组必须发出来 —— 否则用户修好错误后红线永远不消失。
+    #[tokio::test]
+    async fn diagnostics_are_filtered_by_uri_and_empty_clears() {
+        let (fake, session) = setup().await;
+        let mut events = session.events();
+        let tx = fake.sender();
+
+        let foreign = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///opt/ra/ws/Cargo.toml",
+                "diagnostics": [{
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 },
+                    },
+                    "severity": 1,
+                    "message": "foreign",
+                }],
+            },
+        });
+        tx.send(frame::encode(&foreign.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), events.recv())
+                .await
+                .is_err(),
+            "别的 uri 的诊断不该发事件"
+        );
+
+        let cleared = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": DOC_URI, "diagnostics": [] },
+        });
+        tx.send(frame::encode(&cleared.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        assert_eq!(
+            next_event(&mut events).await,
+            Event::Diagnostics(vec![]),
+            "空数组 = 诊断清空,必须发一个空 vec"
+        );
+    }
+
+    /// `didOpen` 之后就要主动要一次 token —— RA 不会自己推,不要的话
+    /// 用户不敲键盘就永远没有高亮。
+    #[tokio::test]
+    async fn did_open_requests_semantic_tokens() {
+        let (fake, session) = setup().await;
+        session
+            .did_open("fn main() {}")
+            .await
+            .expect("didOpen 该成功");
+
+        let bodies = fake.written_bodies();
+        let req = bodies
+            .iter()
+            .find(|v| v["method"] == "textDocument/semanticTokens/full")
+            .unwrap_or_else(|| panic!("didOpen 之后就该请求 token:{bodies:?}"));
+        assert_eq!(
+            req["id"].as_u64(),
+            Some(INTERNAL_ID_BASE),
+            "token 请求要用内部 id"
+        );
+        assert_eq!(req["params"]["textDocument"]["uri"], DOC_URI);
     }
 
     #[tokio::test]
@@ -780,10 +933,20 @@ mod tests {
             .await
             .expect("didChange 该成功");
 
+        // 先确认请求真的写出去了(否则只测「塞响应→收事件」会掩盖
+        // 根本没发请求的情况),并从请求里取 id。
+        let bodies = fake.written_bodies();
+        let req = bodies
+            .iter()
+            .find(|v| v["method"] == "textDocument/semanticTokens/full")
+            .unwrap_or_else(|| panic!("didChange 之后该请求 token:{bodies:?}"));
+        let id = req["id"].as_u64().expect("内部请求该有数字 id");
+        assert_eq!(req["params"]["textDocument"]["uri"], DOC_URI);
+
         let data: Vec<u32> = vec![0, 0, 3, 4, 0, 1, 1, 5, 1, 0, 2, 3, 1, 22, 0];
         let resp = serde_json::json!({
             "jsonrpc": "2.0",
-            "id": INTERNAL_ID_BASE,
+            "id": id,
             "result": { "data": data },
         });
         fake.sender()
@@ -794,6 +957,124 @@ mod tests {
             Event::Tokens(got) => assert_eq!(got, data, "delta 数组要逐元素原样透传"),
             other => panic!("期望 Event::Tokens,实际:{other:?}"),
         }
+    }
+
+    /// `data` 里混了非 u32 元素时不能静默丢元素、更不能假装发一个空
+    /// Tokens —— 那会让前端把整份高亮擦掉。
+    #[tokio::test]
+    async fn malformed_token_data_emits_no_event() {
+        let (fake, session) = setup().await;
+        let mut events = session.events();
+        session
+            .did_change("fn main() {}")
+            .await
+            .expect("didChange 该成功");
+        let bodies = fake.written_bodies();
+        let id = bodies
+            .iter()
+            .find(|v| v["method"] == "textDocument/semanticTokens/full")
+            .expect("didChange 之后该请求 token")["id"]
+            .as_u64()
+            .expect("内部请求该有数字 id");
+
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "data": [0, 1, "bad"] },
+        });
+        fake.sender()
+            .send(frame::encode(&resp.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), events.recv())
+                .await
+                .is_err(),
+            "解析失败不能发 Event::Tokens"
+        );
+    }
+
+    /// 服务端发来的请求必须回一条 `result: null`(静默丢弃会让 RA
+    /// 以为客户端挂了);`workspace/semanticTokens/refresh` 还要重新
+    /// 请求一次 token —— 冷启动时第一次拿到的可能不完整。
+    #[tokio::test]
+    async fn server_requests_are_answered_and_refresh_refetches_tokens() {
+        let (fake, session) = setup().await;
+        let _events = session.events();
+        let tx = fake.sender();
+
+        let refresh = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "workspace/semanticTokens/refresh",
+            "params": null,
+        });
+        tx.send(frame::encode(&refresh.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        fake.wait_until_written("\"id\":42").await;
+
+        let bodies = fake.written_bodies();
+        let resp = bodies
+            .iter()
+            .find(|v| v["id"].as_u64() == Some(42) && v.get("method").is_none())
+            .unwrap_or_else(|| panic!("刷新请求必须回一条响应:{bodies:?}"));
+        assert_eq!(resp["result"], serde_json::Value::Null);
+        let token_req = bodies
+            .iter()
+            .find(|v| v["method"] == "textDocument/semanticTokens/full")
+            .unwrap_or_else(|| panic!("刷新之后要重新请求 token:{bodies:?}"));
+        assert_eq!(
+            token_req["id"].as_u64(),
+            Some(INTERNAL_ID_BASE),
+            "重新请求 token 要用新的内部 id"
+        );
+        assert_eq!(token_req["params"]["textDocument"]["uri"], DOC_URI);
+
+        // 其它服务端请求同样要回,不能静默丢。
+        let register = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "client/registerCapability",
+            "params": {},
+        });
+        tx.send(frame::encode(&register.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        fake.wait_until_written("\"id\":9").await;
+
+        let bodies = fake.written_bodies();
+        let resp = bodies
+            .iter()
+            .find(|v| v["id"].as_u64() == Some(9) && v.get("method").is_none())
+            .expect("未知服务端请求也要回响应");
+        assert_eq!(resp["result"], serde_json::Value::Null);
+    }
+
+    /// RA 在 `initialize` 等待期间死掉:reader 清空 pending 后 oneshot
+    /// 立刻断,`initialize` 应当秒级返回 `Closed`,而不是等满 30s。
+    #[tokio::test]
+    async fn reader_exit_wakes_pending_initialize() {
+        let (fake, session) = setup().await;
+        let disconnect = tokio::spawn({
+            let fake = Arc::clone(&fake);
+            async move {
+                fake.wait_until_written("\"method\":\"initialize\"").await;
+                fake.disconnect_stdout();
+            }
+        });
+
+        let start = tokio::time::Instant::now();
+        let res = tokio::time::timeout(Duration::from_secs(5), session.initialize())
+            .await
+            .expect("RA 死了要立刻醒,不能等满 INIT_TIMEOUT");
+        let elapsed = start.elapsed();
+        disconnect.await.expect("disconnect 任务不该 panic");
+        assert!(
+            matches!(res, Err(LspError::Closed)),
+            "期望 Closed,实际:{res:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "耗时 {elapsed:?},不该接近 INIT_TIMEOUT"
+        );
     }
 
     #[tokio::test]
