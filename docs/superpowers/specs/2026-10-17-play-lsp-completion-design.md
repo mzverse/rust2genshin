@@ -6,9 +6,10 @@
 ## 目标
 
 摆弄页（`docs/typst/play/`）的编辑框目前是裸 `<textarea>`，只有「编译 → 看日志」。要给它加
-Rust 补全与诊断：用户写 `rust2genshin_lib::sc::` 就能列出模块里的函数名。
+**语法高亮、诊断、补全**：用户写 `rust2genshin_lib::sc::` 就能列出模块里的函数名，函数名同时
+被染色。
 
-配套的前置项是**语法高亮**——它不依赖容器，是独立的、可先落地的部分。本设计只谈补全。
+三样**全部由容器里的 rust-analyzer 通过 LSP 提供**，前端不做任何 Rust 解析。
 
 ## 非目标
 
@@ -237,6 +238,9 @@ LspChange { source: String },
 
 ```rust
 LspReady { file: String },
+/// RA 的 semanticTokens delta 数组，原样透传。**不在服务端拆** —— 拆成
+/// (start, len, type, modifiers) 是 CodeMirror 扩展的活，服务只搬运。
+LspTokens { data: Vec<u32> },
 LspDiagnostic { line: u32, column: u32, end_line: u32, end_column: u32,
                 severity: DiagnosticSeverity, message: String },
 LspCompletion { request_id: u32, items: Vec<CompletionItem> },
@@ -255,13 +259,34 @@ LSP 的 completion 是**请求-应答**（`textDocument/completion` → 带 id �
 `ServerMsg` 是单向广播流。这里用 `LspCompletion { request_id }` 让前端把自己的 id 原样
 回显，服务端按 id 配对。多客户端时 id 由前端自行保证唯一。
 
-## 前端
+## 前端：编辑功能全部来自 RA
 
-编辑器换 CodeMirror 6（`@codemirror/lang-rust` 给语法高亮，`@codemirror/lint` 接诊断，
-自己写一个 source 扩展接 completion）。理由是原生 `<textarea>` 没有任何扩展点。
+编辑器换 CodeMirror 6，但**不引入任何 Rust 解析器** —— `@codemirror/lang-rust`、
+tree-sitter、Lezer 语法表统统不要。语法高亮、诊断、补全三样都是 RA 通过 LSP 给的：
 
-挂 npm 包意味着摆弄页不再是无构建的静态页——这是本设计的**最大前端成本**，也是语法高亮
-单独先做的原因：高亮那一档可以只上 `@codemirror/lang-rust`，不碰后端。
+| 能力 | 来源 | CodeMirror 侧 |
+|---|---|---|
+| 语法高亮 | `textDocument/semanticTokens/full` | 自写一个 `StateField` + `Decoration`，把 RA 的 delta 数组映射成 range 上的样式 class |
+| 诊断 | `textDocument/publishDiagnostics` | 自写一个 `StateField` + `Decoration`，或直接借用 `@codemirror/lint` 的 `setDiagnostics` |
+| 补全 | `textDocument/completion` | 自写 `CompletionSource` |
+
+实测这个 RA 版本（`1.101.0-nightly`）**给 `semanticTokensProvider`**，
+`textDocument/semanticTokens/full` 也真的返回 delta 编码的 token 数组 —— 前提是客户端在
+`initialize` 的 `capabilities.textDocument.semanticTokens` 里声明支持。这条要在
+`ServerMsg` 里加一个 `LspTokens { data: Vec<u32> }` 透传（不要在前端拆 delta 再转发，
+拆分是 CodeMirror 扩展的事，服务只做透传）。
+
+好处是本地零解析：没有 Lezer 语法表要下载、没有 wasm 要等、不存在「高亮和分析结论不一致」。
+代价是高亮要等 RA 就绪才出现（待命池的意义之二），以及 RA 卡住时高亮会一起消失。
+
+依赖的 npm 包因此缩到 `@codemirror/state`、`@codemirror/view`、`@codemirror/autocomplete`
+（`@codemirror/lint` 可选）。挂 npm 包意味着摆弄页不再是无构建的静态页 —— 这是本设计
+**唯一的前端成本**。
+
+### 高亮的空窗期
+
+在 RA 就绪之前，编辑框是纯文本。UI 上用一条提示说「分析中…」，而不是留一片纯黑等它。
+拿到第一个 `LspTokens` 后提示消失。
 
 ## 配置
 
