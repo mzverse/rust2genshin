@@ -130,11 +130,18 @@ pub fn container_command(spec: &RunSpec) -> String {
     )
 }
 
-/// 不挂 `target/` —— 挂了会盖掉烘焙进去的预热缓存,任务就必然超时。
-/// 挂目录而不是挂单个文件:单文件 bind mount 在 Docker Desktop 的
-/// 9p / virtiofs 共享上最容易出怪问题,而 `demo/src/` 里只有一个文件。
-pub fn run_args(spec: &RunSpec) -> Vec<String> {
-    let mut a: Vec<String> = vec!["run".into()];
+/// RA 容器在镜像内的 workspace 根目录。源码由 `exec` 在容器内写进这个目录
+/// 不挂 `demo/src`,所以 workdir 必须在镜像里已经存在 —— 否则 `docker run`
+/// 会以 `/opt/ra/ws` 不存在为由失败。
+pub const RA_WORKDIR: &str = "/opt/ra/ws";
+
+/// 资源限额与加固旗标。任务容器与待命 RA 容器都吃同一份:docker CLI 对限额
+/// 旗标的相对顺序不敏感(`-d` / `-v` / `--rm` 这些**是**敏感的,所以那些留在
+/// `run_args` / `run_detached_args` 自己拼)。
+///
+/// 抽出来的目的:让 `run_detached_args` 复用这堆限额,不在 image 之后塞 `-d`。
+fn limit_args(spec: &RunSpec) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
     let pids = spec.pids_limit.to_string();
     for s in [
         "--network", "none",
@@ -161,6 +168,15 @@ pub fn run_args(spec: &RunSpec) -> Vec<String> {
     a.push("ALL".into());
     a.push("--security-opt".into());
     a.push("no-new-privileges".into());
+    a
+}
+
+/// 不挂 `target/` —— 挂了会盖掉烘焙进去的预热缓存,任务就必然超时。
+/// 挂目录而不是挂单个文件:单文件 bind mount 在 Docker Desktop 的
+/// 9p / virtiofs 共享上最容易出怪问题,而 `demo/src/` 里只有一个文件。
+pub fn run_args(spec: &RunSpec) -> Vec<String> {
+    let mut a: Vec<String> = vec!["run".into()];
+    a.extend(limit_args(spec));
     a.push("--rm".into());
     a.push("--name".into());
     a.push(spec.name.clone());
@@ -231,13 +247,28 @@ pub fn exec_args(name: &str, cmd: &str) -> Vec<String> {
 
 /// 待命 RA 容器:`-d` 后台,不 attach。
 ///
+/// 形状必须是 `... limit_args --rm --name X --workdir DIR -d IMAGE sleep`:
+/// `-d` 是 `docker run` 的旗标(IMAGE 之前),而 image 之后是容器要执行的
+/// `COMMAND [ARG...]` —— 末尾的 `sleep` 担当那个 COMMAND,撑住前台进程。
+///
+/// 不挂 `demo/src` 与 `/out`:RA 的 workspace 在镜像内,源码由 `exec_args`
+/// 把 `cargo build` 的产物灌进去;不挂出 `target/` 也意味着容器不会有宿主机
+/// 路径 —— 全程容器内文件系统,挂载少一份故障面。
+///
 /// 末尾的 `sleep` 是必须的:容器必须有前台常驻进程才不会被判定退出
 /// (镜像的 CMD 是 bash,不显式给命令的话它会起一个没有 tty 的 bash 然后
 /// 立刻 exit 0 —— 看起来「起来了」,实际什么都没跑)。RA 本身由
 /// `exec_args` 在这个容器里另起。
 pub fn run_detached_args(spec: &RunSpec) -> Vec<String> {
-    let mut a = run_args(spec);
+    let mut a: Vec<String> = vec!["run".into()];
+    a.extend(limit_args(spec));
+    a.push("--rm".into());
+    a.push("--name".into());
+    a.push(spec.name.clone());
+    a.push("--workdir".into());
+    a.push(RA_WORKDIR.into());
     a.push("-d".into());
+    a.push(spec.image.clone());
     a.push("sleep".into());
     a
 }
@@ -497,9 +528,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_detached_has_no_attach_flags() {
-        let spec = RunSpec {
+    fn ra_spec() -> RunSpec {
+        RunSpec {
             name: "r2g-ra-1".into(),
             image: "img:tag".into(),
             src_dir: PathBuf::from("/src"),
@@ -510,12 +540,45 @@ mod tests {
             pids_limit: 128,
             user: "1001".into(),
             source_file: "demo/src/lib.rs".into(),
-        };
-        let a = run_detached_args(&spec);
-        assert!(a.contains(&"-d".to_string()));
-        assert!(!a.contains(&"-i".to_string()));
-        assert!(!a.contains(&"-t".to_string()));
-        // 待命容器不跑任务,最后一段必须是常驻命令而不是 cargo
-        assert_eq!(a.last().unwrap(), "sleep");
+        }
+    }
+
+    #[test]
+    fn run_detached_puts_d_before_the_image() {
+        let a = run_detached_args(&ra_spec());
+        let d_pos = a.iter().position(|x| x == "-d").unwrap();
+        let img_pos = a.iter().position(|x| x == "img:tag").unwrap();
+        assert!(d_pos < img_pos, "-d 必须在 image 之前,当前 argv: {a:?}");
+    }
+
+    #[test]
+    fn run_detached_drops_the_compile_command() {
+        let a = run_detached_args(&ra_spec());
+        let img_pos = a.iter().position(|x| x == "img:tag").unwrap();
+        let after: Vec<&String> = a.iter().skip(img_pos + 1).collect();
+        assert_eq!(
+            after,
+            vec![&"sleep".to_string()],
+            "image 之后只能有 sleep,实际:{after:?}"
+        );
+        assert!(
+            !a.iter().any(|s| s.contains("cargo build")),
+            "不能含 cargo build,实际 argv:{a:?}"
+        );
+    }
+
+    #[test]
+    fn run_detached_has_no_attach_flags_and_no_mounts() {
+        let a = run_detached_args(&ra_spec());
+        assert!(!a.contains(&"-i".to_string()), "不能有 -i,实际 argv:{a:?}");
+        assert!(!a.contains(&"-t".to_string()), "不能有 -t,实际 argv:{a:?}");
+        assert!(
+            !a.iter().any(|s| s.contains("demo/src")),
+            "不能挂 demo/src,实际 argv:{a:?}"
+        );
+        assert!(
+            !a.iter().any(|s| s.contains("/out")),
+            "不能挂 /out,实际 argv:{a:?}"
+        );
     }
 }
