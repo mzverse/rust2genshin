@@ -20,7 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 use crate::lsp::exec::RaProcess;
 
@@ -99,9 +99,6 @@ impl Drop for Acquire {
 pub struct Pool {
     idle: Mutex<VecDeque<Handle>>,
     in_use: AtomicUsize,
-    /// 给将来「补池/等待唤醒」用 —— 当前 `acquire` 不等任何东西,新会话
-    /// 一调就有。
-    notify: Notify,
     new_session: Box<
         dyn Fn() -> Pin<Box<dyn Future<Output = Handle> + Send>> + Send + Sync + 'static,
     >,
@@ -116,7 +113,6 @@ impl Pool {
         Arc::new(Self {
             idle: Mutex::new(VecDeque::new()),
             in_use: AtomicUsize::new(0),
-            notify: Notify::new(),
             new_session: Box::new(move || Box::pin(new_session())),
         })
     }
@@ -335,11 +331,13 @@ mod tests {
 
         let acq = pool.acquire().await;
         assert_eq!(pool.idle.lock().await.len(), 0, "取用后空闲该 0");
+        assert_eq!(pool.in_use(), 1, "取用后在用数该 1");
         assert_eq!(state.created(), 1, "有空就不该再造");
         assert_eq!(state.destroyed(), 0, "取用不该销毁");
 
         acq.release(true).await;
         assert_eq!(pool.idle.lock().await.len(), 1, "放回后空闲该 1");
+        assert_eq!(pool.in_use(), 0, "放回后在用数该归 0");
         assert_eq!(state.destroyed(), 0, "POOL_MIN 时不该销毁");
     }
 
@@ -386,10 +384,14 @@ mod tests {
         let acq = pool.acquire().await;
         assert_eq!(state.created(), 2, "坏 entry 该被替换成新造的");
         assert_eq!(state.destroyed(), 1, "坏 entry 该被销毁");
+        assert_eq!(pool.in_use(), 1, "取用后在用数该 1");
 
         // release(alive=false) → 该销毁,不入池
         acq.release(false).await;
         assert_eq!(state.destroyed(), 2);
         assert_eq!(pool.idle.lock().await.len(), 0, "alive=false 不该回池");
+        // 会话死了不等于计数能漏 —— 在用数必须归 0,否则下一个请求
+        // 看到的「在用数」会一直虚高。
+        assert_eq!(pool.in_use(), 0, "释放死会话后在用数也得归 0");
     }
 }
