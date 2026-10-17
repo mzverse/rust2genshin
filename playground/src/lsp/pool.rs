@@ -51,6 +51,10 @@ pub struct Handle {
     liveness: Liveness,
     /// 上次回到空闲队列的时间,回收循环据此判断是否超龄。
     pub(crate) idle_since: Instant,
+    /// 会话所在的容器名。池的状态机不关心它,但上层要把用户源码写进
+    /// 这个容器(`LspService::write_source`),所以得带出来。默认空串 ——
+    /// 池的单元测试里的假会话没有容器,加这个字段不动它们的装配。
+    container: String,
     /// `Drop` 里取走;`None` 表示已被消费过。
     destroy: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
@@ -70,6 +74,7 @@ impl Handle {
                 Box::pin(async move { p.ping(Duration::from_secs(1)).await.is_ok() })
             }),
             idle_since: Instant::now(),
+            container: String::new(),
             destroy: Some(destroy),
         }
     }
@@ -80,6 +85,12 @@ impl Handle {
         f: impl Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync + 'static,
     ) -> Self {
         self.liveness = Box::new(f);
+        self
+    }
+
+    /// 带上会话所在的容器名(真实会话才需要,见 [`Acquire::container`])。
+    pub fn with_container(mut self, name: impl Into<String>) -> Self {
+        self.container = name.into();
         self
     }
 
@@ -115,6 +126,16 @@ impl Acquire {
             .as_ref()
             .expect("Acquire 已 release,不能再用 session()")
             .session
+    }
+
+    /// 会话所在的容器名。真实会话由 `service.rs` 用
+    /// [`Handle::with_container`] 填上;假会话是空串。
+    pub fn container(&self) -> &str {
+        &self
+            .handle
+            .as_ref()
+            .expect("Acquire 已 release,不能再用 container()")
+            .container
     }
 
     /// 显式归还。`alive=false` 时会话直接销毁(不进池);`alive=true`

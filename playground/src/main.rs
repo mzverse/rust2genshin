@@ -219,6 +219,16 @@ async fn run(cfg: Config) -> Result<(), String> {
         ..DockerOptions::default()
     }));
 
+    // RA 运行时。`new` 不起后台任务(测试要能造一个不碰 docker 的实例),
+    // 这里显式起补池 / 回收。DISABLED 时整条链路关掉,ws 回错误。
+    let lsp = if cfg.lsp_disabled {
+        None
+    } else {
+        let svc = crate::lsp::service::LspService::new(Arc::clone(&cfg), Arc::clone(&baker));
+        svc.spawn_background();
+        Some(svc)
+    };
+
     let state = Arc::new(AppState {
         queue: Arc::clone(&queue),
         baker: Arc::clone(&baker),
@@ -228,6 +238,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         runner,
         started: std::time::Instant::now(),
         cfg: Arc::clone(&cfg),
+        lsp,
     });
 
     // 1) 启动时先看本地有没有现成的镜像:有就拿来用,不重复烘。

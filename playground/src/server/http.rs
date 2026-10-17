@@ -40,6 +40,9 @@ pub struct AppState {
     /// 换成 `testing::FakeRunner`,不需要 docker。
     pub runner: Arc<dyn crate::runner::JobRunner>,
     pub started: Instant,
+    /// RA 运行时。`None` = `PLAYGROUND_LSP_DISABLED` 或被测试关掉 ——
+    /// `hello` 据此报 `lsp_supported: false`,前端退回纯编译界面。
+    pub lsp: Option<Arc<crate::lsp::service::LspService>>,
 }
 
 /// `/status` 的响应体。字段是给前端和运维看的,名字直接抄过去的
@@ -350,6 +353,7 @@ mod tests {
             }),
             started: Instant::now(),
             cfg,
+            lsp: None,
         })
     }
 
@@ -367,6 +371,7 @@ mod tests {
             runner: st.runner.clone(),
             started: st.started,
             cfg: Arc::new(c),
+            lsp: st.lsp.clone(),
         })
     }
 
@@ -638,6 +643,7 @@ mod tests {
             }),
             started: Instant::now(),
             cfg,
+            lsp: None,
         });
         (st, builder)
     }

@@ -238,10 +238,15 @@ impl SessionMaker {
         // 真实会话的存活探针必须走 `Session::ping`(pending 表),不能用
         // `Handle::new` 默认的裸管道 ping —— 那条管道上有 reader。
         let live = Arc::clone(&session);
-        Some(Handle::new(proc, session, destroy).with_liveness(move || {
-            let s = Arc::clone(&live);
-            Box::pin(async move { s.ping(Duration::from_secs(2)).await.is_ok() })
-        }))
+        Some(
+            Handle::new(proc, session, destroy)
+                .with_liveness(move || {
+                    let s = Arc::clone(&live);
+                    Box::pin(async move { s.ping(Duration::from_secs(2)).await.is_ok() })
+                })
+                // ws 层要用它把用户源码写进这个容器(`LspService::write_source`)。
+                .with_container(name),
+        )
     }
 }
 

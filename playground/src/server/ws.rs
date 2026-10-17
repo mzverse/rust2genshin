@@ -19,11 +19,15 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+};
 
 use crate::{
     docker::Stream,
     job::JobMeta,
+    lsp::{pool::Acquire, session::Event},
     protocol::{ClientMsg, ErrorCode, MAX_SOURCE_BYTES, PROTOCOL_VERSION, SOURCE_FILE, ServerMsg},
     runner::{JobSpec, RunnerError},
     server::{AppState, client_key_of, origin_allowed},
@@ -83,8 +87,8 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         // MVP 只有服务器节点图,所以这张表只有一个 —— 但它是个表,
         // 加客户端节点图时是往这里 push,不是改协议。
         targets: vec!["beyond-server".to_string()],
-        // Task 9 接池后再按 AppState 判断。
-        lsp_supported: false,
+        // 装了 RA 运行时才有;DISABLED 时前端退回纯编译界面。
+        lsp_supported: state.lsp.is_some(),
     };
     let (mut sink, mut stream) = socket.split();
     if send(&mut sink, &hello).await.is_err() {
@@ -97,6 +101,9 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
     // 任务名和 handle 一起存:`cancel` 要把 task 原样回给客户端,光有
     // handle 是 abort 不出名字来的。
     let mut job: Option<(String, JoinHandle<()>)> = None;
+    // 这条连接手里的 RA 会话。断开时必须还回池 —— RA 常驻 839 MB,
+    // 不放回去就等于一直挂在容器里。
+    let mut lsp_conn: Option<LspConn> = None;
 
     // 空闲保活。前面 nginx 的 stream 模块按「最后一次有字节」掐空闲连接
     // (`proxy_timeout`,部署上是 60s),而排队等镜像的那几十秒里一条业务消息
@@ -178,8 +185,126 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                     Ok((task, handle)) => job = Some((task, handle)),
                                 }
                             }
-                            // Task 9 接池后分发;现在先吞掉。
-                            Ok(ClientMsg::LspOpen {} | ClientMsg::LspChange { .. } | ClientMsg::LspCompletion { .. }) => {}
+                            Ok(ClientMsg::LspOpen {}) => {
+                                // 幂等:重复 open 不再取一个会话。
+                                if lsp_conn.is_some() {
+                                    continue;
+                                }
+                                let Some(svc) = state.lsp.clone() else {
+                                    if send(&mut sink, &err(ErrorCode::Internal, "代码分析功能已关闭")).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                };
+                                let acq =
+                                    match tokio::time::timeout(state.cfg.lsp_boot_timeout, svc.acquire()).await {
+                                        Ok(Ok(a)) => a,
+                                        _ => {
+                                            if send(&mut sink, &err(ErrorCode::Internal, "分析器起不来,稍后再试")).await.is_err() {
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                    };
+                                // 不在这里 didOpen:待命会话补池时已经 didOpen
+                                // 过占位内容,同一个 URI 再 didOpen 是 LSP
+                                // 协议违规。用户源码走 LspChange 的 didChange。
+                                let mut events = acq.session().subscribe();
+                                let ftx = tx.clone();
+                                let forwarding = tokio::spawn(async move {
+                                    loop {
+                                        match events.recv().await {
+                                            Ok(Event::Tokens(data)) => {
+                                                if ftx.send(ServerMsg::LspTokens { data }).is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Ok(Event::Diagnostics(list)) => {
+                                                for d in list {
+                                                    let m = ServerMsg::LspDiagnostic {
+                                                        line: d.line,
+                                                        column: d.column,
+                                                        end_line: d.end_line,
+                                                        end_column: d.end_column,
+                                                        severity: d.severity,
+                                                        message: d.message,
+                                                    };
+                                                    if ftx.send(m).is_err() {
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                            Ok(Event::Completed { request_id, items }) => {
+                                                let items = items
+                                                    .into_iter()
+                                                    .map(|i| crate::protocol::CompletionItem {
+                                                        label: i.label,
+                                                        kind: i.kind,
+                                                        detail: i.detail,
+                                                    })
+                                                    .collect();
+                                                if ftx.send(ServerMsg::LspCompletion { request_id, items }).is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            // 慢消费者丢几条不值得断连;会话关闭才收工。
+                                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                            Err(broadcast::error::RecvError::Closed) => break,
+                                        }
+                                    }
+                                });
+                                lsp_conn = Some(LspConn { acq, forwarding });
+                                if send(&mut sink, &ServerMsg::LspReady { file: SOURCE_FILE.to_string() }).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(ClientMsg::LspChange { source }) => {
+                                // 不把 `&LspConn` 借到 await 对面去:`Handle`
+                                // 里的销毁钩子是 `FnOnce`(非 Sync),借它会让
+                                // 整个 `run_socket` future 变成 !Send。
+                                let Some((container, session)) = lsp_conn.as_ref().map(|c| {
+                                    (c.acq.container().to_string(), Arc::clone(c.acq.session()))
+                                }) else {
+                                    if send(&mut sink, &bad_request("先发 lsp_open")).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                };
+                                let Some(svc) = state.lsp.clone() else {
+                                    if send(&mut sink, &err(ErrorCode::Internal, "代码分析功能已关闭")).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                };
+                                // 先写盘再 didChange:否则 RA 可能先看到
+                                // didChange、再从磁盘读到旧内容。
+                                if let Err(e) = svc.write_source(&container, &source).await {
+                                    if send(&mut sink, &err(ErrorCode::Internal, e)).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                if let Err(e) = session.did_change(&source).await
+                                    && send(&mut sink, &err(ErrorCode::Internal, format!("分析器没接住这次修改:{e}"))).await.is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(ClientMsg::LspCompletion { request_id, line, column }) => {
+                                let Some(session) =
+                                    lsp_conn.as_ref().map(|c| Arc::clone(c.acq.session()))
+                                else {
+                                    if send(&mut sink, &bad_request("先发 lsp_open")).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                };
+                                if let Err(e) = session.request_completion(request_id, line, column).await
+                                    && send(&mut sink, &err(ErrorCode::Internal, format!("补全请求失败:{e}"))).await.is_err()
+                                {
+                                    break;
+                                }
+                            }
                         }
                     }
                     Some(Ok(_)) => {} // 二进制 / ping / pong:不收,也不回
@@ -213,6 +338,19 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         h.abort();
         let _ = h.await;
     }
+    // RA 会话同样要还。**会话死就销毁,活着回池** —— 死会话放回池只会
+    // 让下一个请求再用一次坏 handle。
+    if let Some(c) = lsp_conn.take() {
+        c.forwarding.abort();
+        let alive = c.acq.session().is_alive();
+        c.acq.release(alive).await;
+    }
+}
+
+/// 一条连接持有的 RA 会话,以及把事件转成 `ServerMsg` 的转发任务。
+struct LspConn {
+    acq: Acquire,
+    forwarding: JoinHandle<()>,
 }
 
 async fn send<S>(sink: &mut S, m: &ServerMsg) -> Result<(), axum::Error>
@@ -413,26 +551,46 @@ mod tests {
         runner: Arc<FakeRunner>,
         tweak: impl FnOnce(&mut crate::config::Config),
     ) -> Arc<AppState> {
+        build_state(root, runner, false, tweak)
+    }
+
+    /// 同 `ready_state_with`,但装一个 `LspService`。它此刻不碰 docker ——
+    /// 只有 `lsp_open` 取会话时才会。
+    fn ready_state_with_lsp(root: &std::path::Path, runner: Arc<FakeRunner>) -> Arc<AppState> {
+        build_state(root, runner, true, |_| {})
+    }
+
+    fn build_state(
+        root: &std::path::Path,
+        runner: Arc<FakeRunner>,
+        with_lsp: bool,
+        tweak: impl FnOnce(&mut crate::config::Config),
+    ) -> Arc<AppState> {
         let mut cfg = resolve(&|_| None, &root.join("playground")).unwrap();
         cfg.repo_dir = root.to_path_buf();
         cfg.data_dir = root.join("data");
         tweak(&mut cfg);
         let cfg = Arc::new(cfg);
+        let baker = Baker::new(
+            FakeBuilder::new(vec![Ok(BuiltImage {
+                sha: "aaa1111".into(),
+                tag: "rust2genshin-play:aaa1111".into(),
+            })]),
+            Arc::new(OkGate) as Arc<dyn DiskGate>,
+        );
+        let lsp = with_lsp.then(|| {
+            crate::lsp::service::LspService::new(Arc::clone(&cfg), Arc::clone(&baker))
+        });
         Arc::new(AppState {
             queue: Queue::new(cfg.max_jobs, cfg.max_queue),
-            baker: Baker::new(
-                FakeBuilder::new(vec![Ok(BuiltImage {
-                    sha: "aaa1111".into(),
-                    tag: "rust2genshin-play:aaa1111".into(),
-                })]),
-                Arc::new(OkGate) as Arc<dyn DiskGate>,
-            ),
+            baker,
             jobs: Arc::new(JobStore::new(cfg.data_dir.join("tasks"))),
             repo: Arc::new(Repo::new(cfg.repo_dir.clone())),
             registry: ImageRegistry::new(),
             runner,
             started: std::time::Instant::now(),
             cfg,
+            lsp,
         })
     }
 
@@ -473,6 +631,42 @@ mod tests {
         state.baker.step().await;
         let (url, state) = serve(state).await;
         (d, url, state)
+    }
+
+    /// 带 `LspService` 的临时工作区。服务本身不碰 docker;只有 `lsp_open`
+    /// 走到取会话那一步才会(本模块的测试都不走到)。
+    async fn spawn_with_lsp(
+        runner: Arc<FakeRunner>,
+    ) -> (tempfile::TempDir, String, Arc<AppState>) {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("demo/src")).unwrap();
+        std::fs::write(d.path().join(SOURCE_FILE), "fn sample() {}").unwrap();
+        let state = ready_state_with_lsp(d.path(), runner);
+        state.baker.request(BakeRequest::default());
+        state.baker.step().await;
+        let (url, state) = serve(state).await;
+        (d, url, state)
+    }
+
+    /// 读到第一条满足条件的消息(用于 LSP 的异步推送)。上限比 `read_n`
+    /// 长 —— RA 冷启动、诊断都要秒级。
+    async fn read_until(ws: &mut Ws, mut pred: impl FnMut(&ServerMsg) -> bool) -> ServerMsg {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = tokio::time::timeout(left, ws.next())
+                .await
+                .expect("等消息等超时了")
+                .expect("连接断了")
+                .unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
+                let m: ServerMsg =
+                    serde_json::from_str(&t).expect("服务发的东西必须是 ServerMsg");
+                if pred(&m) {
+                    return m;
+                }
+            }
+        }
     }
 
     /// 连上去,收 `n` 条消息(或直到超时)。收到的必须都是 ServerMsg。
@@ -592,6 +786,132 @@ mod tests {
             }
             other => panic!("第一条必须是 hello,得到 {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn lsp_open_is_rejected_when_lsp_is_disabled() {
+        let (_d, url, _st) = spawn(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
+        let mut ws = connect(&url).await;
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Hello { lsp_supported, .. } => assert!(!lsp_supported),
+            other => panic!("期望 hello,得到 {other:?}"),
+        }
+        send(&mut ws, ClientMsg::LspOpen {}).await;
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Error { message, .. } => assert!(message.contains("分析"), "{message}"),
+            other => panic!("期望 error,得到 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hello_reports_lsp_supported_when_the_service_is_configured() {
+        // `AppState::lsp` 有值 = 前端可以挂 LSP 客户端。这条钉住 hello 不再
+        // 写死 `false`。
+        let (_d, url, _st) =
+            spawn_with_lsp(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
+        let mut ws = connect(&url).await;
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Hello { lsp_supported, .. } => assert!(lsp_supported),
+            other => panic!("期望 hello,得到 {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn lsp_change_without_open_is_a_bad_request() {
+        // 没开会话就发源码:要明确回「先发 lsp_open」,不能静默吞掉 ——
+        // 前端会一直以为自己在等分析结果。
+        let (_d, url, _st) =
+            spawn_with_lsp(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(&mut ws, ClientMsg::LspChange { source: "fn main() {}".into() }).await;
+        match read_n(&mut ws, 1).await[0].clone() {
+            ServerMsg::Error { code, message } => {
+                assert_eq!(code, ErrorCode::BadRequest);
+                assert!(message.contains("lsp_open"), "{message}");
+            }
+            other => panic!("期望 error,得到 {other:?}"),
+        }
+    }
+
+    /// 真起一个 RA 会话,走完整条链路,再验证断开后会话回池、能被下一条
+    /// 连接复用。需要本机有 docker 与烘好的镜像。
+    #[tokio::test]
+    #[ignore = "需要本机有 docker 与烘好的镜像"]
+    async fn lsp_session_serves_diagnostics_and_is_reused_after_disconnect() {
+        // 本机没有当前 HEAD 的镜像就跳过 —— 起不了 RA。
+        let mut cfg = crate::config::load().expect("读配置");
+        let repo = Repo::new(cfg.repo_dir.clone());
+        let Some(built) = crate::startup_image(&cfg, &repo).await else {
+            return;
+        };
+
+        let d = tempfile::tempdir().unwrap();
+        cfg.repo_dir = d.path().to_path_buf();
+        cfg.data_dir = d.path().join("data");
+        let cfg = Arc::new(cfg);
+        let baker = Baker::new(
+            FakeBuilder::new(vec![Ok(built)]),
+            Arc::new(OkGate) as Arc<dyn DiskGate>,
+        );
+        baker.request(BakeRequest::default());
+        baker.step().await;
+        let svc = crate::lsp::service::LspService::new(Arc::clone(&cfg), Arc::clone(&baker));
+        let state = Arc::new(AppState {
+            queue: Queue::new(cfg.max_jobs, cfg.max_queue),
+            baker,
+            jobs: Arc::new(JobStore::new(cfg.data_dir.join("tasks"))),
+            repo: Arc::new(Repo::new(cfg.repo_dir.clone())),
+            registry: ImageRegistry::new(),
+            runner: FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 }),
+            started: std::time::Instant::now(),
+            cfg,
+            lsp: Some(Arc::clone(&svc)),
+        });
+
+        // 先直接取一次再放回,记下容器名。待命会话在池里只有这一个,
+        // 所以后面复用的一定是它;若池没把会话放回去,新建的会拿到
+        // 下一个序号,名字就对不上了。
+        let first = svc.acquire().await.expect("镜像就绪该能起 RA");
+        let container = first.container().to_string();
+        assert!(!container.is_empty(), "真实会话要带容器名");
+        first.release(true).await;
+
+        let (url, _state) = serve(state).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(&mut ws, ClientMsg::LspOpen {}).await;
+        let ready = read_until(&mut ws, |m| matches!(m, ServerMsg::LspReady { .. })).await;
+        match ready {
+            ServerMsg::LspReady { file } => assert_eq!(file, SOURCE_FILE),
+            other => panic!("期望 lsp_ready,得到 {other:?}"),
+        }
+
+        // 有语法错 → RA 必然报一条;空 vec 是「清空」,不算。
+        send(
+            &mut ws,
+            ClientMsg::LspChange {
+                source: "fn main() { let x: i32 = \"not an int\"; }".into(),
+            },
+        )
+        .await;
+        read_until(&mut ws, |m| {
+            matches!(m, ServerMsg::LspDiagnostic { message, .. } if !message.is_empty())
+        })
+        .await;
+
+        // 断开 → 会话应回池。给它一点时间走完清理(转发任务 abort +
+        // `release(alive)`),再取一次应是同一容器。
+        drop(ws);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let again = svc.acquire().await.expect("池里该留着刚才那一个");
+        assert_eq!(
+            again.container(),
+            container,
+            "断开后会话该回池复用,不能新建"
+        );
+        let alive = again.session().is_alive();
+        again.release(alive).await;
     }
 
     #[tokio::test]
@@ -901,6 +1221,7 @@ mod tests {
             runner: FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 }),
             started: std::time::Instant::now(),
             cfg,
+            lsp: None,
         });
         // baker 必须 ready,否则先回 NotReady、测不到 Internal 这条路径。
         st.baker.request(BakeRequest::default());
