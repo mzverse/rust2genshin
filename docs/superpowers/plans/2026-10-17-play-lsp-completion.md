@@ -62,6 +62,7 @@
 **Files:**
 - Create: `playground/src/lsp/frame.rs`
 - Create: `playground/src/lsp/mod.rs`
+- Modify: `playground/src/main.rs`（加 `mod lsp;` —— 这个 crate 只有 main.rs，没有 lib.rs，不在这里声明模块，测试 runner 根本扫不到）
 
 **Interfaces:**
 - Produces: `frame::FrameDecoder`（`new()` / `push(&[u8]) -> Result<Vec<Vec<u8>>, FrameError>`）、
@@ -93,8 +94,8 @@ mod tests {
         let full = ok("hello");
         let mut d = FrameDecoder::new();
         assert!(d.push(&full[..5]).unwrap().is_empty());
-        assert!(d.push(&full[10..20]).unwrap().is_empty());
-        assert_eq!(d.push(&full[20..]).unwrap(), vec![b"hello".to_vec()]);
+        assert!(d.push(&full[5..15]).unwrap().is_empty());
+        assert_eq!(d.push(&full[15..]).unwrap(), vec![b"hello".to_vec()]);
     }
 
     #[test]
@@ -247,7 +248,7 @@ Expected: 7 passed。
 - [ ] **Step 5: 提交**
 
 ```bash
-cd C:/projects/rust2genshin && git add playground/src/lsp/mod.rs playground/src/lsp/frame.rs && git commit -m "feat(play): LSP 的 Content-Length 拆帧
+cd C:/projects/rust2genshin && git add playground/src/lsp/mod.rs playground/src/lsp/frame.rs playground/src/main.rs && git commit -m "feat(play): LSP 的 Content-Length 拆帧
 
 编译任务走 docker run 的 attach 协议(8 字节复用头,见 docker::FrameDecoder),
 RA 走 docker exec -i 的裸管道 —— 两者不能混用,这是独立的一份。
@@ -255,7 +256,7 @@ RA 走 docker exec -i 的裸管道 —— 两者不能混用,这是独立的一�
 encode 的长度按字节算:UTF-8 下一个中文占 3 字节,写成字符数 RA 会截帧。
 半个帧不算错,只是还没输出完;BadHeader 才真的要断线。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -377,7 +378,7 @@ LSP 帧能原样穿过;-t 分配伪终端、输出带 \\r\\n,拆帧就废了。
 待命容器以 -d 后台起,末尾显式给 sleep —— 容器得有前台常驻进程才不被判定
 退出,否则镜像的 CMD(bash)会起一个没 tty 的 bash 立刻 exit 0。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -489,7 +490,7 @@ cd C:/projects/rust2genshin && git add playground/src/lsp/mod.rs playground/src/
 
 Drop 里必须杀掉子进程:会话被 abort 时 RA 会留在容器里占 839 MB。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -553,7 +554,7 @@ cd C:/projects/rust2genshin && git add playground/src/lsp/mod.rs playground/src/
 空闲数低于 POOL_MIN 时不回收;超过才 docker rm -f。取用时先 ping 查存活性,
 失败的那个不交给用户也不回池 —— 热 RA 卡死是唯一会把坏管道递出去的路径。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -613,7 +614,7 @@ semanticTokensProvider,高亮会是一片空白。
 didChange 用全文替换不带 range:单文件、1 MiB 上限,整传比增量省事且不会算错
 偏移。semanticTokens 的 delta 数组原样透传,拆分是前端的活。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -676,7 +677,7 @@ cd C:/projects/rust2genshin && git add playground/src/protocol.rs playground/src
 protocol.rs 的文件头注释本来就预留了 {\\"type\\":\\"lsp\\"} 双向转发。Hello 带
 lsp_supported,让旧前端能优雅降级回今天的行为。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -743,7 +744,7 @@ cd C:/projects/rust2genshin && git add playground/src/config.rs && git commit -m
 POOL_MIN 默认 1(IDLE_TTL 90s 是内存策略不是性能策略:热池下省 839 MB 换 6-11s
 重建)。0 = 不预留待命。DISABLED 一键关掉整条链路。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -798,7 +799,7 @@ core 不进 RA 镜像:它是 rustc_private 后端,会拖整个 sysroot 进分析
 
 烘焙时跑一次 cargo metadata 自检 —— 裁错了在烘焙时炸,而不是用户第一次编辑时。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -852,7 +853,7 @@ cd C:/projects/rust2genshin && git add playground/src/server/mod.rs playground/s
 
 DISABLED 时 AppState::lsp 为 None,ws 回 Error 让前端不挂 LSP 客户端。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -940,7 +941,7 @@ cd C:/projects/rust2genshin && git add docs/typst/play/index.typ docs/typst/play
 
 编辑去抖 300ms:早于此发半行代码,晚于此补全体感差。
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
@@ -970,7 +971,7 @@ cd C:/projects/rust2genshin && cargo run -p rust2genshin-docs --bin watch
 ```bash
 cd C:/projects/rust2genshin && git add docs/typst/dev/playground.typ docs/typst/play/index.typ && git commit -m "docs(play): 站点补 RA 编辑器的原理与代价
 
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
