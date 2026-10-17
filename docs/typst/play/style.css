@@ -1,0 +1,99 @@
+/* 摆弄页。样式是**全局**的 —— 这一页没有 shadow root 挡着,所以每条选择器
+ * 都带 `.play-` 前缀。之前是 `playground-app::part(x)`,拆掉自定义组件后
+ * 那层前缀没了,不加就等于给整站文档写规则(button / textarea / pre 全中)。 */
+
+.play {
+    display: block;
+    margin: 1rem 0;
+    font-family: ui-monoospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.play-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+.play-toolbar button,
+.play-toolbar input,
+.play-toolbar select {
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 12px;
+    cursor: pointer;
+}
+.play-toolbar input {
+    cursor: text;
+}
+.play-toolbar button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.play-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+}
+
+.play-editor {
+    width: 100%;
+    min-height: 24rem;
+    box-sizing: border-box;
+    padding: 8px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    tab-size: 4;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    resize: vertical;
+}
+
+.play-status {
+    min-height: 1.6em;
+    font-size: 13px;
+}
+.play[data-status="ok"] .play-status { color: var(--ok); }
+.play[data-status="err"] .play-status { color: var(--err); }
+.play[data-status="warn"] .play-status { color: var(--warn); }
+.play[data-status="pending"] .play-status { opacity: 0.75; }
+
+.play-log {
+    min-height: 22rem;
+    max-height: 22rem;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    line-height: 1.4;
+    background-color: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.play-backend {
+    margin-top: 12px;
+    font-size: 12px;
+}
+.play-backend input {
+    margin-left: 6px;
+    font: inherit;
+}
+.play-hint {
+    margin-left: 8px;
+    opacity: 0.7;
+}
+
+/* 窄屏上下摞起来。两个面板各 24rem 高,横着塞不下。 */
+@media (max-width: 900px) {
+    .play-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .play-editor,
+    .play-log {
+        min-height: 16rem;
+    }
+}
