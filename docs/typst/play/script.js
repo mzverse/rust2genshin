@@ -502,7 +502,14 @@ function ready() {
         };
     };
 
-    /* RA 的省略号标记。只在 RA 截断输出时出现,用户代码里不会有。 */
+    /* RA 的省略号标记。两种完全不同的用法,别混:
+     *   - `fn(a, …)` / `-> (A, B, …)`:`detail` 里,**RA 截断了输出**。
+     *     省略号是「后面还有,被砍掉了」,不是能写进代码的东西。
+     *   - `unsafe(…)` / `doc = "…"`:`label` 里,**RA 的占位提示**,
+     *     意思是「这里要你自己填」。`#[un` 补全出 `unsafe(…)` 就是这种。
+     *
+     * 后者出现在 label 而非 detail,是 `label.includes("…")` 能一眼分开
+     * 的判据 —— 见 `completionProvider` 里的占位分支。 */
     const isEllipsis = (s) => /^\s*…\s*$/.test(s);
 
     /* 按**顶层**逗号切参数。`Option<(A, B)>`、`impl Fn(i32, i32)`、
@@ -553,6 +560,20 @@ function ready() {
         const packed = /\((as|alias)\s+([^)]*)\)$/.exec(item.label);
         if (!packed) return null;
         return packed[1] === "as" ? "of " + packed[2] : "alias " + packed[2];
+    };
+
+    /* 属性占位项的插入:省略号删掉,光标落到它原来的偏移。
+     *
+     * `#[un` → `#[unsafe()`,光标在括号里;`doc = "…"` → `doc = ""`,
+     * 光标在引号里。嵌套同样成立 —— `doc(alias = "…")` 的省略号在内层
+     * 引号中间,光标就落那儿。 */
+    const applyAt = (view, completion, from, to) => {
+        const text = completion.insertText || completion.label;
+        view.dispatch({
+            changes: { from, to, insert: text },
+            selection: { anchor: from + completion.ellipsisAt },
+            userEvent: "input.complete",
+        });
     };
 
     /* 函数/方法的自定义插入:补 `()` 并把光标放进去;无实参时放到
@@ -634,6 +655,31 @@ function ready() {
         return {
             from: context.pos - typed.length,
             options: items.map((item) => {
+                // 属性占位项:`unsafe(…)` / `cfg(…)` / `doc = "…"`。
+                // RA 把省略号直接写在 **label** 里当「这里你自己填」的提示,
+                // kind 也是 3(Function) —— 不截住它就会把 `…` 原样插进
+                // 代码。规则很简单:省略号落在哪,插完光标就去哪,`…` 本身
+                // 删掉。`doc(alias = "…")` 这种嵌套的也对:光标落到引号
+                // 中间。
+                const ellAt = item.label.indexOf("…");
+                if (ellAt >= 0) {
+                    const text = item.label.slice(0, ellAt) +
+                        item.label.slice(ellAt + 1);
+                    return {
+                        label: item.label,
+                        displayLabel: text,
+                        type: kindToType(item.kind),
+                        insertText: text,
+                        params: null,
+                        note: null,
+                        ret: null,
+                        // 走自定义插入:CM 默认会拿 `label` 或
+                        // `insertText` 填,但不会把光标落到省略号原来的
+                        // 位置。
+                        apply: applyAt,
+                        ellipsisAt: ellAt,
+                    };
+                }
                 // 只有函数/方法(2=Method,3=Function)补括号;模块、
                 // 常量、类型保持原来的纯名字插入。
                 const callable = item.kind === 2 || item.kind === 3;
