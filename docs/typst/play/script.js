@@ -382,20 +382,24 @@ function ready() {
     const OPENERS = "{[(";
     const CLOSERS = "}])";
     const INDENT = "    ";
-    /* `indentService` 的签名是 `(context, lineStart)`:
+    /* `indentService` 的签名是 `(context, lineStart)`,三条都和直觉不一样,
+     * 是在浏览器里对着真实模块打日志试出来的:
      *   - `lineStart` 是**位置**,不是行号(1 行文档的末尾传进来是 11);
-     *   - `context.unit` 是**数字**(4),不是 `"    "` 这个字符串 —— 当成
-     *     字符串用 `.length` 会算出 NaN,缩进一路归零,症状就是「配了服务
-     *     但换行还是顶格」;
+     *   - `context.unit` 是**数字**(4),不是 `"    "` 这个字符串 —— 当字符串
+     *     用 `.length` 会算出 NaN,缩进一路归零,现象和没配服务一样;
      *   - `context.state` 才是状态。
-     * 这三条是在浏览器里对着真实模块打日志试出来的,不是猜的。 */
+     *
+     * 判断「这一行该缩进多少」时只看**位置之前**的那段文本,不看整行:光标
+     * 常停在 `}` 之前(`{` + Enter 会把 `}` 顶到下一行),看整行会先撞上
+     * 那个 `}` 而判成「该退一层」,新行就没缩进了。 */
     const rustIndent = (context, lineStart) => {
         const state = context.state;
-        // 越界的位置(文档刚被清空之类的)不该让 Enter 抛 —— 缩进退化成 0。
+        // 越界的位置不该让 Enter 抛 —— 缩进退化成 0。
         if (!(lineStart >= 0 && lineStart <= state.doc.length)) return 0;
-        const text = state.doc.lineAt(lineStart).text;
-        const base = text.length - text.trimStart().length;
-        const last = text.trimEnd().slice(-1);
+        const line = state.doc.lineAt(lineStart);
+        const upto = line.text.slice(0, lineStart - line.from);
+        const base = upto.length - upto.trimStart().length;
+        const last = upto.trimEnd().slice(-1);
         if (OPENERS.includes(last)) return base + context.unit;
         if (CLOSERS.includes(last)) return Math.max(0, base - context.unit);
         return base;
