@@ -803,7 +803,15 @@ function ready() {
         }, 5000);
     };
 
-    /* 用 `Hello.targets` 填下拉框,默认选第一项;unknown 显示名走原值。 */
+    /* 目标选择记在 localStorage 里,刷新后回到上次选的那个。
+     *
+     * 存的值**不写死信任**:每次 `hello` 都用当次 `Hello.targets` 校验 ——
+     * 后端换了、某个目标下线了,存下来的那个可能根本不在列表里,直接套用
+     * 会让 `submit` 带一个服务端不认的 target(轻则 BadRequest,重则静默
+     * 编译错目标)。不在列表里就退回第一项。 */
+    const TARGET_STORE_KEY = "r2g.play.target";
+
+    /* 用 `Hello.targets` 填下拉框,优先回到上次选的;unknown 显示名走原值。 */
     const populateTargetSelect = (targets) => {
         if (!targetSel) return;
         targetSel.textContent = "";
@@ -813,8 +821,10 @@ function ready() {
             opt.textContent = TARGET_LABELS[t] || t;
             targetSel.appendChild(opt);
         }
-        // 默认第一项。下拉框列表为空时不改 value,避免 `null` 进 submit。
-        if (targets.length > 0) targetSel.value = targets[0];
+        if (targets.length === 0) return;
+        let want = null;
+        try { want = localStorage.getItem(TARGET_STORE_KEY); } catch { /* 无痕模式等 */ }
+        targetSel.value = want && targets.includes(want) ? want : targets[0];
     };
 
     const client = new PlayClient({
@@ -910,6 +920,17 @@ function ready() {
     });
     // 编辑器打字 → 后台重连(见 updateListener 里的说明)。
     hintReconnect = () => client.ensureConnected();
+
+    // 目标选择写进 localStorage(见 populateTargetSelect 的注释)。
+    if (targetSel) {
+        targetSel.addEventListener("change", () => {
+            try {
+                localStorage.setItem(TARGET_STORE_KEY, targetSel.value);
+            } catch {
+                /* 存不了就当没这回事:下拉框本身照常工作 */
+            }
+        });
+    }
 
     runBtn.addEventListener("click", () => {
         log.textContent = "";
