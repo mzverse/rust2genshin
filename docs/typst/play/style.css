@@ -311,13 +311,21 @@ body:has(main > .play) main {
  * `--sl-input-height-medium` 和按钮对好了。
  *
  * `width` 而不是 `min-width`:`.play-picker` 是 flex 行,select 的默认宽度
- * 会被内部 `display: block` 撑成整行,把「载入」挤出去。 */
+ * 会被内部 `display: block` 撑成整行,把「载入」挤出去。
+ *
+ * 字号跟着站点工具条走(13px),不是 Shoelace 默认的 1rem —— 16px 下
+ * 「aaa_hello-world」在 10rem 里放不下,显示输入框会截断。两个 token 都要
+ * 给:`--sl-input-font-size-medium` 管显示框,`sl-option` 用的是通用的
+ * `--sl-font-size-medium`。自定义属性会继承进 shadow root,打开的弹层也
+ * 吃同一个值。 */
 .play-select {
     width: 7rem;
+    --sl-input-font-size-medium: 13px;
+    --sl-font-size-medium: 13px;
 }
 /* 样例名长(「aaa_hello-world」),比「目标」的选项宽;窄了会被截掉。 */
 .play-sample-select {
-    width: 10rem;
+    width: 12rem;
 }
 /* play-picker-target 与示例的 picker 共享样式,但稍短 —— 它的内容本来就少。 */
 .play-picker.play-picker-target {
@@ -571,7 +579,8 @@ body:has(main > .play) main {
  * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
 @media (max-width: 560px) {
     .play-sample-select {
-        width: 7rem;
+        /* 13px 下最长的样例名也要放得下(名字 + 左右内边距 + 箭头)。 */
+        width: 9rem;
     }
 }
 
