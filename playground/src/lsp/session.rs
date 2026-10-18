@@ -9,8 +9,13 @@
 //! - 这里起一个后台 reader 任务,把收到的帧按 JSON-RPC 的 id / method
 //!   分流:带 id 且命中 pending 表的是响应,`publishDiagnostics` 是诊断,
 //!   服务端发来的请求统一回 `result: null`(其中
-//!   `workspace/semanticTokens/refresh` 还要重新拉一次 token),其余通知
+//!   `workspace/semanticTokens/refresh` 还要重新拉一次 token,
+//!   `workspace/diagnostic/refresh` 重新拉一次诊断),其余通知
 //!   (日志、progress)忽略。
+//!
+//! **诊断主要走拉取式**:RA 1.10x 在文档改动后不再推
+//! `publishDiagnostics`,只有 `didOpen`/`didChange` 后自己发
+//! `textDocument/diagnostic` 才有新结果(见 [`Session::did_open`])。
 //!
 //! 两种请求共用一条 JSON-RPC id 空间:内部请求(`initialize`、
 //! `semanticTokens/full`)从 [`INTERNAL_ID_BASE`] 起单调递增,补全请求
@@ -214,6 +219,9 @@ pub enum LspError {
 enum Pending {
     Response(oneshot::Sender<Value>),
     Tokens,
+    /// `textDocument/diagnostic`(拉取式诊断)的响应,reader 转成
+    /// [`Event::Diagnostics`]。
+    Diagnostics,
     /// `request_id` 是前端给的 id —— 回显在 `Event::Completed` 里。
     Completion {
         request_id: u32,
@@ -239,6 +247,11 @@ pub struct Session {
     /// RA 报的 legend,`initialize` 拿到响应后填上。token 转发时用它
     /// 把 RA 的下标翻成 [`TOKEN_TYPES`] 的下标。
     legend: Arc<Mutex<TokenLegend>>,
+    /// 最近一次**完整**诊断集合。拉取式诊断在内容没变时会回
+    /// `kind: "unchanged"` 且不带 `items`;池里的会话还会被下一条连接
+    /// 复用,新连接起来的第一次拉取完全可能命中 unchanged —— 缓存一份,
+    /// 这两种情况才有东西可发。
+    last_diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
     /// 后台读任务。`Drop` 时 abort —— 否则它会攥着 `Arc<RaProcess>`
     /// 和事件 channel 活到进程结束。
     reader: tokio::task::JoinHandle<()>,
@@ -252,6 +265,7 @@ impl Session {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let next_internal_id = Arc::new(AtomicU64::new(INTERNAL_ID_BASE));
         let legend = Arc::new(Mutex::new(TokenLegend::default()));
+        let last_diagnostics = Arc::new(Mutex::new(Vec::new()));
         let reader = tokio::spawn(reader_loop(
             Arc::clone(&proc),
             tx.clone(),
@@ -259,11 +273,13 @@ impl Session {
             Arc::clone(&pending),
             Arc::clone(&next_internal_id),
             Arc::clone(&legend),
+            Arc::clone(&last_diagnostics),
         ));
         Self {
             proc,
             events_tx: tx,
             legend,
+            last_diagnostics,
             pending,
             alive,
             next_internal_id,
@@ -294,6 +310,11 @@ impl Session {
                     "completion": {
                         "completionItem": { "snippetSupport": false }
                     },
+                    // 声明支持**拉取式**诊断 —— RA 1.10x 把诊断改成了
+                    // `textDocument/diagnostic`:`publishDiagnostics` 只在
+                    // 工作区加载完时推一次,之后文档怎么改都不再推。不声明
+                    // 也不拉的话,波浪线永远停在第一次那份内容上。
+                    "diagnostic": {},
                     "semanticTokens": {
                         "requests": { "full": true },
                         "formats": ["relative"],
@@ -367,12 +388,14 @@ impl Session {
             }
         }))
         .await?;
-        self.request_tokens().await
+        self.request_tokens().await?;
+        self.request_diagnostics().await
     }
 
-    /// 全文替换(不带 `range`),然后主动要一次 `semanticTokens/full`。
+    /// 全文替换(不带 `range`),然后主动要一次 token 与诊断。
     ///
-    /// RA 不会自己推 token —— 不主动要,前端就一直没有高亮。
+    /// 两者 RA 都不会在改动后自己推:token 要靠请求;诊断在 RA 1.10x
+    /// 已经是拉取式的(`publishDiagnostics` 只在工作区加载完时推一次)。
     pub async fn did_change(&self, text: &str) -> Result<(), LspError> {
         let version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
         self.send_json(&json!({
@@ -385,7 +408,8 @@ impl Session {
             }
         }))
         .await?;
-        self.request_tokens().await
+        self.request_tokens().await?;
+        self.request_diagnostics().await
     }
 
     /// 发一个补全请求。**id 用前端给的 `request_id` 原样当 JSON-RPC id**,
@@ -472,6 +496,12 @@ impl Session {
         request_tokens_impl(&self.proc, &self.pending, &self.next_internal_id).await
     }
 
+    /// 主动拉一次 `textDocument/diagnostic`。响应由 reader 转成
+    /// [`Event::Diagnostics`](拉取式诊断的唯一来源)。
+    async fn request_diagnostics(&self) -> Result<(), LspError> {
+        request_diagnostics_impl(&self.proc, &self.pending, &self.next_internal_id).await
+    }
+
     fn next_id(&self) -> u64 {
         self.next_internal_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -528,6 +558,39 @@ async fn request_tokens_impl(
     Ok(())
 }
 
+/// 登记 `Pending::Diagnostics` 并发出 `textDocument/diagnostic`。
+///
+/// 与 [`request_tokens_impl`] 同理,reader 处理 `workspace/diagnostic/refresh`
+/// 时也要发一次。**不传 `previousResultId`**:RA 只有拿到上一份的
+/// `resultId` 才可能回 `kind: "unchanged"`,而不带 items 的 unchanged
+/// 对刚连上来的新客户端毫无意义 —— 池里的会话是跨连接复用的,新连接
+/// 手上没有上一份。不带就总能拿到完整集合。
+async fn request_diagnostics_impl(
+    proc: &RaProcess,
+    pending: &Mutex<HashMap<u64, Pending>>,
+    next_id: &AtomicU64,
+) -> Result<(), LspError> {
+    let id = next_id.fetch_add(1, Ordering::SeqCst);
+    pending
+        .lock()
+        .expect("Mutex 不该中毒:持锁段不 panic")
+        .insert(id, Pending::Diagnostics);
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "textDocument/diagnostic",
+        "params": { "textDocument": { "uri": DOC_URI } },
+    });
+    if let Err(e) = proc.send(&req.to_string()).await {
+        pending
+            .lock()
+            .expect("Mutex 不该中毒:持锁段不 panic")
+            .remove(&id);
+        return Err(LspError::Exec(e.to_string()));
+    }
+    Ok(())
+}
+
 /// 后台读循环:把 RA 的每一帧分到 pending 表或事件里。
 async fn reader_loop(
     proc: Arc<RaProcess>,
@@ -536,13 +599,14 @@ async fn reader_loop(
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
     next_id: Arc<AtomicU64>,
     legend: Arc<Mutex<TokenLegend>>,
+    last_diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
 ) {
     while alive.load(Ordering::SeqCst) {
         match proc.recv(RECV_TIMEOUT).await {
             Ok(Some(raw)) => {
                 // 不是 JSON 的帧:忽略。RA 的 stdout 上只该有 LSP 帧。
                 if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                    dispatch(v, &proc, &tx, &pending, &next_id, &legend).await;
+                    dispatch(v, &proc, &tx, &pending, &next_id, &legend, &last_diagnostics).await;
                 }
             }
             // 沉默(RA 还活着只是没回):继续等。
@@ -573,11 +637,28 @@ async fn dispatch(
     pending: &Mutex<HashMap<u64, Pending>>,
     next_id: &AtomicU64,
     legend: &Mutex<TokenLegend>,
+    last_diagnostics: &Mutex<Vec<Diagnostic>>,
 ) {
     // 带 method 的是通知或服务端发来的请求。
     if let Some(method) = v.get("method").and_then(Value::as_str) {
         if method == "textDocument/publishDiagnostics" {
-            emit_diagnostics(&v, tx);
+            emit_diagnostics(&v, tx, last_diagnostics);
+            return;
+        }
+        // RA 拉取式诊断的「有东西变了」信号。它**是通知**(不带 id,
+        // 不需要回响应),收到就主动拉一次。RA 1.10x 只在工作区加载完
+        // 时推 publishDiagnostics,之后的诊断全靠这条链路。
+        if method == "workspace/diagnostic/refresh" {
+            // 规范里它是通知;万一带了 id 也照下面的规矩回一个空结果。
+            if let Some(id) = v.get("id") {
+                let resp = json!({ "jsonrpc": "2.0", "id": id.clone(), "result": Value::Null });
+                if let Err(e) = proc.send(&resp.to_string()).await {
+                    tracing::warn!("回复 RA 的诊断刷新请求失败:{e}");
+                }
+            }
+            if let Err(e) = request_diagnostics_impl(proc, pending, next_id).await {
+                tracing::warn!("刷新诊断失败:{e}");
+            }
             return;
         }
         // 服务端**请求**(带 id)必须回响应:静默丢弃会让 RA 以为
@@ -642,6 +723,23 @@ async fn dispatch(
                 }
             }
         }
+        Pending::Diagnostics => {
+            let mut cache = last_diagnostics
+                .lock()
+                .expect("Mutex 不该中毒:持锁段不 panic");
+            match parse_diagnostic_result(&v) {
+                // 完整集合:换掉缓存再发。
+                Some(Some(items)) => {
+                    *cache = items.clone();
+                    let _ = tx.send(Event::Diagnostics(items));
+                }
+                // `unchanged`:新连接手上什么都没有,发缓存里的那一份。
+                Some(None) => {
+                    let _ = tx.send(Event::Diagnostics(cache.clone()));
+                }
+                None => tracing::warn!("textDocument/diagnostic 响应不合约,丢弃"),
+            }
+        }
         Pending::Completion { request_id } => {
             let items = parse_completion_items(v.get("result"));
             let _ = tx.send(Event::Completed { request_id, items });
@@ -649,7 +747,7 @@ async fn dispatch(
     }
 }
 
-fn emit_diagnostics(v: &Value, tx: &broadcast::Sender<Event>) {
+fn emit_diagnostics(v: &Value, tx: &broadcast::Sender<Event>, last: &Mutex<Vec<Diagnostic>>) {
     let Some(params) = v.get("params") else {
         return;
     };
@@ -663,7 +761,30 @@ fn emit_diagnostics(v: &Value, tx: &broadcast::Sender<Event>) {
     };
     // 空数组也要发:它表示「该 uri 的诊断清空」,上层据此擦红线。
     let diagnostics: Vec<Diagnostic> = list.iter().filter_map(diagnostic_from).collect();
+    // 推送和拉取共享同一份缓存:之后某次拉取回 `unchanged` 时,
+    // 要发的就是这一份。
+    *last.lock().expect("Mutex 不该中毒:持锁段不 panic") = diagnostics.clone();
     let _ = tx.send(Event::Diagnostics(diagnostics));
+}
+
+/// `textDocument/diagnostic` 的 `result` 有几种形状:
+/// - `{ "kind": "full", "items": [...] }` —— 完整集合
+/// - `{ "kind": "unchanged" }` —— 与上一份相同,**不带 items**
+/// - 裸数组 —— 老形状,按完整集合处理
+///
+/// 返回值:`Some(Some(items))` = 完整集合,`Some(None)` = unchanged,
+/// `None` = 形状不认识。注意 unchanged 与「解析失败」必须分开 ——
+/// 把 unchanged 当失败丢掉,新连接就永远收不到诊断。
+fn parse_diagnostic_result(v: &Value) -> Option<Option<Vec<Diagnostic>>> {
+    let result = v.get("result")?;
+    if result.get("kind").and_then(Value::as_str) == Some("unchanged") {
+        return Some(None);
+    }
+    let list = result
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())?;
+    Some(Some(list.iter().filter_map(diagnostic_from).collect()))
 }
 
 fn diagnostic_from(d: &Value) -> Option<Diagnostic> {
@@ -1050,6 +1171,158 @@ mod tests {
             Event::Diagnostics(vec![]),
             "空数组 = 诊断清空,必须发一个空 vec"
         );
+    }
+
+    /// RA 1.10x 的诊断是**拉取式**的:文档改动后它不再推
+    /// `publishDiagnostics`,要自己发 `textDocument/diagnostic`。
+    /// 不拉的话波浪线永远停在第一次那份内容上。
+    #[tokio::test]
+    async fn did_change_pulls_diagnostics() {
+        let (fake, session) = setup().await;
+        session
+            .did_change("fn main() {}")
+            .await
+            .expect("didChange 该成功");
+
+        let bodies = fake.written_bodies();
+        let pull = bodies
+            .iter()
+            .find(|v| v["method"] == "textDocument/diagnostic")
+            .unwrap_or_else(|| panic!("didChange 之后要拉一次诊断:{bodies:?}"));
+        assert_eq!(pull["params"]["textDocument"]["uri"], DOC_URI);
+        assert!(
+            pull.get("previousResultId").is_none(),
+            "不带 previousResultId 才总会拿到完整集合:{pull}"
+        );
+    }
+
+    /// 拉取式诊断的 `full` 响应要变成 [`Event::Diagnostics`]。
+    #[tokio::test]
+    async fn pulled_diagnostics_become_an_event() {
+        let (fake, session) = setup().await;
+        let mut events = session.subscribe();
+        session.did_change("fn main() {}").await.expect("didChange 该成功");
+        let id = fake
+            .wait_until_written("\"method\":\"textDocument/diagnostic\"")
+            .await
+            .expect("拉取请求该带 id");
+
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "kind": "full",
+                "items": [{
+                    "range": {
+                        "start": { "line": 0, "character": 9 },
+                        "end": { "line": 0, "character": 13 },
+                    },
+                    "severity": 1,
+                    "message": "mismatched types",
+                }],
+            },
+        });
+        fake.sender()
+            .send(frame::encode(&resp.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+
+        assert_eq!(
+            next_event(&mut events).await,
+            Event::Diagnostics(vec![Diagnostic {
+                line: 0,
+                column: 9,
+                end_line: 0,
+                end_column: 13,
+                severity: 1,
+                message: "mismatched types".into(),
+            }])
+        );
+    }
+
+    /// `kind: "unchanged"` 不带 items。池里的会话跨连接复用,新连接
+    /// 起来时手上什么都没有 —— 必须回放缓存,否则它就永远看不到诊断。
+    #[tokio::test]
+    async fn unchanged_diagnostics_replay_the_cached_set() {
+        let (fake, session) = setup().await;
+        let mut first = session.subscribe();
+
+        // 第一份完整集合:写进缓存。
+        let id = {
+            session.did_change("fn main() {}").await.expect("didChange 该成功");
+            fake.wait_until_written("\"method\":\"textDocument/diagnostic\"")
+                .await
+                .expect("拉取请求该带 id")
+        };
+        let full = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "kind": "full",
+                "items": [{
+                    "range": {
+                        "start": { "line": 2, "character": 4 },
+                        "end": { "line": 2, "character": 8 },
+                    },
+                    "severity": 1,
+                    "message": "no method named `foo`",
+                }],
+            },
+        });
+        fake.sender()
+            .send(frame::encode(&full.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+        let cached = Event::Diagnostics(vec![Diagnostic {
+            line: 2,
+            column: 4,
+            end_line: 2,
+            end_column: 8,
+            severity: 1,
+            message: "no method named `foo`".into(),
+        }]);
+        assert_eq!(next_event(&mut first).await, cached);
+
+        // 第二个「客户端」(新订阅者)拉取时 RA 回 unchanged。
+        let mut second = session.subscribe();
+        session.did_change("fn main() {}").await.expect("didChange 该成功");
+        let id = fake
+            .wait_until_written("\"method\":\"textDocument/diagnostic\"")
+            .await
+            .expect("拉取请求该带 id");
+        let unchanged = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "kind": "unchanged" },
+        });
+        fake.sender()
+            .send(frame::encode(&unchanged.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+
+        assert_eq!(
+            next_event(&mut second).await,
+            cached,
+            "unchanged 要回放缓存给新订阅者"
+        );
+    }
+
+    /// RA 发 `workspace/diagnostic/refresh`(通知,不带 id)时要再拉一次 ——
+    /// 这是它在工作区状态变化后唯一的提示方式。
+    #[tokio::test]
+    async fn diagnostic_refresh_notification_pulls_again() {
+        let (fake, session) = setup().await;
+        let _events = session.subscribe();
+
+        let note = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/diagnostic/refresh",
+            "params": null,
+        });
+        fake.sender()
+            .send(frame::encode(&note.to_string()))
+            .expect("UnboundedSender 不该 send 失败");
+
+        let _ = fake
+            .wait_until_written("\"method\":\"textDocument/diagnostic\"")
+            .await;
     }
 
     /// `didOpen` 之后就要主动要一次 token —— RA 不会自己推,不要的话

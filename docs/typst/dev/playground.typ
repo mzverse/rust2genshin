@@ -97,6 +97,8 @@ cargo run -p rust2genshin-playground
 
 *诊断是整份替换的，不是逐条追加。* LSP 的 `publishDiagnostics` 语义就是「这份取代上一份」，空数组表示清空；协议因此一条消息带完整 `items`。逐条发送的旧形状下，服务端清空时一条消息都不发，前端既分不清一批何时结束也收不到清空信号，旧坐标只能永久累积 —— 文档一改就指到别的文字上，波浪线擦不掉。
 
+*诊断是服务端主动「拉」回来的，不是等 RA 推。* RA 1.10x 把诊断改成了拉取式（`textDocument/diagnostic`）：`publishDiagnostics` 只在工作区加载完时推一次，之后文档怎么改都不再推。所以 `didOpen` / `didChange` 之后服务端都要自己拉一份，`workspace/diagnostic/refresh` 通知到达时也要再拉 —— 只监听推的那条链路，波浪线会永远停在第一次分析的结果上。RA 对没变的内容只回 `kind: "unchanged"` 且不带 `items`，会话又是跨连接复用的，所以服务端缓存最近一份完整集合，遇到 unchanged 就回放它。
+
 *补全只在真有前缀时弹。* `activateOnTyping` 是在键入的字符*之前*触发的，`context.pos` 因此落在已敲字符之前 —— 直接拿它当 `from`，选中后那个字符会留在替换范围外，`log` 补成 `llog`。所以 `from` 由自己往回走过词字符算出来。另外没有前缀就直接返回 `null`：RA 会把整个 crate 的符号都列出来，满屏 item 只会挡住代码。
 
 *缩进是自己写的服务，走 `indentService`。* CodeMirror 只提供*机制*（`indentService` facet、`defaultKeymap` 里的 Enter 命令、语法树兜底），每种语言的规则由各自的 language 包给 —— `@codemirror/lang-rust` 一条都没给，lezer-rust 也没定义 `indentNodeProp`，兜底算出来是 0。所以规则得自己写，一共两条：光标前*还没有非空白内容*时沿用本行已有缩进（这条保证反复回车不会越缩越深），否则前一个非空白字符是开括号就多一层、其余沿用本行缩进。
