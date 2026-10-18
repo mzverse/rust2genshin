@@ -26,6 +26,7 @@
     // upgrade 时子元素已经在,才能一次性把选中态同步对。
     for path in (
         "components/button/button.js",
+        "components/divider/divider.js",
         "components/option/option.js",
         "components/select/select.js",
     ) {
@@ -69,6 +70,15 @@
             ..if hidden { ("hidden": "") } else {},
         ),
     )
+}
+
+/// `<sl-divider>`。`vertical` 时是一条竖线,宽度/高度由使用处定
+/// (组件只画 `border-left`,尺寸吃 `:host` 上的 `height`)。
+#let sl-divider(vertical: false, class: none) = {
+    let attrs = (:)
+    if class != none { attrs.insert("class", class) }
+    if vertical { attrs.insert("vertical", "") }
+    custom_element(import_shoelace, html_elem("sl-divider", attrs: attrs)[])
 }
 
 /// `<sl-option>`。只能放在 `<sl-select>`(或 `<sl-menu>`)里。

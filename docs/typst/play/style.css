@@ -123,19 +123,24 @@ body:has(main > .play) main {
     padding-right: 14px;
 }
 
-/* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
- * 现成代码」,和右边的「取消 / 编译」是两件事,平铺在一排里看不出来谁管谁。
+/* 「示例 + 选 + 载入」这一组用间距抱在一起,不画框 —— 边框会和「目标」
+ * 那组并排成两块独立面板的样子。组与组之间由 `<sl-divider vertical>` 的
+ * 一条短竖线分隔。
  *
- * 组里的下拉是原生 `<select>`,「载入」是 `<sl-button>` —— 后者的样式在
- * shadow root 里,外面只能通过它暴露的 `--sl-*` 变量和 `::part()` 调。 */
+ * 组里的控件都是 `<sl-*>` —— 样式在 shadow root 里,外面只能通过它们
+ * 暴露的 `--sl-*` 变量和 `::part()` 调。 */
 .play-picker {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 2px 8px;
-    border: 1px solid var(--border-soft);
-    border-radius: 8px;
     white-space: nowrap;
+}
+/* Shoelace 的竖版 divider 高度默认吃满整行(100%),和 40px 的控件一样高
+ * 就不是「短竖线」了;压到 20px,`align-items: center` 自然居中。左右留白
+ * 交给工具栏自己的 `gap`,这里不再加 `--spacing`。 */
+.play-divider {
+    height: 20px;
+    --spacing: 0;
 }
 /* 「示例：」三个字:显式告诉人这个框是干嘛的。`.play-label` 不带前缀会被
  * 站点全局的 label 规则抓到。 */
@@ -327,11 +332,6 @@ body:has(main > .play) main {
 .play-sample-select {
     width: 12rem;
 }
-/* play-picker-target 与示例的 picker 共享样式,但稍短 —— 它的内容本来就少。 */
-.play-picker.play-picker-target {
-    padding: 2px 6px;
-}
-
 /* ---- 补全弹窗(autocomplete) ----
  *
  * CM 自动完成默认是浅色硬编码背景,与站点的深色主题撞色 —— 深色下弹窗

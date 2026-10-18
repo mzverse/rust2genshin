@@ -6,7 +6,7 @@
 // 顶栏的「摆弄」已经标明了身份,再占一行标题只是把编辑器往下挤。
 #show: template.with(toc: false, with_outline: false, with_title: false);
 // Shoelace 的封装都在这儿。
-#import "/lib/shoelace.typ": sl-button, sl-select, sl-option
+#import "/lib/shoelace.typ": sl-button, sl-divider, sl-select, sl-option
 
 #let title = [摆弄];
 
@@ -38,8 +38,8 @@
     // 左右两栏同时吃到,不像套了 wrapper 之后各写各的还要防一边漏掉。
     // DOM 顺序也正好是窄屏上下堆叠要的顺序。
     #html_elem("div", class: "play-left-head")[
-        // 「示例 + 选 + 载入」框成一组:它是「往编辑器里放段现成代码」,
-        // 和右边那组「取消 / 编译」是两件事。
+        // 「示例 + 选 + 载入」用一条短竖线和「目标」隔开,不再各套一个边框
+        // 盒子 —— 工具条上两个带框的组并排,看起来像两块独立面板。
         #html_elem("div", class: "play-picker")[
           #html_elem("span", class: "play-label")[示例：]
           // 样例是**静态资产**(`play/demo/*.rs` 会被当 asset 拷进输出目录),
@@ -74,11 +74,12 @@
           }
           #sl-button(id: "play-sample-load", variant: "default", icon: "download")[载入]
         ]
+        #sl-divider(vertical: true, class: "play-divider")
         // 「目标」选择器由 `Hello.targets` 驱动 —— 不写死选项,后端报什么就
         // 渲染什么;显示名(`超限模式` / `经典模式`)在 script.js 里查
         // TARGET_LABELS。默认选第一项(`Hello.targets` 的顺序就是显示顺序)。
         // 选项由后端 `hello` 填(见 script.js),初始空值显示 placeholder。
-        #html_elem("div", class: "play-picker play-picker-target")[
+        #html_elem("div", class: "play-picker")[
           #html_elem("span", class: "play-label")[目标：]
           #sl-select(
             id: "play-target",
