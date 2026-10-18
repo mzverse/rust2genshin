@@ -54,6 +54,11 @@ body:has(main > .play) main {
 .play-layout {
     --play-left: 1fr;
     --play-gutter: 22px;
+    /* 表头里所有控件的统一宽度。旁边的按钮(「载入」96.2px、「编译」94.2px)
+     * 本来就差不多这么宽,下拉框却各自按内容长:示例 184px、目标 112px ——
+     * 一排控件宽窄不齐,示例那个还把整条工具条撑到了折行。现在两个下拉都
+     * 收到这个宽度,和按钮对齐。 */
+    --play-ctl-w: 96px;
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -72,7 +77,10 @@ body:has(main > .play) main {
     grid-row: 1 / 3;
     min-width: 0;
     min-height: 0;
-    gap: 0;
+    /* 表头和内容之间的 6px。**必须写在 wrapper 上,不能只写父级的
+     * `row-gap`**:subgrid 继承了父级的轨道尺寸,但间隙取的是自己的 ——
+     * 这里写 `gap: 0`,父级的 `row-gap: 6px` 就一点都透不进来。 */
+    gap: 6px;
 }
 
 .play-left-head {
@@ -132,7 +140,10 @@ body:has(main > .play) main {
  * `height` 是写不到那个 text-field 上的(设了也不生效,内层还是 56px)。
  * 自定义属性倒是能穿过分层边界,所以这是唯一能缩的旋钮。56 → 48。 */
 .play-picker mdui-select {
-    min-width: 10rem;
+    /* 宽度跟着 `--play-ctl-w` 走(见 `.play-layout`)。`min-width: 0` 是关键:
+     * 不然原来那条 `min-width: 10rem` 还在,盒子收不下来。 */
+    width: var(--play-ctl-w);
+    min-width: 0;
     --mdui-typescale-body-large-size: 0.8125rem;
     --mdui-typescale-body-large-line-height: 1rem;
 }
@@ -312,7 +323,9 @@ body:has(main > .play) main {
         right 5px center;
     background-size: 5px 5px, 5px 5px;
     background-repeat: no-repeat;
-    min-width: 7rem;
+    /* 和示例下拉、按钮同一个宽度,见 `.play-layout` 的 `--play-ctl-w`。 */
+    width: var(--play-ctl-w);
+    min-width: 0;
 }
 .play-target:focus-visible {
     outline: 2px solid var(--accent);
@@ -433,7 +446,9 @@ body:has(main > .play) main {
     grid-row: 1 / 3;
     min-width: 0;
     min-height: 0;
-    gap: 0;
+    /* 和 `.play-left` 同一个 6px —— 两边各写各的就会出现「右边有间隙、
+     * 左边贴着底线」的不对称。见 `.play-left` 里关于 subgrid 间隙的说明。 */
+    gap: 6px;
 }
 
 /* 选项卡条。底边那条线一路铺满,选项卡自己的下边框压在它上面 —— 选中的
@@ -528,7 +543,9 @@ body:has(main > .play) main {
     flex-direction: column;
     flex: 1 1 0;
     min-height: 0;
-    padding-top: 6px;
+    /* 原来这里有 `padding-top: 6px`。现在由 `.play-right` 的 `gap: 6px`
+     * 提供 —— 两边的间隙写在各自的 wrapper 上,才是一样多;写在
+     * `.play-panels` 上就只右栏有,编辑框会贴着表头底线。 */
 }
 .play-panel {
     display: flex;
@@ -577,14 +594,10 @@ body:has(main > .play) main {
     border-radius: 6px;
 }
 
-/* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,再把下拉框的最小宽度
- * 收一收,好让折行后的第二行不至于只有「编译」孤零零一个。
+/* 下拉框的宽度现在是定值(见 `.play-layout` 的 `--play-ctl-w`),窄屏不用再
+ * 单独收一遍 —— 原来那条 `@media` 只改 `min-width`,而 `min-width` 早已被
+ * `width` 顶掉,留着也不会再有任何作用。
  * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
-@media (max-width: 560px) {
-    .play-picker mdui-select {
-        min-width: 7rem;
-    }
-}
 
 /* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标
  * 会误导),直接藏掉,两栏各占一半高度。
