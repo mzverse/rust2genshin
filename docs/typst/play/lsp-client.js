@@ -401,6 +401,14 @@ export class LspClient {
 
     _applyTokens(data) {
         if (!this.view) return;
+        // **新会话还没拿到用户文档之前算出来的 token 不能往编辑器里画。**
+        // 重连时服务端一订阅上 RA 就可能转发一帧旧内容的 token(占位源码、
+        // 同一个池里上一份文档,或 workspace 重载触发的 refresh),它们先于
+        // `lsp_ready` 或紧跟着到达;直接应用会把编辑器里已有的高亮整片擦掉,
+        // 要等 `onReady` 推过去的整份文档分析完才恢复。
+        // `onReady` 是「已把当前文档同步给 RA」的分界,此后的帧才是针对
+        // 用户代码的。首发连接同理:编辑器本来是空的,丢一帧不亏。
+        if (!this._ready) return;
         this.view.dispatch({ effects: setTokensEffect.of(data) });
     }
 

@@ -120,6 +120,11 @@ function httpOrigin(wsUrl) {
 /* 打字触发的后台重连失败后的冷却。显式点「编译」不受这个限制。 */
 const RECONNECT_BACKOFF_MS = 5000;
 
+/* 用户多久没操作就主动关掉 WebSocket。连接断开后服务端会把 RA 会话还回
+ * 池子 —— 一个空闲页面不该一直占着几百 MB 的分析进程。下一次按键 /
+ * 点击会走既有的自动重连(见 `PlayClient.touch` 与 `send`)。 */
+const IDLE_DISCONNECT_MS = 90_000;
+
 class PlayClient {
     constructor(handlers) {
         this.handlers = handlers;
@@ -140,6 +145,13 @@ class PlayClient {
         // 上次连失败的时间,用来做退避。后端全挂时键盘每次停顿都重连
         // 一遍,只会把 4 s 超时叠成一串。
         this._lastFailAt = 0;
+        // 空闲断连的计时器,和「这次关闭是不是我们自己因为空闲发起的」。
+        // 后者只影响关闭时的提示文案:空闲不是故障。
+        this._idleTimer = null;
+        this._idleClosing = false;
+        // 排队 / 编译中。空闲断连必须避开这段时间:服务端的语义是
+        // 「断开 = 取消」,否则用户挂着页面等编译就会被自己人杀掉任务。
+        this.busy = false;
     }
 
     /* 从后端池里挑一个连上,把这个 socket 接过来用。
@@ -159,6 +171,29 @@ class PlayClient {
         } finally {
             this._connecting = null;
         }
+    }
+
+    /* 记一次「用户还在」,把空闲断连的计时往后推。
+     * 没连着就什么都不用计:没有连接可断,下次按键本来就会连上。 */
+    touch() {
+        if (this._idleTimer !== null) {
+            clearTimeout(this._idleTimer);
+            this._idleTimer = null;
+        }
+        if (!this.ws || this.ws.readyState !== 1) return;
+        this._idleTimer = setTimeout(() => this.#disconnectIdle(), IDLE_DISCONNECT_MS);
+    }
+
+    /* 空闲到点了:主动关掉连接,让服务端把 RA 会话还回池子。
+     * 任务在跑 / 在排队时不能断 —— 服务端把断开当成取消,挂页面等编译的
+     * 人会被自己这端杀掉任务。这种情况再等一轮,任务收尾后计时会重来。 */
+    #disconnectIdle() {
+        this._idleTimer = null;
+        if (this.busy) { this.touch(); return; }
+        const ws = this.ws;
+        if (!ws || ws.readyState !== 1) return;
+        this._idleClosing = true;
+        ws.close();
     }
 
     /* 后台重连。打字时调用 —— 用户只是在写代码,不能让它等一个 Promise,
@@ -192,9 +227,23 @@ class PlayClient {
             // close 随后到达时不能拿它覆盖新连接刚设的状态,也不能重置按钮态。
             if (ws !== this.ws) return;
             this.ws = null;
+            this.busy = false;
             // 断连就把待发队列清掉,**不**在重连后重放。「编译」是有副作用的
             // 动作,在用户不知情时静默占一个排队位,比丢一次没送达的点击更坏。
             this.pending = [];
+            if (this._idleTimer !== null) {
+                clearTimeout(this._idleTimer);
+                this._idleTimer = null;
+            }
+            if (this._idleClosing) {
+                // 自己因为空闲关的:这不是故障,别显示成红色错误。
+                // kind 用空串,`onIdle` 里那段「pending → 连接已断开」的
+                // 兜底就不会改写到这句中性文案上。
+                this._idleClosing = false;
+                this.handlers.onStatus("空闲断开 · 打字或点「编译」会自动重连", "");
+                this.handlers.onIdle();
+                return;
+            }
             this.handlers.onStatus("连接已断开", "err");
             this.handlers.onIdle();
         };
@@ -220,6 +269,8 @@ class PlayClient {
         };
         this._lastFailAt = 0;
         this.handlers.onStatus("已连接", "ok");
+        // 新连接从「刚有操作」开始算空闲时间。
+        this.touch();
         // socket 已经开着,攒下的非 LSP 消息(取消等)现在可以发了。
         this.#flushPending();
         return true;
@@ -243,6 +294,9 @@ class PlayClient {
     async submit(source, target) {
         // 点了「编译」就是明确要连,不吃打字重连的退避。
         if (!(await this.connect(true))) return;
+        // 从这一刻起这单就是「在途」:空闲断连不能把连接关掉,服务端会
+        // 把断开当成取消。收到 finished / failed / cancelled / error 再放开。
+        this.busy = true;
         // 回包之前按"排队中"显示,免得点了没反应。
         this.handlers.onStatus("排队中…", "pending");
         this.send({ type: "submit", source, target: target ?? null });
@@ -251,15 +305,17 @@ class PlayClient {
     cancel() { this.send({ type: "cancel" }); }
 
     /* 公开的发消息接口 —— LSP / 提交 / 取消都走它。
-     * readyState 不是 1 就顺手拉一次后台重连:空闲一段时间后后端会关掉
-     * 连接,用户下次打字(tokens / 补全 / lsp_change)就是这条路径 ——
-     * 以前这里只入队不重连,于是必须点一次「编译」才活过来。
+     * 每次发送都算一次操作,把空闲断连的计时推后。
+     * readyState 不是 1 就顺手拉一次后台重连:空闲 90 秒后前端会主动断开
+     * (见 `IDLE_DISCONNECT_MS`),用户下次打字(tokens / 补全 / lsp_change)
+     * 就是这条路径 —— 以前这里只入队不重连,于是必须点一次「编译」才活过来。
      *
      * LSP 消息**不入队**:重连后服务端会重新 hello,`onHello` 会新建
      * `LspClient`、重发 `lsp_open` 并整份同步文档。旧会话的 `lsp_change` /
      * `lsp_completion` 到新会话里要么撞 BadRequest,要么 request_id 对不上。
      * 其余消息(取消、提交)保留入队语义。 */
     send(o) {
+        this.touch();
         if (this.ws && this.ws.readyState === 1) {
             this.ws.send(JSON.stringify(o));
             return;
@@ -314,6 +370,12 @@ class PlayClient {
                 // 认不出来的消息不忽略 —— 记一行。将来加 lsp 消息时,
                 // 老前端就是靠这一行走过去的。
                 this.handlers.onLog({ stream: "stderr", text: `未知消息 ${m.type}\n` });
+        }
+        // 这几种消息意味着这一单结束了(或请求压根没起):空闲断连可以
+        // 正常计时,不必再为它守着连接。
+        if (m.type === "finished" || m.type === "failed"
+            || m.type === "cancelled" || m.type === "error") {
+            this.busy = false;
         }
     }
 }
@@ -1123,9 +1185,9 @@ function ready() {
                 // `lsp` 可能为 null,check 一下避免无谓调用。
                 EditorView.updateListener.of((u) => {
                     if (!u.docChanged) return;
-                    // 空闲后服务端会关掉连接。用户下一次打字就是「再次操作」,
-                    // 在这里把连接拉回来 —— 不能等 LSP 的 _ready 分支,更不能
-                    // 让用户以为必须点「编译」才能恢复。
+                    // 空闲 90 秒后前端会主动断开连接。用户下一次打字就是
+                    // 「再次操作」,在这里把连接拉回来 —— 不能等 LSP 的 _ready
+                    // 分支,更不能让用户以为必须点「编译」才能恢复。
                     if (hintReconnect) hintReconnect();
                     if (lsp) lsp.onDocChanged(u.state.doc.toString());
                 }),
@@ -1297,6 +1359,12 @@ function ready() {
     });
     // 编辑器打字 → 后台重连(见 updateListener 里的说明)。
     hintReconnect = () => client.ensureConnected();
+
+    // 用户活动 → 把空闲断连的计时推后。挂在 window 上而不是编辑器上:
+    // 看日志、滚页面、切目标、点按钮都算「人还在」。
+    for (const ev of ["keydown", "pointerdown", "wheel"]) {
+        window.addEventListener(ev, () => client.touch(), { passive: true });
+    }
 
     // 目标选择写进 localStorage(见 populateTargetSelect 的注释)。
     // Shoelace 的自定义控件发的是 `sl-change`,不保证再发原生 `change`。

@@ -185,9 +185,13 @@ server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docke
 
 *后端地址不归页面管*：`BACKENDS` 写死在 `script.js`，每次加载打乱、逐个尝试（4 秒超时），连上就停。页面里不给看也不给改。
 
+*连接不是常开的*：页面把「用户操作」放宽到整页（`keydown` / `pointerdown` / `wheel`，加上每次发消息），90 秒没有任何操作就主动关掉 WebSocket。服务端把断开当成取消并把 RA 会话还回池子，一个没人看的页面不该一直占着几百 MB 的分析进程；空闲关闭显示中性提示，不标红。排队或编译中的连接不在此列：任务收摊（`finished` / `failed` / `cancelled` / `error`）之前计时只会顺延，否则用户挂着页面等编译，会被自己这端取消掉。下次打字或点「编译」走既有的自动重连，`hello` 重建 LSP 会话并整份同步文档。
+
 *编辑器只借 CodeMirror 的词法层*：`@codemirror/lang-rust` 提供括号匹配等结构信息，*不装* `syntaxHighlighting`；颜色全部来自服务端语义 token。缩进是自写的 `indentService`（`lang-rust` 没有提供任何缩进规则）。
 
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
+
+*重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。
 
 *选区与光标由 CodeMirror 自绘*（`drawSelection()`）：浏览器原生的光标在选区非空时会被隐藏，拖动或 Shift 选中后看不到落点；自绘层则在选区头部始终画一根光标。
 
