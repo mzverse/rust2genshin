@@ -6,7 +6,7 @@
 // 顶栏的「摆弄」已经标明了身份,再占一行标题只是把编辑器往下挤。
 #show: template.with(toc: false, with_outline: false, with_title: false);
 // Shoelace 的封装都在这儿。
-#import "/lib/shoelace.typ": sl-button
+#import "/lib/shoelace.typ": sl-button, sl-select, sl-option
 
 #let title = [摆弄];
 
@@ -55,26 +55,37 @@
             for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted() {
               options.insert(base_path + x, [#x.split("/").last().trim(".rs", at: end)])
             }
-            // 下拉用原生 `<select>`(和下面的「目标」一样):这一页的下拉只有
-            // 两三个选项,原生控件样式全在外面,高度由 `style.css` 的
-            // `--play-ctl-h` 一处控制,和旁边的 `<sl-button>` 对齐。
-            // `<select>` 自动选中第一项,不用显式给 value。
-            html_elem("select", id: "play-sample", class: "play-target play-sample-select")[
-              #for (path, label) in options.pairs() {
-                html_elem("option", value: path)[#label]
-              }
-            ]
+            // 用 `<sl-select>` 而不是原生 `<select>`:和按钮同一套主题、
+            // 同一个 `--sl-input-height-medium`(见 `style.css` 的
+            // `.play-layout`),胶囊形也由组件的 `pill` 属性保证。
+            // 原生 select 没有「选中第一项」之外的空值态,这里显式给 value。
+            let pairs = options.pairs()
+            sl-select(
+              id: "play-sample",
+              class: "play-select play-sample-select",
+              value: if pairs.len() > 0 { pairs.first().at(0) } else { none },
+              aria_label: "示例",
+              [
+                #for (path, label) in pairs {
+                  sl-option(path, [#label])
+                }
+              ],
+            )
           }
           #sl-button(id: "play-sample-load", variant: "default", icon: "download")[载入]
         ]
         // 「目标」选择器由 `Hello.targets` 驱动 —— 不写死选项,后端报什么就
         // 渲染什么;显示名(`超限模式` / `经典模式`)在 script.js 里查
         // TARGET_LABELS。默认选第一项(`Hello.targets` 的顺序就是显示顺序)。
-        // 用原生 `<select>`:这个选择器只有两三行,套一个组件反而要多管一层
-        // 尺寸和可空性,不值。
+        // 选项由后端 `hello` 填(见 script.js),初始空值显示 placeholder。
         #html_elem("div", class: "play-picker play-picker-target")[
           #html_elem("span", class: "play-label")[目标：]
-          #html_elem("select", id: "play-target", class: "play-target")[]
+          #sl-select(
+            id: "play-target",
+            class: "play-select play-select-target",
+            placeholder: "未连接",
+            aria_label: "目标",
+          )[]
         ]
         // 「取消」和「编译」是一对动作 —— 取消取消的就是正在跑的那次编译,
         // 所以贴在它旁边;「下载」属于右栏的结果,不在这组里。

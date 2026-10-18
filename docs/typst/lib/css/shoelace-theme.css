@@ -1,19 +1,13 @@
 /* Shoelace 主题微调。
  *
  * 不重画调色板:Shoelace 自带的 light/dark 两套中性色阶已经足够现代,这里
- * 只改四样 —— 主色(跟站点强调色一致)、控件高度(和工具条 40px 对齐)、
- * 圆角、字体。自己维护的颜色越少,深色模式越不容易漂。
+ * 只改两样 —— 主色(跟站点强调色一致)和字体。尺寸和胶囊圆角由用到的
+ * 组件自己带(pill 属性、页面上的 --sl-input-height-medium),不往全局塞。
+ * 自己维护的颜色越少,深色模式越不容易漂。
  *
  * 这些自定义属性会穿透 shadow root,从 `:root` 一路继承进组件内部。 */
 
 :root {
-    /* 控件高度不在这里定:`--sl-input-height-medium` 是页面自己的事,
-     * 摆弄页在 `play/style.css` 的 `.play-layout` 上把它指到 `--play-ctl-h`
-     * (同样会继承进 shadow root)。这个文件只管外观。 */
-
-    /* 胶囊形。按钮和输入框共用这一个 token;这一页没有输入框,不会误伤。 */
-    --sl-input-border-radius-medium: 9999px;
-
     /* 字体跟随站点正文(template.css 的 body 那一串)。 */
     --sl-font-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont,
         "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC",

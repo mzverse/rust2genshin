@@ -335,11 +335,16 @@ function makeEditorOps(view) {
 function init() {
     const root = document.querySelector(".play");
     if (!root) return;
-    // 不再等组件 upgrade。两个下拉都是原生 `<select>`,`.value` 一开始就是
-    // 准的;按钮这边脚本只碰 `disabled` / `hidden` —— Lit 会把 upgrade 之前
-    // 设在实例上的属性接过去,而 Shoelace 的模块万一被墙,`<sl-button>` 退回
-    // 成一个普通的内联元素,点击照样能用,比整页卡在等组件上强。
-    ready();
+    // `<sl-select>` 的 `.value` 要等组件 upgrade 之后才准(选项、选中态都
+    // 是 upgrade 时同步的),整段初始化挂到 `whenDefined` 后面。
+    if (customElements.get("sl-select")) ready();
+    else customElements.whenDefined("sl-select").then(ready, (e) => {
+        // Shoelace 的模块没加载出来(CDN 挂了/被墙)时页面就废了 —— 至少把
+        // 话说明白。
+        const log = root.querySelector("#play-log");
+        if (log) log.textContent = `界面组件没加载出来:${e}
+`;
+    });
 }
 
 function ready() {
@@ -930,7 +935,7 @@ function ready() {
         if (!targetSel) return;
         targetSel.textContent = "";
         for (const t of targets) {
-            const opt = document.createElement("option");
+            const opt = document.createElement("sl-option");
             opt.value = t;
             opt.textContent = TARGET_LABELS[t] || t;
             targetSel.appendChild(opt);
@@ -1036,8 +1041,9 @@ function ready() {
     hintReconnect = () => client.ensureConnected();
 
     // 目标选择写进 localStorage(见 populateTargetSelect 的注释)。
+    // Shoelace 的自定义控件发的是 `sl-change`,不保证再发原生 `change`。
     if (targetSel) {
-        targetSel.addEventListener("change", () => {
+        targetSel.addEventListener("sl-change", () => {
             try {
                 localStorage.setItem(TARGET_STORE_KEY, targetSel.value);
             } catch {

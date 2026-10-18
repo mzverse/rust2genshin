@@ -157,11 +157,6 @@ body:has(main > .play) main {
  * shadow root。给 `<sl-button>` 宿主直接写 `height` 只会把内部已经排好的
  * 盒模型裁掉,不是真改 —— 这也是当初从 MDUI 换过来的原因:那套没有尺寸
  * token。 */
-/* 样例名长(「aaa_hello-world」),比「目标」的选项宽;窄了会被截掉。 */
-.play-sample-select {
-    min-width: 10rem;
-}
-
 /* 左栏的编辑框:CodeMirror 6 的挂载点。CodeMirror 自己管滚动、光标、IME,
  * 这里只负责把高度传下去 —— 格子高度已经是第 2 行的 `minmax(0, 1fr)`,
  * `.cm-editor` 在这个 flex 列里再吃一次。 */
@@ -309,42 +304,20 @@ body:has(main > .play) main {
     text-decoration-skip-ink: none;
 }
 
-/* ---- 目标选择器(原生 <select>) ----
+/* ---- 下拉(`<sl-select>`) ----
  *
- * 用原生 select:这个选择器只两三个选项,套组件要多管一层尺寸和可空性,
- * 不值。配色用站点 token,与 `.play-picker` 同一种灰底框;高度对齐旁边
- * 的「示例」下拉。 */
-.play-target {
-    appearance: none;
-    -webkit-appearance: none;
-    background-color: var(--surface);
-    color: var(--fg);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    /* 和按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。原生 `<select>` 的
-     * `height` 就是它本来的用法。竖直居中由 select 自己保证,`padding` 只管
-     * 左右和箭头那块空位。 */
-    height: var(--play-ctl-h);
-    padding: 0 28px 0 10px;
-    font: inherit;
-    font-size: 13px;
-    line-height: 1.2;
-    /* 右侧画一个下拉箭头(用 currentColor 与 fg 同色,不另开 SVG 文件):
-     *   ▼ 形,用两段 linear-gradient 拼出来,8x6px,贴近右边沿 8px。 */
-    background-image:
-        linear-gradient(45deg, transparent 50%, currentColor 50%),
-        linear-gradient(135deg, currentColor 50%, transparent 50%);
-    background-position:
-        right 10px center,
-        right 5px center;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-    min-width: 7rem;
+ * 配色、箭头、焦点环、胶囊圆角全由 Shoelace 自己画(主题在
+ * `lib/css/shoelace-theme.css`);宿主上只留宽度 —— 高度已经由
+ * `--sl-input-height-medium` 和按钮对好了。
+ *
+ * `width` 而不是 `min-width`:`.play-picker` 是 flex 行,select 的默认宽度
+ * 会被内部 `display: block` 撑成整行,把「载入」挤出去。 */
+.play-select {
+    width: 7rem;
 }
-.play-target:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-    border-color: transparent;
+/* 样例名长(「aaa_hello-world」),比「目标」的选项宽;窄了会被截掉。 */
+.play-sample-select {
+    width: 10rem;
 }
 /* play-picker-target 与示例的 picker 共享样式,但稍短 —— 它的内容本来就少。 */
 .play-picker.play-picker-target {
@@ -504,9 +477,12 @@ body:has(main > .play) main {
     outline-offset: -2px;
 }
 
-/* 状态行占掉选项卡和下载按钮之间的空白;太长就省略号,不能把下载按钮挤走。 */
+/* 状态行占掉选项卡和下载按钮之间的空白;太长就省略号,不能把下载按钮挤走。
+ * 选项卡条是 `align-items: stretch`(为了让选项卡贴住底线),状态文字不能
+ * 跟着拉满整行 —— 那会让文字停在行首。单独收回来自适应高度再居中。 */
 .play-status {
     flex: 1 1 auto;
+    align-self: center;
     min-width: 0;
     font-size: 13px;
     text-align: right;
@@ -590,12 +566,12 @@ body:has(main > .play) main {
     border-radius: 6px;
 }
 
-/* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,把下拉框的最小宽度收一收,
+/* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,把下拉框的宽度收一收,
  * 好让折行后的第二行不至于只有「编译」孤零零一个。
  * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
 @media (max-width: 560px) {
     .play-sample-select {
-        min-width: 7rem;
+        width: 7rem;
     }
 }
 
