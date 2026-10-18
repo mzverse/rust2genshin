@@ -17,7 +17,7 @@
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
-import { indentWithTab, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
+import { history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
 import { indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
@@ -397,7 +397,30 @@ function ready() {
                 rust(),
                 indentUnit.of("    "),
                 indentOnInput(),
-                indentWithTab,
+                // Tab 缩进。挂**默认**优先级(不是 `Prec.high`):补全弹窗
+                // 开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
+                // 扩展列表靠后,于是弹窗开着时 Tab 归弹窗(选中下一项),
+                // 没开时才是这里。
+                // 没有用官方的 `indentWithTab`:从 esm.sh 加载时它带着另一份
+                // `@codemirror/view`,产出的扩展会被本页这份 `state` 判成
+                // 「Unrecognized extension value」直接让整个编辑器建不起来。
+                keymap.of([{
+                    key: "Tab",
+                    run: (v) => {
+                        const { from, to } = v.state.selection.main;
+                        const unit = v.state.languageDataAt("indentUnit", from) || "    ";
+                        const indent = v.state.lineAt(from).search(/\s*$/, 0, "end").from;
+                        const spaces = " ".repeat(unit.length);
+                        const inserts = to === from && to === v.state.doc.lineAt(from).from
+                            ? spaces
+                            : null;
+                        v.dispatch(inserts ? {
+                            changes: { from, to, insert: inserts },
+                            selection: { anchor: from + inserts.length },
+                        } : v.state.replaceSelection(spaces));
+                        return true;
+                    },
+                }]),
                 // 撤销/重做。显式装上 `historyKeymap`(`Mod-z` / `Mod-y` /
                 // `Mod-Shift-z`),不要依赖编辑器的默认绑定 —— GitHub Pages
                 // 上页面的 `Mod` 在 Windows/Linux 是 Ctrl、在 macOS 是 Cmd,
