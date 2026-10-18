@@ -19,7 +19,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://es
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
-import { indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
+import { indentation, indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
     LspClient,
@@ -369,6 +369,34 @@ function ready() {
         };
     };
 
+    /* 缩进服务。
+     *
+     * `@codemirror/lang-rust` **不提供** `indentation`:
+     * `languageDataAt("indentation", pos)` 在装了 `rust()` 的状态里返回空数组。
+     * 所以 Enter 的智能缩进没有来源 —— 光秃的编辑器里块内换行就是顶格
+     * (这正是用户报的「块内换行不自动补缩进」)。
+     *
+     * 只做「打开就多一层、关掉就少一层」这一条,不追 Rust 的完整缩进规则:
+     * 一份朴素但正确率高的缩进,比一份看起来聪明、实际在链式调用和
+     * where 子上乱猜的缩进好 —— 后者会把用户的代码越排越乱。 */
+    const OPENERS = "{[(";
+    const CLOSERS = "}])";
+    const INDENT = "    ";
+    const rustIndent = {
+        closedIndent: () => 0,
+        indentation: (state, line) => {
+            const src = state.doc.line(line - 1);
+            if (!src) return 0;
+            const text = src.text;
+            const base = text.length - text.trimStart().length;
+            const trimmed = text.trimEnd();
+            const last = trimmed.slice(-1);
+            if (OPENERS.includes(last)) return base + INDENT.length;
+            if (CLOSERS.includes(last)) return Math.max(0, base - INDENT.length);
+            return base;
+        },
+    };
+
     view = new EditorView({
         state: EditorState.create({
             doc: "",
@@ -395,8 +423,12 @@ function ready() {
                 // 下一项。之前用 `Prec.high` 自写 handler 抢在弹窗前面,
                 // 弹窗一开 Tab 就不工作了。
                 rust(),
-                indentUnit.of("    "),
+                indentUnit.of(INDENT),
+                // `indentOnInput` 让输入时保持当前缩进;`indentation` 是 Enter
+                // 走 `insertNewlineAndIndent` 时查的服务。两者是同一套缩进
+                // 约定的两条入口,缺一个都会让「块内换行不缩进」复现。
                 indentOnInput(),
+                indentation.of(rustIndent),
                 // Tab 缩进。挂**默认**优先级(不是 `Prec.high`):补全弹窗
                 // 开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
                 // 扩展列表靠后,于是弹窗开着时 Tab 归弹窗(选中下一项),
@@ -408,7 +440,7 @@ function ready() {
                     key: "Tab",
                     run: (v) => {
                         const { from, to } = v.state.selection.main;
-                        const unit = v.state.languageDataAt("indentUnit", from) || "    ";
+                        const unit = v.state.languageDataAt("indentUnit", from) || INDENT;
                         const indent = v.state.lineAt(from).search(/\s*$/, 0, "end").from;
                         const spaces = " ".repeat(unit.length);
                         const inserts = to === from && to === v.state.doc.lineAt(from).from
