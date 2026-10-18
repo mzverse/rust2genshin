@@ -17,9 +17,9 @@
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
-import { history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
+import { defaultKeymap, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
-import { indentService, indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
+import { indentService, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
     LspClient,
@@ -424,20 +424,21 @@ function ready() {
                     activateOnTyping: true,
                     closeOnBlur: true,
                 }),
-                // Tab 在 textarea 里默认是切焦点,写 Rust 的人会疯。
-                // 用官方的 `indentWithTab`:它**按当前缩进**插空格(在行首
-                // 补齐到下一层,中间对齐到列),而不是无脑插 4 个;并且它
-                // 挂在默认优先级上,补全弹窗开着时 Tab 仍然交给弹窗选中
-                // 下一项。之前用 `Prec.high` 自写 handler 抢在弹窗前面,
-                // 弹窗一开 Tab 就不工作了。
+                // `defaultKeymap` 必须在:Enter 走的是里面的
+                // `insertNewlineAndIndent`,而**只有那条命令会去问缩进服务**
+                // —— 不绑它,Enter 就是浏览器原生的插一个 `\n`,缩进服务
+                // 一次都不会被问。附带好处是补齐了 Backspace 合并行、
+                // 光标处引号成对删除等一整批默认行为。
+                // 注意它里面不含 Tab 绑定(Tab 在 `indentWithTab` 里,而那个
+                // 不能用,见下),所以和我们自己的 Tab handler 不打架。
+                keymap.of(defaultKeymap),
                 rust(),
                 indentUnit.of(INDENT),
-                // `indentOnInput` 让输入时保持当前缩进;`indentService` 是 Enter
-                // 走 `insertNewlineAndIndent` 时查的服务(注意名字是
-                // `indentService`,不是 `indentation` —— 后者根本没导出,引用
-                // 它会在建编辑器时抛,页面只剩一个空框)。两者是同一套缩进
-                // 约定的两条入口,缺一个都会让「块内换行不缩进」复现。
-                indentOnInput(),
+                // 缩进只有 `indentService` 这一条真入口。`indentOnInput` 在这儿
+                // 是**空转**:实测它的实现是 transactionFilter,只在
+                // `tr.isUserEvent("input.type")` 时跑,还要
+                // `languageDataAt("indentOnInput")` 提供一个函数 ——
+                // `@codemirror/lang-rust` 不提供,配了也不触发。
                 indentService.of(rustIndent),
                 // Tab 缩进。挂**默认**优先级(不是 `Prec.high`):补全弹窗
                 // 开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
