@@ -31,7 +31,11 @@ import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@6";
  * 前端按同顺序把索引映射到 CSS class,顺序错一档整个高亮就乱。
  *
  * 不接收来自浏览器的 legend:服务端不向前端转发 `initialize` 响应
- * (Task 6 的协议),前端不依赖任何外部数据源 —— 协议层只透传 raw data。 */
+ * (Task 6 的协议),前端不依赖任何外部数据源 —— 协议层只透传 raw data。
+ *
+ * 而这里的下标**已经是我们的下标**:RA 按它自己那份 legend 编码,服务端
+ * 在 `initialize` 之后按名字翻译过了(见 `playground/src/lsp/session.rs`
+ * 的 `TokenLegend`)。表对不上时表现为整段颜色错位(比如关键字变斜体)。 */
 const TOKEN_TYPES = [
     "namespace",      // 0
     "type",           // 1

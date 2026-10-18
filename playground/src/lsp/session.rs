@@ -65,6 +65,88 @@ const TOKEN_TYPES: [&str; 23] = [
     "decorator",
 ];
 
+/// RA 的 semantic token 索引 → 我们 [`TOKEN_TYPES`] 索引的翻译表。
+///
+/// **为什么必须翻译**:我们在 `initialize` 里上报了自己的 `tokenTypes`,
+/// 但 RA **不按它编码** —— 它回自己那份 legend,并且按**自己那份**的下标发
+/// token。实测 RA 1.101 回的是字母序:
+/// `comment, decorator, enumMember, enum, function, interface, keyword, …`
+/// 于是 `keyword` 落在第 6 位,而上面这张表第 6 位是 `typeParameter` ——
+/// 不翻译的话 `pub` / `fn` 会被前端当泛型参数染成斜体,`hello_world`
+/// 这种函数被染成 `interface` 的颜色。
+///
+/// 映射按**名字**做,RA 换 legend 顺序不用改我们:名字对上就行。RA 独有的
+/// 标点类 token(`brace` / `comma` / `lifetime` …)在我们表里没有对应项,
+/// 翻成 [`Self::NO_COLOR`] —— 前端解到越界索引会跳过这一项。
+#[derive(Debug, Clone, Default)]
+struct TokenLegend {
+    /// 下标 = RA 的下标,值 = 我们表里的下标(或 `NO_COLOR`)。
+    map: Vec<u32>,
+}
+
+impl TokenLegend {
+    /// 前端解到不认识的索引就跳过(见 `lsp-client.js` 的 `decodeTokens`)。
+    /// 取一个必然越界的值 —— 上面那张表只有 23 项。
+    const NO_COLOR: u32 = u32::MAX;
+
+    /// 从 RA 报的 `legend.tokenTypes` 建表。空表 = 直通(行为同改动之前)。
+    fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let map = names
+            .into_iter()
+            .map(|n| {
+                TOKEN_TYPES
+                    .iter()
+                    .position(|t| *t == n.as_ref())
+                    .map(|i| i as u32)
+                    .unwrap_or(Self::NO_COLOR)
+            })
+            .collect();
+        Self { map }
+    }
+
+    /// 从 `initialize` 响应的 `result.capabilities` 里取 RA 报的 legend。
+    fn from_capabilities(caps: &Value) -> Self {
+        let names = caps
+            .get("semanticTokensProvider")
+            .and_then(|p| p.get("legend"))
+            .and_then(|l| l.get("tokenTypes"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+        match names {
+            Some(n) if !n.is_empty() => Self::from_names(n),
+            // 没报 / 报成空 = 无从翻译,保持原样。
+            _ => Self::default(),
+        }
+    }
+
+    /// 单个 RA 索引 → 我们的索引。越界(RA 的 legend 比我们长)也当
+    /// 「不着色」,不能让 `map[i]` 整个 panic —— 一个新 token 类型不该把
+    /// 整份高亮带崩。
+    fn remap_one(&self, ra_index: u32) -> u32 {
+        self.map.get(ra_index as usize).copied().unwrap_or(Self::NO_COLOR)
+    }
+
+    /// 把 RA 的 delta 数组里每个 token 的**类型**换成我们的下标。
+    ///
+    /// delta 是 5 个一组 `(Δline, Δstart, len, type, modifiers)`,只动每组
+    /// 第 4 个。**长度必须与入参一致** —— 前端按固定步长解码,少一个元素
+    /// 就整体错位。尾部不足 5 个的残缺组原样保留。
+    fn remap(&self, data: &[u32]) -> Vec<u32> {
+        if self.map.is_empty() {
+            return data.to_vec();
+        }
+        let mut out = data.to_vec();
+        for i in (0..data.len() / 5 * 5).step_by(5) {
+            out[i + 3] = self.remap_one(data[i + 3]);
+        }
+        out
+    }
+}
+
 /// 内部请求 id 的起点。前端 id 从 1 起,正常不会到达这里;真到了就拒绝。
 pub const INTERNAL_ID_BASE: u64 = 0x4000_0000;
 
@@ -154,6 +236,9 @@ pub struct Session {
     next_internal_id: Arc<AtomicU64>,
     /// didOpen / didChange 共用的文档版本号。
     version: AtomicU64,
+    /// RA 报的 legend,`initialize` 拿到响应后填上。token 转发时用它
+    /// 把 RA 的下标翻成 [`TOKEN_TYPES`] 的下标。
+    legend: Arc<Mutex<TokenLegend>>,
     /// 后台读任务。`Drop` 时 abort —— 否则它会攥着 `Arc<RaProcess>`
     /// 和事件 channel 活到进程结束。
     reader: tokio::task::JoinHandle<()>,
@@ -166,16 +251,19 @@ impl Session {
         let alive = Arc::new(AtomicBool::new(true));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let next_internal_id = Arc::new(AtomicU64::new(INTERNAL_ID_BASE));
+        let legend = Arc::new(Mutex::new(TokenLegend::default()));
         let reader = tokio::spawn(reader_loop(
             Arc::clone(&proc),
             tx.clone(),
             Arc::clone(&alive),
             Arc::clone(&pending),
             Arc::clone(&next_internal_id),
+            Arc::clone(&legend),
         ));
         Self {
             proc,
             events_tx: tx,
+            legend,
             pending,
             alive,
             next_internal_id,
@@ -238,6 +326,19 @@ impl Session {
         if let Some(err) = resp.get("error") {
             return Err(LspError::BadResponse(err.to_string()));
         }
+
+        // RA 会回它**自己那份** legend(实测是字母序,不是我们上报的那份)。
+        // 拿它把后续 token 的类型下标翻译到我们的表上,否则 `pub` / `fn`
+        // 会按 RA 的 `keyword`(6) 被前端当 `typeParameter`(6) 染成斜体。
+        let legend = resp
+            .get("result")
+            .and_then(|r| r.get("capabilities"))
+            .map(TokenLegend::from_capabilities)
+            .unwrap_or_default();
+        self.legend
+            .lock()
+            .expect("Mutex 不该中毒:持锁段不 panic")
+            .map = legend.map;
 
         self.send_json(&json!({
             "jsonrpc": "2.0",
@@ -434,13 +535,14 @@ async fn reader_loop(
     alive: Arc<AtomicBool>,
     pending: Arc<Mutex<HashMap<u64, Pending>>>,
     next_id: Arc<AtomicU64>,
+    legend: Arc<Mutex<TokenLegend>>,
 ) {
     while alive.load(Ordering::SeqCst) {
         match proc.recv(RECV_TIMEOUT).await {
             Ok(Some(raw)) => {
                 // 不是 JSON 的帧:忽略。RA 的 stdout 上只该有 LSP 帧。
                 if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                    dispatch(v, &proc, &tx, &pending, &next_id).await;
+                    dispatch(v, &proc, &tx, &pending, &next_id, &legend).await;
                 }
             }
             // 沉默(RA 还活着只是没回):继续等。
@@ -470,6 +572,7 @@ async fn dispatch(
     tx: &broadcast::Sender<Event>,
     pending: &Mutex<HashMap<u64, Pending>>,
     next_id: &AtomicU64,
+    legend: &Mutex<TokenLegend>,
 ) {
     // 带 method 的是通知或服务端发来的请求。
     if let Some(method) = v.get("method").and_then(Value::as_str) {
@@ -516,15 +619,20 @@ async fn dispatch(
             let _ = resp_tx.send(v);
         }
         Pending::Tokens => {
-            // `delta` 数组原样透传:拆成 (start, len, type, modifiers)
-            // 是前端 CodeMirror 扩展的活。整体按 `Vec<u32>` 解析 ——
-            // 逐元素 `filter_map` 会静默丢元素/截断。
+            // `delta` 数组整体按 `Vec<u32>` 解析(逐元素 `filter_map` 会静默
+            // 丢元素/截断),随后**只把每个 token 的类型下标**从 RA 的
+            // legend 翻到我们的 `TOKEN_TYPES`。坐标、修饰符原样不动 ——
+            // 拆成 (start, len, type, modifiers) 是前端 CodeMirror 的活。
             let Some(data) = v.get("result").and_then(|r| r.get("data")) else {
                 tracing::warn!("semanticTokens/full 响应里没有 data,丢弃");
                 return;
             };
             match serde_json::from_value::<Vec<u32>>(data.clone()) {
                 Ok(data) => {
+                    let data = legend
+                        .lock()
+                        .expect("Mutex 不该中毒:持锁段不 panic")
+                        .remap(&data);
                     let _ = tx.send(Event::Tokens(data));
                 }
                 Err(e) => {
@@ -1037,6 +1145,127 @@ mod tests {
                 .is_err(),
             "解析失败不能发 Event::Tokens"
         );
+    }
+
+    /// RA 的 legend 是**它自己排的序**,不是我们 `initialize` 里报的那份。
+    /// 实测 RA 1.101 回的是字母序:`keyword` 在第 6 位;我们表里第 6 位是
+    /// `typeParameter` —— 按自己的表去解释 RA 的索引,`pub` / `fn` 就会
+    /// 被染成「泛型参数」的斜体。映射必须按**名字**做。
+    #[test]
+    fn legend_maps_ra_alphabetical_names_onto_our_table() {
+        // 这份是 RA 实测回来的顺序(截取到我们有映射的那一段)。
+        let ra: Vec<&str> = vec![
+            "comment", "decorator", "enumMember", "enum", "function", "interface", "keyword",
+            "macro", "method", "namespace", "number", "operator", "parameter", "property",
+            "string", "struct", "typeParameter", "variable", "type",
+        ];
+        let legend = TokenLegend::from_names(ra);
+        assert_eq!(legend.remap_one(6), 15, "keyword 在我们表里是 15");
+        assert_eq!(legend.remap_one(4), 12, "function 在我们表里是 12");
+        assert_eq!(legend.remap_one(0), 17, "comment 在我们表里是 17");
+        assert_eq!(legend.remap_one(10), 19, "number 在我们表里是 19");
+    }
+
+    /// RA 的标点类 token(`brace` / `comma` / `lifetime` …)不在我们表里。
+    /// 它们必须变成「前端跳过」的哨兵值,**同时不能打乱 5 个一组的步长** ——
+    /// 错位一个元素,后面所有 token 的类型全错。
+    #[test]
+    fn names_outside_our_table_become_a_skip_sentinel_without_shifting() {
+        let legend = TokenLegend::from_names(vec!["comment", "keyword", "brace", "lifetime"]);
+        assert_eq!(legend.remap_one(2), TokenLegend::NO_COLOR);
+        assert_eq!(legend.remap_one(3), TokenLegend::NO_COLOR);
+        assert_eq!(legend.remap_one(1), 15);
+        // 三组完整的 token,类型位分别取 `brace` / `keyword` / `lifetime`。
+        let data = vec![0, 0, 3, 2, 0, 0, 3, 3, 1, 0, 0, 5, 3, 3, 0];
+        assert_eq!(
+            legend.remap(&data),
+            vec![
+                0,
+                0,
+                3,
+                TokenLegend::NO_COLOR,
+                0,
+                0,
+                3,
+                3,
+                15,
+                0,
+                0,
+                5,
+                3,
+                TokenLegend::NO_COLOR,
+                0
+            ]
+        );
+        // 长度必须不变:前端按 5 个一组解码,少一个就整体错位。
+        assert_eq!(legend.remap(&data).len(), data.len());
+    }
+
+    /// 尾部的残缺组(不足 5 个)不能被改写 —— 前端解码时本来就会丢掉,
+    /// 这里也别碰它。
+    #[test]
+    fn a_trailing_partial_group_is_left_alone() {
+        let legend = TokenLegend::from_names(vec!["comment", "keyword"]);
+        assert_eq!(legend.remap(&[0, 1, 2, 1, 0, 9, 9]), vec![0, 1, 2, 15, 0, 9, 9]);
+    }
+
+    /// RA 没报 legend(老版本 / 能力缺失)时按原样透传 —— 此时索引由前端
+    /// 那张表解释,和这次改动之前的行为一致。
+    #[test]
+    fn an_empty_legend_is_the_identity() {
+        let legend = TokenLegend::from_names(Vec::<String>::new());
+        let data = vec![0, 0, 3, 6, 0];
+        assert_eq!(legend.remap(&data), data);
+    }
+
+    /// 端到端:initialize 的响应里带 RA 那份 legend,之后回来的 token
+    /// 里 `type` 字段(第 4 个)已经被翻译成我们表里的下标。
+    #[tokio::test]
+    async fn tokens_are_remapped_through_the_legend_from_initialize() {
+        let (fake, session) = setup().await;
+        let mut events = session.subscribe();
+
+        let feeder = {
+            let fake = Arc::clone(&fake);
+            tokio::spawn(async move {
+                fake.wait_until_written("\"method\":\"initialize\"").await;
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": INTERNAL_ID_BASE,
+                    "result": { "capabilities": { "semanticTokensProvider": {
+                        "legend": { "tokenTypes": ["comment", "keyword"] }
+                    }}},
+                });
+                fake.sender()
+                    .send(frame::encode(&resp.to_string()))
+                    .expect("回 initialize 响应");
+                fake.wait_until_written("textDocument/semanticTokens/full").await;
+                let bodies = fake.written_bodies();
+                let id = bodies
+                    .iter()
+                    .find(|v| v["method"] == "textDocument/semanticTokens/full")
+                    .map(|v| v["id"].as_u64().unwrap())
+                    .unwrap();
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "data": [0, 0, 3, 1, 0] },
+                });
+                fake.sender()
+                    .send(frame::encode(&resp.to_string()))
+                    .expect("回 token 响应");
+            })
+        };
+
+        session.initialize().await.expect("initialize 该成功");
+        // didChange 会触发 token 请求(会话 booted 后灌过一次占位源码)。
+        let _ = session.did_change("fn main() {}").await;
+        let _ = feeder.await;
+
+        match next_event(&mut events).await {
+            Event::Tokens(got) => assert_eq!(got[3], 15, "RA 的 keyword(1) 要翻成我们的 15"),
+            other => panic!("期望 Event::Tokens,实际:{other:?}"),
+        }
     }
 
     /// 服务端发来的请求必须回一条 `result: null`(静默丢弃会让 RA

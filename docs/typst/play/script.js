@@ -16,8 +16,11 @@
  */
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
-import { EditorState, Prec, Compartment } from "https://esm.sh/@codemirror/state@6";
+import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
+import { indentWithTab, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
+import { indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
+import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
     LspClient,
     kindToType,
@@ -339,19 +342,30 @@ function ready() {
      * 与 CodeMirror 默认一致,直接相减。 */
     const completionProvider = async (context) => {
         if (!lsp) return null;
+        // `activateOnTyping` 是在**键入的字符之前**触发的:`context.pos` 落在
+        // 刚敲下的那个字符**之前**。直接拿它当 `from` 会把已敲的字符留在
+        // 替换范围之外,选中补全后就变成 `llog`(用户报的那个 bug)。
+        // 自己从 pos 往回走过词字符,算出这个词的起点。
         const lineObj = context.state.doc.lineAt(context.pos);
+        const before = lineObj.text.slice(0, context.pos - lineObj.from);
+        const m = /[\w]*$/.exec(before);
+        const typed = m ? m[0] : "";
+        // 什么前缀都没有就别弹 —— RA 会把整份 crate 的符号都列出来,
+        // 满屏 item 只会挡住代码(`validFor: /^[\w]*$/` 会匹配空串,
+        // 所以光靠它挡不住)。
+        if (typed.length === 0) return null;
         const line = lineObj.number - 1;
         const column = context.pos - lineObj.from;
         const items = await lsp.requestCompletion(line, column);
         if (!items || items.length === 0) return null;
         return {
-            from: context.pos,
+            from: context.pos - typed.length,
             options: items.map((item) => ({
                 label: item.label,
                 type: kindToType(item.kind),
                 detail: item.detail || undefined,
             })),
-            validFor: /^[\w]*$/,
+            validFor: /^[\w]+$/,
         };
     };
 
@@ -375,22 +389,21 @@ function ready() {
                     closeOnBlur: true,
                 }),
                 // Tab 在 textarea 里默认是切焦点,写 Rust 的人会疯。
-                // 这里复刻旧版的「选 → 4 空格」:Prec.high 抢在补全默认
-                // keymap 之前,补全弹窗没开时插入 4 空格;弹窗开了时
-                // completionProvider 的弹出靠 Ctrl-Space / Enter,Tab 不
-                // 需要抢走。Shift-Tab 不绑 —— 旧 textarea 也没处理。
-                Prec.high(keymap.of([{
-                    key: "Tab",
-                    run: (v) => {
-                        const { from, to } = v.state.selection.main;
-                        const spaces = "    ";
-                        v.dispatch({
-                            changes: { from, to, insert: spaces },
-                            selection: { anchor: from + spaces.length },
-                        });
-                        return true;
-                    },
-                }])),
+                // 用官方的 `indentWithTab`:它**按当前缩进**插空格(在行首
+                // 补齐到下一层,中间对齐到列),而不是无脑插 4 个;并且它
+                // 挂在默认优先级上,补全弹窗开着时 Tab 仍然交给弹窗选中
+                // 下一项。之前用 `Prec.high` 自写 handler 抢在弹窗前面,
+                // 弹窗一开 Tab 就不工作了。
+                rust(),
+                indentUnit.of("    "),
+                indentOnInput(),
+                indentWithTab,
+                // 撤销/重做。显式装上 `historyKeymap`(`Mod-z` / `Mod-y` /
+                // `Mod-Shift-z`),不要依赖编辑器的默认绑定 —— GitHub Pages
+                // 上页面的 `Mod` 在 Windows/Linux 是 Ctrl、在 macOS 是 Cmd,
+                // 少一个绑定就是「按了没反应」。
+                history(),
+                keymap.of(historyKeymap),
                 // 文档变化 → LspClient 去抖 300 ms 后发 LspChange。
                 // `lsp` 可能为 null,check 一下避免无谓调用。
                 EditorView.updateListener.of((u) => {
