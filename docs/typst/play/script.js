@@ -18,7 +18,7 @@
 
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
-import { defaultKeymap, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
+import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
 import { indentService, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
@@ -957,6 +957,15 @@ function ready() {
                         return true;
                     },
                 }]),
+                // Ctrl-D 删整行。`defaultKeymap` 里 `Mod-d` 绑的是
+                // `deleteCharAfter`(Emacs 风格删一个字符),要盖掉它就得排在
+                // `defaultKeymap` **之前** —— keymap 扩展按注册顺序匹配,
+                // 同一个键先跑到的赢。
+                //
+                // 命令用官方的 `deleteLine`,不自己 dispatch:它对多行选区
+                // (删整段)、选区正好结束在某行开头(不吞下一行)、文档只剩
+                // 一行(留一个空行而不是把文档删空)这些边界都处理过了。
+                keymap.of([{ key: "Mod-d", run: deleteLine }]),
                 // 撤销/重做。显式装上 `historyKeymap`(`Mod-z` / `Mod-y` /
                 // `Mod-Shift-z`),不要依赖编辑器的默认绑定 —— GitHub Pages
                 // 上页面的 `Mod` 在 Windows/Linux 是 Ctrl、在 macOS 是 Cmd,
