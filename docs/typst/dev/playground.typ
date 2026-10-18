@@ -89,7 +89,7 @@ cargo run -p rust2genshin-playground
 
 = 编辑器与 rust-analyzer
 
-「摆弄」页的编辑框是 CodeMirror 6。语法高亮、红色波浪线、补全列表，三样全部来自容器里的 `rust-analyzer`，经 LSP 过一道 WebSocket 回来 —— *没有第二套本地语法分析在抢颜色*。本地只借了 `@codemirror/lang-rust` 的*缩进*（配 `indentUnit` / `indentOnInput`），**不装** `syntaxHighlighting`，所以它不会画出任何自己的颜色。
+「摆弄」页的编辑框是 CodeMirror 6。语法高亮、红色波浪线、补全列表，三样全部来自容器里的 `rust-analyzer`，经 LSP 过一道 WebSocket 回来 —— *没有第二套本地语法分析在抢颜色*。本地只借了 `@codemirror/lang-rust` 做*词法*（bracket matching 之类），缩进是自己写的服务，**不装** `syntaxHighlighting`，所以它不会画出任何自己的颜色。
 
 *token 类型下标由服务端翻译。* 我们在 `initialize` 里上报自己的 `tokenTypes` 表，但 RA *不按它编码* —— 它回一份自己的 legend（实测是字母序），索引编码进那份表。前端和后端因此不能共用一张表：后端在 `initialize` 之后按*名字*把 RA 的下标翻到我们的下标再转发，对不上名字的（`brace` / `comma` / `lifetime` 之类）编码成越界哨兵，前端解码时直接跳过。不这么翻的后果很具体：RA 的 `keyword` 是它的 6 号，而我们的 6 号是 `typeParameter` —— 于是 `pub` / `fn` 全被染成斜体。
 
@@ -97,7 +97,11 @@ cargo run -p rust2genshin-playground
 
 *补全只在真有前缀时弹。* `activateOnTyping` 是在键入的字符*之前*触发的，`context.pos` 因此落在已敲字符之前 —— 直接拿它当 `from`，选中后那个字符会留在替换范围外，`log` 补成 `llog`。所以 `from` 由自己往回走过词字符算出来。另外没有前缀就直接返回 `null`：RA 会把整个 crate 的符号都列出来，满屏 item 只会挡住代码。
 
-*Tab 用官方的 `indentWithTab`，不自己写。* 它按当前缩进插空格（行首补齐到下一层，中间对齐到列），而且挂在默认优先级上 —— 补全弹窗开着时 Tab 仍然交给弹窗选中下一项。挂在 `Prec.high` 上手写的 handler 会抢在弹窗前面，弹窗一开 Tab 就失灵。
+*缩进是自己写的服务，走 `indentService`。* `@codemirror/lang-rust` 不提供缩进（`languageDataAt("indentent")` 是空的），而 `indentService` 这个 facet *只有* `insertNewlineAndIndent` 会去问 —— 那条命令在 `defaultKeymap` 里，所以 `defaultKeymap` 不绑，缩进服务一次都不会被调用，Enter 只是浏览器原生地插一个换行。规则本身很土：看光标*之前*那段文本（不是整行 —— `}` 常被顶到光标后面，看整行会先撞上它判成要退一层），末字符是开括号就多一层、是闭括号就少一层。
+
+*`indentOnInput` 在这个组合下是空转，别配。* 它的实现是 transactionFilter，只在 `tr.isUserEvent("input.type")` 时跑，还要 `languageDataAt("indentOnInput")` 提供一个函数 —— `lang-rust` 不提供，配了也不触发。
+
+*Tab 自己写 handler，但挂默认优先级。* 不用官方的 `indentWithTab`：从 esm.sh 加载时它带着另一份 `@codemirror/view`，产出的扩展会被本页这份 `state` 判成「Unrecognized extension value」，整个编辑器建不起来。挂 `Prec.high` 同样错 —— 补全弹窗开着自己的 Tab 绑定，高优先级会抢在它前面，弹窗一开 Tab 就失灵。
 
 *RA 的分析范围裁到三个成员。* 镜像里除了任务容器要用的完整源码，另烘了一份 `/opt/ra/ws` —— 只有 `demo` / `lib` / `lib-internal`，没有 `core`。`core` 是 `rustc_private` 后端，RA 为了解析它要把整个编译器 sysroot 的元数据拖进来，冷启动从 11 秒涨到 84 秒，而 `demo` 的依赖链上根本没有它。裁剪在烘焙时用一次 `cargo metadata --offline` 自检，裁错了在烘焙时就炸，而不是用户第一次编辑时才发现。
 
