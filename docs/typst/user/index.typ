@@ -3,6 +3,7 @@
 
 #let title = [使用];
 #let order = 0;
+#let tag = <tag-user>;
 
 #set raw(lang: "rust");
 

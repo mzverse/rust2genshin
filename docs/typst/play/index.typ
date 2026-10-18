@@ -9,6 +9,7 @@
 #import "/lib/shoelace.typ": sl-button, sl-divider, sl-select, sl-option
 
 #let title = [摆弄];
+#let tag = <tag-playground>;
 
 #set raw(lang: "rust");
 
