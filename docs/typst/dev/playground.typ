@@ -111,7 +111,7 @@ cargo run -p rust2genshin-playground
 
 *RA 的分析范围裁到三个成员。* 镜像里除了任务容器要用的完整源码，另烘了一份 `/opt/ra/ws` —— 只有 `demo` / `lib` / `lib-internal`，没有 `core`。`core` 是 `rustc_private` 后端，RA 为了解析它要把整个编译器 sysroot 的元数据拖进来，冷启动从 11 秒涨到 84 秒，而 `demo` 的依赖链上根本没有它。裁剪在烘焙时用一次 `cargo metadata --offline` 自检，裁错了在烘焙时就炸，而不是用户第一次编辑时才发现。
 
-*部署期间不会整站停摆。* HEAD 刚推上去、本机还没有对应镜像时，服务拿*最新的旧镜像*先顶上继续服务，同时照常烘新的；烘完自动切过去。代价是这十几分钟里跑的是上一个 commit 的后端 —— 新写的 `lib` API 可能编不过 —— 而 `hello` 带 serving commit，用户看得见自己跑的是哪一版。宁可「旧版本能用」也不要「什么都不做」。`PLAYGROUND_FORCE_REBAKE=1` 是唯一关掉这条降级的开关。
+*启动时有镜像就直接用，不按 tag 重烘。* 启动计划只看本机有没有带 commit label 的镜像：有就拿来服务，*不烘新的*，哪怕它的 tag 对应的是更早的 commit。镜像 tag 跟烘焙时的 commit 绑定，但服务进程和镜像里的后端/lib 是两份东西 —— 重启服务不该因为源码前进了几个 commit 就等十几分钟。实际跑的是哪一版由 `hello` 的 serving commit 如实报出；要换新版走 webhook 的 `main` push、手工调 `/admin/rebuild`，或者设 `PLAYGROUND_FORCE_REBAKE=1` 在启动时无视本地镜像重烘一遍。只有本机一张镜像都没有时才走冷启动烘焙。
 
 *会话池是有代价的。* 一个待命的 RA 会话在 `did_open` 之后吃 839 MB；`PLAYGROUND_LSP_POOL_MIN` 乘以这个数就是这部分常驻内存。空闲超过 `PLAYGROUND_LSP_IDLE_TTL` 会话被 `docker rm -f` 收掉，RA 进程随之消失 —— 不靠谁的 `Drop`，也不靠连接断开。
 

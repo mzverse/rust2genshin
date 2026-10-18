@@ -184,29 +184,17 @@ fn parse_image_candidates(stdout: &str) -> Vec<String> {
 }
 
 /// 启动时对「用哪份镜像」的决定。
-///
-/// 关键在 `serving` 与 `needs_bake` **可以同时为真**:HEAD 还没烘过、但本机有旧
-/// 镜像时,拿旧的顶上继续服务,同时照常烘新的。只有把它们塞进一个 `Option` 就会
-/// 丢掉其中一半 —— 要么整站等十几分钟,要么永远停在旧 commit 上。
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StartupPlan {
     pub serving: Option<crate::bake::BuiltImage>,
     pub needs_bake: bool,
 }
 
-/// HEAD 对应的镜像已经烘好 —— 拿来用,不烘。
-pub fn plan_exact_hit(built: crate::bake::BuiltImage) -> StartupPlan {
+/// 本机有烘好的镜像:拿来用,**不烘**。
+pub fn plan_reuse(built: crate::bake::BuiltImage) -> StartupPlan {
     StartupPlan {
         serving: Some(built),
         needs_bake: false,
-    }
-}
-
-/// 本机只有更早的镜像:旧的顶上,新的照烘。
-pub fn plan_stale_fallback(built: crate::bake::BuiltImage) -> StartupPlan {
-    StartupPlan {
-        serving: Some(built),
-        needs_bake: true,
     }
 }
 
@@ -224,33 +212,12 @@ pub async fn startup_plan(cfg: &Config, repo: &Repo) -> StartupPlan {
     if cfg.force_rebake {
         return plan_cold();
     }
-    let Some(head) = repo.head().await.ok() else {
-        return plan_cold();
-    };
-    let dirty = repo.is_dirty().await.unwrap_or(true);
-    let want = crate::image::tag(&cfg.image, &head, dirty);
-    let out = tokio::process::Command::new("docker")
-        .args(crate::docker::image_ls_args(&crate::image::label_filter(
-            &cfg.image,
-            Some(&head),
-        )))
-        .output()
-        .await;
-    let hit = match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(str::trim)
-            .any(|l| l == want),
-        _ => false,
-    };
-    if hit {
-        return plan_exact_hit(crate::bake::BuiltImage { sha: head, tag: want });
-    }
-
-    // 降级:HEAD 还没烘过,但本机有更早的镜像。拿最新的一份先顶上 ——
-    // 否则每次部署都要等完整的十几分钟烘焙,期间用户什么都做不了。
-    // 代价是这段时间跑的是上一个 commit 的后端(新写的 lib API 可能编不过),
-    // 但 `hello` 带 serving commit,用户看得见自己跑的是哪一版。
+    // **只认「本机有没有镜像」,不认 tag。** tag 绑的是烘焙时的 commit,
+    // 而服务进程和镜像里的后端/lib 是两份东西:只要本地有烘好的镜像就
+    // 直接顶上,重启一次服务不该因为源码前进了几个 commit 就重烘十几分钟。
+    // 实际跑的是哪一版由 `hello.image_commit` 如实报出,觉得旧了再手工
+    // 调 `/admin/rebuild` 或设 `PLAYGROUND_FORCE_REBAKE=1`。
+    let head = repo.head().await.ok().unwrap_or_default();
     let out = tokio::process::Command::new("docker")
         .args(crate::docker::newest_labeled_image_args(&cfg.image))
         .output()
@@ -279,8 +246,13 @@ pub async fn startup_plan(cfg: &Config, repo: &Repo) -> StartupPlan {
         if sha.is_empty() {
             continue;
         }
-        tracing::warn!(serving = %tag, head = %head, "本地没有当前 HEAD 的镜像,先用旧的顶上");
-        return plan_stale_fallback(crate::bake::BuiltImage { sha, tag });
+        if sha != head {
+            tracing::warn!(
+                serving = %tag, head = %head,
+                "本地有镜像但不是当前 HEAD,直接顶上,不重烘"
+            );
+        }
+        return plan_reuse(crate::bake::BuiltImage { sha, tag });
     }
     plan_cold()
 }
@@ -446,26 +418,14 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_fallback_serves_the_old_image_and_still_bakes() {
-        // 这条钉的是整个降级设计的核心断言:两件事**同时**发生。
-        // 只做一件的两种实现(要么整站等烘、要么永远停在旧 commit)
-        // 都会在这里被拒。
-        let p = plan_stale_fallback(crate::bake::BuiltImage {
+    fn an_existing_image_is_served_without_baking() {
+        // 启动计划的核心断言:**有镜像就用,不管 tag 对不对**,也不烘。
+        let p = plan_reuse(crate::bake::BuiltImage {
             sha: "old".into(),
             tag: "img:old".into(),
         });
         assert_eq!(p.serving.unwrap().tag, "img:old");
-        assert!(p.needs_bake, "降级期间必须同时烘新的");
-    }
-
-    #[test]
-    fn an_exact_hit_serves_and_does_not_bake() {
-        let p = plan_exact_hit(crate::bake::BuiltImage {
-            sha: "head".into(),
-            tag: "img:head".into(),
-        });
-        assert_eq!(p.serving.unwrap().tag, "img:head");
-        assert!(!p.needs_bake, "HEAD 已经烘过就不该再烘一遍");
+        assert!(!p.needs_bake, "本地有镜像就不该再烘一遍");
     }
 
     #[test]
@@ -476,37 +436,18 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "需要本机有 docker"]
-    async fn startup_image_falls_back_to_the_newest_older_image() {
-        // 部署后 HEAD 是新 commit、本地只有上一个 commit 的镜像时,
-        // 必须拿旧镜像顶上(而不是整站不可用),同时照样烘新的。
+    #[ignore = "需要本机有 docker 且至少烘过一次"]
+    async fn startup_image_uses_whatever_is_local_without_baking() {
+        // 只要本机有带 commit label 的镜像就用它,不管 tag 是不是当前 HEAD,
+        // 也不烘新的。
         let cfg = config::load().expect("读配置");
         let repo = Repo::new(cfg.repo_dir.clone());
-        let head = repo.head().await.expect("读 HEAD");
-        let plan = startup_plan(&cfg, &repo).await;
-        if let Some(b) = &plan.serving {
-            assert_ne!(
-                b.sha, head,
-                "本机刚烘过 HEAD 时这条测不到降级路径,换个时间再跑"
-            );
-            assert!(plan.needs_bake);
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "需要本机有 docker"]
-    async fn startup_image_finds_a_locally_baked_image() {
-        // 需要先烘过一遍:镜像 label 里得有当前 HEAD 的全长 sha。
-        let cfg = config::load().expect("读配置");
-        let repo = Repo::new(cfg.repo_dir.clone());
-        let head = repo.head().await.expect("读 HEAD");
         let plan = startup_plan(&cfg, &repo).await;
         let b = plan
             .serving
-            .expect("本机没有当前 HEAD 的镜像,测试没起到守门作用");
-        assert_eq!(b.sha, head, "adopt 的 sha 应是当前 HEAD 的全长");
-        assert!(b.tag.contains(&head[..7]), "tag 带短 sha:{}", b.tag);
-        assert!(!plan.needs_bake, "HEAD 已烘过就不该再烘");
+            .expect("本机一张镜像都没有,测试没起到守门作用");
+        assert!(!b.sha.is_empty(), "adopt 的 sha 来自镜像 label");
+        assert!(!plan.needs_bake, "本地有镜像就不该再烘");
     }
 
     #[test]
