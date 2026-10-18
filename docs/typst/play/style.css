@@ -127,6 +127,8 @@ body:has(main > .play) main {
 .play-editor .cm-editor {
     flex: 1 1 0;
     min-height: 0;
+    /* 焦点环是绝对定位的伪元素,需要它做包含块。 */
+    position: relative;
     border: 1px solid var(--border);
     border-radius: 6px;
     background-color: var(--code-bg);
@@ -135,11 +137,24 @@ body:has(main > .play) main {
     font-size: 12px;
 }
 .play-editor .cm-editor.cm-focused {
-    /* 焦点环用 `--accent`,别让默认那个系统色在深色下变成看不见的纯白;
-     * outline 不能交给 --border 那种 1px 实色 —— 编辑框 1.5rem 高的行,
-     * 整圈 1px 实色看着像浏览器默认 focus,不是这个页面的设计语言。 */
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+    /* 焦点环不能用 `outline` + 负 offset:Chrome 在圆角处会沿内接矩形
+     * 裁一刀,左上/左下角露出一个斜切缺口;而且它画在当前行背景之下,
+     * 高亮行会把右侧那一段盖成灰色。改用覆盖层,边框跟着 border-radius
+     * 走,z-index 保证压在行高亮之上。
+     *
+     * 颜色仍用 `--accent`,别让默认的系统 focus 色在深色下变成看不见的
+     * 纯白 —— 这是这个页面的设计语言。 */
+    outline: none;
+}
+.play-editor .cm-editor.cm-focused::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    box-sizing: border-box;
+    border: 2px solid var(--accent);
+    border-radius: inherit;
+    pointer-events: none;
 }
 .play-editor .cm-scroller {
     line-height: 1.5;
