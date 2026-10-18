@@ -117,6 +117,9 @@ function httpOrigin(wsUrl) {
     return wsUrl.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
 }
 
+/* 打字触发的后台重连失败后的冷却。显式点「编译」不受这个限制。 */
+const RECONNECT_BACKOFF_MS = 5000;
+
 class PlayClient {
     constructor(handlers) {
         this.handlers = handlers;
@@ -130,13 +133,42 @@ class PlayClient {
         // LSP 消息路由回调。脚本在收到 hello 并决定启用 LSP 后才设上;
         // 在此之前 LSP 消息一律不处理 —— 服务端不应该发,但保险起见。
         this.onLsp = null;
+        // 正在进行的重连。打字会连续触发 `ensureConnected`,不合并的话
+        // 一次断线会同时开出一堆 socket,谁最后 resolve 谁赢 —— 其余的全
+        // 泄漏成幽灵连接。
+        this._connecting = null;
+        // 上次连失败的时间,用来做退避。后端全挂时键盘每次停顿都重连
+        // 一遍,只会把 4 s 超时叠成一串。
+        this._lastFailAt = 0;
     }
 
     /* 从后端池里挑一个连上,把这个 socket 接过来用。
      * 返回 true/false,不抛 —— 调用方(按钮点击)要的是「成没成」,不是异常。
-     * 池子每次用之前重新打乱,顺序由 pickBackend 那边的 shuffled 给。 */
-    async connect() {
-        if (this.ws && this.ws.readyState <= 1) return true;
+     * 池子每次用之前重新打乱,顺序由 pickBackend 那边的 shuffled 给。
+     *
+     * `force` 是给「编译」按钮用的:用户明确点在重连,退避不该拦它。
+     * 打字触发的 `ensureConnected` 走非 force,失败后安静等一会儿。 */
+    async connect(force = false) {
+        if (this.ws && this.ws.readyState === 1) return true;
+        // 已经有重连在跑:复用同一个 Promise,别再开第二条连接。
+        if (this._connecting) return this._connecting;
+        if (!force && Date.now() - this._lastFailAt < RECONNECT_BACKOFF_MS) return false;
+        this._connecting = this._connect();
+        try {
+            return await this._connecting;
+        } finally {
+            this._connecting = null;
+        }
+    }
+
+    /* 后台重连。打字时调用 —— 用户只是在写代码,不能让它等一个 Promise,
+     * 成败都由 `connect` 里的状态更新告诉用户。 */
+    ensureConnected() {
+        // 失败已经由 `connect` 写到状态行了,这里吞掉 rejection 就够了。
+        this.connect().catch(() => {});
+    }
+
+    async _connect() {
         this.handlers.onStatus("找后端…", "pending");
         let ws;
         let url;
@@ -144,6 +176,7 @@ class PlayClient {
             ws = await pickBackend(shuffled(BACKENDS));
             url = ws.url;
         } catch (e) {
+            this._lastFailAt = Date.now();
             this.ws = null;
             this.handlers.onStatus(`连不上后端:${e.message}`, "err");
             return false;
@@ -151,13 +184,14 @@ class PlayClient {
         // pickBackend 建 socket 时没挂 handler,这里补上。
         this.url = url;
         this.ws = ws;
-        ws.onopen = () => {
-            this.handlers.onStatus("已连接", "ok");
-        };
+        // 注意:`pickBackend` 只在 open 之后才 resolve,所以这个 socket
+        // 已经是 OPEN 的,`ws.onopen` 不会再来 —— 状态和待发队列在这里
+        // 直接处理。
         ws.onclose = () => {
             // 陈旧 socket 守卫:重连后 this.ws 已指向新连接,旧 socket 的
             // close 随后到达时不能拿它覆盖新连接刚设的状态,也不能重置按钮态。
             if (ws !== this.ws) return;
+            this.ws = null;
             // 断连就把待发队列清掉,**不**在重连后重放。「编译」是有副作用的
             // 动作,在用户不知情时静默占一个排队位,比丢一次没送达的点击更坏。
             this.pending = [];
@@ -184,7 +218,22 @@ class PlayClient {
                 });
             }
         };
+        this._lastFailAt = 0;
+        this.handlers.onStatus("已连接", "ok");
+        // socket 已经开着,攒下的非 LSP 消息(取消等)现在可以发了。
+        this.#flushPending();
         return true;
+    }
+
+    /* 把断线期间攒下的消息补发出去。只在 socket 确认 OPEN 时调用;
+     * 走裸 `ws.send` 而不是 `send`,免得又绕回队列。 */
+    #flushPending() {
+        if (!this.ws || this.ws.readyState !== 1) return;
+        const queued = this.pending;
+        this.pending = [];
+        for (const o of queued) {
+            try { this.ws.send(JSON.stringify(o)); } catch { /* 又断了:丢掉 */ }
+        }
     }
 
     /* 点一次「编译」= 重扫一遍池子。断线之后也走这条,所以「连接已断开」
@@ -192,7 +241,8 @@ class PlayClient {
      *
      * `target` 是 `Hello.targets` 里的一项 —— 不传就让服务端走 DEFAULT_TARGET。 */
     async submit(source, target) {
-        if (!(await this.connect())) return;
+        // 点了「编译」就是明确要连,不吃打字重连的退避。
+        if (!(await this.connect(true))) return;
         // 回包之前按"排队中"显示,免得点了没反应。
         this.handlers.onStatus("排队中…", "pending");
         this.send({ type: "submit", source, target: target ?? null });
@@ -201,14 +251,23 @@ class PlayClient {
     cancel() { this.send({ type: "cancel" }); }
 
     /* 公开的发消息接口 —— LSP / 提交 / 取消都走它。
-     * readyState 不是 1 就先入队 —— 首连握手和断线重连两条路径都靠它,
-     * 否则消息静默消失,界面卡在「排队中…」。 */
+     * readyState 不是 1 就顺手拉一次后台重连:空闲一段时间后后端会关掉
+     * 连接,用户下次打字(tokens / 补全 / lsp_change)就是这条路径 ——
+     * 以前这里只入队不重连,于是必须点一次「编译」才活过来。
+     *
+     * LSP 消息**不入队**:重连后服务端会重新 hello,`onHello` 会新建
+     * `LspClient`、重发 `lsp_open` 并整份同步文档。旧会话的 `lsp_change` /
+     * `lsp_completion` 到新会话里要么撞 BadRequest,要么 request_id 对不上。
+     * 其余消息(取消、提交)保留入队语义。 */
     send(o) {
         if (this.ws && this.ws.readyState === 1) {
             this.ws.send(JSON.stringify(o));
-        } else {
+            return;
+        }
+        if (typeof o.type === "string" && !o.type.startsWith("lsp_")) {
             this.pending.push(o);
         }
+        this.ensureConnected();
     }
 
     #dispatch(m) {
@@ -333,6 +392,10 @@ function ready() {
      * updateListener / completionProvider 都通过这个闭包变量访问,
      * null 时两个回调都安全地 no-op。 */
     let lsp = null;
+    /* 断线重连的触发点。编辑器在 `client` 建好之前就存在,所以先占位,
+     * 等 PlayClient 构造完再接上 —— 直接在 updateListener 里引用 `const
+     * client` 要赌「初始化后才会触发更新」,没必要。 */
+    let hintReconnect = null;
     /* CodeMirror 视图 —— 总是创建,LSP 关掉时就是纯文本编辑器。 */
     let view = null;
     /* 编辑器上的文本操作句柄,外部(loadSample / runBtn click)用它。 */
@@ -670,7 +733,12 @@ function ready() {
                 // 文档变化 → LspClient 去抖 300 ms 后发 LspChange。
                 // `lsp` 可能为 null,check 一下避免无谓调用。
                 EditorView.updateListener.of((u) => {
-                    if (u.docChanged && lsp) lsp.onDocChanged(u.state.doc.toString());
+                    if (!u.docChanged) return;
+                    // 空闲后服务端会关掉连接。用户下一次打字就是「再次操作」,
+                    // 在这里把连接拉回来 —— 不能等 LSP 的 _ready 分支,更不能
+                    // 让用户以为必须点「编译」才能恢复。
+                    if (hintReconnect) hintReconnect();
+                    if (lsp) lsp.onDocChanged(u.state.doc.toString());
                 }),
             ],
         }),
@@ -828,6 +896,8 @@ function ready() {
             }
         },
     });
+    // 编辑器打字 → 后台重连(见 updateListener 里的说明)。
+    hintReconnect = () => client.ensureConnected();
 
     runBtn.addEventListener("click", () => {
         log.textContent = "";
