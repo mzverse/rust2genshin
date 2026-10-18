@@ -29,6 +29,7 @@ Rust → 节点图。
 #list(
     link("/arch/asset.html", [资产格式]) + [ —— `.gia` 的字节布局、proto 字段、值的编码],
     link("/arch/viewer.html", [viewer]) + [ —— 中间态浏览器：布局算法与优化面板的设计取舍],
+    link("/arch/play.html", [摆弄页]) + [ —— 浏览器、playground 服务、docker 三层的组件与数据流],
 )
 
 = 外部依据
