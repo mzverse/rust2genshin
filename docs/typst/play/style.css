@@ -54,11 +54,10 @@ body:has(main > .play) main {
 .play-layout {
     --play-left: 1fr;
     --play-gutter: 22px;
-    /* 表头里两个下拉框的统一高度。基准是 `mdui-select` 压完 typescale 之后
-     * 的天然高度 48px,`.play-target` 照它对齐;MDUI 组件本身不碰(见下面
-     * `.play-picker mdui-select` 的说明)。宽度不统一:下拉框按内容长度给,
-     * 收窄会把样例名截成「aaa_hello-」。 */
-    --play-ctl-h: 48px;
+    /* 表头里所有控件的统一高度。MDUI 的按钮写死了 2.5rem(40px),下拉框是
+     * 原生 `<select>`,照它对齐 —— 详见 `.play-picker select` 的说明。
+     * 宽度不统一:下拉框按内容长度给,收窄会把样例名截成「aaa_hello-」。 */
+    --play-ctl-h: 40px;
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -105,9 +104,9 @@ body:has(main > .play) main {
 /* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
  * 现成代码」,和右边的「取消 / 编译」是两件事,平铺在一排里看不出来谁管谁。
  *
- * 组里的控件是 `<mdui-select>` / `<mdui-button>` —— 它们把样式关在自己的
- * shadow root 里,这里给外面的 div 写规则**进不去**,能给它们调尺寸的只有
- * 自己的盒模型属性(width / min-width / --mdui-typescale-*)。 */
+ * 组里的下拉是原生 `<select>`,「载入」是 `<mdui-button>` —— 后者把样式关在
+ * shadow root 里,给外面的 div 写规则**进不去**,能给它调尺寸的只有自己的
+ * 盒模型属性。 */
 .play-picker {
     display: flex;
     align-items: center;
@@ -136,22 +135,20 @@ body:has(main > .play) main {
  * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
  * 还高一截,看着不成一条线。
  *
- * **只能用 MDUI 自己的 variables,别写 `height`。** MDUI 是 web component,
- * 样式全在 shadow root 里,外面唯一能穿过去的只有自定义属性。核过 MDUI v2
- * 的全部规则:`mdui-text-field` 的高度由内层写死的
- * `padding: 0.875rem 0.875rem 0.875rem 0` 加 `.container` 的上下各 2px
- * 决定,整条链上**没有任何 `--mdui-*` 变量** —— 没有 `size` / `dense` 属性,
- * 也没有尺寸 token。曾经写过的 `height: var(--play-ctl-h)` 只会把宿主盒子
- * 压到那么高、里面 48px 的内容照旧,看着对其实是被裁掉了;按钮那边同理,
- * 40px 是 `:host` 里写死的。
+ * 这条规则曾经写过 `height` 和 `--mdui-typescale-*`,现在两样都不要了。
+ * MDUI v2 的高度在 shadow root 里**写死**:内层
+ * `padding: 0.875rem 0.875rem 0.875rem 0` + `.container` 的上下各 2px
+ * 决定 text-field 是 48px,`mdui-button` 的 `:host { height: 2.5rem }`
+ * 决定按钮是 40px;没有 `size` / `dense` 属性,整条链上也**没有任何
+ * `--mdui-*` 尺寸变量**,唯一能穿透 shadow 的 typescale 只管字号行高。
+ * 也就是说工具条里只要有 MDUI 组件,就一定对不齐 —— 给宿主写 `height`
+ * 也只是把内容裁掉,不是真改。
  *
- * typescale 变量是唯一真正生效的旋钮,而它只管文字:字号和行高。48px =
- * 行高 16px + 上下各 14px 固定 padding + 各 2px 的 container 内边距,所以
- * 下限是 44px,再往下压不动。工具条的高度基准就取这个 48px。 */
-.play-picker mdui-select {
+ * 所以「示例」那个下拉已经换成原生 `<select>`(见 `index.typ`),
+ * 高度跟「目标」一起由 `.play-target` 的 `--play-ctl-h` 控制。 */
+/* 样例名长(「aaa_hello-world」),比「目标」的选项宽;窄了会被截掉。 */
+.play-sample-select {
     min-width: 10rem;
-    --mdui-typescale-body-large-size: 0.8125rem;
-    --mdui-typescale-body-large-line-height: 1rem;
 }
 
 /* 左栏的编辑框:CodeMirror 6 的挂载点。CodeMirror 自己管滚动、光标、IME,
@@ -315,9 +312,9 @@ body:has(main > .play) main {
     color: var(--fg);
     border: 1px solid var(--border-soft);
     border-radius: 6px;
-    /* 跟示例下拉一样高(见 `.play-layout` 的 `--play-ctl-h`)。原生控件,
-     * `height` 就是它本来的用法 —— 要改的是这里,不是 MDUI 组件。竖直居中
-     * 由 select 自己保证,`padding` 只管左右和箭头那块空位。 */
+    /* 和按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。两个下拉框都是原生
+     * `<select>`,`height` 就是它本来的用法 —— 要改的是这里,不是 MDUI 组件。
+     * 竖直居中由 select 自己保证,`padding` 只管左右和箭头那块空位。 */
     height: var(--play-ctl-h);
     padding: 0 28px 0 10px;
     font: inherit;
@@ -606,7 +603,7 @@ body:has(main > .play) main {
  * 好让折行后的第二行不至于只有「编译」孤零零一个。
  * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
 @media (max-width: 560px) {
-    .play-picker mdui-select {
+    .play-sample-select {
         min-width: 7rem;
     }
 }

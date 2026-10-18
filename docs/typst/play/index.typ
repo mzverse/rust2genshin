@@ -50,9 +50,18 @@
             for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted() {
               options.insert(base_path + x, [#x.split("/").last().trim(".rs", at: end)])
             }
-            // `<select>` 会自动选中第一个,`<mdui-select>` 不会 —— 它得显式给
-            // `value`。不给的话框里是空的,页面一进来就没法直接「载入」。
-            mdui-select(options, value: options.keys().at(0), id: "play-sample", variant: "outlined")
+            // 用原生 `<select>` 而不是 `<mdui-select>`(和下面的「目标」同一个
+            // 理由):MDUI 组件的高度在它的 shadow root 里写死(`mdui-text-field`
+            // 内层 `padding: 0.875rem`、`mdui-button` 的 `:host { height: 2.5rem }`),
+            // 整条链上没有尺寸变量可用,唯一能穿透的 typescale 只管字号。样例下拉
+            // 因此天生 48px、按钮 40px,同一行里对不齐 —— 换原生控件后两者都由
+            // `style.css` 的 `--play-ctl-h` 一处控制。
+            // `<select>` 自动选中第一项,不用显式给 value。
+            html_elem("select", id: "play-sample", class: "play-target play-sample-select")[
+              #for (path, label) in options.pairs() {
+                html_elem("option", value: path)[#label]
+              }
+            ]
           }
           #mdui-button(id: "play-sample-load", variant: "outlined", icon: "download")[载入]
         ]
