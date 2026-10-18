@@ -156,7 +156,10 @@ body:has(main > .play) main {
     color: var(--muted);
     border-right: none;
 }
-.play-editor .cm-content {
+/* 多带一层 `.cm-editor`:CM 自己注入的基础主题里有 `.ͼ2 .cm-content
+ * { caret-color: black }`(0,2,0),和 `.play-editor .cm-content` 同权重
+ * 但注入得更晚,同权重后者胜 —— 光写一条同权重的规则会被它盖掉。 */
+.play-editor .cm-editor .cm-content {
     padding: 6px 0;
     /* 没装 `drawSelection()` 时 CM 用的是浏览器原生光标,颜色取自
      * `caret-color`(默认黑)。深色主题下黑光标贴在暗底上几乎看不见;
@@ -285,21 +288,25 @@ body:has(main > .play) main {
  * CM 自动完成默认是浅色硬编码背景,与站点的深色主题撞色 —— 深色下弹窗
  * 还是白底黑字,文字读了还行但 hover 高亮 (灰色) 与正文分不清。覆写
  * 关键几条让弹窗跟主题走。 */
-.play-editor .cm-tooltip-autocomplete {
+/* 选择器里多带一层 `.cm-editor`:CM 注入的基础主题是
+ * `.ͼ1 .cm-tooltip.cm-tooltip-autocomplete{...}` / `... > ul{...}`,
+ * 三个类 + 注入得更晚。少一个类就整条丢给 CM 的浅色硬编码 ——
+ * 深色主题下弹窗白底、列表字体也退回泛型 `monospace`。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete {
     background-color: var(--surface);
     color: var(--fg);
     border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: var(--shadow-rest);
 }
-.play-editor .cm-tooltip-autocomplete > ul {
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul {
     /* 显式给编辑框同一套等宽字体。`font-family: inherit` 继承下来的是
      * CM 默认的泛型 `monospace`,Windows 上落到 Courier New —— 小字号下
      * 笔画又细又毛,和编辑框里的字明显不是一套。 */
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
 }
-.play-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
     background-color: var(--hover);
     color: var(--fg);
 }

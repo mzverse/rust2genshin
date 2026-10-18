@@ -332,13 +332,28 @@ export class LspClient {
         if (this._debounceTimer !== null) clearTimeout(this._debounceTimer);
         this._debounceTimer = setTimeout(() => {
             this._debounceTimer = null;
-            const s = this._pendingSource;
-            this._pendingSource = null;
-            // 没 ready 就丢 —— 服务端 LspChange 在未 open 时回 BadRequest。
-            // onReady 会重新同步当前文档,这里静默丢没问题。
-            if (!this._ready) return;
-            this.send({ type: "lsp_change", source: s });
+            this._flushChange();
         }, DEBOUNCE_MS);
+    }
+
+    /** 把还没发出去的文档改动立刻推给服务端。
+     *
+     * `lsp_change` 的去抖(300 ms)比 CodeMirror 的补全去抖(100 ms)长,
+     * 不主动冲一下的话补全请求会跑在**旧文**上:RA 收到的是一个它还没
+     * 见的行/列(刚敲的字符还在旧文本之外),于是回空数组 —— 「`obj.`
+     * 和 `path::` 按下后不弹补全」的根因就是这个时序差。服务端按收到的
+     * 顺序逐条处理,先 change 后 completion 就是确定的。 */
+    _flushChange() {
+        if (this._debounceTimer !== null) {
+            clearTimeout(this._debounceTimer);
+            this._debounceTimer = null;
+        }
+        const s = this._pendingSource;
+        this._pendingSource = null;
+        // 没 ready 就丢 —— 服务端 LspChange 在未 open 时回 BadRequest。
+        // onReady 会重新同步当前文档,这里静默丢没问题。
+        if (s === null || !this._ready) return;
+        this.send({ type: "lsp_change", source: s });
     }
 
     /** 用户触发补全。返回 Promise<items>。
@@ -348,6 +363,8 @@ export class LspClient {
      * 收到未 open 的 LspCompletion 会回 BadRequest,前端没理由踩这条。 */
     requestCompletion(line, column) {
         if (!this._ready) return Promise.resolve([]);
+        // 先冲掉还没发的 `lsp_change`(见 `_flushChange` 的注释)。
+        this._flushChange();
         for (const [, entry] of this._pendingCompletions) {
             clearTimeout(entry.timer);
             entry.resolve([]);
