@@ -89,7 +89,7 @@ cargo run -p rust2genshin-playground
 
 = 编辑器与 rust-analyzer
 
-「摆弄」页的编辑框是 CodeMirror 6。语法高亮、红色波浪线、补全列表，三样全部来自容器里的 `rust-analyzer`，经 LSP 过一道 WebSocket 回来 —— *没有第二套本地语法分析在抢颜色*。本地只借了 `@codemirror/lang-rust` 做*词法*（bracket matching 之类），缩进是自己写的服务，**不装** `syntaxHighlighting`，所以它不会画出任何自己的颜色。
+「摆弄」页的编辑框是 CodeMirror 6。语法高亮、红色波浪线、补全列表，三样全部来自容器里的 `rust-analyzer`，经 LSP 过一道 WebSocket 回来 —— *没有第二套本地语法分析在抢颜色*。本地只借了 `@codemirror/lang-rust` 做*词法*（bracket matching 之类），缩进是自己写的服务，*不装* `syntaxHighlighting`，所以它不会画出任何自己的颜色。
 
 *token 类型下标由服务端翻译。* 我们在 `initialize` 里上报自己的 `tokenTypes` 表，但 RA *不按它编码* —— 它回一份自己的 legend（实测是字母序），索引编码进那份表。前端和后端因此不能共用一张表：后端在 `initialize` 之后按*名字*把 RA 的下标翻到我们的下标再转发，对不上名字的（`brace` / `comma` / `lifetime` 之类）编码成越界哨兵，前端解码时直接跳过。不这么翻的后果很具体：RA 的 `keyword` 是它的 6 号，而我们的 6 号是 `typeParameter` —— 于是 `pub` / `fn` 全被染成斜体。
 

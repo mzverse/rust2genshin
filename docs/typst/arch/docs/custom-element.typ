@@ -90,7 +90,7 @@ shadow root 里的东西，页面样式表选不中 —— 样式隔离是特性
 
 只有 `outline` 是例外：`nav.outline` 和它的 ✕ 按钮都在 light DOM 里（`outline.css` / `outline.js`），页面样式能直接够到。
 
-shadow 挡的只是**选择器**，自定义属性照样继承。所以布局常量（`--header-h`）统一定义在 `theme.css` 里，shadow 内的 `header.css` 用 `var(--header-h)` 就能拿到 —— 顶栏在 shadow 里定高，两侧抽屉在 light DOM 里从它算偏移，两边对得上。
+shadow 挡的只是*选择器*，自定义属性照样继承。所以布局常量（`--header-h`）统一定义在 `theme.css` 里，shadow 内的 `header.css` 用 `var(--header-h)` 就能拿到 —— 顶栏在 shadow 里定高，两侧抽屉在 light DOM 里从它算偏移，两边对得上。
 
 = 三笔代价
 
@@ -144,7 +144,7 @@ if (document.readyState === 'loading') {
 
 - *`code-block` 的 `<template>` 不走 `custom_element`*，而是随每个代码块落进正文（`show raw` 里生成的），JS 用 `getElementById` 取第一个。走 `custom_element` 更干净 —— 代价是要改一行。
 - *`toc-component` 和 `site-header` 没有 `<template>`*：它们的 shadow root 全靠 `connectedCallback` 里 `fetch` 一份单独编译的页面（`toc.html` / `header.html`）再建。侧栏和顶栏各自就是一个页面（`lib/toc.typ`、`lib/header.typ`），所以拿得到。
-  - 这两页 fetch 回来的是*整页* HTML，`<head>` 里还挂着全站那些 `<link>` 和 `<custom-element>` 的注册模板。直接丢给 `innerHTML` 的话那些 `<link>` 会被解析进 shadow root 并且**真的生效** —— 得先 `new DOMParser().parseFromString(html, 'text/html')` 再取 `.body.innerHTML`。
+  - 这两页 fetch 回来的是*整页* HTML，`<head>` 里还挂着全站那些 `<link>` 和 `<custom-element>` 的注册模板。直接丢给 `innerHTML` 的话那些 `<link>` 会被解析进 shadow root 并且*真的生效* —— 得先 `new DOMParser().parseFromString(html, 'text/html')` 再取 `.body.innerHTML`。
   - `<site-header>` 里的按钮因此在 shadow 里，别的脚本 `document.querySelector` 够不到。`header.js` 只负责「收到点击」，然后往 `document` 上发 `drawer-toggle` / `theme-toggle`；`theme.js` 换完主题再发回一个 `theme-applied`。和 `toc.js` 的 `drawer-close` 是同一个路子。
 
 还有一个元素用了 `custom_element` 却*不是*自定义元素：`outline`（`lib/outline.typ`）。它注册 outline.css / outline.js，但产出的是普通的 `<nav>` 和 `<button>`，JS 走 `DOMContentLoaded` + `querySelectorAll` 直接操作 light DOM。`custom_element` 在这里只当「往 `<head>` 里塞脚本和样式」用 —— 所以名字有点名不副实，用的时候看的是那个注册函数，不是 `ele`。

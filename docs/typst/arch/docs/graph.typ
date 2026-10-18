@@ -68,7 +68,7 @@ shadow root 里只有一层 `<svg class="g-layer">`，*没有 `viewBox`* —— 
 
 所以这层要 `pointer-events: none`，再用 `.g-shapes > circle, .g-shapes > polygon` 把引脚形状本身放回来 —— 它们得能悬停出类型提示。不能靠调 DOM 顺序把 svg 挪到 `foreignObject` 前面：引脚圆点有一半在盒子外面，挪到底下会被 `.g-box` 的白底盖住。
 
-顺带一个连带效应：`pointer-events` 会**继承**，而引脚标签的 `foreignObject` 也挂在这层 svg 下，所以 `.g-label` 得显式写 `pointer-events: auto`，否则标签里的链接（`ctrl_out[#link(...)[]]` 这种）同样点不动 —— 而且它的表现是「命中 `.g-label` 那个 div」，比标题那种更隐蔽。
+顺带一个连带效应：`pointer-events` 会*继承*，而引脚标签的 `foreignObject` 也挂在这层 svg 下，所以 `.g-label` 得显式写 `pointer-events: auto`，否则标签里的链接（`ctrl_out[#link(...)[]]` 这种）同样点不动 —— 而且它的表现是「命中 `.g-label` 那个 div」，比标题那种更隐蔽。
 
 = 交互
 
