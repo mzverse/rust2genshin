@@ -512,24 +512,32 @@ function ready() {
         });
     };
 
-    /* 右侧附加信息:先 trait/别名,再把返回类型贴到最右。
-     * 没有返回值的函数由调用方传 `()`。 */
-    const renderCompletionMeta = (completion) => {
-        if (!completion.note && !completion.ret) return null;
+    /* 补全行拆成四段,各由 `addToOptions` 按 position 排:
+     *   - label(position 50):名字,黑色 —— 这是真正会被插入的文本;
+     *   - 参数(position 55):`(self, i32)`,淡色,紧贴名字;
+     *   - note(position 60):`of Trait` / `alias xxx`,淡色,紧跟参数;
+     *   - 返回类型(position 90):淡色,`margin-left:auto` 推到最右。
+     * 参数不放进 label 是因为 CodeMirror 的 `displayLabel` 只能整段一个
+     * 文本节点,没法只把括号部分染灰。 */
+    const renderCompletionParams = (completion) => {
+        if (!completion.params) return null;
         const el = document.createElement("span");
-        el.className = "cm-completionMeta";
-        if (completion.note) {
-            const note = document.createElement("span");
-            note.className = "cm-completionNote";
-            note.textContent = completion.note;
-            el.appendChild(note);
-        }
-        if (completion.ret) {
-            const ret = document.createElement("span");
-            ret.className = "cm-completionRet";
-            ret.textContent = completion.ret;
-            el.appendChild(ret);
-        }
+        el.className = "cm-completionParams";
+        el.textContent = "(" + completion.params.join(", ") + ")";
+        return el;
+    };
+    const renderCompletionNote = (completion) => {
+        if (!completion.note) return null;
+        const el = document.createElement("span");
+        el.className = "cm-completionNote";
+        el.textContent = completion.note;
+        return el;
+    };
+    const renderCompletionRet = (completion) => {
+        if (!completion.ret) return null;
+        const el = document.createElement("span");
+        el.className = "cm-completionRet";
+        el.textContent = completion.ret;
         return el;
     };
 
@@ -584,19 +592,18 @@ function ready() {
                         : sig.params.length)
                     : 0;
                 return {
+                    // `label` 仍用于匹配(CM 拿它跟已输入前缀比对),
+                    // `displayLabel` 是真正画出来的名字 —— 剥掉旧服务端
+                    // 拼进来的 `(as Trait)` / `(alias ...)`。
                     label: item.label,
-                    // 参数放进 displayLabel 而不是 detail:detail 的样式
-                    // 自带 `margin-left`,会显示成 `abs (self)`;而且
-                    // displayLabel 仍然用 label 做匹配,前缀高亮不受影响。
-                    // 函数即使签名解析失败也只显示剥干净的名字,不把
-                    // `(as Trait)` 摆在名字里。
-                    displayLabel: sig
-                        ? name + "(" + sig.params.join(", ") + ")"
-                        : (callable ? name : undefined),
+                    displayLabel: name,
                     type: kindToType(item.kind),
                     detail: sig ? undefined : (item.detail || undefined),
-                    insertText: callable ? name : undefined,
-                    // addToOptions 的 render 读这两个自定义字段。
+                    // 非可调用项通常就是 label;只有剥过注解时才需要显式
+                    // 覆盖,否则 CM 的默认插入会带上 `(as Trait)`。
+                    insertText: callable || name !== item.label ? name : undefined,
+                    // addToOptions 的三段 render 读这些自定义字段。
+                    params: sig ? sig.params : null,
                     note: completionNote(item),
                     ret: sig ? (sig.ret || "()") : null,
                     cursorInside: args > 0,
@@ -671,9 +678,14 @@ function ready() {
                     override: [completionProvider],
                     activateOnTyping: true,
                     closeOnBlur: true,
-                    // CM 内置的 label / detail 位置是 50 / 80;90 保证附加
-                    // 信息排在 detail 之后,再由 CSS 推到行尾。
-                    addToOptions: [{ position: 90, render: renderCompletionMeta }],
+                    // CM 内置的 label / detail 位置是 50 / 80。参数与
+                    // trait 注释塞在 55 / 60(紧贴名字),返回类型放 90
+                    // (由 CSS 推到行尾)。
+                    addToOptions: [
+                        { position: 55, render: renderCompletionParams },
+                        { position: 60, render: renderCompletionNote },
+                        { position: 90, render: renderCompletionRet },
+                    ],
                 }),
                 // `defaultKeymap` 必须在:Enter 走的是里面的
                 // `insertNewlineAndIndent`,而**只有那条命令会去问缩进服务**
