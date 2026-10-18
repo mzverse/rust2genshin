@@ -159,13 +159,23 @@ pub const INTERNAL_ID_BASE: u64 = 0x4000_0000;
 /// 拼出来的一致 —— 有测试钉住。
 pub const DOC_URI: &str = "file:///opt/ra/ws/demo/src/lib.rs";
 
-/// 一条补全候选。只取前端渲染要用的三个字段;`kind` 是 LSP 的数字枚举,
+/// 补全项上的展示用注释(来自 LSP `CompletionItem.labelDetails`)。
+/// 声明 `labelDetailsSupport` 之后 RA 会把 `(as Trait)` / 别名放这里,
+/// 而不是拼进 `label`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionLabelDetails {
+    pub detail: Option<String>,
+    pub description: Option<String>,
+}
+
+/// 一条补全候选。只取前端渲染要用的字段;`kind` 是 LSP 的数字枚举,
 /// 原样传,映射成样式是前端的活。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: Option<u32>,
     pub detail: Option<String>,
+    pub label_details: Option<CompletionLabelDetails>,
 }
 
 /// 一条诊断。位置是 LSP 的 0 基行列。
@@ -308,7 +318,15 @@ impl Session {
                 "textDocument": {
                     "synchronization": { "didSave": false },
                     "completion": {
-                        "completionItem": { "snippetSupport": false }
+                        "completionItem": {
+                            // 前端不展开占位符。
+                            "snippetSupport": false,
+                            // 让 RA 把 `(as Trait)` / `(alias a, b)` 放进
+                            // `labelDetails` 而不是拼进 `label` —— 拼进
+                            // `label` 的话选中后会被**插进代码**,而且
+                            // `label` 也不再是合法的标识符前缀。
+                            "labelDetailsSupport": true
+                        }
                     },
                     // 声明支持**拉取式**诊断 —— RA 1.10x 把诊断改成了
                     // `textDocument/diagnostic`:`publishDiagnostics` 只在
@@ -828,6 +846,13 @@ fn parse_completion_items(result: Option<&Value>) -> Vec<CompletionItem> {
                 label: it.get("label")?.as_str()?.to_string(),
                 kind: it.get("kind").and_then(Value::as_u64).map(|k| k as u32),
                 detail: it.get("detail").and_then(Value::as_str).map(str::to_string),
+                label_details: it.get("labelDetails").map(|d| CompletionLabelDetails {
+                    detail: d.get("detail").and_then(Value::as_str).map(str::to_string),
+                    description: d
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                }),
             })
         })
         .collect()
@@ -1031,6 +1056,11 @@ mod tests {
         assert_eq!(
             init["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
             false
+        );
+        assert_eq!(
+            init["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["labelDetailsSupport"],
+            true,
+            "不声明这个 RA 会把 `(as Trait)` 拼进 label,选中后插进代码"
         );
         // tokenTypes 的**顺序**必须整体钉死:前端按同一顺序把索引映射成
         // 样式 class,只钉首尾/长度挡不住中间 21 项被重排。
@@ -1681,11 +1711,13 @@ mod tests {
                         label: "sc".into(),
                         kind: Some(9),
                         detail: Some("mod sc".into()),
+                        label_details: None,
                     },
                     CompletionItem {
                         label: "advance".into(),
                         kind: Some(3),
                         detail: None,
+                        label_details: None,
                     },
                 ],
             }

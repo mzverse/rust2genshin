@@ -141,12 +141,28 @@ pub struct LspDiagnosticItem {
     pub message: String,
 }
 
+/// 补全项上的**展示用**注释。
+///
+/// 客户端在 `initialize` 里声明 `labelDetailsSupport` 之后,RA 不再把
+/// `(as Trait)` / `(alias a, b)` 拼进 `label`,而是拆到这里 —— 这正是
+/// 「trait 方法补全时把 `(as Trait1)` 插进代码」的根因。前端只拿它渲染,
+/// 插入代码时用 `label`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionLabelDetails {
+    /// 短标注,通常是 `(as Trait)` 或 `(alias popcount, popcnt)`。
+    pub detail: Option<String>,
+    /// 签名描述,如 `const fn(self) -> u32`。与顶层 `detail` 同值,
+    /// 保留两份是为了前端可以只依赖 `labelDetails`。
+    pub description: Option<String>,
+}
+
 /// 补全列表的一项。`insertText` 先不做 —— RA 默认给的与 `label` 一致。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: Option<u32>,
     pub detail: Option<String>,
+    pub label_details: Option<CompletionLabelDetails>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,6 +454,7 @@ mod tests {
                 label: "foo".into(),
                 kind: Some(3),
                 detail: None,
+                label_details: None,
             }],
         };
         assert_eq!(round_trip(&m), m);

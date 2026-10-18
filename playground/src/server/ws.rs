@@ -247,6 +247,12 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                                         label: i.label,
                                                         kind: i.kind,
                                                         detail: i.detail,
+                                                        label_details: i.label_details.map(|d| {
+                                                            crate::protocol::CompletionLabelDetails {
+                                                                detail: d.detail,
+                                                                description: d.description,
+                                                            }
+                                                        }),
                                                     })
                                                     .collect();
                                                 if ftx.send(ServerMsg::LspCompletion { request_id, items }).is_err() {

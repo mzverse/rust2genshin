@@ -317,6 +317,25 @@ body:has(main > .play) main {
     color: var(--muted);
     margin-left: 0.75em;
 }
+/* 每行都是 flex:名字/参数在左,返回类型和 trait 注释推到最右。
+ * 选择器带满 `.cm-editor` 和两个 tooltip 类,压过 CM 注入的基础主题。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li {
+    display: flex;
+    align-items: center;
+}
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionMeta {
+    margin-left: auto;
+    padding-left: 1em;
+    display: flex;
+    gap: 0.75em;
+    color: var(--muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+/* 别名 / `of Trait` 比返回类型更次要一点。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionNote {
+    opacity: 0.75;
+}
 /* 匹配到的前缀默认加粗,在等宽字体里会把整行挤得忽宽忽窄 —— 只保留
  * 颜色强调。 */
 .play-editor .cm-tooltip-autocomplete .cm-completionMatchedText {

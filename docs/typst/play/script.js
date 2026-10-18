@@ -1,8 +1,9 @@
 /* 摆弄页。
  *
  * 编辑器从 `<mdui-text-field textarea>` 换成了 CodeMirror 6;语义高亮 / 诊断 /
- * 补全都由 RA 经后端 WebSocket 给,本地零解析 —— 不存在「高亮和分析结论
- * 不一致」(Review Focus 第 5 条)。
+ * 补全的候选都由 RA 经后端 WebSocket 给,本地不做语义分析 —— 不存在「高亮
+ * 和分析结论不一致」(Review Focus 第 5 条)。补全项拿到手后只把 RA 给的
+ * 签名字符串拆成参数/返回类型用于展示与光标落点(见 `parseSignature`)。
  *
  * 与 `lsp-client.js` 的分工:
  *   - script.js 管「WS 连上 / 发 submit / 收消息」+ UI 状态(target 选择器、
@@ -337,6 +338,131 @@ function ready() {
     /* 编辑器上的文本操作句柄,外部(loadSample / runBtn click)用它。 */
     let editor = null;
 
+    /* ---------- 补全项的签名解析 ---------- */
+
+    /* RA 的签名是给人看的字符串(实测样例):
+     *     `const fn(self) -> u32`
+     *     `fn(&self, i32) -> i32`
+     *     `fn(impl ToString)`
+     * 注意它**只给类型、不给参数名**,所以 `ilog` 显示成 `ilog(self, i32)`,
+     * 不是 `ilog(self, rhs: i32)`。要参数名得再发 signatureHelp / hover,
+     * 每个候选一次往返,不划算。
+     *
+     * 返回 `null` 表示「不是可解析的函数签名」—— 调用方退回只插名字,
+     * 不补括号,不会把代码弄坏。 */
+    const parseSignature = (detail) => {
+        if (!detail) return null;
+        // 定位声明里的 `fn`:detail 一定是签名,第一个 `fn` 就是它。
+        const fnAt = detail.search(/\bfn\b/);
+        if (fnAt < 0) return null;
+        // 从 `fn` 往后找**顶层**的左括号。泛型参数里的逗号/括号
+        // (`fn<T: Into<U>>(x: T)`)不能算进参数列表。
+        let angle = 0;
+        let open = -1;
+        for (let i = fnAt + 2; i < detail.length; i++) {
+            const c = detail[i];
+            if (c === "<") angle++;
+            else if (c === ">" && detail[i - 1] !== "-") angle--;
+            else if (c === "(" && angle <= 0) { open = i; break; }
+        }
+        if (open < 0) return null;
+        // 只数圆括号:type 里的 `Fn(A) -> B`、元组都自平衡。
+        let depth = 0;
+        let close = -1;
+        for (let i = open; i < detail.length; i++) {
+            if (detail[i] === "(") depth++;
+            else if (detail[i] === ")") {
+                depth--;
+                if (depth === 0) { close = i; break; }
+            }
+        }
+        if (close < 0) return null;
+        const params = splitTopLevel(detail.slice(open + 1, close));
+        const rest = detail.slice(close + 1).trim();
+        const ret = /^->\s*(.+)$/.exec(rest);
+        return { params, ret: ret ? ret[1].trim() : null };
+    };
+
+    /* 按**顶层**逗号切参数。`Option<(A, B)>`、`impl Fn(i32, i32)`、
+     * `fn(i32) -> i32` 里的逗号都在更深一层,不能切。 */
+    const splitTopLevel = (s) => {
+        const out = [];
+        let depth = 0;
+        let start = 0;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (c === "(" || c === "[" || c === "{" || c === "<") depth++;
+            else if (c === ")" || c === "]" || c === "}") depth--;
+            else if (c === ">" && s[i - 1] !== "-") depth--;
+            else if (c === "," && depth === 0) {
+                out.push(s.slice(start, i).trim());
+                start = i + 1;
+            }
+        }
+        const last = s.slice(start).trim();
+        if (last) out.push(last);
+        return out.filter(Boolean);
+    };
+
+    /* 第一个参数是不是接收者。RA 在 `.` 和 `::` 两种上下文里都写成
+     * `fn(self)` —— 所以「self 算不算实参」只能由调用语法决定:
+     * `.` 调用时它由左侧提供,`i32::abs` 时它要自己传。 */
+    const isSelfParam = (p) =>
+        /^(?:&\s*(?:'[^']+\s*)?(?:mut\s+)?)?self(?:\s*:.*)?$/.test(p);
+
+    /* `labelDetails.detail` 里的展示注释 → 右侧的附加信息。
+     * RA 在声明 `labelDetailsSupport` 后把 `(as Trait)` 放这里;
+     * 别名是 `(alias popcount, popcnt)`。 */
+    const completionNote = (item) => {
+        const raw = item.label_details && item.label_details.detail;
+        if (!raw) return null;
+        const text = raw.trim();
+        const asTrait = /^\(as\s+(.+)\)$/.exec(text);
+        if (asTrait) return "of " + asTrait[1];
+        const alias = /^\(alias\s+(.+)\)$/.exec(text);
+        if (alias) return "alias " + alias[1];
+        return text;
+    };
+
+    /* 函数/方法的自定义插入:补 `()` 并把光标放进去;无实参时放到
+     * 括号后。`from`/`to` 是 CodeMirror 算好的替换范围(已含用户
+     * 敲下的前缀),所以直接整段替换成名字 + 括号。 */
+    const applyCallable = (view, completion, from, to) => {
+        // `insertText` 是剥掉展示注解后的名字;旧服务端会把 `(as Trait)`
+        // 拼在 label 里,绝不能让它进代码。
+        const name = completion.insertText || completion.label;
+        const text = name + (completion.insertParens ? "()" : "");
+        const anchor = completion.cursorInside
+            ? from + name.length + 1
+            : from + text.length;
+        view.dispatch({
+            changes: { from, to, insert: text },
+            selection: { anchor },
+            userEvent: "input.complete",
+        });
+    };
+
+    /* 右侧附加信息:先 trait/别名,再把返回类型贴到最右。
+     * 没有返回值的函数由调用方传 `()`。 */
+    const renderCompletionMeta = (completion) => {
+        if (!completion.note && !completion.ret) return null;
+        const el = document.createElement("span");
+        el.className = "cm-completionMeta";
+        if (completion.note) {
+            const note = document.createElement("span");
+            note.className = "cm-completionNote";
+            note.textContent = completion.note;
+            el.appendChild(note);
+        }
+        if (completion.ret) {
+            const ret = document.createElement("span");
+            ret.className = "cm-completionRet";
+            ret.textContent = completion.ret;
+            el.appendChild(ret);
+        }
+        return el;
+    };
+
     /* 补全触发时算位置:context.pos 是 CodeMirror 的绝对字符偏移;
      * 转成 LSP 的 0 基 (line, column) —— column 按 UTF-16 code unit,
      * 与 CodeMirror 默认一致,直接相减。 */
@@ -362,13 +488,52 @@ function ready() {
         const column = context.pos - lineObj.from;
         const items = await lsp.requestCompletion(line, column);
         if (!items || items.length === 0) return null;
+        // 前缀之前那个字符决定调用语法:`.foo` 的 self 由接收者提供,
+        // `Type::foo` 的 self 要作为第一个实参传。
+        const beforePrefix = before.slice(0, before.length - typed.length);
+        const isDotCall = /\.$/.test(beforePrefix);
         return {
             from: context.pos - typed.length,
-            options: items.map((item) => ({
-                label: item.label,
-                type: kindToType(item.kind),
-                detail: item.detail || undefined,
-            })),
+            options: items.map((item) => {
+                // 只有函数/方法(2=Method,3=Function)补括号;模块、
+                // 常量、类型保持原来的纯名字插入。
+                const callable = item.kind === 2 || item.kind === 3;
+                // 服务端没声明 labelDetailsSupport 时 RA 把 `(as Trait)` /
+                // 别名拼在 label 末尾;插入前剥掉。新服务端下这是 no-op。
+                const name = callable
+                    ? item.label.replace(/\s*\((?:as|alias)\s+[^)]*\)$/, "")
+                    : item.label;
+                const sig = callable
+                    ? parseSignature(item.detail ||
+                        (item.label_details && item.label_details.description))
+                    : null;
+                // 解析不出签名时退回普通项:不补括号,显示 RA 的原文。
+                const args = sig
+                    ? (isDotCall && sig.params.length > 0 && isSelfParam(sig.params[0])
+                        ? sig.params.length - 1
+                        : sig.params.length)
+                    : 0;
+                return {
+                    label: item.label,
+                    // 参数放进 displayLabel 而不是 detail:detail 的样式
+                    // 自带 `margin-left`,会显示成 `abs (self)`;而且
+                    // displayLabel 仍然用 label 做匹配,前缀高亮不受影响。
+                    displayLabel: sig
+                        ? name + "(" + sig.params.join(", ") + ")"
+                        : undefined,
+                    type: kindToType(item.kind),
+                    detail: sig ? undefined : (item.detail || undefined),
+                    insertText: callable ? name : undefined,
+                    // addToOptions 的 render 读这两个自定义字段。
+                    note: completionNote(item),
+                    ret: sig ? (sig.ret || "()") : null,
+                    cursorInside: args > 0,
+                    insertParens: !!sig,
+                    // 可调用项一律走自定义插入:即使签名解析失败,也要把
+                    // 旧服务端拼在 label 里的注解挡在代码之外。
+                    apply: callable ? applyCallable : undefined,
+                };
+            }),
             // 允许空串:`.` / `::` 触发时前缀本来就是空的。出现 `:` 等
             // 非单词字符时 validFor 失配,CM 会重新问一次服务端。
             validFor: /^[\w]*$/,
@@ -434,6 +599,9 @@ function ready() {
                     override: [completionProvider],
                     activateOnTyping: true,
                     closeOnBlur: true,
+                    // CM 内置的 label / detail 位置是 50 / 80;90 保证附加
+                    // 信息排在 detail 之后,再由 CSS 推到行尾。
+                    addToOptions: [{ position: 90, render: renderCompletionMeta }],
                 }),
                 // `defaultKeymap` 必须在:Enter 走的是里面的
                 // `insertNewlineAndIndent`,而**只有那条命令会去问缩进服务**
