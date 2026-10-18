@@ -16,7 +16,7 @@
  * 后端地址不归页面管 —— 见下面 `BACKENDS` 的注释。
  */
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6";
+import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
@@ -887,6 +887,11 @@ function ready() {
             extensions: [
                 lineNumbers(),
                 highlightActiveLine(),
+                // 浏览器原生选区在校区非空时不画光标 —— 拖动或 Shift 选中
+                // 后就看不到落点。CM 的 `drawSelection()` 改用自绘层：选区
+                // 和光标都自己画，光标始终留在选区头部。要它就得放弃原生
+                // 选区,颜色见 style.css 的 `.cm-selectionBackground`。
+                drawSelection(),
                 closeBrackets(),
                 // 初始为可编辑;setBusy() 用 editableCompartment.reconfigure 切。
                 editableCompartment.of(EditorView.editable.of(true)),

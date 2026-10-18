@@ -221,21 +221,17 @@ body:has(main > .play) main {
     color: var(--muted);
     border-right: none;
 }
-/* 多带一层 `.cm-editor`:CM 自己注入的基础主题里有 `.ͼ2 .cm-content
- * { caret-color: black }`(0,2,0),和 `.play-editor .cm-content` 同权重
- * 但注入得更晚,同权重后者胜 —— 光写一条同权重的规则会被它盖掉。 */
+/* 多带一层 `.cm-editor`:CM 注入的基础主题也是两层权重(主题类 +
+ * `.cm-content`),同权重但注入得更晚,会盖掉只写两层的规则。 */
 .play-editor .cm-editor .cm-content {
     padding: 6px 0;
-    /* 没装 `drawSelection()` 时 CM 用的是浏览器原生光标,颜色取自
-     * `caret-color`(默认黑)。深色主题下黑光标贴在暗底上几乎看不见;
-     * 下面那条 `.cm-cursor` 规则管不到原生光标。 */
-    caret-color: var(--fg);
 }
-/* 选区:用 `--accent` 半透明,既能在浅色下读得清也能在深色下不抢镜;
- * CM 自带 selectionBackground 默认是浏览器 selected-text 那个色,深色
- * 下灰底看不见。 */
-.play-editor .cm-selectionBackground,
-.play-editor .cm-content ::selection {
+/* 选区:用 `--accent` 半透明,既能在浅色下读得清也能在深色下不抢镜。
+ * 装了 `drawSelection()` 后原生选区被 CM 强制透明,能看到的只有它自绘的
+ * `.cm-selectionBackground`;而 CM 针对聚焦态的默认规则是四层权重
+ * (`cm-focused > .cm-scroller > .cm-selectionLayer ...`),这里必须写到
+ * 五层才压得住。 */
+.play-editor .cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
     background-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .play-editor .cm-cursor,
