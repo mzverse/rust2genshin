@@ -367,8 +367,96 @@ function ready() {
         status.textContent = text;
         root.dataset.status = kind || "";
     };
+    /* 编译诊断里的源码位置。
+     *
+     * rustc / cargo 打出的是 `--> 路径:行:列`,路径用平台分隔符(本地跑是
+     * `lib\src\lib.rs`,容器里是 `lib/src/lib.rs`)。这类整串原样丢进日志
+     * 就只是字,点不动 —— 把它包成按钮,点了把光标送过去。
+     *
+     * 正则只认行首的 `--> ` 后跟 `路径:数字:数字`,不碰正文里出现的
+     * 箭头(代码片段、依赖的输出都可能带)。 */
+    const DIAG_RE = /(--> )(\S+?):(\d+):(\d+)/;
+
+    /* 平台路径 → 正斜杠;`\` 是正则里的转义,得先换成字符类。 */
+    const slashes = (p) => p.replace(/\\/g, "/");
+
+    /* 只跳 `lib/src/lib.rs` —— 编辑器里现在装的文本就是这一个文件。
+     * 别的路径(后端的 core/、demo/、依赖)先不处理:编辑器里没有它们的
+     * 文本,拿行号去定位等于把人送到错的地方。 */
+    const EDITOR_FILE = "lib/src/lib.rs";
+
+    /* 把编辑器光标移到第 `line` 行第 `col` 列,并滚到可见处。
+     *
+     * `col` 是 1 基的列号,`doc.line(n).from + col - 1` 正是 CodeMirror
+     * 文档里的位置;末行末尾用 `line.length` 兜住(诊断的列可能正好指向
+     * 行尾之后)。 */
+    const gotoLineCol = (line, col) => {
+        if (!view) return;
+        const doc = view.state.doc;
+        // 行号越界(改过文件、或诊断来自上一次编译)就别动光标。
+        if (line < 1 || line > doc.lines) return;
+        const ln = doc.line(line);
+        const pos = ln.from + Math.min(Math.max(col - 1, 0), ln.length);
+        view.dispatch({
+            selection: { anchor: pos },
+            effects: EditorView.scrollIntoView(pos, { y: "center" }),
+            userEvent: "select.jump",
+        });
+        view.focus();
+    };
+
+    /* 按钮的回调:从按钮自己的文本里解析出路径和行列。
+     *
+     * 文本就是日志里那一串 `-->` 位置,没有另外的载荷 —— 按钮被复制到
+     * 别处也还认得自己指向哪。路径先按正斜杠归一(本地 Windows 打出的是
+     * 反斜杠),末尾比对文件名。 */
+    const onDiagClick = (ev) => {
+        const m = DIAG_RE.exec(ev.currentTarget.textContent);
+        if (!m) return;
+        if (!slashes(m[2]).endsWith(EDITOR_FILE)) return;
+        gotoLineCol(+m[3], +m[4]);
+    };
+
+    /* 把一段编译输出里所有 `-->` 位置变成按钮。
+     *
+     * 日志是 `<pre>` 里的文本流,不能整段 `innerHTML`(输出里有 `<` `>`
+     * `&`,还有用户自己的代码)。所以按正则切:命中就插按钮,其余用
+     * textNode 原样插回去。 */
+    const appendDiagText = (stream, text) => {
+        let rest = text;
+        for (;;) {
+            const m = DIAG_RE.exec(rest);
+            if (!m) break;
+            const at = m.index;
+            if (at > 0) log.append(document.createTextNode(rest.slice(0, at)));
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "play-log-link";
+            btn.textContent = m[0];
+            btn.title = "跳到编辑器里的这个位置";
+            btn.addEventListener("click", onDiagClick);
+            log.append(btn);
+            rest = rest.slice(at + m[0].length);
+        }
+        if (rest) log.append(document.createTextNode(rest));
+        log.dataset.lastStream = stream;
+    };
+
+    /* 编译输出是一段段 WS 帧推来的,行会被切在中间(`--> lib` 和
+     * `\src\lib.rs:32:5` 可能分在两帧)。所以留一个尾巴缓冲:凑齐一行
+     * 才去扫,剩下的半行留着等下一帧。 */
+    let logTail = "";
     const appendLog = (stream, text) => {
-        log.textContent += text;
+        const joined = logTail + text;
+        const cut = joined.lastIndexOf("\n");
+        if (cut < 0) {
+            // 整帧都是半行:只缓冲,不显示。下帧到了补上行尾再一次性显示
+            // —— 现在就 append 的话,这半行会被算两遍。
+            logTail = joined;
+        } else {
+            logTail = joined.slice(cut + 1);
+            appendDiagText(stream, joined.slice(0, cut + 1));
+        }
         log.scrollTop = log.scrollHeight;
         log.dataset.lastStream = stream;
     };
@@ -1054,6 +1142,8 @@ function ready() {
 
     runBtn.addEventListener("click", () => {
         log.textContent = "";
+        // 上一轮攒下的半行不属于这次编译,留着会和新的输出拼成一行。
+        logTail = "";
         dlBtn.hidden = true;
         downloadUrl = "";
         const target = targetSel ? targetSel.value : null;

@@ -562,6 +562,28 @@ body:has(main > .play) main {
     border-radius: 6px;
 }
 
+/* 编译输出里可点的源码位置(`--> lib/src/lib.rs:32:5`,见 script.js 的
+ * `appendDiagText`)。做成链接的样子而不是按钮的样子 —— 它在日志里就是
+ * 一段可点的文本,按 `line-height` 参与排版,给按钮的边框和内边距会破坏
+ * 日志的行距。 */
+.play-log-link {
+    font: inherit;
+    color: var(--accent);
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+.play-log-link:hover {
+    text-decoration-style: solid;
+}
+.play-log-link:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}
+
 /* 预览页现在只是个占位。用和日志盒一样的外框,免得一切过去时整块区域
  * 突然空掉、像是坏了。 */
 .play-preview {
