@@ -402,14 +402,30 @@ function ready() {
         view.focus();
     };
 
-    /* 按钮的回调:从按钮自己的文本里解析出行列。
+    /* 只跳 `demo/src/lib.rs` —— 编辑器里现在装的文本就是这一个文件
+     * (`play/demo/*.rs` 那些样例是它的复制品)。别的路径先不处理:
+     * 编辑器里没有它们的文本,拿行号去定位等于把人送到错的地方。
      *
-     * 按钮文本就是 `路径:行:列`,没有另外的载荷。路径不参与判断 ——
-     * 编辑器里眼下装的是哪个文件由用户决定,拿文件名去卡只会让大部分
-     * 点击变成死按钮。 */
+     * 路径先按正斜杠归一:本地 Windows 打的是 `demo\src\lib.rs`,
+     * 容器里是 `demo/src/lib.rs`。 */
+    const EDITOR_FILE = "demo/src/lib.rs";
+    const slashes = (p) => p.replace(/\\/g, "/");
+
+    /* 按钮的回调:从按钮自己的文本里解析出路径和行列。
+     *
+     * 按钮文本就是 `路径:行:列`,没有另外的载荷。不支持的路径给一行
+     * 提示而不是静默不动 —— 静默的话人只会觉得按钮坏了。
+     *
+     * 提示写进日志面板而不是状态行:状态行被连接状态 / 编译进度占着,
+     * 在这儿插一句会把「编译中…」冲掉。 */
     const onDiagClick = (ev) => {
         const m = /^(\S+?):(\d+):(\d+)$/.exec(ev.currentTarget.textContent.trim());
         if (!m) return;
+        if (!slashes(m[1]).endsWith(EDITOR_FILE)) {
+            appendLog("stdout",
+                `编辑器里只装了 ${EDITOR_FILE},${m[1]} 的位置暂时跳不过去\n`);
+            return;
+        }
         gotoLineCol(+m[2], +m[3]);
     };
 
