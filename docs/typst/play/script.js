@@ -16,7 +16,7 @@
  * 后端地址不归页面管 —— 见下面 `BACKENDS` 的注释。
  */
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "https://esm.sh/@codemirror/view@6";
+import { EditorView, ViewPlugin, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
@@ -665,6 +665,31 @@ function ready() {
         return packed[1] === "as" ? "of " + packed[2] : "alias " + packed[2];
     };
 
+    /* `detail` 归一成右侧的附加信息。RA 对每种 kind 的填法都不一样
+     * (实测):
+     *   - 字段 / 变量 / 静态:`i32`;
+     *   - 关联常量:`pub const MAX: Self`,局部常量:`i32`;
+     *   - 类型别名:`i32`(目标类型),结构体 / 联合体:`U`(自身名字);
+     *   - 枚举:`Option<T>`(泛型参数);
+     *   - 宏:`macro_rules! assert` / `macro bench`,只是把名字重复了一遍。
+     * 常量去掉 `名字:` 前缀后剩类型;其余原样。与显示名相同的
+     * (`U` / `U`、`A` / `A`、`i32` / `i32`)没有信息量,丢掉。
+     *
+     * 常量 label 里那个 ` = 2147483647` 也是附加信息,但它在 label 不在
+     * detail,由调用方拆开后拼进来。 */
+    const completionMeta = (item, name, detail) => {
+        // `macro_rules! name` 里 `macro` 后面是 `_`,词边界不成立,不能
+        // 用 `\bmacro\b` 的写法。
+        if (item.kind === 3 && /^macro(?:_rules)?\b/.test(detail)) return null;
+        // 只处理 `名字: 类型` 这一种前缀。类型里的 `::` 不带空格,
+        // 所以找 `: ` 不会切错。
+        const colon = detail.indexOf(": ");
+        if (item.kind === 12 || item.kind === 21) {
+            if (colon >= 0) detail = detail.slice(colon + 2).trim();
+        }
+        return detail && detail !== name ? detail : null;
+    };
+
     /* 属性占位项的插入:省略号删掉,光标落到它原来的偏移。
      *
      * `#[un` → `#[unsafe()`,光标在括号里;`doc = "…"` → `doc = ""`,
@@ -675,6 +700,17 @@ function ready() {
         view.dispatch({
             changes: { from, to, insert: text },
             selection: { anchor: from + completion.ellipsisAt },
+            userEvent: "input.complete",
+        });
+    };
+
+    /* 普通项的自定义插入。CM 没有 `insertText` 字段 —— 不设 `apply`
+     * 时它一律插 `label`,而常量的 label 带着展示用的值
+     * (`MAX = 2147483647`),原样插入会把代码弄坏。只有名字与 label
+     * 不同时才挂这个(常量、旧服务端拼了注解的项)。 */
+    const applyName = (view, completion, from, to) => {
+        view.dispatch({
+            changes: { from, to, insert: completion.insertText },
             userEvent: "input.complete",
         });
     };
@@ -697,13 +733,24 @@ function ready() {
         });
     };
 
-    /* 补全行拆成四段,各由 `addToOptions` 按 position 排:
+    /* 补全行拆成五段,各由 `addToOptions` 按 position 排:
      *   - label(position 50):名字,黑色 —— 这是真正会被插入的文本;
+     *   - 常量值(position 52):`= 2147483647`,淡色,紧跟名字;
      *   - 参数(position 55):`(self, i32)`,淡色,紧贴名字;
      *   - note(position 60):`of Trait` / `alias xxx`,淡色,紧跟参数;
-     *   - 返回类型(position 90):淡色,`margin-left:auto` 推到最右。
+     *   - meta(position 90):类型 / 返回类型,淡色,`margin-left:auto`
+     *     推到最右。
      * 参数不放进 label 是因为 CodeMirror 的 `displayLabel` 只能整段一个
-     * 文本节点,没法只把括号部分染灰。 */
+     * 文本节点,没法只把括号部分染灰。附加信息同理,不塞进 CM 自己的
+     * `detail`(位置 80):它只能紧跟名字,而且不同 kind 的 detail
+     * 含义各不相同,得先归一。 */
+    const renderCompletionValue = (completion) => {
+        if (!completion.value) return null;
+        const el = document.createElement("span");
+        el.className = "cm-completionValue";
+        el.textContent = "= " + completion.value;
+        return el;
+    };
     const renderCompletionParams = (completion) => {
         if (!completion.params) return null;
         const el = document.createElement("span");
@@ -718,11 +765,11 @@ function ready() {
         el.textContent = completion.note;
         return el;
     };
-    const renderCompletionRet = (completion) => {
-        if (!completion.ret) return null;
+    const renderCompletionMeta = (completion) => {
+        if (!completion.meta) return null;
         const el = document.createElement("span");
-        el.className = "cm-completionRet";
-        el.textContent = completion.ret;
+        el.className = "cm-completionMeta";
+        el.textContent = completion.meta;
         return el;
     };
 
@@ -773,65 +820,82 @@ function ready() {
                         displayLabel: text,
                         type: kindToType(item.kind),
                         insertText: text,
+                        value: null,
                         params: null,
                         note: null,
-                        ret: null,
-                        // 走自定义插入:CM 默认会拿 `label` 或
-                        // `insertText` 填,但不会把光标落到省略号原来的
-                        // 位置。
+                        meta: null,
+                        // 走自定义插入:CM 默认会插 `label`,不会把光标
+                        // 落到省略号原来的位置。
                         apply: applyAt,
                         ellipsisAt: ellAt,
                     };
                 }
-                // 只有函数/方法(2=Method,3=Function)补括号;模块、
-                // 常量、类型保持原来的纯名字插入。
-                const callable = item.kind === 2 || item.kind === 3;
+                // 只有函数/方法(2=Method,3=Function)补括号;宏虽然也是
+                // kind 3,但 label 以 `!` 结尾,不是函数调用,按普通项插入。
+                const callable = (item.kind === 2 || item.kind === 3) &&
+                    !item.label.endsWith("!");
                 // 服务端没声明 labelDetailsSupport 时 RA 把 `(as Trait)` /
-                // 别名拼在 label 末尾;插入前剥掉。新服务端下这是 no-op。
-                const name = callable
-                    ? item.label.replace(/\s*\((?:as|alias)\s+[^)]*\)$/, "")
-                    : item.label;
+                // 别名拼在 label 末尾;展示和插入前都剥掉。新服务端下
+                // 这是 no-op。
+                const bare = item.label.replace(
+                    /\s*\((?:as|alias)\s+[^)]*\)$/, ""
+                );
+                // 常量 label 带着值(`MAX = 2147483647`),枚举成员也可能带
+                // 判别值(`A = 1`)。值的部分只展示,不进代码。
+                const value = (item.kind === 20 || item.kind === 21)
+                    ? /^([A-Za-z_]\w*) = (.+)$/.exec(bare)
+                    : null;
+                const name = value ? value[1] : bare;
                 const sig = callable
                     ? parseSignature(item.detail ||
                         (item.label_details && item.label_details.description))
                     : null;
-                // 解析不出签名时退回普通项:不补括号,detail 原样给 CM。
+                // 解析不出签名时退回普通项:不补括号。
                 const args = sig
                     ? (isDotCall && sig.params.length > 0 && isSelfParam(sig.params[0])
                         ? sig.params.length - 1
                         : sig.params.length)
                     : 0;
-                // 剥完前缀可能只剩空串(`detail` 整条都是属性),别给 CM
-                // 传空 detail —— 它会画出一个空的 `.cm-completionDetail`。
+                // 剥完前缀可能只剩空串(`detail` 整条都是属性)。
                 const rawDetail = item.detail ||
                     (item.label_details && item.label_details.description);
                 const plainDetail = rawDetail
                     ? stripPrefixNoise(rawDetail).replace(/…\s*$/, "").trim()
                     : "";
+                // 右侧附加信息只有类型。可调用项是返回类型;签名解析失败
+                // 时退回 RA 的原始签名;其余项是归一后的类型 / 泛型参数。
+                // 常量的值(`= 2147483647`)属于名字的补充,显示在名字
+                // 后面,不推到行尾。
+                // 被 RA 截断的返回类型什么都不显示,也不能退回 `()` ——
+                // 那会被读成「无返回值」。
+                const meta = callable
+                    ? (sig
+                        ? (sig.retTruncated ? null : (sig.ret || "()"))
+                        : (plainDetail || null))
+                    : completionMeta(item, name, plainDetail);
                 return {
                     // `label` 仍用于匹配(CM 拿它跟已输入前缀比对),
                     // `displayLabel` 是真正画出来的名字 —— 剥掉旧服务端
-                    // 拼进来的 `(as Trait)` / `(alias ...)`。
+                    // 拼进来的注解和常量值。
                     label: item.label,
                     displayLabel: name,
                     type: kindToType(item.kind),
-                    detail: sig ? undefined : (plainDetail || undefined),
-                    // 非可调用项通常就是 label;只有剥过注解时才需要显式
-                    // 覆盖,否则 CM 的默认插入会带上 `(as Trait)`。
-                    insertText: callable || name !== item.label ? name : undefined,
-                    // addToOptions 的三段 render 读这些自定义字段。
+                    // 真正写进代码的名字。CM 的默认插入用不上它,由下面
+                    // 的 `apply` 读。
+                    insertText: name,
+                    // addToOptions 的 render 读这些自定义字段。
+                    value: value ? value[2] : null,
                     params: sig ? sig.params : null,
                     note: completionNote(item),
-                    // 返回类型被 RA 截断时什么都不显示,也不能退回 `()` ——
-                    // 那会被读成「无返回值」。
-                    ret: sig
-                        ? (sig.retTruncated ? null : (sig.ret || "()"))
-                        : null,
+                    meta,
                     cursorInside: args > 0,
                     insertParens: !!sig,
                     // 可调用项一律走自定义插入:即使签名解析失败,也要把
-                    // 旧服务端拼在 label 里的注解挡在代码之外。
-                    apply: callable ? applyCallable : undefined,
+                    // 旧服务端拼在 label 里的注解挡在代码之外。其余项只在
+                    // 名字与 label 不同时(常量值、旧服务端注解)才覆盖。
+                    apply: callable
+                        ? applyCallable
+                        : (name !== item.label ? applyName : undefined),
                 };
             }),
             // 允许空串:`.` / `::` 触发时前缀本来就是空的。出现 `:` 等
@@ -881,17 +945,94 @@ function ready() {
         return OPENERS.includes(trimmed.slice(-1)) ? base + context.unit : base;
     };
 
+    /* 选区矩形对齐到整行。
+     *
+     * `drawSelection()` 的矩形量的是字形盒(12px 字约 14px 高),而行盒是
+     * 18px(`line-height: 1.5`)。单行选中时上下各缩进 2px;跨行选中时 CM
+     * 会把接缝那一侧补到行边界,于是同一个选区两侧不对称。这里在每次画完
+     * 后把每块矩形的上下缘对到行盒边界上,行与行之间严丝合缝,也不会越过
+     * 行边界伸进相邻行。
+     *
+     * 行盒等高且首尾相接,所以「矩形的边离哪条行边界更近」就是把它取整到
+     * 行网格。取任意一条已渲染行的 top/height 当原点与步长即可。选区超过
+     * 3 行时 CM 画的那块横跨多行的大矩形,两条边同样在网格附近,取整后仍
+     * 跨多行,不会被压成一行,也不会把整行宽涂到首末行选区端点之外的空白。
+     *
+     * 本插件注册在 `drawSelection()` 之后:同一轮更新里两边都请求 measure,
+     * 写阶段按注册顺序执行,所以这里拿到的已经是本次画出的矩形。重绘条件
+     * 必须原样镜像 CM 选区图层的 (docChanged / selectionSet / viewportChanged
+     * / geometryChanged),否则可能调整上一轮遗留的矩形。 */
+    const snapSelectionToLine = ViewPlugin.fromClass(
+        class {
+            constructor(view) {
+                this.view = view;
+                // `read` 必须存在(CM 的 measure 阶段无条件调用),但这里没
+                // 有可读的东西:矩形要到写阶段、CM 画完之后才存在。
+                this.measure = { read: () => {}, write: () => this.snap() };
+            }
+            update(update) {
+                // 没有非空选区时没有矩形可调,连 measure 都不必请求。
+                if (
+                    update.state.selection.ranges.some((r) => !r.empty) &&
+                    (update.docChanged ||
+                        update.selectionSet ||
+                        update.viewportChanged ||
+                        update.geometryChanged)
+                )
+                    update.view.requestMeasure(this.measure);
+            }
+            snap() {
+                const rects = this.view.scrollDOM.querySelectorAll(
+                    ".cm-selectionLayer .cm-selectionBackground"
+                );
+                const line = this.view.scrollDOM.querySelector(".cm-line");
+                if (!rects.length || !line) return;
+                const box = line.getBoundingClientRect();
+                if (!box.height) return;
+                const snap = (y) =>
+                    box.top + Math.round((y - box.top) / box.height) * box.height;
+                // 行的 style 坐标可能被缩放(浏览器缩放时 CM 给图层加
+                // transform),视口差要乘 `view.scaleY` 才是局部坐标差。
+                const scale = this.view.scaleY;
+                // 先量完再写:读写交替会反复强制布局。
+                const moves = [];
+                for (const rect of rects) {
+                    const r = rect.getBoundingClientRect();
+                    const top = snap(r.top);
+                    const bottom = snap(r.bottom);
+                    // 已经在网格上就别写,免得无谓地弄脏布局。
+                    if (Math.abs(top - r.top) < 0.1 && Math.abs(bottom - r.bottom) < 0.1)
+                        continue;
+                    const curTop = parseFloat(rect.style.top);
+                    moves.push([
+                        rect,
+                        curTop + (top - r.top) * scale,
+                        (bottom - top) * scale,
+                    ]);
+                }
+                for (const [rect, top, height] of moves) {
+                    rect.style.top = `${top}px`;
+                    rect.style.height = `${height}px`;
+                }
+            }
+        }
+    );
+
     view = new EditorView({
         state: EditorState.create({
             doc: "",
             extensions: [
                 lineNumbers(),
                 highlightActiveLine(),
+                // 行号列的当前行高亮;背景色与正文的 `--hover` 对齐,
+                // 见 style.css 的 `.cm-activeLineGutter`。
+                highlightActiveLineGutter(),
                 // 浏览器原生选区在校区非空时不画光标 —— 拖动或 Shift 选中
                 // 后就看不到落点。CM 的 `drawSelection()` 改用自绘层：选区
                 // 和光标都自己画，光标始终留在选区头部。要它就得放弃原生
                 // 选区,颜色见 style.css 的 `.cm-selectionBackground`。
                 drawSelection(),
+                snapSelectionToLine,
                 closeBrackets(),
                 // 初始为可编辑;setBusy() 用 editableCompartment.reconfigure 切。
                 editableCompartment.of(EditorView.editable.of(true)),
@@ -904,13 +1045,14 @@ function ready() {
                     override: [completionProvider],
                     activateOnTyping: true,
                     closeOnBlur: true,
-                    // CM 内置的 label / detail 位置是 50 / 80。参数与
-                    // trait 注释塞在 55 / 60(紧贴名字),返回类型放 90
-                    // (由 CSS 推到行尾)。
+                    // CM 内置的 label 位置是 50。常量值放 52,参数与
+                    // trait 注释放 55 / 60(都紧贴名字),类型 / 返回类型
+                    // 放 90(由 CSS 推到行尾)。
                     addToOptions: [
+                        { position: 52, render: renderCompletionValue },
                         { position: 55, render: renderCompletionParams },
                         { position: 60, render: renderCompletionNote },
-                        { position: 90, render: renderCompletionRet },
+                        { position: 90, render: renderCompletionMeta },
                     ],
                 }),
                 // `defaultKeymap` 必须在:Enter 走的是里面的

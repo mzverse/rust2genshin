@@ -211,28 +211,54 @@ body:has(main > .play) main {
     font-family: inherit;
 }
 /* 当前行高亮:与 `--hover` 同色 —— 同样的「鼠标移过」语义,只不过这次
- * 是「光标所在」。`--active` 太重,会盖住诊断波浪线的视觉。 */
+ * 是「光标所在」。`--active` 太重,会盖住诊断波浪线的视觉。
+ *
+ * 它不能直接画在 `.cm-line` 的背景上:行属于内容层,会盖住 z 为负的选区
+ * 自绘层 —— 光标所在那一行的选区整段消失。改成行内一个负 z 的伪元素,
+ * 让它参与 `.cm-scroller`(它建了层叠上下文)的排序,落到
+ * `.cm-selectionLayer` 下面。z 取 -10 而不是贴着 -2,免得 CM 再加图层
+ * 把顺序挤乱。 */
 .play-editor .cm-activeLine {
-    background-color: var(--hover);
+    position: relative;
+    /* CM 基础主题的 `.cm-activeLine` 自带一层 #cceeff44,它同样在内容层,
+     * 会把选区和伪元素一起盖掉。底色全部交给下面的伪元素。 */
+    background-color: transparent;
 }
-.play-editor .cm-activeLineGutter,
+.play-editor .cm-activeLine::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -10;
+    background-color: var(--hover);
+    pointer-events: none;
+}
 .play-editor .cm-gutters {
     background-color: var(--code-bg);
     color: var(--muted);
     border-right: none;
+}
+/* 行号跟着当前行走:与正文同一层 `--hover`。gutter 在自己的 z=200 层里,
+ * 不受选区层影响。 */
+.play-editor .cm-activeLineGutter {
+    background-color: var(--hover);
 }
 /* 多带一层 `.cm-editor`:CM 注入的基础主题也是两层权重(主题类 +
  * `.cm-content`),同权重但注入得更晚,会盖掉只写两层的规则。 */
 .play-editor .cm-editor .cm-content {
     padding: 6px 0;
 }
-/* 选区:用 `--accent` 半透明,既能在浅色下读得清也能在深色下不抢镜。
+/* 选区:颜色取 `--accent` 与代码底色 40/60 的混色。
+ *
+ * 用不透明色而不是半透明:矩形已经被脚本对齐到行盒(见 `script.js` 的
+ * `snapSelectionToLine`),相邻两行在亚像素上仍可能压住半像素;半透明
+ * 叠起来会在行距处露出一道更深的接缝。
+ *
  * 装了 `drawSelection()` 后原生选区被 CM 强制透明,能看到的只有它自绘的
  * `.cm-selectionBackground`;而 CM 针对聚焦态的默认规则是四层权重
  * (`cm-focused > .cm-scroller > .cm-selectionLayer ...`),这里必须写到
  * 五层才压得住。 */
 .play-editor .cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
-    background-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    background-color: color-mix(in srgb, var(--accent) 40%, var(--code-bg));
 }
 .play-editor .cm-cursor,
 .play-editor .cm-dropCursor {
@@ -356,20 +382,19 @@ body:has(main > .play) main {
     background-color: var(--hover);
     color: var(--fg);
 }
-/* 补全项的附加信息(函数签名、类型)。CM 默认是斜体 + 正文同色,
- * 和名字一样抢眼;改成正常的正文字形 + 弱化色,让它退到后面。 */
-.play-editor .cm-tooltip-autocomplete .cm-completionDetail {
-    font-style: normal;
-    color: var(--muted);
-    margin-left: 0.75em;
-}
-/* 每行都是 flex:名字在左,参数 / trait 注释紧随其后,返回类型推到最右。
+/* 每行都是 flex:名字在左,常量值 / 参数 / trait 注释紧随其后,
+ * 类型 / 返回类型推到最右。
  * 选择器带满 `.cm-editor` 和两个 tooltip 类,压过 CM 注入的基础主题。 */
 .play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li {
     display: flex;
     align-items: center;
 }
 /* 只有名字(会被插入的文本)用正文色;其余一律淡色。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionValue {
+    margin-left: 0.35em;
+    color: var(--muted);
+    white-space: nowrap;
+}
 .play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionParams {
     color: var(--muted);
     white-space: nowrap;
@@ -380,8 +405,8 @@ body:has(main > .play) main {
     color: var(--muted);
     white-space: nowrap;
 }
-/* 返回类型贴在行尾。 */
-.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionRet {
+/* 类型 / 返回类型贴在行尾。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete .cm-completionMeta {
     margin-left: auto;
     padding-left: 1em;
     color: var(--muted);
