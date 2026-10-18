@@ -97,7 +97,9 @@ cargo run -p rust2genshin-playground
 
 *补全只在真有前缀时弹。* `activateOnTyping` 是在键入的字符*之前*触发的，`context.pos` 因此落在已敲字符之前 —— 直接拿它当 `from`，选中后那个字符会留在替换范围外，`log` 补成 `llog`。所以 `from` 由自己往回走过词字符算出来。另外没有前缀就直接返回 `null`：RA 会把整个 crate 的符号都列出来，满屏 item 只会挡住代码。
 
-*缩进是自己写的服务，走 `indentService`。* `@codemirror/lang-rust` 不提供缩进（`languageDataAt("indentent")` 是空的），而 `indentService` 这个 facet *只有* `insertNewlineAndIndent` 会去问 —— 那条命令在 `defaultKeymap` 里，所以 `defaultKeymap` 不绑，缩进服务一次都不会被调用，Enter 只是浏览器原生地插一个换行。规则本身很土：看光标*之前*那段文本（不是整行 —— `}` 常被顶到光标后面，看整行会先撞上它判成要退一层），末字符是开括号就多一层、是闭括号就少一层。
+*缩进是自己写的服务，走 `indentService`。* CodeMirror 只提供*机制*（`indentService` facet、`defaultKeymap` 里的 Enter 命令、语法树兜底），每种语言的规则由各自的 language 包给 —— `@codemirror/lang-rust` 一条都没给，lezer-rust 也没定义 `indentNodeProp`，兜底算出来是 0。所以规则得自己写，一共两条：光标前*还没有非空白内容*时沿用本行已有缩进（这条保证反复回车不会越缩越深），否则前一个非空白字符是开括号就多一层、其余沿用本行缩进。
+
+看光标*之前*那段文本而不是整行 —— 光标常停在 `}` 之前，看整行会先撞上它。另外 `indentService` 这条链路只在 `defaultKeymap` 被装上后才通：Enter 走的是里面的 `insertNewlineAndIndent`，不绑它服务一次都不会被调用。被顶下去的 `}` 不经过本服务，CodeMirror 自己按 `{` 行的前导空白算。
 
 *`indentOnInput` 在这个组合下是空转，别配。* 它的实现是 transactionFilter，只在 `tr.isUserEvent("input.type")` 时跑，还要 `languageDataAt("indentOnInput")` 提供一个函数 —— `lang-rust` 不提供，配了也不触发。
 

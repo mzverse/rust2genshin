@@ -371,38 +371,43 @@ function ready() {
 
     /* 缩进服务。
      *
-     * `@codemirror/lang-rust` **不提供** `indentation`:
-     * `languageDataAt("indentation", pos)` 在装了 `rust()` 的状态里返回空数组。
-     * 所以 Enter 的智能缩进没有来源 —— 光秃的编辑器里块内换行就是顶格
-     * (这正是用户报的「块内换行不自动补缩进」)。
+     * CodeMirror 只提供**机制**(`indentService` facet + `defaultKeymap` 里的
+     * Enter 命令 + 语法树兜底),每种语言的缩进规则由各自的 language 包给。
+     * `@codemirror/lang-rust` 一条都没给:`languageDataAt("indentService")`
+     * 在装了 `rust()` 的状态里是空数组,lezer-rust 也没定义 `indentNodeProp`,
+     * 于是语法树兜底算出来是 0 —— 光秃秃的编辑器里块内换行就是顶格。
+     * 所以这十条规则得自己写。
      *
-     * 只做「打开就多一层、关掉就少一层」这一条,不追 Rust 的完整缩进规则:
+     * 只做「开括号多一层、其余沿用本行」,不追 Rust 的完整缩进规则:
      * 一份朴素但正确率高的缩进,比一份看起来聪明、实际在链式调用和
      * where 子上乱猜的缩进好 —— 后者会把用户的代码越排越乱。 */
     const OPENERS = "{[(";
-    const CLOSERS = "}])";
     const INDENT = "    ";
-    /* `indentService` 的签名是 `(context, lineStart)`,三条都和直觉不一样,
-     * 是在浏览器里对着真实模块打日志试出来的:
-     *   - `lineStart` 是**位置**,不是行号(1 行文档的末尾传进来是 11);
-     *   - `context.unit` 是**数字**(4),不是 `"    "` 这个字符串 —— 当字符串
-     *     用 `.length` 会算出 NaN,缩进一路归零,现象和没配服务一样;
-     *   - `context.state` 才是状态。
+    /* 缩进服务。签名是 `(context, pos)`,契约来自 `@codemirror/commands`
+     * 的 `newlineAndIndent`:Enter 时它拿**光标位置**调这里问新行的缩进;
+     * 被顶下去的 `}` 不经过这里,它用 `cx.lineIndent(line.from, -1)` 取
+     * `{` 行自己的前导空白。`context.unit` 是**数字**(4),返回值是**列数**。
      *
-     * 判断「这一行该缩进多少」时只看**位置之前**的那段文本,不看整行:光标
-     * 常停在 `}` 之前(`{` + Enter 会把 `}` 顶到下一行),看整行会先撞上
-     * 那个 `}` 而判成「该退一层」,新行就没缩进了。 */
-    const rustIndent = (context, lineStart) => {
+     * 规则只有两条,关键是第一条:
+     *   - 光标前**还没有非空白内容**(空行 / 新建行) → 沿用本行已有的缩进。
+     *     少了这条会出事:反复回车时新行是 `"    "`,`trimEnd()` 是空串,
+     *     若拿 `includes("")` 判开括号,JS 里 `"abc".includes("")` 恒为
+     *     true,于是每按一次回车就多一层(4 → 8 → 12 …)。
+     *   - 否则看前一个非空白字符:开括号多一层,其余沿用本行缩进(行尾的
+     *     `}` 也是沿用 —— 那一行本来就在正确的层级上)。
+     *
+     * 只看**光标之前**那段,不看整行:光标常停在 `}` 之前,看整行会先
+     * 撞上那个 `}`。 */
+    const rustIndent = (context, pos) => {
         const state = context.state;
         // 越界的位置不该让 Enter 抛 —— 缩进退化成 0。
-        if (!(lineStart >= 0 && lineStart <= state.doc.length)) return 0;
-        const line = state.doc.lineAt(lineStart);
-        const upto = line.text.slice(0, lineStart - line.from);
-        const base = upto.length - upto.trimStart().length;
-        const last = upto.trimEnd().slice(-1);
-        if (OPENERS.includes(last)) return base + context.unit;
-        if (CLOSERS.includes(last)) return Math.max(0, base - context.unit);
-        return base;
+        if (!(pos >= 0 && pos <= state.doc.length)) return 0;
+        const line = state.doc.lineAt(pos);
+        const before = line.text.slice(0, pos - line.from);
+        const base = context.countColumn(/^[ \t]*/.exec(before)[0]);
+        const trimmed = before.trimEnd();
+        if (trimmed === "") return base;
+        return OPENERS.includes(trimmed.slice(-1)) ? base + context.unit : base;
     };
 
     view = new EditorView({
