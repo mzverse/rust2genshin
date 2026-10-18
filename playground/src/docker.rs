@@ -301,16 +301,12 @@ pub fn image_ls_args(filter: &str) -> Vec<String> {
     ]
 }
 
-/// 列**我们自己的**全部镜像,把 commit label 与创建时间一起带出来。
+/// 列**我们自己的**全部镜像:tag + 创建时间,按调用方给的顺序无关(不排序)。
 ///
-/// 与 [`image_ls_args`] 的区别有两个,都服务于「部署后拿旧镜像顶上」这条路径:
-///   - 不按 commit 过滤 —— 调用方要的是*除当前 HEAD 以外*最新的那份;
-///   - 多带 `commit` 和 `CreatedAt` 两列:tag 里只有短 sha,`BuiltImage.sha`
-///     要的是全长;而「谁最新」由调用方自己挑。
-///
-/// **不在这里排序。** 曾经想用 `--sort=-createdAt`,但部署用的那台宿主上的
-/// docker CLI 不认这个 flag(直接 `unknown flag: --sort`,退出码 125),整条
-/// 命令失败、降级路径静默退化成「什么都没有」。排序放在客户端做,依赖面小得多。
+/// 部署用的那台宿主上的 docker CLI 有两个坑,这里一个都不踩:
+///   - `image ls` 不认 `--sort`(退出码 125),所以排序在客户端做;
+///   - `image ls` 的模板里**没有 `.Label` 字段**(`can't evaluate field
+///     Label`),所以 commit label 拿不到 —— 改用 [`image_inspect_commit_args`]。
 pub fn newest_labeled_image_args(image: &str) -> Vec<String> {
     vec![
         "image".into(),
@@ -318,10 +314,21 @@ pub fn newest_labeled_image_args(image: &str) -> Vec<String> {
         "--filter".into(),
         crate::image::label_filter(image, None),
         "--format".into(),
-        format!(
-            "{{{{.Repository}}}}:{{{{.Tag}}}}\t{{{{.Label \"{}\"}}}}\t{{{{.CreatedAt}}}}",
-            crate::image::LABEL_COMMIT
-        ),
+        "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}".into(),
+    ]
+}
+
+/// 读单个镜像的 commit label 全长 sha。
+///
+/// `image inspect` 的模板走的是 `index .Config.Labels`,这条路在老 docker 上
+/// 是通的(`image ls` 的 `.Label` 不是)。
+pub fn image_inspect_commit_args(tag: &str) -> Vec<String> {
+    vec![
+        "image".into(),
+        "inspect".into(),
+        tag.into(),
+        "--format".into(),
+        format!("{{{{index .Config.Labels \"{}\"}}}}", crate::image::LABEL_COMMIT),
     ]
 }
 
@@ -577,18 +584,30 @@ mod tests {
     }
 
     #[test]
-    fn newest_labeled_image_args_carry_the_commit_and_the_creation_time() {
+    fn newest_labeled_image_args_carry_the_creation_time_and_nothing_they_cannot_do() {
         let a = newest_labeled_image_args("rust2genshin-play");
         // 部署用的那台宿主上 docker CLI 不认 --sort(退出码 125),
         // 排序在客户端做 —— 这里就不许再出现它。
         assert!(!a.iter().any(|x| x.contains("sort")), "{a:?}");
         let fmt = &a[a.iter().position(|x| x == "--format").unwrap() + 1];
-        assert!(fmt.contains("rust2genshin.commit"), "{fmt}");
+        // `.Label` 在这台 docker 的 image ls 模板里不存在(模板解析直接报错),
+        // commit 只能另走 image inspect。
+        assert!(!fmt.contains("Label"), "{fmt}");
         assert!(fmt.contains("CreatedAt"), "{fmt}");
         assert!(
             a.iter().any(|x| x == "label=rust2genshin.play=1"),
             "必须只列我们自己的镜像:{a:?}"
         );
+    }
+
+    #[test]
+    fn image_inspect_commit_args_read_the_label_by_index() {
+        let a = image_inspect_commit_args("rust2genshin-play:1102e2b");
+        assert_eq!(a[0], "image");
+        assert_eq!(a[1], "inspect");
+        assert!(a.contains(&"rust2genshin-play:1102e2b".to_string()), "{a:?}");
+        let fmt = &a[a.iter().position(|x| x == "--format").unwrap() + 1];
+        assert_eq!(fmt, "{{index .Config.Labels \"rust2genshin.commit\"}}");
     }
 
     #[test]

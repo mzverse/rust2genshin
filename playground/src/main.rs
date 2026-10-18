@@ -151,38 +151,36 @@ fn lock_data_dir(cfg: &Config) -> std::io::Result<fs::File> {
 /// 收到的就是 `repo.head()`,见 `image_builder::build_args`),而 `label_filter`
 /// 是精确匹配 —— 所以这里的 commit 也必须原样用全长 sha,截短了永远命中不了。
 /// tag 那边带 `-dirty` 后缀,`image::tag` 算出的和这里要一致才认。
-/// 解析 `docker image ls` 的输出(每行 `tag\tcommit\tcreatedAt`),挑**创建时间
-/// 最新**的那条带 commit label 的记录。
+/// 解析 `docker image ls` 的输出(每行 `tag\tcreatedAt`),按创建时间**从新到旧**
+/// 排好序返回候选 tag。
 ///
 /// 排序在客户端做 —— 见 [`crate::docker::newest_labeled_image_args`] 的注释:
-/// 部署用的宿主上的 docker CLI 不认 `--sort`。`CreatedAt` 是定长 RFC3339,
-/// 字典序就是时间序。
+/// 部署用的宿主上的 docker CLI 不认 `--sort`。`CreatedAt` 是定长的
+/// `2026-10-18 01:36:52 +0800 CST`,字典序就是时间序。
 ///
-/// 跳过没有 commit label 的行(手工 `docker import`/`load` 的镜像):没有 sha 就
-/// 没法在 `hello` 里如实报「当前服务的是哪个 commit」,拿它顶替等于把这件事
-/// 重新变成不可信 —— 而那正是 tag 用 sha 的全部理由。
-fn parse_newest_labeled(stdout: &str) -> Option<(String, String)> {
-    let mut best: Option<(&str, String, String)> = None; // (created, sha, tag)
+/// 缺列的行(理论上不该有,`-` 表示镜像被删过)直接丢。
+fn parse_image_candidates(stdout: &str) -> Vec<String> {
+    let mut rows: Vec<(&str, &str)> = Vec::new();
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let mut cols = line.split('\t');
-        let (tag, commit, created) = (
-            cols.next()?,
-            cols.next().unwrap_or(""),
-            cols.next().unwrap_or(""),
-        );
-        let (tag, commit, created) = (tag.trim(), commit.trim(), created.trim());
-        if tag.is_empty() || commit.is_empty() || created.is_empty() {
+        let tag = cols.next().unwrap_or("").trim();
+        let created = cols.next().unwrap_or("").trim();
+        if tag.is_empty()
+            || created.is_empty()
+            || created == "-"
+            || tag == "<none>"
+            || created == "<none>"
+        {
             continue;
         }
-        if best.as_ref().is_none_or(|(b, _, _)| created > *b) {
-            best = Some((created, commit.to_string(), tag.to_string()));
-        }
+        rows.push((created, tag));
     }
-    best.map(|(_, sha, tag)| (sha, tag.to_string()))
+    rows.sort_by(|a, b| b.0.cmp(a.0));
+    rows.into_iter().map(|(_, tag)| tag.to_string()).collect()
 }
 
 /// 启动时对「用哪份镜像」的决定。
@@ -258,19 +256,33 @@ pub async fn startup_plan(cfg: &Config, repo: &Repo) -> StartupPlan {
         .output()
         .await
         .ok();
-    let found = match out {
-        Some(o) if o.status.success() => {
-            parse_newest_labeled(&String::from_utf8_lossy(&o.stdout))
-        }
-        _ => None,
+    let candidates = match out {
+        Some(o) if o.status.success() => parse_image_candidates(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
     };
-    match found {
-        Some((sha, tag)) => {
-            tracing::warn!(serving = %tag, head = %head, "本地没有当前 HEAD 的镜像,先用旧的顶上");
-            plan_stale_fallback(crate::bake::BuiltImage { sha, tag })
+    for tag in candidates {
+        // commit label 只在 `image inspect` 的模板里拿得到(`image ls` 的模板
+        // 没有 `.Label` 字段)。拿不到就换下一份候选 —— 手工 import 进来的
+        // 镜像没有这个 label,而没有 sha 就没法在 `hello` 里如实报当前服务的是
+        // 哪个 commit,拿它顶替等于把这件事重新变成不可信。
+        let out = tokio::process::Command::new("docker")
+            .args(crate::docker::image_inspect_commit_args(&tag))
+            .output()
+            .await
+            .ok();
+        let sha = match out {
+            Some(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).trim().to_string()
+            }
+            _ => String::new(),
+        };
+        if sha.is_empty() {
+            continue;
         }
-        None => plan_cold(),
+        tracing::warn!(serving = %tag, head = %head, "本地没有当前 HEAD 的镜像,先用旧的顶上");
+        return plan_stale_fallback(crate::bake::BuiltImage { sha, tag });
     }
+    plan_cold()
 }
 
 async fn run(cfg: Config) -> Result<(), String> {
@@ -404,27 +416,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_newest_created_at_wins_regardless_of_line_order() {
+    fn candidates_come_back_newest_first_regardless_of_line_order() {
         // docker 的输出顺序不作数(而且这台宿主的 CLI 连 --sort 都不认),
         // 所以「谁最新」必须由我们自己从 CreatedAt 那一列判。
-        let out = "rust2genshin-play:f1f75ac\tabcdef0123456789\t2026-10-18 02:00:00 +0000 UTC\n\
-                   rust2genshin-play:1102e2b\tfedcba9876543210\t2026-10-18 03:00:00 +0000 UTC\n";
-        let got = parse_newest_labeled(out).expect("两行都有 commit label");
-        assert_eq!(got.0, "fedcba9876543210", "创建时间更晚的那份才该被选中");
-        assert_eq!(got.1, "rust2genshin-play:1102e2b");
+        let out = "rust2genshin-play:f1f75ac\t2026-10-18 02:00:00 +0000 UTC\n\
+                   rust2genshin-play:1102e2b\t2026-10-18 03:00:00 +0000 UTC\n";
+        assert_eq!(
+            parse_image_candidates(out),
+            vec![
+                "rust2genshin-play:1102e2b".to_string(),
+                "rust2genshin-play:f1f75ac".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn a_line_without_a_commit_label_is_dropped() {
-        // 手工导入的镜像可能没有 commit label —— 不能拿它当 serving,
-        // 也绝不能把半条记录报成 sha。
-        let out = "rust2genshin-play:manual\t\t2026-10-18 03:00:00 +0000 UTC\n\
-                   rust2genshin-play:ok\tabcdef\t2026-10-18 02:00:00 +0000 UTC\n";
-        let got = parse_newest_labeled(out).expect("第二行完整");
-        assert_eq!(got.1, "rust2genshin-play:ok", "第一行没 commit,不能顶替");
-        assert!(parse_newest_labeled("").is_none());
-        assert!(parse_newest_labeled("rust2genshin-play:x\n").is_none());
-        assert!(parse_newest_labeled("rust2genshin-play:x\tabc\n").is_none());
+    fn rows_without_a_usable_creation_time_are_dropped() {
+        // `<none>` 的镜像是悬空的,`-` 是被删掉的 —— 两种都不该进候选,
+        // 否则会拿一份根本起不来的镜像当 serving。
+        let out = "rust2genshin-play:gone\t-\n\
+                   rust2genshin-play:ok\t2026-10-18 02:00:00 +0000 UTC\n\
+                   <none>\t<none>\n";
+        assert_eq!(
+            parse_image_candidates(out),
+            vec!["rust2genshin-play:ok".to_string()]
+        );
+        assert!(parse_image_candidates("").is_empty());
+        assert!(parse_image_candidates("rust2genshin-play:x\n").is_empty());
     }
 
     #[test]
