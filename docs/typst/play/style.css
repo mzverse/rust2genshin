@@ -54,9 +54,11 @@ body:has(main > .play) main {
 .play-layout {
     --play-left: 1fr;
     --play-gutter: 22px;
-    /* 表头里所有控件的统一高度,和旁边的按钮(40px)一样。宽度不统一:
-     * 下拉框按内容长度给,收窄会把样例名截成「aaa_hello-」。 */
-    --play-ctl-h: 40px;
+    /* 表头里两个下拉框的统一高度。基准是 `mdui-select` 压完 typescale 之后
+     * 的天然高度 48px,`.play-target` 照它对齐;MDUI 组件本身不碰(见下面
+     * `.play-picker mdui-select` 的说明)。宽度不统一:下拉框按内容长度给,
+     * 收窄会把样例名截成「aaa_hello-」。 */
+    --play-ctl-h: 48px;
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -134,17 +136,20 @@ body:has(main > .play) main {
  * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
  * 还高一截,看着不成一条线。
  *
- * 两个旋钮:
- *   - typescale 变量能穿过分层边界改到内层 text-field 的字号和行高,
- *     56 → 48 就靠它;但它只管文字,再往下压就不动了(实测最小 44px)。
- *   - `height` 直接写在 `mdui-select` 这个宿主元素上是**生效的**,盒子
- *     会收到那么高。之前那条注释说「height 写不进 shadow root」已经不成立
- *     了 —— 写不进的是内层那个 text-field,不是宿主。
+ * **只能用 MDUI 自己的 variables,别写 `height`。** MDUI 是 web component,
+ * 样式全在 shadow root 里,外面唯一能穿过去的只有自定义属性。核过 MDUI v2
+ * 的全部规则:`mdui-text-field` 的高度由内层写死的
+ * `padding: 0.875rem 0.875rem 0.875rem 0` 加 `.container` 的上下各 2px
+ * 决定,整条链上**没有任何 `--mdui-*` 变量** —— 没有 `size` / `dense` 属性,
+ * 也没有尺寸 token。曾经写过的 `height: var(--play-ctl-h)` 只会把宿主盒子
+ * 压到那么高、里面 48px 的内容照旧,看着对其实是被裁掉了;按钮那边同理,
+ * 40px 是 `:host` 里写死的。
  *
- * 要的就是和按钮同高,直接给 height,不必跟 typescale 较劲。 */
+ * typescale 变量是唯一真正生效的旋钮,而它只管文字:字号和行高。48px =
+ * 行高 16px + 上下各 14px 固定 padding + 各 2px 的 container 内边距,所以
+ * 下限是 44px,再往下压不动。工具条的高度基准就取这个 48px。 */
 .play-picker mdui-select {
     min-width: 10rem;
-    height: var(--play-ctl-h);
     --mdui-typescale-body-large-size: 0.8125rem;
     --mdui-typescale-body-large-line-height: 1rem;
 }
@@ -310,7 +315,8 @@ body:has(main > .play) main {
     color: var(--fg);
     border: 1px solid var(--border-soft);
     border-radius: 6px;
-    /* 和示例下拉、按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。竖直居中
+    /* 跟示例下拉一样高(见 `.play-layout` 的 `--play-ctl-h`)。原生控件,
+     * `height` 就是它本来的用法 —— 要改的是这里,不是 MDUI 组件。竖直居中
      * 由 select 自己保证,`padding` 只管左右和箭头那块空位。 */
     height: var(--play-ctl-h);
     padding: 0 28px 0 10px;
