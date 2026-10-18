@@ -413,7 +413,48 @@ function ready() {
      *
      * 返回 `null` 表示「不是可解析的函数签名」—— 调用方退回只插名字,
      * 不补括号,不会把代码弄坏。 */
-    const parseSignature = (detail) => {
+    /* RA 会在签名前面挂一堆修饰:`pub` / `pub(crate)` / `const` /
+     * `unsafe` / `async` / `extern "C"` / `#[attr]`。
+     *
+     * 属性那一项尤其碍眼:RA 嫌长会截断成 `#[unsafe(…)]` —— 省略号是
+     * **RA 自己**的截断标记,不是用户代码里的东西,插进补全列表只会让人
+     * 以为有个叫 `…` 的写法。而且 `parseSignature` 本来就只认 `fn`,
+     * 这些前缀一个都用不上,直接剥干净。
+     *
+     * 只剥前缀,不动参数里的属性(惯例上不会出现在 `fn(...)` 内部,真出现
+     * 了也是签名的一部分)。`#[...]` 按方括号配对删,免得 `#[a(b[c])]`
+     * 提前收尾。 */
+    const stripPrefixNoise = (detail) => {
+        let s = detail.trim();
+        for (;;) {
+            const before = s;
+            if (s.startsWith("#[")) {
+                let depth = 0;
+                let end = -1;
+                for (let i = 1; i < s.length; i++) {
+                    if (s[i] === "[") depth++;
+                    else if (s[i] === "]") {
+                        depth--;
+                        if (depth === 0) { end = i + 1; break; }
+                    }
+                }
+                // 没闭合(RA 截断到了属性中间):后面全是噪音,整条丢。
+                if (end < 0) return "";
+                s = s.slice(end).trim();
+            } else {
+                // 修饰符可能连着来(`pub unsafe extern "C" fn`),一个个摘。
+                const m = /^(?:pub(?:\s*\([^)]*\))?|const|async|unsafe|extern(?:\s+"[^"]*")?|default)\s+/.exec(s);
+                if (m) s = s.slice(m[0].length).trim();
+            }
+            if (s === before) break;
+        }
+        return s;
+    };
+
+    const parseSignature = (raw) => {
+        if (!raw) return null;
+        const detail = stripPrefixNoise(raw);
+        // 剥完可能什么都不剩(整条 detail 都是属性)。
         if (!detail) return null;
         // 定位声明里的 `fn`:detail 一定是签名,第一个 `fn` 就是它。
         const fnAt = detail.search(/\bfn\b/);
@@ -441,10 +482,28 @@ function ready() {
         }
         if (close < 0) return null;
         const params = splitTopLevel(detail.slice(open + 1, close));
+        // RA 嫌长时会截断,统一留个 `…`(`#[unsafe(…)]`、`fn(a, …)`、
+        // `-> (A, B, …)`)。参数位置出现这个就意味着**实参个数不可知** ——
+        // 光标落点取决于有没有实参,猜不得,整条退回不可解析,让调用方
+        // 只插名字不补括号(见 `applyCallable`)。
+        if (params.some(isEllipsis)) return null;
         const rest = detail.slice(close + 1).trim();
         const ret = /^->\s*(.+)$/.exec(rest);
-        return { params, ret: ret ? ret[1].trim() : null };
+        const retText = ret ? ret[1].trim() : null;
+        return {
+            params,
+            ret: retText,
+            // 返回类型被 RA 截断(`-> (A, B, …)`)。削掉省略号会留下
+            // `(A, B,` 这种半截类型,比不显示更糟;显示成 `()` 又会被读
+            // 成「没有返回值」。老老实实什么都不显示 —— 右边空着总比
+            // 显示错的东西好。参数那侧同样处理不了(实参个数不可知,
+            // 光标落点取决于它),所以整条退回不可解析。
+            retTruncated: !!retText && retText.includes("…"),
+        };
     };
+
+    /* RA 的省略号标记。只在 RA 截断输出时出现,用户代码里不会有。 */
+    const isEllipsis = (s) => /^\s*…\s*$/.test(s);
 
     /* 按**顶层**逗号切参数。`Option<(A, B)>`、`impl Fn(i32, i32)`、
      * `fn(i32) -> i32` 里的逗号都在更深一层,不能切。 */
@@ -479,7 +538,9 @@ function ready() {
     const completionNote = (item) => {
         const raw = item.label_details && item.label_details.detail;
         if (raw) {
-            const text = raw.trim();
+            // 别名列表也可能被 RA 截断成 `(alias a, …)`。省略号在这里同样
+            // 纯属噪音,削掉。
+            const text = raw.trim().replace(/…\s*$/, "").trim();
             const asTrait = /^\(as\s+(.+)\)$/.exec(text);
             if (asTrait) return "of " + asTrait[1];
             const alias = /^\(alias\s+(.+)\)$/.exec(text);
@@ -585,12 +646,19 @@ function ready() {
                     ? parseSignature(item.detail ||
                         (item.label_details && item.label_details.description))
                     : null;
-                // 解析不出签名时退回普通项:不补括号,显示 RA 的原文。
+                // 解析不出签名时退回普通项:不补括号,detail 原样给 CM。
                 const args = sig
                     ? (isDotCall && sig.params.length > 0 && isSelfParam(sig.params[0])
                         ? sig.params.length - 1
                         : sig.params.length)
                     : 0;
+                // 剥完前缀可能只剩空串(`detail` 整条都是属性),别给 CM
+                // 传空 detail —— 它会画出一个空的 `.cm-completionDetail`。
+                const rawDetail = item.detail ||
+                    (item.label_details && item.label_details.description);
+                const plainDetail = rawDetail
+                    ? stripPrefixNoise(rawDetail).replace(/…\s*$/, "").trim()
+                    : "";
                 return {
                     // `label` 仍用于匹配(CM 拿它跟已输入前缀比对),
                     // `displayLabel` 是真正画出来的名字 —— 剥掉旧服务端
@@ -598,14 +666,18 @@ function ready() {
                     label: item.label,
                     displayLabel: name,
                     type: kindToType(item.kind),
-                    detail: sig ? undefined : (item.detail || undefined),
+                    detail: sig ? undefined : (plainDetail || undefined),
                     // 非可调用项通常就是 label;只有剥过注解时才需要显式
                     // 覆盖,否则 CM 的默认插入会带上 `(as Trait)`。
                     insertText: callable || name !== item.label ? name : undefined,
                     // addToOptions 的三段 render 读这些自定义字段。
                     params: sig ? sig.params : null,
                     note: completionNote(item),
-                    ret: sig ? (sig.ret || "()") : null,
+                    // 返回类型被 RA 截断时什么都不显示,也不能退回 `()` ——
+                    // 那会被读成「无返回值」。
+                    ret: sig
+                        ? (sig.retTruncated ? null : (sig.ret || "()"))
+                        : null,
                     cursorInside: args > 0,
                     insertParens: !!sig,
                     // 可调用项一律走自定义插入:即使签名解析失败,也要把
