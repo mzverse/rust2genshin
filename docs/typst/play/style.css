@@ -54,11 +54,9 @@ body:has(main > .play) main {
 .play-layout {
     --play-left: 1fr;
     --play-gutter: 22px;
-    /* 表头里所有控件的统一宽度。旁边的按钮(「载入」96.2px、「编译」94.2px)
-     * 本来就差不多这么宽,下拉框却各自按内容长:示例 184px、目标 112px ——
-     * 一排控件宽窄不齐,示例那个还把整条工具条撑到了折行。现在两个下拉都
-     * 收到这个宽度,和按钮对齐。 */
-    --play-ctl-w: 96px;
+    /* 表头里所有控件的统一高度,和旁边的按钮(40px)一样。宽度不统一:
+     * 下拉框按内容长度给,收窄会把样例名截成「aaa_hello-」。 */
+    --play-ctl-h: 40px;
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -136,14 +134,17 @@ body:has(main > .play) main {
  * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
  * 还高一截,看着不成一条线。
  *
- * 只能动 typescale 变量:MDUI 的样式在自己的 shadow root 里,外面写
- * `height` 是写不到那个 text-field 上的(设了也不生效,内层还是 56px)。
- * 自定义属性倒是能穿过分层边界,所以这是唯一能缩的旋钮。56 → 48。 */
+ * 两个旋钮:
+ *   - typescale 变量能穿过分层边界改到内层 text-field 的字号和行高,
+ *     56 → 48 就靠它;但它只管文字,再往下压就不动了(实测最小 44px)。
+ *   - `height` 直接写在 `mdui-select` 这个宿主元素上是**生效的**,盒子
+ *     会收到那么高。之前那条注释说「height 写不进 shadow root」已经不成立
+ *     了 —— 写不进的是内层那个 text-field,不是宿主。
+ *
+ * 要的就是和按钮同高,直接给 height,不必跟 typescale 较劲。 */
 .play-picker mdui-select {
-    /* 宽度跟着 `--play-ctl-w` 走(见 `.play-layout`)。`min-width: 0` 是关键:
-     * 不然原来那条 `min-width: 10rem` 还在,盒子收不下来。 */
-    width: var(--play-ctl-w);
-    min-width: 0;
+    min-width: 10rem;
+    height: var(--play-ctl-h);
     --mdui-typescale-body-large-size: 0.8125rem;
     --mdui-typescale-body-large-line-height: 1rem;
 }
@@ -309,7 +310,10 @@ body:has(main > .play) main {
     color: var(--fg);
     border: 1px solid var(--border-soft);
     border-radius: 6px;
-    padding: 5px 28px 5px 10px;
+    /* 和示例下拉、按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。竖直居中
+     * 由 select 自己保证,`padding` 只管左右和箭头那块空位。 */
+    height: var(--play-ctl-h);
+    padding: 0 28px 0 10px;
     font: inherit;
     font-size: 13px;
     line-height: 1.2;
@@ -323,9 +327,7 @@ body:has(main > .play) main {
         right 5px center;
     background-size: 5px 5px, 5px 5px;
     background-repeat: no-repeat;
-    /* 和示例下拉、按钮同一个宽度,见 `.play-layout` 的 `--play-ctl-w`。 */
-    width: var(--play-ctl-w);
-    min-width: 0;
+    min-width: 7rem;
 }
 .play-target:focus-visible {
     outline: 2px solid var(--accent);
@@ -594,10 +596,14 @@ body:has(main > .play) main {
     border-radius: 6px;
 }
 
-/* 下拉框的宽度现在是定值(见 `.play-layout` 的 `--play-ctl-w`),窄屏不用再
- * 单独收一遍 —— 原来那条 `@media` 只改 `min-width`,而 `min-width` 早已被
- * `width` 顶掉,留着也不会再有任何作用。
+/* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,把下拉框的最小宽度收一收,
+ * 好让折行后的第二行不至于只有「编译」孤零零一个。
  * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
+@media (max-width: 560px) {
+    .play-picker mdui-select {
+        min-width: 7rem;
+    }
+}
 
 /* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标
  * 会误导),直接藏掉,两栏各占一半高度。
