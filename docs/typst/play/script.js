@@ -19,7 +19,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://es
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
-import { indentation, indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
+import { indentService, indentOnInput, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
     LspClient,
@@ -382,19 +382,19 @@ function ready() {
     const OPENERS = "{[(";
     const CLOSERS = "}])";
     const INDENT = "    ";
-    const rustIndent = {
-        closedIndent: () => 0,
-        indentation: (state, line) => {
-            const src = state.doc.line(line - 1);
-            if (!src) return 0;
-            const text = src.text;
-            const base = text.length - text.trimStart().length;
-            const trimmed = text.trimEnd();
-            const last = trimmed.slice(-1);
-            if (OPENERS.includes(last)) return base + INDENT.length;
-            if (CLOSERS.includes(last)) return Math.max(0, base - INDENT.length);
-            return base;
-        },
+    /* `indentService` 的签名是 `(context, line)`:`context` 带 `state` / `unit`,
+     * `line` 是**新插入的那一行**的行号 —— 所以要看的是它的上一行。
+     * (写成对象 `{indentation, closedIndent}` 或把 `state` 当第一个参数都会
+     * 在 Enter 时抛,编辑器里表现为「按了没反应」。) */
+    const rustIndent = (context, line) => {
+        const src = context.state.doc.line(line - 1);
+        if (!src) return 0;
+        const text = src.text;
+        const base = text.length - text.trimStart().length;
+        const last = text.trimEnd().slice(-1);
+        if (OPENERS.includes(last)) return base + context.unit.length;
+        if (CLOSERS.includes(last)) return Math.max(0, base - context.unit.length);
+        return base;
     };
 
     view = new EditorView({
@@ -424,11 +424,13 @@ function ready() {
                 // 弹窗一开 Tab 就不工作了。
                 rust(),
                 indentUnit.of(INDENT),
-                // `indentOnInput` 让输入时保持当前缩进;`indentation` 是 Enter
-                // 走 `insertNewlineAndIndent` 时查的服务。两者是同一套缩进
+                // `indentOnInput` 让输入时保持当前缩进;`indentService` 是 Enter
+                // 走 `insertNewlineAndIndent` 时查的服务(注意名字是
+                // `indentService`,不是 `indentation` —— 后者根本没导出,引用
+                // 它会在建编辑器时抛,页面只剩一个空框)。两者是同一套缩进
                 // 约定的两条入口,缺一个都会让「块内换行不缩进」复现。
                 indentOnInput(),
-                indentation.of(rustIndent),
+                indentService.of(rustIndent),
                 // Tab 缩进。挂**默认**优先级(不是 `Prec.high`):补全弹窗
                 // 开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
                 // 扩展列表靠后,于是弹窗开着时 Tab 归弹窗(选中下一项),
