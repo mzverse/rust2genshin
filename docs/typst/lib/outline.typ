@@ -2,7 +2,7 @@
 
 #let template(self) = {
     show heading: it => context {
-        let list = query(heading.where(outlined: true).within(this-doc().location()).before(here()));
+        let list = query(heading.where(outlined: true).within(this-doc-selector()).before(here()));
         let level = it.level;
         let id = contentToString(it.body);
         for x in list.rev() {
@@ -26,7 +26,7 @@
     context {
         let result = ();
         let path = ();
-        for x in query(heading.where(outlined: true).within(this-doc().location())) + (heading(level: 1, "EOF"),) {
+        for x in query(heading.where(outlined: true).within(this-doc-selector())) + (heading(level: 1, "EOF"),) {
             while path.len() > 0 and path.last().level >= x.level {
                 _ = path.pop();
             }

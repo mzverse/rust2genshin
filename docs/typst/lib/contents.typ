@@ -4,6 +4,18 @@
 #let text_def = ("size": 12pt, "fill": black);
 #let std_symbol = [~].func();
 
+#let this-doc() = query(document.where().before(here())).last(default: none);
+#let this-doc-selector() = {
+    let doc = this-doc();
+    selector(if doc != none {
+        doc.location()
+    } else {
+        document
+    })
+}
+#let state-this-doc-module = state("this-doc-module", std);
+#let this-doc-module() = state-this-doc-module.get();
+
 #let contentToString(con) = {
     if type(con) == str {
         con
