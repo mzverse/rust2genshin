@@ -350,10 +350,14 @@ function ready() {
         const before = lineObj.text.slice(0, context.pos - lineObj.from);
         const m = /[\w]*$/.exec(before);
         const typed = m ? m[0] : "";
-        // 什么前缀都没有就别弹 —— RA 会把整份 crate 的符号都列出来,
-        // 满屏 item 只会挡住代码(`validFor: /^[\w]*$/` 会匹配空串,
-        // 所以光靠它挡不住)。
-        if (typed.length === 0) return null;
+        // 三条触发路径:
+        //   - 有单词前缀(正常打字)
+        //   - 光标紧跟 `.` 或 `::`(成员/路径补全,此时前缀为空)
+        //   - 用户显式按键(Ctrl+Space)—— 这时空前缀也是在要列表
+        // 其余情况什么前缀都没有就别弹:RA 会把整份 crate 的符号都列出来,
+        // 满屏 item 只会挡住代码(`validFor` 匹配空串,光靠它挡不住)。
+        const afterTrigger = /(?:\.|::)$/.test(before);
+        if (typed.length === 0 && !afterTrigger && !context.explicit) return null;
         const line = lineObj.number - 1;
         const column = context.pos - lineObj.from;
         const items = await lsp.requestCompletion(line, column);
@@ -365,7 +369,9 @@ function ready() {
                 type: kindToType(item.kind),
                 detail: item.detail || undefined,
             })),
-            validFor: /^[\w]+$/,
+            // 允许空串:`.` / `::` 触发时前缀本来就是空的。出现 `:` 等
+            // 非单词字符时 validFor 失配,CM 会重新问一次服务端。
+            validFor: /^[\w]*$/,
         };
     };
 

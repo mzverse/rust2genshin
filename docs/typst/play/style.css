@@ -158,6 +158,10 @@ body:has(main > .play) main {
 }
 .play-editor .cm-content {
     padding: 6px 0;
+    /* 没装 `drawSelection()` 时 CM 用的是浏览器原生光标,颜色取自
+     * `caret-color`(默认黑)。深色主题下黑光标贴在暗底上几乎看不见;
+     * 下面那条 `.cm-cursor` 规则管不到原生光标。 */
+    caret-color: var(--fg);
 }
 /* 选区:用 `--accent` 半透明,既能在浅色下读得清也能在深色下不抢镜;
  * CM 自带 selectionBackground 默认是浏览器 selected-text 那个色,深色
@@ -289,12 +293,29 @@ body:has(main > .play) main {
     box-shadow: var(--shadow-rest);
 }
 .play-editor .cm-tooltip-autocomplete > ul {
-    font-family: inherit;
+    /* 显式给编辑框同一套等宽字体。`font-family: inherit` 继承下来的是
+     * CM 默认的泛型 `monospace`,Windows 上落到 Courier New —— 小字号下
+     * 笔画又细又毛,和编辑框里的字明显不是一套。 */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
 }
 .play-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
     background-color: var(--hover);
     color: var(--fg);
+}
+/* 补全项的附加信息(函数签名、类型)。CM 默认是斜体 + 正文同色,
+ * 和名字一样抢眼;改成正常的正文字形 + 弱化色,让它退到后面。 */
+.play-editor .cm-tooltip-autocomplete .cm-completionDetail {
+    font-style: normal;
+    color: var(--muted);
+    margin-left: 0.75em;
+}
+/* 匹配到的前缀默认加粗,在等宽字体里会把整行挤得忽宽忽窄 —— 只保留
+ * 颜色强调。 */
+.play-editor .cm-tooltip-autocomplete .cm-completionMatchedText {
+    font-weight: inherit;
+    color: var(--accent);
+    text-decoration: none;
 }
 
 /* ---- 中间的拖动条 ----
