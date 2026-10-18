@@ -415,13 +415,20 @@ function ready() {
      * 别名是 `(alias popcount, popcnt)`。 */
     const completionNote = (item) => {
         const raw = item.label_details && item.label_details.detail;
-        if (!raw) return null;
-        const text = raw.trim();
-        const asTrait = /^\(as\s+(.+)\)$/.exec(text);
-        if (asTrait) return "of " + asTrait[1];
-        const alias = /^\(alias\s+(.+)\)$/.exec(text);
-        if (alias) return "alias " + alias[1];
-        return text;
+        if (raw) {
+            const text = raw.trim();
+            const asTrait = /^\(as\s+(.+)\)$/.exec(text);
+            if (asTrait) return "of " + asTrait[1];
+            const alias = /^\(alias\s+(.+)\)$/.exec(text);
+            if (alias) return "alias " + alias[1];
+            return text;
+        }
+        // 旧服务端没声明 `labelDetailsSupport`:RA 把同样的注解拼在
+        // `label` 末尾,例如 `tfoo(as Tr)`、`count_ones(alias popcount,
+        // popcnt)`。这里解出来,免得非要先重编服务端才能看到 `of Trait`。
+        const packed = /\((as|alias)\s+([^)]*)\)$/.exec(item.label);
+        if (!packed) return null;
+        return packed[1] === "as" ? "of " + packed[2] : "alias " + packed[2];
     };
 
     /* 函数/方法的自定义插入:补 `()` 并把光标放进去;无实参时放到
@@ -518,9 +525,11 @@ function ready() {
                     // 参数放进 displayLabel 而不是 detail:detail 的样式
                     // 自带 `margin-left`,会显示成 `abs (self)`;而且
                     // displayLabel 仍然用 label 做匹配,前缀高亮不受影响。
+                    // 函数即使签名解析失败也只显示剥干净的名字,不把
+                    // `(as Trait)` 摆在名字里。
                     displayLabel: sig
                         ? name + "(" + sig.params.join(", ") + ")"
-                        : undefined,
+                        : (callable ? name : undefined),
                     type: kindToType(item.kind),
                     detail: sig ? undefined : (item.detail || undefined),
                     insertText: callable ? name : undefined,
