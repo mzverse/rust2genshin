@@ -151,27 +151,38 @@ fn lock_data_dir(cfg: &Config) -> std::io::Result<fs::File> {
 /// 收到的就是 `repo.head()`,见 `image_builder::build_args`),而 `label_filter`
 /// 是精确匹配 —— 所以这里的 commit 也必须原样用全长 sha,截短了永远命中不了。
 /// tag 那边带 `-dirty` 后缀,`image::tag` 算出的和这里要一致才认。
-/// 解析 `docker image ls` 的输出(每行 `tag\tcommit`),取**第一条**带 commit
-/// label 的 —— 调用方已经用 `--sort=-createdAt` 排过序,第一条就是最新的。
+/// 解析 `docker image ls` 的输出(每行 `tag\tcommit\tcreatedAt`),挑**创建时间
+/// 最新**的那条带 commit label 的记录。
+///
+/// 排序在客户端做 —— 见 [`crate::docker::newest_labeled_image_args`] 的注释:
+/// 部署用的宿主上的 docker CLI 不认 `--sort`。`CreatedAt` 是定长 RFC3339,
+/// 字典序就是时间序。
 ///
 /// 跳过没有 commit label 的行(手工 `docker import`/`load` 的镜像):没有 sha 就
 /// 没法在 `hello` 里如实报「当前服务的是哪个 commit」,拿它顶替等于把这件事
 /// 重新变成不可信 —— 而那正是 tag 用 sha 的全部理由。
 fn parse_newest_labeled(stdout: &str) -> Option<(String, String)> {
+    let mut best: Option<(&str, String, String)> = None; // (created, sha, tag)
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let (tag, commit) = line.split_once('\t')?;
-        let (commit, _) = commit.split_once('\t').unwrap_or((commit, ""));
-        let (tag, commit) = (tag.trim(), commit.trim());
-        if tag.is_empty() || commit.is_empty() {
+        let mut cols = line.split('\t');
+        let (tag, commit, created) = (
+            cols.next()?,
+            cols.next().unwrap_or(""),
+            cols.next().unwrap_or(""),
+        );
+        let (tag, commit, created) = (tag.trim(), commit.trim(), created.trim());
+        if tag.is_empty() || commit.is_empty() || created.is_empty() {
             continue;
         }
-        return Some((commit.to_string(), tag.to_string()));
+        if best.as_ref().is_none_or(|(b, _, _)| created > *b) {
+            best = Some((created, commit.to_string(), tag.to_string()));
+        }
     }
-    None
+    best.map(|(_, sha, tag)| (sha, tag.to_string()))
 }
 
 /// 启动时对「用哪份镜像」的决定。
@@ -393,19 +404,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_newest_labeled_line_wins_and_a_line_without_a_commit_is_dropped() {
-        // `docker image ls --sort=-createdAt` 输出里,**第一条**就是最新的。
-        let out = "rust2genshin-play:f1f75ac\tabcdef0123456789\n\
-                   rust2genshin-play:1102e2b\tfedcba9876543210\n";
-        let got = parse_newest_labeled(out).expect("第一行有 commit label");
-        assert_eq!(got.0, "abcdef0123456789");
-        assert_eq!(got.1, "rust2genshin-play:f1f75ac");
+    fn the_newest_created_at_wins_regardless_of_line_order() {
+        // docker 的输出顺序不作数(而且这台宿主的 CLI 连 --sort 都不认),
+        // 所以「谁最新」必须由我们自己从 CreatedAt 那一列判。
+        let out = "rust2genshin-play:f1f75ac\tabcdef0123456789\t2026-10-18 02:00:00 +0000 UTC\n\
+                   rust2genshin-play:1102e2b\tfedcba9876543210\t2026-10-18 03:00:00 +0000 UTC\n";
+        let got = parse_newest_labeled(out).expect("两行都有 commit label");
+        assert_eq!(got.0, "fedcba9876543210", "创建时间更晚的那份才该被选中");
+        assert_eq!(got.1, "rust2genshin-play:1102e2b");
+    }
 
+    #[test]
+    fn a_line_without_a_commit_label_is_dropped() {
         // 手工导入的镜像可能没有 commit label —— 不能拿它当 serving,
         // 也绝不能把半条记录报成 sha。
-        assert!(parse_newest_labeled("rust2genshin-play:manual\t\n").is_none());
+        let out = "rust2genshin-play:manual\t\t2026-10-18 03:00:00 +0000 UTC\n\
+                   rust2genshin-play:ok\tabcdef\t2026-10-18 02:00:00 +0000 UTC\n";
+        let got = parse_newest_labeled(out).expect("第二行完整");
+        assert_eq!(got.1, "rust2genshin-play:ok", "第一行没 commit,不能顶替");
         assert!(parse_newest_labeled("").is_none());
         assert!(parse_newest_labeled("rust2genshin-play:x\n").is_none());
+        assert!(parse_newest_labeled("rust2genshin-play:x\tabc\n").is_none());
     }
 
     #[test]
