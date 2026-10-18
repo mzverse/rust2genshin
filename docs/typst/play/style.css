@@ -30,42 +30,68 @@ body:has(main > .play) main {
     min-height: 0;
 }
 
-/* ---- 主体:左 | 拖动条 | 右 ----
+/* ---- 主体:表头行 | 内容行,列是 左 | 拖动条 | 右 ----
  *
- * 三列用 grid,中间那列是固定 8px 的拖动条。左列宽度由 script.js 拖动时
- * 写进 `--play-left`(px);没拖过的时候是 `1fr`,也就是两栏等分。
+ * **两行而不是一行**:表头(左工具条 / 右选项卡条)和它下面的内容必须共用
+ * 同一条行轨道,否则两栏的表头各按各的高度垂直居中,按钮对不齐 —— 而且
+ * 上沿不齐会一路带到下面,编辑器顶边和面板顶边也跟着错开十几像素。
+ * `.play-left` / `.play-right` 用 `grid-template-rows: subgrid` 认领父级
+ * 这两行(`auto` 取两边表头里更高的那个),于是高度由内容决定,没有魔法数字。
+ * 代价是 `subgrid`,要 Chrome 117+ / Safari 16+ / Firefox 71+。
+ *
+ * 三列:中间那列是拖动条独占的一格,**表头行的中间格也归它** —— 于是两栏的
+ * 底线在分隔条处断开,左右读起来是两个面板,而不是一条线穿过去。左列宽度
+ * 由 script.js 拖动时写进 `--play-left`(px);没拖过是 `1fr`,两栏等分。
+ *
+ * `--play-gutter` 是 22px 而不是原来的 8px:8px 时示例框、拖动线、编辑框
+ * 的右边框全挤在一起,看着像糊成一块。22px 加上两侧表头各自的 padding,
+ * 线两边才有喘气的地方。
  *
  * 高度不自己算:`.play` 是 `main` 里的 flex 项,拿到了 body grid 第 2 行
  * 拉伸出来的一屏余量,这里 `flex: 1` 接着吃。以前写死
  * `calc(100dvh - 19rem)`,那个 19rem 是照页头 + 说明文字拍的 —— 页面上
- * 的文字一变,底下就会空出或者溢出一截。
- *
- * 工具条现在在左栏里面(以前在面板上方)。 */
+ * 的文字一变,底下就会空出或者溢出一截。 */
 .play-layout {
     --play-left: 1fr;
+    --play-gutter: 22px;
     display: grid;
-    grid-template-columns: var(--play-left) 8px minmax(0, 1fr);
+    grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0;
     flex: 1 1 auto;
     min-height: 26rem;
 }
 
-/* ---- 左栏:工具条在上,编辑框吃掉剩下的高度 ---- */
+/* ---- 左栏:工具条在上,编辑框吃掉剩下的高度 ----
+ *
+ * 工具条和编辑框是 `.play-layout` 第 1 / 第 2 行的子格,不是自己 flex 出来
+ * 的两段 —— 高度由上面的行轨道给,自己只管排内容。 */
 .play-left {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-row: 1 / 3;
     min-width: 0;
     min-height: 0;
-    gap: 6px;
+    gap: 0;
 }
 
 .play-left-head {
     display: flex;
     align-items: center;
     gap: 10px;
+    /* 永远允许折行,不是只在窄屏。工具条是 grid item,`min-width: auto`
+     * 会把它的最小宽度锁死在整行的 min-content(约 630px);栏被拖到比这
+     * 窄时,「编译」就直接压过分隔线跑到右栏去了。折行之后 min-content
+     * 降到最宽的那一个控件,栏才能真的收窄。 */
+    flex-wrap: wrap;
     /* 工具条高度按里面最高的控件定;给个下限,mdui 组件还没 upgrade 时
      * 不至于塌成一条线再跳一下。 */
     min-height: 36px;
+    /* 补一条底线,和右边选项卡条的底线接成同一行(中间被分隔条断开)。以前
+     * 左边没有底线,两栏的表头读起来不像一层。 */
+    border-bottom: 1px solid var(--border-soft);
+    /* 「编译」贴着右边,离分隔条太近;留出内边距让它和拖动线分开。 */
+    padding-right: 14px;
 }
 
 /* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
@@ -367,9 +393,13 @@ body:has(main > .play) main {
 
 /* ---- 中间的拖动条 ----
  *
- * 可点区域是整条 8px,可见的那道线用 ::after 画在中间 2px —— 直接给整条
- * 上色会太粗。`touch-action: none` 让触屏拖动不被浏览器的滚动手势抢走。 */
+ * 独占中间那一列,而且跨两行(`grid-row: 1 / 3`)—— 表头那一段也有它,上下
+ * 连成一条。宽度是 `--play-gutter`(22px),可点区域就是整条;可见的那道线用
+ * ::after 画在正中的 2px —— 直接给整条上色会太粗。
+ * `touch-action: none` 让触屏拖动不被浏览器的滚动手势抢走。 */
 .play-splitter {
+    grid-column: 2;
+    grid-row: 1 / 3;
     position: relative;
     cursor: col-resize;
     touch-action: none;
@@ -378,7 +408,11 @@ body:has(main > .play) main {
 .play-splitter::after {
     content: "";
     position: absolute;
-    inset: 0 3px;
+    /* 原来的 `inset: 0 3px` 是按 8px 宽写的;列宽变成 22px 之后那会画出
+     * 一条 16px 的粗线。改成定宽 2px 再水平居中。 */
+    inset: 0 auto 0 50%;
+    margin-left: -1px;
+    width: 2px;
     border-radius: 1px;
     /* `--border-soft` 在深色下几乎和背景同色,拖动条等于不存在;用 `--border`
      * 就够看出这条线是可以抓的,又不至于抢镜。 */
@@ -390,21 +424,29 @@ body:has(main > .play) main {
     background: var(--accent);
 }
 
-/* ---- 右栏:选项卡条 + 内容 ---- */
+/* ---- 右栏:选项卡条 + 内容 ----
+ *
+ * 和左栏一样认领父级的两行,理由见 `.play-layout` 那段。 */
 .play-right {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-row: 1 / 3;
     min-width: 0;
     min-height: 0;
+    gap: 0;
 }
 
 /* 选项卡条。底边那条线一路铺满,选项卡自己的下边框压在它上面 —— 选中的
- * 那个就「接上」了下面的内容。 */
+ * 那个就「接上」了下面的内容。
+ *
+ * `align-items: stretch`(不是默认的 center)是为了让选项卡拉满整行:行高由
+ * 左边更高的工具条定,居中的话选项卡的下边框会浮在半空里,接不住下面那
+ * 条底线。按钮本身内容垂直居中,文字位置不受影响。 */
 .play-tabs-bar {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     gap: 10px;
-    padding: 0 0 0 2px;
+    padding: 0 0 0 12px;
     border-bottom: 1px solid var(--border-soft);
     min-height: 34px;
 }
@@ -535,21 +577,23 @@ body:has(main > .play) main {
     border-radius: 6px;
 }
 
-/* 手机上工具条一行放不下:「示例 + 下拉 + 载入」本身就要约 290px,
- * 再加右边的「编译」就超过可用的宽度,不换行会横向撑出 40 多 px 的
- * 滚动条。让这一行允许折行:示例组占第一行,编译/取消落到第二行
- * 靠右(`.play-run-group` 的 `margin-left: auto` 在折行后照样生效)。 */
+/* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,再把下拉框的最小宽度
+ * 收一收,好让折行后的第二行不至于只有「编译」孤零零一个。
+ * (折行本身已经无条件打开了,见 `.play-left-head` 里的说明。) */
 @media (max-width: 560px) {
-    .play-left-head {
-        flex-wrap: wrap;
-    }
     .play-picker mdui-select {
         min-width: 7rem;
     }
 }
 
 /* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标
- * 会误导),直接藏掉,两栏各占一半高度。 */
+ * 会误导),直接藏掉,两栏各占一半高度。
+ *
+ * `display: flex` 那两行是**必须的**,不是多余的:宽屏那套
+ * `.play-left { grid-row: 1 / 3; grid-template-rows: subgrid }` 在这里
+ * 会跟着生效 —— 单列两行的父网格里两栏都去占 1~2 行、直接叠在一起,而且
+ * `subgrid` 在只剩一行的父级里没有两条轨道可认领,表头那一行会塌成 0。
+ * 竖排时两栏各是独立的一行,表头本来就不会错位,退回原来的 flex 列即可。 */
 @media (max-width: 900px) {
     .play-layout {
         grid-template-columns: minmax(0, 1fr);
@@ -557,5 +601,12 @@ body:has(main > .play) main {
     }
     .play-splitter {
         display: none;
+    }
+    .play-left,
+    .play-right {
+        display: flex;
+        flex-direction: column;
+        grid-row: auto;
+        grid-template-rows: none;
     }
 }
