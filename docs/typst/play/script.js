@@ -244,7 +244,7 @@ class PlayClient {
                 break;
             case "lsp_ready":
             case "lsp_tokens":
-            case "lsp_diagnostic":
+            case "lsp_diagnostics":
             case "lsp_completion":
                 // LSP 消息路由到客户端(若已挂上)。`onLsp` 默认 null,
                 // 脚本在 hello 决定启用 LSP 之后才设上。
