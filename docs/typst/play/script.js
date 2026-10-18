@@ -451,16 +451,25 @@ function ready() {
                     key: "Tab",
                     run: (v) => {
                         const { from, to } = v.state.selection.main;
-                        const unit = v.state.languageDataAt("indentUnit", from) || INDENT;
-                        const indent = v.state.lineAt(from).search(/\s*$/, 0, "end").from;
-                        const spaces = " ".repeat(unit.length);
-                        const inserts = to === from && to === v.state.doc.lineAt(from).from
-                            ? spaces
-                            : null;
-                        v.dispatch(inserts ? {
-                            changes: { from, to, insert: inserts },
-                            selection: { anchor: from + inserts.length },
-                        } : v.state.replaceSelection(spaces));
+                        // `languageDataAt` 返回的是**数组**(可能多层配置),
+                        // 直接拿它当字符串用会得到 `"    "` 的长度 5 之类。
+                        const unit = v.state.languageDataAt("indentUnit", from)[0] || INDENT;
+                        const line = v.state.doc.lineAt(from);
+                        const base = line.text.match(/^\s*/)[0];
+                        const col = from - line.from;
+                        let insert;
+                        if (to === from && col <= base.length) {
+                            // 还在行首的空白里:补到**下一层**,而不是加一格。
+                            insert = base + unit;
+                        } else {
+                            // 行中间:对齐到下一个制表位。
+                            const rest = col % unit.length;
+                            insert = " ".repeat(rest === 0 ? unit.length : unit.length - rest);
+                        }
+                        v.dispatch({
+                            changes: { from, to, insert },
+                            selection: { anchor: from + insert.length },
+                        });
                         return true;
                     },
                 }]),
