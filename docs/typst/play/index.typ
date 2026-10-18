@@ -5,8 +5,8 @@
 // 目录可列。`with_title: false` 也关掉页面里那行 <h1>:这一页就是一块工具,
 // 顶栏的「摆弄」已经标明了身份,再占一行标题只是把编辑器往下挤。
 #show: template.with(toc: false, with_outline: false, with_title: false);
-// MDUI 的封装都在这儿。
-#import "/lib/mdui.typ": mdui-select, mdui-button
+// Shoelace 的封装都在这儿。
+#import "/lib/shoelace.typ": sl-button
 
 #let title = [摆弄];
 
@@ -55,12 +55,9 @@
             for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted() {
               options.insert(base_path + x, [#x.split("/").last().trim(".rs", at: end)])
             }
-            // 用原生 `<select>` 而不是 `<mdui-select>`(和下面的「目标」同一个
-            // 理由):MDUI 组件的高度在它的 shadow root 里写死(`mdui-text-field`
-            // 内层 `padding: 0.875rem`、`mdui-button` 的 `:host { height: 2.5rem }`),
-            // 整条链上没有尺寸变量可用,唯一能穿透的 typescale 只管字号。样例下拉
-            // 因此天生 48px、按钮 40px,同一行里对不齐 —— 换原生控件后两者都由
-            // `style.css` 的 `--play-ctl-h` 一处控制。
+            // 下拉用原生 `<select>`(和下面的「目标」一样):这一页的下拉只有
+            // 两三个选项,原生控件样式全在外面,高度由 `style.css` 的
+            // `--play-ctl-h` 一处控制,和旁边的 `<sl-button>` 对齐。
             // `<select>` 自动选中第一项,不用显式给 value。
             html_elem("select", id: "play-sample", class: "play-target play-sample-select")[
               #for (path, label) in options.pairs() {
@@ -68,13 +65,13 @@
               }
             ]
           }
-          #mdui-button(id: "play-sample-load", variant: "outlined", icon: "download")[载入]
+          #sl-button(id: "play-sample-load", variant: "default", icon: "download")[载入]
         ]
         // 「目标」选择器由 `Hello.targets` 驱动 —— 不写死选项,后端报什么就
         // 渲染什么;显示名(`超限模式` / `经典模式`)在 script.js 里查
         // TARGET_LABELS。默认选第一项(`Hello.targets` 的顺序就是显示顺序)。
-        // 用原生 `<select>` 而不是 `<mdui-select>`:这个选择器只有两三行,
-        // mdui 的样式包袱反而让头部多出一截高度,不值。
+        // 用原生 `<select>`:这个选择器只有两三行,套一个组件反而要多管一层
+        // 尺寸和可空性,不值。
         #html_elem("div", class: "play-picker play-picker-target")[
           #html_elem("span", class: "play-label")[目标：]
           #html_elem("select", id: "play-target", class: "play-target")[]
@@ -82,13 +79,13 @@
         // 「取消」和「编译」是一对动作 —— 取消取消的就是正在跑的那次编译,
         // 所以贴在它旁边;「下载」属于右栏的结果,不在这组里。
         #html_elem("span", class: "play-run-group")[
-          #mdui-button(id: "play-cancel", variant: "outlined", icon: "close", hidden: true)[取消]
-          #mdui-button(id: "play-run", variant: "filled", icon: "play_arrow")[编译]
+          #sl-button(id: "play-cancel", variant: "default", icon: "close", hidden: true)[取消]
+          #sl-button(id: "play-run", variant: "primary", icon: "play_arrow")[编译]
         ]
       ]
-      // CodeMirror 6 挂载点。`<mdui-text-field textarea>` 的内层 textarea 在 shadow
-      // root 里,JS 取不到 `selectionStart`、dispatch 也得绕一圈;直接挂到普通 div
-      // 上省事,而且 CodeMirror 自己管光标、IME、composition event。
+      // CodeMirror 6 挂载点。挂普通 div:把编辑器塞进组件(比如 textarea)的
+      // shadow root 里,JS 取不到 `selectionStart`、dispatch 也得绕一圈;直接
+      // 挂外面省事,而且 CodeMirror 自己管光标、IME、composition event。
       #html_elem("div", id: "play-editor", class: "play-editor")[]
 
     // 拖动它改左右宽度。role/aria 只是让读屏知道这是个分隔条。
@@ -100,7 +97,7 @@
 
     // ---- 右栏:选项卡条 + 各页内容 ----
     #html_elem("div", class: "play-tabs-bar")[
-        // 原生 <button> 而不是 MDUI 的:选项卡要的是「一排贴着底边的文字」,
+        // 原生 <button> 而不是 `<sl-button>`:选项卡要的是「一排贴着底边的文字」,
         // 用按钮组件反而得再把它压扁回文字的样子。
         #html_elem("div", class: "play-tabs")[
           #html_elem("button", type: "button", class: "play-tab", attrs: (
@@ -115,7 +112,7 @@
         // 太长的文案由 CSS 省略。
         #html_elem("span", id: "play-status", class: "play-status")[]
         #html_elem("span", class: "play-actions")[
-          #mdui-button(id: "play-download", variant: "outlined", icon: "save_alt", hidden: true)[下载 .gia]
+          #sl-button(id: "play-download", variant: "default", icon: "save_alt", hidden: true)[下载 .gia]
         ]
       ]
       #html_elem("div", class: "play-panels")[

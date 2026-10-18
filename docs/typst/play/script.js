@@ -1,6 +1,6 @@
 /* 摆弄页。
  *
- * 编辑器从 `<mdui-text-field textarea>` 换成了 CodeMirror 6;语义高亮 / 诊断 /
+ * 编辑器是 CodeMirror 6;语义高亮 / 诊断 /
  * 补全的候选都由 RA 经后端 WebSocket 给,本地不做语义分析 —— 不存在「高亮
  * 和分析结论不一致」(Review Focus 第 5 条)。补全项拿到手后只把 RA 给的
  * 签名字符串拆成参数/返回类型用于展示与光标落点(见 `parseSignature`)。
@@ -335,15 +335,11 @@ function makeEditorOps(view) {
 function init() {
     const root = document.querySelector(".play");
     if (!root) return;
-    // MDUI 是 web component:`.value` 之类的属性要等组件 upgrade 之后才同步,
-    // 在那之前读到的都是空。整段初始化挂到 `whenDefined` 后面。
-    if (customElements.get("mdui-select")) ready();
-    else customElements.whenDefined("mdui-select").then(ready, (e) => {
-        // mdui.js 没加载出来(unpkg 挂了/被墙)时页面就废了 —— 至少把话说明白。
-        const log = root.querySelector("#play-log");
-        if (log) log.textContent = `界面组件没加载出来:${e}
-`;
-    });
+    // 不再等组件 upgrade。两个下拉都是原生 `<select>`,`.value` 一开始就是
+    // 准的;按钮这边脚本只碰 `disabled` / `hidden` —— Lit 会把 upgrade 之前
+    // 设在实例上的属性接过去,而 Shoelace 的模块万一被墙,`<sl-button>` 退回
+    // 成一个普通的内联元素,点击照样能用,比整页卡在等组件上强。
+    ready();
 }
 
 function ready() {

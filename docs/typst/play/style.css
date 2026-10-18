@@ -16,7 +16,7 @@
     flex: 1 1 auto;
     min-height: 0;
     margin: 1rem 0 2rem;
-    /* 不给整页挂等宽字体:MDUI 的按钮 / 下拉是按 UI 字体设计的,强制等宽会
+    /* 不给整页挂等宽字体:按钮和下拉是按 UI 字体设计的,强制等宽会
      * 让它们跟旁边的正文对不上。只给真正是代码的两块(log)用等宽。 */
     font-size: 14px;
 }
@@ -61,10 +61,13 @@ body:has(main > .play) main {
 .play-layout {
     --play-left: 1fr;
     --play-gutter: 22px;
-    /* 表头里所有控件的统一高度。MDUI 的按钮写死了 2.5rem(40px),下拉框是
-     * 原生 `<select>`,照它对齐 —— 详见 `.play-picker select` 的说明。
+    /* 表头里所有控件的统一高度。两个下拉是原生 `<select>`,直接吃
+     * `--play-ctl-h`;`<sl-button>` 的高度来自 Shoelace 的公开 token
+     * `--sl-input-height-medium`,在这里把它指同一个值 —— 自定义属性会穿过
+     * shadow 边界继承下去,所以一处定义两边对齐。
      * 宽度不统一:下拉框按内容长度给,收窄会把样例名截成「aaa_hello-」。 */
     --play-ctl-h: 40px;
+    --sl-input-height-medium: var(--play-ctl-h);
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -110,7 +113,7 @@ body:has(main > .play) main {
      * 窄时,「编译」就直接压过分隔线跑到右栏去了。折行之后 min-content
      * 降到最宽的那一个控件,栏才能真的收窄。 */
     flex-wrap: wrap;
-    /* 工具条高度按里面最高的控件定;给个下限,mdui 组件还没 upgrade 时
+    /* 工具条高度按里面最高的控件定;给个下限,`<sl-button>` 还没 upgrade 时
      * 不至于塌成一条线再跳一下。 */
     min-height: 36px;
     /* 补一条底线,和右边选项卡条的底线接成同一行(中间被分隔条断开)。以前
@@ -123,9 +126,8 @@ body:has(main > .play) main {
 /* 「示例 + 选 + 载入」这一组框成一个自成一组的盒子 —— 它是「往编辑器里放段
  * 现成代码」,和右边的「取消 / 编译」是两件事,平铺在一排里看不出来谁管谁。
  *
- * 组里的下拉是原生 `<select>`,「载入」是 `<mdui-button>` —— 后者把样式关在
- * shadow root 里,给外面的 div 写规则**进不去**,能给它调尺寸的只有自己的
- * 盒模型属性。 */
+ * 组里的下拉是原生 `<select>`,「载入」是 `<sl-button>` —— 后者的样式在
+ * shadow root 里,外面只能通过它暴露的 `--sl-*` 变量和 `::part()` 调。 */
 .play-picker {
     display: flex;
     align-items: center;
@@ -150,21 +152,11 @@ body:has(main > .play) main {
     gap: 6px;
     flex: none;
 }
-/* 摆弄页的行高比 MDUI 默认小一档 —— 默认那套 typescale 是按触屏设计的
- * (text-field 56px 高),这一页是桌面上的工具条,56px 撑得比旁边的「载入」
- * 还高一截,看着不成一条线。
- *
- * 这条规则曾经写过 `height` 和 `--mdui-typescale-*`,现在两样都不要了。
- * MDUI v2 的高度在 shadow root 里**写死**:内层
- * `padding: 0.875rem 0.875rem 0.875rem 0` + `.container` 的上下各 2px
- * 决定 text-field 是 48px,`mdui-button` 的 `:host { height: 2.5rem }`
- * 决定按钮是 40px;没有 `size` / `dense` 属性,整条链上也**没有任何
- * `--mdui-*` 尺寸变量**,唯一能穿透 shadow 的 typescale 只管字号行高。
- * 也就是说工具条里只要有 MDUI 组件,就一定对不齐 —— 给宿主写 `height`
- * 也只是把内容裁掉,不是真改。
- *
- * 所以「示例」那个下拉已经换成原生 `<select>`(见 `index.typ`),
- * 高度跟「目标」一起由 `.play-target` 的 `--play-ctl-h` 控制。 */
+/* 按钮的高度不在这里写。Shoelace 把尺寸做成公开的 token,`.play-layout`
+ * 已经把 `--sl-input-height-medium` 指到 `--play-ctl-h`,从那里继承进
+ * shadow root。给 `<sl-button>` 宿主直接写 `height` 只会把内部已经排好的
+ * 盒模型裁掉,不是真改 —— 这也是当初从 MDUI 换过来的原因:那套没有尺寸
+ * token。 */
 /* 样例名长(「aaa_hello-world」),比「目标」的选项宽;窄了会被截掉。 */
 .play-sample-select {
     min-width: 10rem;
@@ -319,9 +311,9 @@ body:has(main > .play) main {
 
 /* ---- 目标选择器(原生 <select>) ----
  *
- * 用原生 select 而不是 `<mdui-select>`:这个选择器只两三个选项,mdui
- * 那一坨样式成本没必要。配色用站点 token,与 `.play-picker` 同一种
- * 灰底框;高度对齐旁边的「示例」下拉。 */
+ * 用原生 select:这个选择器只两三个选项,套组件要多管一层尺寸和可空性,
+ * 不值。配色用站点 token,与 `.play-picker` 同一种灰底框;高度对齐旁边
+ * 的「示例」下拉。 */
 .play-target {
     appearance: none;
     -webkit-appearance: none;
@@ -329,9 +321,9 @@ body:has(main > .play) main {
     color: var(--fg);
     border: 1px solid var(--border-soft);
     border-radius: 6px;
-    /* 和按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。两个下拉框都是原生
-     * `<select>`,`height` 就是它本来的用法 —— 要改的是这里,不是 MDUI 组件。
-     * 竖直居中由 select 自己保证,`padding` 只管左右和箭头那块空位。 */
+    /* 和按钮同高(见 `.play-layout` 的 `--play-ctl-h`)。原生 `<select>` 的
+     * `height` 就是它本来的用法。竖直居中由 select 自己保证,`padding` 只管
+     * 左右和箭头那块空位。 */
     height: var(--play-ctl-h);
     padding: 0 28px 0 10px;
     font: inherit;
@@ -532,10 +524,10 @@ body:has(main > .play) main {
     gap: 6px;
     flex: none;
 }
-/* 「取消」「下载」在没东西可取消 / 可下载的时候要藏起来。`<mdui-button>` 是
- * 自定义元素,`[hidden]` 对它不像对原生按钮那样默认生效(display 被组件自己
- * 设成了 inline-flex),所以显式补一条 —— 两个按钮分属左栏和右栏,**两处都
- * 要包到**,漏一个它就一直亮着。 */
+/* 「取消」「下载」在没东西可取消 / 可下载的时候要藏起来。`<sl-button>` 是
+ * 自定义元素,组件的 `:host` 自己设了 `display`,`[hidden]` 的 UA 默认样式
+ * 不一定压得住,所以显式补一条 —— 两个按钮分属左栏和右栏,**两处都要包到**,
+ * 漏一个它就一直亮着。 */
 .play-run-group [hidden],
 .play-actions [hidden] {
     display: none;
