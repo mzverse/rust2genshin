@@ -238,7 +238,13 @@ export const decorationField = StateField.define({
     create() { return Decoration.none; },
     update(deco, tr) {
         if (tr.effects.some((e) => e.is(setTokensEffect) || e.is(setDiagnosticsEffect))) {
-            return Decoration.set(buildDecorations(tr.state));
+            // 第二个参数**必须**是 true:`buildDecorations` 是先塞完全部 token、
+            // 再塞全部诊断,两段各自有序而拼起来不一定 —— 一个诊断落在某个
+            // token 前面就乱序了。默认 `set` 假定输入已排序,乱序直接抛
+            // `Ranges must be added sorted by from position and startSide`,
+            // 整个 decoration 事务失败,高亮和波浪线一起消失。
+            // (样本里没有诊断,所以只有用户改出错误时才复现。)
+            return Decoration.set(buildDecorations(tr.state), true);
         }
         if (tr.docChanged) return deco.map(tr.changes);
         return deco;
