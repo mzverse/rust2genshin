@@ -371,31 +371,28 @@ function ready() {
      *
      * rustc / cargo 打出的是 `--> 路径:行:列`,路径用平台分隔符(本地跑是
      * `lib\src\lib.rs`,容器里是 `lib/src/lib.rs`)。这类整串原样丢进日志
-     * 就只是字,点不动 —— 把它包成按钮,点了把光标送过去。
+     * 就只是字,点不动 —— 把路径和行列包成按钮,点了把光标送过去。
      *
-     * 正则只认行首的 `--> ` 后跟 `路径:数字:数字`,不碰正文里出现的
-     * 箭头(代码片段、依赖的输出都可能带)。 */
+     * 箭头留在按钮外面:`-->` 是诊断的排版标记,不是可点的东西,连着它
+     * 一起变蓝反而看不出按钮是从哪开始的。
+     *
+     * 正则要求 `-->` 后面紧跟 `路径:数字:数字`,不碰正文里出现的箭头
+     * (代码片段、依赖的输出都可能带)。 */
     const DIAG_RE = /(--> )(\S+?):(\d+):(\d+)/;
-
-    /* 平台路径 → 正斜杠;`\` 是正则里的转义,得先换成字符类。 */
-    const slashes = (p) => p.replace(/\\/g, "/");
-
-    /* 只跳 `lib/src/lib.rs` —— 编辑器里现在装的文本就是这一个文件。
-     * 别的路径(后端的 core/、demo/、依赖)先不处理:编辑器里没有它们的
-     * 文本,拿行号去定位等于把人送到错的地方。 */
-    const EDITOR_FILE = "lib/src/lib.rs";
 
     /* 把编辑器光标移到第 `line` 行第 `col` 列,并滚到可见处。
      *
      * `col` 是 1 基的列号,`doc.line(n).from + col - 1` 正是 CodeMirror
      * 文档里的位置;末行末尾用 `line.length` 兜住(诊断的列可能正好指向
-     * 行尾之后)。 */
+     * 行尾之后)。
+     *
+     * 行号越界时**夹到文档末尾**,而不是直接返回 —— 返回的话点击就是
+     * 「完全没反应」,人看不出是越界了还是按钮坏了。夹住至少会跳到某个
+     * 确定的地方。 */
     const gotoLineCol = (line, col) => {
         if (!view) return;
         const doc = view.state.doc;
-        // 行号越界(改过文件、或诊断来自上一次编译)就别动光标。
-        if (line < 1 || line > doc.lines) return;
-        const ln = doc.line(line);
+        const ln = doc.line(Math.min(Math.max(line, 1), doc.lines));
         const pos = ln.from + Math.min(Math.max(col - 1, 0), ln.length);
         view.dispatch({
             selection: { anchor: pos },
@@ -405,34 +402,35 @@ function ready() {
         view.focus();
     };
 
-    /* 按钮的回调:从按钮自己的文本里解析出路径和行列。
+    /* 按钮的回调:从按钮自己的文本里解析出行列。
      *
-     * 文本就是日志里那一串 `-->` 位置,没有另外的载荷 —— 按钮被复制到
-     * 别处也还认得自己指向哪。路径先按正斜杠归一(本地 Windows 打出的是
-     * 反斜杠),末尾比对文件名。 */
+     * 按钮文本就是 `路径:行:列`,没有另外的载荷。路径不参与判断 ——
+     * 编辑器里眼下装的是哪个文件由用户决定,拿文件名去卡只会让大部分
+     * 点击变成死按钮。 */
     const onDiagClick = (ev) => {
-        const m = DIAG_RE.exec(ev.currentTarget.textContent);
+        const m = /^(\S+?):(\d+):(\d+)$/.exec(ev.currentTarget.textContent.trim());
         if (!m) return;
-        if (!slashes(m[2]).endsWith(EDITOR_FILE)) return;
-        gotoLineCol(+m[3], +m[4]);
+        gotoLineCol(+m[2], +m[3]);
     };
 
     /* 把一段编译输出里所有 `-->` 位置变成按钮。
      *
      * 日志是 `<pre>` 里的文本流,不能整段 `innerHTML`(输出里有 `<` `>`
-     * `&`,还有用户自己的代码)。所以按正则切:命中就插按钮,其余用
-     * textNode 原样插回去。 */
+     * `&`,还有用户自己的代码)。所以按正则切:`-->` 留在按钮外,只有
+     * `路径:行:列` 进按钮,其余用 textNode 原样插回去。 */
     const appendDiagText = (stream, text) => {
         let rest = text;
         for (;;) {
             const m = DIAG_RE.exec(rest);
             if (!m) break;
             const at = m.index;
-            if (at > 0) log.append(document.createTextNode(rest.slice(0, at)));
+            const head = rest.slice(0, at);
+            if (head) log.append(document.createTextNode(head));
+            log.append(document.createTextNode(m[1]));
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "play-log-link";
-            btn.textContent = m[0];
+            btn.textContent = `${m[2]}:${m[3]}:${m[4]}`;
             btn.title = "跳到编辑器里的这个位置";
             btn.addEventListener("click", onDiagClick);
             log.append(btn);
