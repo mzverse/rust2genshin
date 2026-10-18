@@ -189,7 +189,7 @@ function diagnosticRanges(doc, diags) {
             else if (from > 0) from -= 1;
             else continue;
         }
-        out.push({ from, to, severity: d.severity });
+        out.push({ from, to, severity: d.severity, message: d.message });
     }
     return out;
 }
@@ -226,7 +226,11 @@ function buildDecorations(state) {
         for (const d of decoded) {
             const cls = severityClass(d.severity);
             if (!cls) continue;
-            out.push(Decoration.mark({ class: cls }).range(d.from, d.to));
+            // RA 的说明挂成 `title`:悬停波浪线就能看到原文。之前只画了
+            // 红线、把 message 丢了,用户只能看到「这里错了」却不知道错在哪。
+            const spec = { class: cls };
+            if (d.message) spec.attributes = { title: d.message };
+            out.push(Decoration.mark(spec).range(d.from, d.to));
         }
     }
     return out;
@@ -282,9 +286,6 @@ export class LspClient {
         this._pendingSource = null;
         this._nextRequestId = 1;
         this._pendingCompletions = new Map();
-        // 同一帧里攒着的诊断与「要不要刷」的标记,见 _scheduleDiagFlush。
-        this._pendingDiag = [];
-        this._diagFlushScheduled = false;
     }
 
     /** 编辑器建好之后调用一次,会发 `LspOpen`。 */
@@ -315,12 +316,9 @@ export class LspClient {
             case "lsp_tokens":
                 this._applyTokens(msg.data || []);
                 break;
-            case "lsp_diagnostic":
-                // **攒一帧再 dispatch。** 服务端一条诊断一条消息发,RA 改一行
-                // 常给五条 —— 直接逐条 dispatch 就是五次 CM 事务、五个中间
-                // 状态(波浪线先亮三条再齐)。rAF 把同一帧里的消息并成一次。
-                this._pendingDiag.push(msg);
-                this._scheduleDiagFlush();
+            case "lsp_diagnostics":
+                // 一整份取代上一份,空数组就是清空 —— 直接替换,不合并。
+                this._setDiagnostics(msg.items || []);
                 break;
             case "lsp_completion":
                 this._resolveCompletion(msg.request_id, msg.items || []);
@@ -377,9 +375,6 @@ export class LspClient {
             this._debounceTimer = null;
         }
         this._pendingSource = null;
-        // 攒着的诊断不再有意义:新连接会重新推一遍文档,RA 会重发。
-        this._pendingDiag = [];
-        this._diagFlushScheduled = false;
         for (const [, entry] of this._pendingCompletions) {
             clearTimeout(entry.timer);
             entry.resolve([]);
@@ -392,38 +387,13 @@ export class LspClient {
         this.view.dispatch({ effects: setTokensEffect.of(data) });
     }
 
-    _scheduleDiagFlush() {
-        if (this._diagFlushScheduled) return;
-        this._diagFlushScheduled = true;
-        requestAnimationFrame(() => {
-            this._diagFlushScheduled = false;
-            const list = this._pendingDiag;
-            this._pendingDiag = [];
-            this._applyDiagnostics(list);
-        });
-    }
-
-    _applyDiagnostics(list) {
-        if (!this.view || list.length === 0) return;
-        // 累积:服务端按 LSP 语义一次给完整集合,这里按 (line,column,end_line,end_column)
-        // 去重 + 后到的覆盖同 range。`LspDiagnostic` 一次只来一条但连接上的同一帧可能多条。
-        const map = new Map();
-        const cur = this.view.state.field(diagnosticsField, false) || [];
-        for (const d of cur) {
-            map.set(diagKey(d), d);
-        }
-        for (const m of list) {
-            map.set(diagKey(m), {
-                line: m.line,
-                column: m.column,
-                end_line: m.end_line,
-                end_column: m.end_column,
-                severity: m.severity,
-                message: m.message,
-            });
-        }
-        const merged = [...map.values()];
-        this.view.dispatch({ effects: setDiagnosticsEffect.of(merged) });
+    /* 整份替换。`lsp_diagnostics` 携带的是 RA 对当前文档的完整诊断集合
+     * (LSP `publishDiagnostics` 语义),空数组 = 全清空。**不能累积**:
+     * 旧实现把新诊断并进上一份,而服务端当时清空时一条消息都不发,于是
+     * 旧坐标永久留在列表里 —— 文档一改它指向别的文字,波浪线擦不掉。 */
+    _setDiagnostics(list) {
+        if (!this.view) return;
+        this.view.dispatch({ effects: setDiagnosticsEffect.of(list) });
     }
 
     _resolveCompletion(request_id, items) {
@@ -433,8 +403,4 @@ export class LspClient {
         this._pendingCompletions.delete(request_id);
         entry.resolve(items);
     }
-}
-
-function diagKey(d) {
-    return `${d.line}:${d.column}:${d.end_line}:${d.end_column}`;
 }

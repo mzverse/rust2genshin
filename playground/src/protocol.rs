@@ -114,20 +114,31 @@ pub enum ServerMsg {
     /// 是 Task 10 的 CodeMirror 扩展的活。`tokenType` 是索引,指向
     /// `lsp/session.rs` 里 `TOKEN_TYPES` 的同一份顺序。
     LspTokens { data: Vec<u32> },
-    /// 一条诊断。坐标是**0 基**(LSP 的 `Position` 就是 0 基),`column`
-    /// 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端 CodeMirror
-    /// 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算就会错。
-    LspDiagnostic {
-        line: u32,
-        column: u32,
-        end_line: u32,
-        end_column: u32,
-        /// LSP 的 `DiagnosticSeverity`:1=Error、2=Warning、3=Information、
-        /// 4=Hint。`0` 在 LSP 里是未使用值,前端收到 0 应视为 Information。
-        severity: u8,
-        message: String,
-    },
+    /// 当前文件的**完整**诊断集合。
+    ///
+    /// LSP 的 `publishDiagnostics` 语义就是整份重发:一次推送里的 `items`
+    /// 取代上一份,空数组表示「全清空」。
+    ///
+    /// 早先的协议是一条诊断一条消息,而空集合时**一条都不发** —— 前端
+    /// 既分不清一批何时结束,也永远收不到清空信号,旧诊断只能一路累积;
+    /// 文档一改,那些坐标就指到别的文字上,波浪线再也擦不掉。
+    LspDiagnostics { items: Vec<LspDiagnosticItem> },
     LspCompletion { request_id: u32, items: Vec<CompletionItem> },
+}
+
+/// 一条诊断。坐标是**0 基**(LSP 的 `Position` 就是 0 基),`column`
+/// 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端 CodeMirror
+/// 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算就会错。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspDiagnosticItem {
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    /// LSP 的 `DiagnosticSeverity`:1=Error、2=Warning、3=Information、
+    /// 4=Hint。`0` 在 LSP 里是未使用值,前端收到 0 应视为 Information。
+    pub severity: u8,
+    pub message: String,
 }
 
 /// 补全列表的一项。`insertText` 先不做 —— RA 默认给的与 `label` 一致。
@@ -440,5 +451,38 @@ mod tests {
     #[test]
     fn protocol_version_is_2() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    /// 诊断必须是**一整份**往外发:前端靠这一条区分「这批结束了」,
+    /// 而空数组是唯一的「清空」信号。按条发的旧形状会让旧诊断永远擦不掉。
+    #[test]
+    fn diagnostics_travel_as_one_complete_set() {
+        let empty = ServerMsg::LspDiagnostics { items: vec![] };
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({ "type": "lsp_diagnostics", "items": [] })
+        );
+
+        let one = ServerMsg::LspDiagnostics {
+            items: vec![LspDiagnosticItem {
+                line: 1,
+                column: 2,
+                end_line: 1,
+                end_column: 5,
+                severity: 1,
+                message: "mismatched types".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&one).unwrap(),
+            serde_json::json!({
+                "type": "lsp_diagnostics",
+                "items": [{
+                    "line": 1, "column": 2, "end_line": 1, "end_column": 5,
+                    "severity": 1, "message": "mismatched types"
+                }]
+            })
+        );
+        assert_eq!(round_trip(&one), one);
     }
 }

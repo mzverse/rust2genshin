@@ -220,18 +220,24 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                                 }
                                             }
                                             Ok(Event::Diagnostics(list)) => {
-                                                for d in list {
-                                                    let m = ServerMsg::LspDiagnostic {
+                                                // 整份转发。空 vec 也要发 —— 它
+                                                // 是「清空」的唯一信号。
+                                                let items = list
+                                                    .into_iter()
+                                                    .map(|d| crate::protocol::LspDiagnosticItem {
                                                         line: d.line,
                                                         column: d.column,
                                                         end_line: d.end_line,
                                                         end_column: d.end_column,
                                                         severity: d.severity,
                                                         message: d.message,
-                                                    };
-                                                    if ftx.send(m).is_err() {
-                                                        return;
-                                                    }
+                                                    })
+                                                    .collect();
+                                                if ftx
+                                                    .send(ServerMsg::LspDiagnostics { items })
+                                                    .is_err()
+                                                {
+                                                    return;
                                                 }
                                             }
                                             Ok(Event::Completed { request_id, items }) => {
@@ -933,7 +939,7 @@ mod tests {
         )
         .await;
         read_until(&mut ws, |m| {
-            matches!(m, ServerMsg::LspDiagnostic { message, .. } if !message.is_empty())
+            matches!(m, ServerMsg::LspDiagnostics { items } if items.iter().any(|d| !d.message.is_empty()))
         })
         .await;
 
