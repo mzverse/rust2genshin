@@ -119,6 +119,9 @@ body:has(main > .play) main {
     /* 补一条底线,和右边选项卡条的底线接成同一行(中间被分隔条断开)。以前
      * 左边没有底线,两栏的表头读起来不像一层。 */
     border-bottom: 1px solid var(--border-soft);
+    /* 控件 40px 高,原来底线就贴在他们下沿;补一点下方内边距,让横线和
+     * 控件之间透口气。 */
+    padding-bottom: 6px;
     /* 「编译」贴着右边,离分隔条太近;留出内边距让它和拖动线分开。 */
     padding-right: 14px;
 }
@@ -135,11 +138,9 @@ body:has(main > .play) main {
     gap: 6px;
     white-space: nowrap;
 }
-/* Shoelace 的竖版 divider 高度默认吃满整行(100%),和 40px 的控件一样高
- * 就不是「短竖线」了;压到 20px,`align-items: center` 自然居中。左右留白
- * 交给工具栏自己的 `gap`,这里不再加 `--spacing`。 */
+/* 竖版 divider 高度交给组件(吃满工具栏的高度)。左右留白交给工具栏自己
+ * 的 `gap`,这里不再加 `--spacing`。 */
 .play-divider {
-    height: 20px;
     --spacing: 0;
 }
 /* 「示例：」三个字:显式告诉人这个框是干嘛的。`.play-label` 不带前缀会被
