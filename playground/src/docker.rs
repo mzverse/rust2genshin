@@ -301,8 +301,27 @@ pub fn image_ls_args(filter: &str) -> Vec<String> {
     ]
 }
 
-pub fn system_df_args() -> Vec<String> {
+/// 列**我们自己的**全部镜像,按创建时间从新到旧,并把 commit label 一起带出来。
+///
+/// 与 [`image_ls_args`] 的区别有两个,都服务于「部署后拿旧镜像顶上」这条路径:
+///   - 不按 commit 过滤 —— 调用方要的是*除当前 HEAD 以外*最新的那份;
+///   - 显式 `--sort=-createdAt` —— `docker image ls` 的默认顺序不是承诺,
+///     而这条路径的整个语义就是「谁最新」,不能靠默认值。
+///   - 多带一列 commit label:tag 里只有短 sha,`BuiltImage.sha` 要的是全长。
+pub fn newest_labeled_image_args(image: &str) -> Vec<String> {
     vec![
+        "image".into(),
+        "ls".into(),
+        "--filter".into(),
+        crate::image::label_filter(image, None),
+        "--sort".into(),
+        "-createdAt".into(),
+        "--format".into(),
+        format!("{{{{.Repository}}}}:{{{{.Tag}}}}\t{{{{.Label \"{}\"}}}}", crate::image::LABEL_COMMIT),
+    ]
+}
+
+pub fn system_df_args() -> Vec<String> {    vec![
         "system".into(),
         "df".into(),
         "--format".into(),
@@ -551,6 +570,20 @@ mod tests {
             ]
         );
         assert_eq!(system_df_args(), vec!["system", "df", "--format", "{{json .}}"]);
+    }
+
+    #[test]
+    fn newest_labeled_image_args_sort_by_creation_and_carry_the_commit() {
+        let a = newest_labeled_image_args("rust2genshin-play");
+        assert!(a.contains(&"--sort".to_string()), "{a:?}");
+        assert_eq!(
+            a[a.iter().position(|x| x == "--format").unwrap() + 1],
+            "{{.Repository}}:{{.Tag}}\t{{.Label \"rust2genshin.commit\"}}"
+        );
+        assert!(
+            a.iter().any(|x| x == "label=rust2genshin.play=1"),
+            "必须只列我们自己的镜像:{a:?}"
+        );
     }
 
     #[test]

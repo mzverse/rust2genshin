@@ -879,7 +879,7 @@ mod tests {
         // 本机没有当前 HEAD 的镜像就跳过 —— 起不了 RA。
         let mut cfg = crate::config::load().expect("读配置");
         let repo = Repo::new(cfg.repo_dir.clone());
-        let Some(built) = crate::startup_image(&cfg, &repo).await else {
+        let Some(built) = crate::startup_plan(&cfg, &repo).await.serving else {
             return;
         };
 
