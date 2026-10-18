@@ -382,18 +382,22 @@ function ready() {
     const OPENERS = "{[(";
     const CLOSERS = "}])";
     const INDENT = "    ";
-    /* `indentService` 的签名是 `(context, line)`:`context` 带 `state` / `unit`,
-     * `line` 是**新插入的那一行**的行号 —— 所以要看的是它的上一行。
-     * (写成对象 `{indentation, closedIndent}` 或把 `state` 当第一个参数都会
-     * 在 Enter 时抛,编辑器里表现为「按了没反应」。) */
-    const rustIndent = (context, line) => {
-        const src = context.state.doc.line(line - 1);
-        if (!src) return 0;
-        const text = src.text;
+    /* `indentService` 的签名是 `(context, lineStart)`:
+     *   - `lineStart` 是**位置**,不是行号(1 行文档的末尾传进来是 11);
+     *   - `context.unit` 是**数字**(4),不是 `"    "` 这个字符串 —— 当成
+     *     字符串用 `.length` 会算出 NaN,缩进一路归零,症状就是「配了服务
+     *     但换行还是顶格」;
+     *   - `context.state` 才是状态。
+     * 这三条是在浏览器里对着真实模块打日志试出来的,不是猜的。 */
+    const rustIndent = (context, lineStart) => {
+        const state = context.state;
+        // 越界的位置(文档刚被清空之类的)不该让 Enter 抛 —— 缩进退化成 0。
+        if (!(lineStart >= 0 && lineStart <= state.doc.length)) return 0;
+        const text = state.doc.lineAt(lineStart).text;
         const base = text.length - text.trimStart().length;
         const last = text.trimEnd().slice(-1);
-        if (OPENERS.includes(last)) return base + context.unit.length;
-        if (CLOSERS.includes(last)) return Math.max(0, base - context.unit.length);
+        if (OPENERS.includes(last)) return base + context.unit;
+        if (CLOSERS.includes(last)) return Math.max(0, base - context.unit);
         return base;
     };
 
