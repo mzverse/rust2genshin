@@ -30,9 +30,14 @@
   // 左右两栏 + 中间那条可拖动的分隔条(`grid-template-columns` 是
   // `左 | 8px | 右`)。宽度由 script.js 拖拽时写到 `--play-left` 上。
   #html_elem("div", class: "play-layout", id: "play-layout")[
-    // ---- 左栏:工具条 + 编辑框 ----
-    #html_elem("div", class: "play-left")[
-      #html_elem("div", class: "play-left-head")[
+    // ---- 五格平铺:工具条 | 编辑框 | 拖动条 | 选项卡条 | 内容 ----
+    //
+    // 左栏的两个块之间、右栏的两个块之间**不套 wrapper**:它们本来就是
+    // 同一个 grid 里同一行(表头)的两格,`auto` 行会自然取两边更高的那个,
+    // 对齐是白送的。平铺之后表头↔内容的间隙交给父级一条 `row-gap`,
+    // 左右两栏同时吃到,不像套了 wrapper 之后各写各的还要防一边漏掉。
+    // DOM 顺序也正好是窄屏上下堆叠要的顺序。
+    #html_elem("div", class: "play-left-head")[
         // 「示例 + 选 + 载入」框成一组:它是「往编辑器里放段现成代码」,
         // 和右边那组「取消 / 编译」是两件事。
         #html_elem("div", class: "play-picker")[
@@ -85,7 +90,6 @@
       // root 里,JS 取不到 `selectionStart`、dispatch 也得绕一圈;直接挂到普通 div
       // 上省事,而且 CodeMirror 自己管光标、IME、composition event。
       #html_elem("div", id: "play-editor", class: "play-editor")[]
-    ]
 
     // 拖动它改左右宽度。role/aria 只是让读屏知道这是个分隔条。
     #html_elem("div", class: "play-splitter", id: "play-splitter", attrs: (
@@ -95,8 +99,7 @@
     ))[]
 
     // ---- 右栏:选项卡条 + 各页内容 ----
-    #html_elem("div", class: "play-right")[
-      #html_elem("div", class: "play-tabs-bar")[
+    #html_elem("div", class: "play-tabs-bar")[
         // 原生 <button> 而不是 MDUI 的:选项卡要的是「一排贴着底边的文字」,
         // 用按钮组件反而得再把它压扁回文字的样子。
         #html_elem("div", class: "play-tabs")[
@@ -125,6 +128,5 @@
           ]
         ]
       ]
-    ]
   ]
 ]

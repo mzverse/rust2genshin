@@ -32,16 +32,23 @@ body:has(main > .play) main {
 
 /* ---- 主体:表头行 | 内容行,列是 左 | 拖动条 | 右 ----
  *
- * **两行而不是一行**:表头(左工具条 / 右选项卡条)和它下面的内容必须共用
- * 同一条行轨道,否则两栏的表头各按各的高度垂直居中,按钮对不齐 —— 而且
- * 上沿不齐会一路带到下面,编辑器顶边和面板顶边也跟着错开十几像素。
- * `.play-left` / `.play-right` 用 `grid-template-rows: subgrid` 认领父级
- * 这两行(`auto` 取两边表头里更高的那个),于是高度由内容决定,没有魔法数字。
- * 代价是 `subgrid`,要 Chrome 117+ / Safari 16+ / Firefox 71+。
+ * **五格平铺,左右栏各自不套 wrapper。** 工具条和右边的选项卡条是第 1 行的
+ * 两格,编辑框和右边的内容区是第 2 行的两格 —— 同一个 grid 的同一个 `auto`
+ * 行,高度自动取两边表头里更高的那个,对齐是白送的。之前套了 `.play-left` /
+ * `.play-right` 再让它们 `grid-template-rows: subgrid` 认领父级的行,绕了
+ * 一圈还多背一条 `subgrid` 的浏览器要求(Chrome 117+ / Safari 16+ /
+ * Firefox 71+),更要命的是间隙得两边各写各的 —— subgrid 只继承父级的**轨道
+ * 尺寸**,间隙取自己的,父级的 `row-gap` 一点都透不进来,漏一边就成了「右边
+ * 有间隙、左边贴着底线」。平铺之后一条 `row-gap` 两栏同时吃到。
  *
- * 三列:中间那列是拖动条独占的一格,**表头行的中间格也归它** —— 于是两栏的
- * 底线在分隔条处断开,左右读起来是两个面板,而不是一条线穿过去。左列宽度
- * 由 script.js 拖动时写进 `--play-left`(px);没拖过是 `1fr`,两栏等分。
+ * **两行而不是一行**:表头和它下面的内容必须共用行轨道,否则两栏的表头各按各
+ * 的高度垂直居中,按钮对不齐 —— 而且上沿不齐会一路带到下面,编辑器顶边和
+ * 面板顶边也跟着错开十几像素。
+ *
+ * 三列:中间那列是拖动条独占的一格,**表头行的中间格也归它**(`grid-row: 1 / 3`,
+ * 跨过 row-gap,所以线是连的)—— 于是两栏的底线在分隔条处断开,左右读起来是
+ * 两个面板,而不是一条线穿过去。左列宽度由 script.js 拖动时写进 `--play-left`
+ * (px);没拖过是 `1fr`,两栏等分。
  *
  * `--play-gutter` 是 22px 而不是原来的 8px:8px 时示例框、拖动线、编辑框
  * 的右边框全挤在一起,看着像糊成一块。22px 加上两侧表头各自的 padding,
@@ -61,25 +68,37 @@ body:has(main > .play) main {
     display: grid;
     grid-template-columns: var(--play-left) var(--play-gutter) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    gap: 0;
+    /* 表头和内容之间的 6px。`column-gap` 留 0 —— 列宽是 `--play-gutter` 算好的,
+     * 再加一份间距只会把左右两栏推开。分隔条靠 `grid-row: 1 / 3` 跨过来。 */
+    row-gap: 6px;
     flex: 1 1 auto;
     min-height: 26rem;
 }
 
-/* ---- 左栏:工具条在上,编辑框吃掉剩下的高度 ----
- *
- * 工具条和编辑框是 `.play-layout` 第 1 / 第 2 行的子格,不是自己 flex 出来
- * 的两段 —— 高度由上面的行轨道给,自己只管排内容。 */
-.play-left {
-    display: grid;
-    grid-template-rows: subgrid;
-    grid-row: 1 / 3;
+/* 五个格子各自的落位。`min-width: 0` 不能省:grid item 默认 `min-width: auto`,
+ * 会被整行的 min-content(约 630px 的工具条)撑破,栏被拖窄时「编译」就直接压
+ * 过分隔线跑到右栏去了。 */
+.play-left-head,
+.play-editor,
+.play-tabs-bar,
+.play-panels {
     min-width: 0;
-    min-height: 0;
-    /* 表头和内容之间的 6px。**必须写在 wrapper 上,不能只写父级的
-     * `row-gap`**:subgrid 继承了父级的轨道尺寸,但间隙取的是自己的 ——
-     * 这里写 `gap: 0`,父级的 `row-gap: 6px` 就一点都透不进来。 */
-    gap: 6px;
+}
+.play-left-head {
+    grid-column: 1;
+    grid-row: 1;
+}
+.play-editor {
+    grid-column: 1;
+    grid-row: 2;
+}
+.play-tabs-bar {
+    grid-column: 3;
+    grid-row: 1;
+}
+.play-panels {
+    grid-column: 3;
+    grid-row: 2;
 }
 
 .play-left-head {
@@ -152,11 +171,9 @@ body:has(main > .play) main {
 }
 
 /* 左栏的编辑框:CodeMirror 6 的挂载点。CodeMirror 自己管滚动、光标、IME,
- * 这里只负责把 `.play-editor` 这一栏撑满左栏的剩余高度 ——`.cm-editor`
- * 在里面再 flex 一遍把高度传下去。 */
+ * 这里只负责把高度传下去 —— 格子高度已经是第 2 行的 `minmax(0, 1fr)`,
+ * `.cm-editor` 在这个 flex 列里再吃一次。 */
 .play-editor {
-    width: 100%;
-    flex: 1 1 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
@@ -442,20 +459,6 @@ body:has(main > .play) main {
     background: var(--accent);
 }
 
-/* ---- 右栏:选项卡条 + 内容 ----
- *
- * 和左栏一样认领父级的两行,理由见 `.play-layout` 那段。 */
-.play-right {
-    display: grid;
-    grid-template-rows: subgrid;
-    grid-row: 1 / 3;
-    min-width: 0;
-    min-height: 0;
-    /* 和 `.play-left` 同一个 6px —— 两边各写各的就会出现「右边有间隙、
-     * 左边贴着底线」的不对称。见 `.play-left` 里关于 subgrid 间隙的说明。 */
-    gap: 6px;
-}
-
 /* 选项卡条。底边那条线一路铺满,选项卡自己的下边框压在它上面 —— 选中的
  * 那个就「接上」了下面的内容。
  *
@@ -546,11 +549,7 @@ body:has(main > .play) main {
 .play-panels {
     display: flex;
     flex-direction: column;
-    flex: 1 1 0;
     min-height: 0;
-    /* 原来这里有 `padding-top: 6px`。现在由 `.play-right` 的 `gap: 6px`
-     * 提供 —— 两边的间隙写在各自的 wrapper 上,才是一样多;写在
-     * `.play-panels` 上就只右栏有,编辑框会贴着表头底线。 */
 }
 .play-panel {
     display: flex;
@@ -611,24 +610,22 @@ body:has(main > .play) main {
 /* 窄屏上下摞起来。拖动条在竖排里没有意义(而且它的 `col-resize` 光标
  * 会误导),直接藏掉,两栏各占一半高度。
  *
- * `display: flex` 那两行是**必须的**,不是多余的:宽屏那套
- * `.play-left { grid-row: 1 / 3; grid-template-rows: subgrid }` 在这里
- * 会跟着生效 —— 单列两行的父网格里两栏都去占 1~2 行、直接叠在一起,而且
- * `subgrid` 在只剩一行的父级里没有两条轨道可认领,表头那一行会塌成 0。
- * 竖排时两栏各是独立的一行,表头本来就不会错位,退回原来的 flex 列即可。 */
+ * 宽屏那五条显式的 `grid-column` / `grid-row` 在这里必须清掉 —— 不然四个
+ * 格子全去抢第 1 列的前两行、直接叠在一起。清成 `auto` 之后它们按 DOM 顺序
+ * 各自占一行,而 DOM 顺序本来就是「工具条、编辑框、| 选项卡条、内容」,
+ * 正好是竖排要的上下两组。`display: none` 的拖动条不占格子,所以正好四行。 */
 @media (max-width: 900px) {
     .play-layout {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+        /* 四行 = 表头、编辑框、选项卡条、内容。表头按内容,两块内容区平分
+         * 剩下的高度 —— 表头夹在中间是因为两栏是上下摞的,不是并排。 */
+        grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 1fr);
+    }
+    .play-layout > * {
+        grid-column: auto;
+        grid-row: auto;
     }
     .play-splitter {
         display: none;
-    }
-    .play-left,
-    .play-right {
-        display: flex;
-        flex-direction: column;
-        grid-row: auto;
-        grid-template-rows: none;
     }
 }
