@@ -605,7 +605,7 @@ body:has(main > .play) main {
     outline-offset: 1px;
 }
 
-/* 预览页现在只是个占位。用和日志盒一样的外框,免得一切过去时整块区域
+/* 预览页现在还只是个占位。用和日志盒一样的外框,免得一切过去时整块区域
  * 突然空掉、像是坏了。 */
 .play-preview {
     flex: 1 1 0;
@@ -616,6 +616,32 @@ body:has(main > .play) main {
     background-color: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
+}
+
+/* 空着的时候中央显示「待编译」。
+ *
+ * 用 `:empty` 而不是插一个占位元素再记得删:DOM 里没有东西可忘,清空
+ * 预览只要一句 `textContent = ""`,状态与内容永远对得上。
+ *
+ * `display: grid` + `place-content: center` 是让**伪元素**也能居中的
+ * 最短写法(伪元素不是 flex/grid 容器,给它 `margin: auto` 之类不灵)。
+ * 注意 `:empty` 对**空白字符**同样不成立 —— `index.typ` 里这个 div
+ * 必须是紧挨着 `[]` 的空体。 */
+.play-preview:empty,
+.play-preview[data-state="artifact"] {
+    display: grid;
+    place-content: center;
+    text-align: center;
+}
+.play-preview:empty::before {
+    content: "待编译";
+}
+
+/* 收到产物之后那行占位:和「待编译」一样居中,但用正文色 —— 它说的是
+ * 「东西在这儿」,不是「还没有东西」。 */
+.play-preview[data-state="artifact"] {
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
 }
 
 /* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,把下拉框的宽度收一收,

@@ -90,6 +90,9 @@ function pickBackend(urls) {
 function tryConnect(url, timeoutMs = 4000) {
     return new Promise((resolve, reject) => {
         const ws = new WebSocket(url);
+        // 编译产物是以二进制帧下来的(裸 `.gia` 字节)。默认的 `blob`
+        // 会让每条产物帧都多一个异步读;这里要同步就能拿到的字节。
+        ws.binaryType = "arraybuffer";
         let done = false;
         const finish = (fn, arg) => {
             if (done) return;
@@ -125,12 +128,25 @@ const RECONNECT_BACKOFF_MS = 5000;
  * 点击会走既有的自动重连(见 `PlayClient.touch` 与 `send`)。 */
 const IDLE_DISCONNECT_MS = 90_000;
 
+/* 编译产物的文件名。跟服务端 `playground/src/job.rs` 里的 `ARTIFACT_NAME`
+ * 是同一个值 —— 容器里 cargo 按它落盘,`docker cp` 按它取,前端按它命名
+ * 另存下来的文件。三处对不上,表现是「下载下来打不开」而不是报错。 */
+const ARTIFACT_NAME = "rust2genshin_demo.gia";
+
+/* 字节数给人看。`.gia` 实际就十几 KB,不需要正经的单位换算,但一位小数
+ * 加上单位比裸数字好读 —— 预览面板里就靠它占位。 */
+function formatBytes(n) {
+    if (n < 1024) return `${n} 字节`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+}
+
 class PlayClient {
     constructor(handlers) {
         this.handlers = handlers;
         this.ws = null;
-        // 连上之前是 null —— `httpOrigin(client.url)` 只在收到 hello /
-        // finished 之后用,那时 connect() 已经把它填好了。
+        // 连上之前是 null —— `httpOrigin(client.url)` 只在收到 hello
+        // 之后用,那时 connect() 已经把它填好了。
         this.url = null;
         // 还没连上时想发的消息。断线重连期间点「编译」会落到这里,
         // onopen 一冲就发出去 —— 不能丢,丢了界面会永远停在「排队中…」。
@@ -252,6 +268,19 @@ class PlayClient {
             this.handlers.onStatus("连不上后端", "err");
         };
         ws.onmessage = (ev) => {
+            // 二进制帧 = 编译产物。走独立的 handler,不进 JSON 解析。
+            if (typeof ev.data !== "string") {
+                if (!this.handlers.onArtifact) return;
+                try {
+                    this.handlers.onArtifact(ev.data);
+                } catch (e) {
+                    this.handlers.onError({
+                        code: "client",
+                        message: `收到产物但处理失败:${e && e.message ? e.message : e}`,
+                    });
+                }
+                return;
+            }
             let m;
             try { m = JSON.parse(ev.data); } catch { return; }
             // handler 抛出来就到此为止,后面每条消息都还能收,但**这一条**
@@ -1197,10 +1226,11 @@ function ready() {
     });
     editor = makeEditorOps(view);
 
-    // 下载地址在收到 finished 时才算得出来:后端给的是**服务端相对**
-    // 路径(`/artifact/<id>`),而这一页在 GitHub Pages 上,直接用相对
-    // 路径会去文档站找那个文件、必然 404。
-    let downloadUrl = null;
+    // 产物只在**内存里**:后端编译完直接用二进制帧把它送过来(见
+    // `tryConnect` 里的 `binaryType`),没有下载链接、也不经过 HTTP ——
+    // 服务端那边产物同样不落盘。「下载」按钮做的事就是把这份字节原样
+    // 交给浏览器的保存对话框。
+    let artifactBytes = null;
     // 第一次连上时镜像往往还在烘。这时要每 5 秒看一眼 /status 把烘焙
     // 日志尾巴显示出来 —— 否则用户看到的就是一句"还在烘焙",不知道
     // 是卡住了还是在动。
@@ -1317,12 +1347,14 @@ function ready() {
         onFinished: (m) => {
             setBusy(false);
             setStatus(`编译成功 · ${m.bytes} 字节`, "ok");
-            // **不能**用 new URL(m.download, base):m.download 是绝对路径
-            // ("/artifact/<id>"),new URL 会把它当 origin 根解析,反代前缀
-            // ("/rust2genshin")会被整个丢掉。去掉开头的斜杠按字符串接上,
-            // 前缀就跟着 httpOrigin 走。
-            downloadUrl = httpOrigin(client.url) + "/" + m.download.replace(/^\/+/, "");
+            // 「下载」按钮**不在这里点亮** —— 它跟着产物帧走。产物是
+            // 另一条消息,万一它没到,按钮早亮起来只会让人点出空气。
+        },
+        // 编译产物:裸 `.gia` 字节。存在内存里,顺带在预览面板占个位。
+        onArtifact: (data) => {
+            artifactBytes = new Uint8Array(data);
             dlBtn.hidden = false;
+            showArtifactNote(artifactBytes.length);
         },
         onCancelled: () => {
             // 和 finished/failed 一样收摊。状态不标红:取消是用户自己按的,
@@ -1383,26 +1415,31 @@ function ready() {
         // 上一轮攒下的半行不属于这次编译,留着会和新的输出拼成一行。
         logTail = "";
         dlBtn.hidden = true;
-        downloadUrl = "";
+        // 上一份产物立刻作废:留着它,一次编译失败之后用户点「下载」拿到的
+        // 还是上一次的图 —— 而界面上根本看不出来不是这次的。
+        artifactBytes = null;
+        clearPreview();
         const target = targetSel ? targetSel.value : null;
         client.submit(editor.getText(), target);
     });
     cancelBtn.addEventListener("click", () => client.cancel());
     dlBtn.addEventListener("click", () => {
-        if (!downloadUrl) return;
-        // 只校验 scheme,不比较 origin。downloadUrl 是在 finished 时按
-        // 字符串拼出来的(见上面那处),后端可以完全控制 m.download ——
-        // 传 "javascript:alert(1)" 拼出来就是 javascript: 开头的地址。
-        // 这里用 new URL 反解一遍,protocol 不是 http(s) 就拒。
-        // 不按 origin 比:页面 origin 与后端 origin 本来就不同(本地
-        // 3000 vs 后端 8787,线上 github.io vs mzverse.org),比了就把
-        // 正常下载全挡死。
-        const u = new URL(downloadUrl);
-        if (u.protocol !== "http:" && u.protocol !== "https:") {
-            appendLog("stderr", "拒绝下载:链接不是 http(s)\n");
-            return;
+        if (!artifactBytes) return;
+        // Blob + 临时 <a download>:`downloadUrl` 那套已经没了,产物本来
+        // 就在内存里,不必再经一次 HTTP 往返、也不必在服务端留一份能被
+        // 猜 id 读走的文件。
+        const url = URL.createObjectURL(new Blob([artifactBytes]));
+        try {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = ARTIFACT_NAME;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        } finally {
+            // 立刻 revoke:浏览器已经把内容取走了(点的是 a.download)。
+            URL.revokeObjectURL(url);
         }
-        window.location.href = downloadUrl;
     });
 
     // ---- 选项卡:日志 / 预览 ----
@@ -1412,6 +1449,20 @@ function ready() {
     const panels = {
         log: $("play-panel-log"),
         preview: $("play-panel-preview"),
+    };
+    // 预览面板里真正放占位文字的那块。**空着的时候用 CSS 的
+    // `.play-preview:empty::before` 画一个「待编译」** —— 不占 DOM、
+    // 不用在 JS 里插一个元素再记得删掉,`:empty` 自己就是状态。
+    const preview = panels.preview.querySelector(".play-preview");
+
+    const clearPreview = () => {
+        preview.textContent = "";
+        preview.removeAttribute("data-state");
+    };
+
+    const showArtifactNote = (bytes) => {
+        preview.dataset.state = "artifact";
+        preview.textContent = `产物 ${ARTIFACT_NAME} · ${formatBytes(bytes)}`;
     };
     tabs.forEach((tab) => {
         tab.addEventListener("click", () => {

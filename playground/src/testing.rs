@@ -155,11 +155,10 @@ impl JobRunner for FakeRunner {
                 for (s, t) in lines {
                     log(*s, t);
                 }
-                std::fs::write(&job.paths.artifact, vec![0u8; *bytes as usize]).unwrap();
                 Ok(RunOutcome {
                     exit_code: Some(0),
                     elapsed: Duration::from_millis(1),
-                    artifact_bytes: *bytes,
+                    artifact: vec![0u8; *bytes as usize],
                 })
             }
             Behavior::Fail { lines, code } => {
@@ -176,17 +175,14 @@ impl JobRunner for FakeRunner {
     }
 }
 
-/// 给测试用的 `JobPaths`:在临时目录里建一份真的。
+/// 给测试用的 `JobPaths`:在临时目录里建一份真的。**只有 src** —— 产物
+/// 不落宿主盘,替身也是直接返回字节。
 pub fn fake_paths(dir: &std::path::Path, task: &str) -> JobPaths {
     let src = dir.join(task).join("src");
-    let out = dir.join(task).join("out");
     std::fs::create_dir_all(&src).unwrap();
-    std::fs::create_dir_all(&out).unwrap();
     JobPaths {
-        artifact: out.join(crate::job::ARTIFACT_NAME),
         dir: dir.join(task),
         src_dir: src,
-        out_dir: out,
     }
 }
 
@@ -271,13 +267,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ok_writes_artifact_and_reports_bytes() {
+    async fn ok_returns_artifact_bytes_without_touching_the_disk() {
         let d = tempfile::tempdir().unwrap();
         let r = FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 7 });
         let s = spec(d.path(), "t1");
         let out = r.run(&s, Arc::new(|_, _| {})).await.unwrap();
-        assert_eq!(out.artifact_bytes, 7);
-        assert!(s.paths.artifact.is_file());
+        assert_eq!(out.artifact_bytes(), 7);
+        assert_eq!(out.artifact, vec![0u8; 7]);
         assert_eq!(r.calls(), vec!["t1"]);
         assert_eq!(r.running(), 0, "收尾要把计数还回去");
     }
@@ -288,6 +284,5 @@ mod tests {
         let r = FakeRunner::new(Behavior::Fail { lines: vec![], code: 101 });
         let s = spec(d.path(), "t1");
         assert!(r.run(&s, Arc::new(|_, _| {})).await.is_err());
-        assert!(!s.paths.artifact.exists());
     }
 }

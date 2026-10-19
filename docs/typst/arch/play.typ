@@ -12,8 +12,8 @@
 
 ```text
 浏览器（静态页）
-   │  HTTP: /sample /artifact/<id> /status
-   │  WebSocket: submit / cancel / lsp_*
+   │  HTTP: /sample /status
+   │  WebSocket: submit / cancel / lsp_* / 二进制产物帧
    ▼
 playground 服务（axum 进程，不含 rustc）
    │  docker build / run / exec
@@ -39,11 +39,11 @@ docker
     [*模块*], [*职责*],
 
     [`config`], [全部环境变量与默认值；空串等价于未设置。],
-    [`server::http`], [路由、CORS、`/healthz` `/status` `/sample` `/artifact` `/admin/rebuild`；`AppState` 在这里定义。],
+    [`server::http`], [路由、CORS、`/healthz` `/status` `/sample` `/admin/rebuild`；`AppState` 在这里定义。],
     [`server::ws`], [WebSocket 连接的生命周期：握手校验、消息分发、把任务输出转成 `ServerMsg`。],
     [`protocol`], [线协议的全部枚举与常量；`TARGETS` 是目标的唯一真源。],
     [`queue`], [并发额度 + 每 IP 一个 + 排队上限；额度靠 `Ticket` 的 `Drop` 归还。],
-    [`job`], [任务目录布局 `<data>/tasks/<id>/{src,out,meta.json}`；每次新写源码。],
+    [`job`], [任务目录布局 `<data>/tasks/<id>/{src/lib.rs, meta.json}`；每次新写源码。],
     [`runner`], [把 `cargo build` 放进一次性容器；分帧读日志、超时、判 `verdict`。],
     [`bake`], [烘焙状态机；单飞、折叠 pending、失败保旧。],
     [`image_builder`], [`docker build` 的参数与日志；tag/label 与镜像对齐。],
@@ -89,7 +89,7 @@ docker
     [服务端 → 客户端], [`queued`], [排队位次与当前队列长度。],
     [服务端 → 客户端], [`started`], [容器开始跑；带 `task` 与 `image_commit`。],
     [服务端 → 客户端], [`log`], [`{task, stream, text}`；stdout / stderr 分开。],
-    [服务端 → 客户端], [`finished`], [成功；带产物字节数与下载路径。],
+    [服务端 → 客户端], [`finished`], [成功；带产物字节数。产物**紧跟其后**以二进制帧发过来。],
     [服务端 → 客户端], [`failed`], [失败；`exit_code` 可空，`message` 是给用户看的。],
     [服务端 → 客户端], [`cancelled`], [`abort` 本身静默，必须显式回这一条。],
     [服务端 → 客户端], [`error`], [请求被拒：`not_ready` / `ip_busy` / `queue_full` / `bad_request` / `internal`。],
@@ -112,7 +112,6 @@ docker
     [`/healthz`], [烘焙就绪返回 200，否则 503 并带日志尾巴。],
     [`/status`], [serving 镜像、烘焙状态、队列、git HEAD、pull 失败原因。],
     [`/sample`], [仓库里的 `demo/src/lib.rs`；响应头带 HEAD 与烘焙 commit。],
-    [`/artifact/<id>`], [下载 `.gia`；id 白名单 + canonicalize 双重防穿越。],
     [`/admin/rebuild`], [触发烘焙：GitHub webhook（HMAC）或 Bearer token；都没配就 403。],
     [`/ws`], [升级为 WebSocket；Origin 白名单在这里查。],
 )
@@ -126,18 +125,20 @@ submit
   → registry.acquire(serving_tag)  # 先握住镜像引用，防 GC 中途删掉
   → 排队则回 queued，spawn 的任务等 ticket.wait_started()
   → 写 tasks/<id>/src/lib.rs       # 新写文件，mtime 必须是“现在”
-  → docker run 一次性容器           # --rm --network none，挂 src 只读、out 可写
+  → docker run 一次性容器           # 无 --rm，挂 src 只读
   → 读 stdout 8 字节帧 / stderr 裸行 → log
-  → verdict(exit_code, artifact)   # 退出码 0 且产物在才算成功
-  → finished | failed | cancelled
+  → docker cp <容器>:<路径> -      # tar 走 stdout，产物**不落宿主盘**
+  → verdict(exit_code, artifact)   # 退出码 0 且产物取到了才算成功
+  → finished + 二进制产物帧 | failed | cancelled
 ```
 
 两个关键判断：
 
 - *退出码 0 但没产物也是失败*。cargo 判 fresh、跳过编译时，容器会交出上一次的 `.gia` —— 那是没有报错的错答案。
+- *产物不落宿主盘*。容器**故意不带 `--rm`**（否则 `docker cp` 之前文件系统就被删了），跑完用 `docker cp <容器>:<路径> -` 把 tar 从 stdout 读回来解出字节，直接推给前端。清理由 `ContainerGuard` 的 `docker rm -f` 负责。
 - *判定顺序是超时 → 解码 → verdict*。被 kill 的容器会在帧中间截断，先判解码会把正常超时误报成“读输出失败”。
 
-容器离开正常路径时（用户取消、进程被杀）由 `ContainerGuard::Drop` 补一发 `docker kill` —— `--rm` 只在容器退出时清理，一个死循环容器否则会一直占住 CPU 和内存。
+容器离开正常路径时（用户取消、进程被杀）由 `ContainerGuard::Drop` 补一发 `docker rm -f` —— 任务容器不带 `--rm`，一个死循环容器否则会一直占住 CPU 和内存，还会留下一个容器条目。
 
 = 镜像生命周期
 
@@ -192,6 +193,8 @@ server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docke
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
 
 *重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。
+
+*产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物**立刻作废** —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。预览面板空着时用 `.play-preview:empty::before` 画一个居中的「待编译」，收到产物后换成居中的文件名与体积：`:empty` 既是状态也是内容，没有占位元素需要记得删。
 
 *选区与光标由 CodeMirror 自绘*（`drawSelection()`）：浏览器原生的光标在选区非空时会被隐藏，拖动或 Shift 选中后看不到落点；自绘层则在选区头部始终画一根光标。
 

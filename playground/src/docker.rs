@@ -99,7 +99,6 @@ pub struct RunSpec {
     pub name: String,
     pub image: String,
     pub src_dir: PathBuf,
-    pub out_dir: PathBuf,
     pub workdir: String,
     /// 目标平台:`beyond-server`(超限)或 `classic-server`(经典)。
     /// 两个 spec 的 triple 不同,cargo 在 `target/` 下按 triple 分目录,
@@ -125,15 +124,30 @@ pub struct RunSpec {
 
 /// 容器里跑的那条命令。`--offline` 是关键:依赖在烘焙时 fetch 齐了,
 /// 容器又是 `--network none`,让"万一要联网"变成一个明确的错误而不是超时。
+///
+/// 产物留在 `target/` 里**不拷走**:容器没有挂 `/out`,`docker cp` 直接从
+/// 它自己文件系统里取(见 [`container_artifact_path`]),少一次容器内的
+/// `cp`,也少一个「拷到 /out 成功但后续取不到」的口子。
 pub fn container_command(spec: &RunSpec) -> String {
-    // `--target` 与 `cp` 的路径必须来自同一个变量:写死其中一处,选经典
-    // 时就会去超限的目录里拷产物,cp 失败、任务判失败。
-    let t = &spec.target;
     format!(
         "cargo build --release --offline -p rust2genshin-demo \
          --target ./genshin-unknown-{t}.json \
-         -Zunstable-options -Zjson-target-spec -Zbuild-std=core \
-         && cp target/genshin-unknown-{t}/release/rust2genshin_demo.gia /out/"
+         -Zunstable-options -Zjson-target-spec -Zbuild-std=core",
+        t = &spec.target,
+    )
+}
+
+/// 容器内产物的绝对路径。`docker cp` 的源路径。
+///
+/// **必须与 [`container_command`] 的 `--target` 来自同一个字段**:两个 spec
+/// 的 triple 不同,cargo 在 `target/` 下按 triple 分目录,写死其中一处,
+/// 选经典时就会去超限目录里取一个不存在的文件。
+pub fn container_artifact_path(spec: &RunSpec) -> String {
+    format!(
+        "{workdir}/target/genshin-unknown-{t}/release/{name}",
+        workdir = spec.workdir,
+        t = &spec.target,
+        name = crate::job::ARTIFACT_NAME,
     )
 }
 
@@ -181,10 +195,14 @@ fn limit_args(spec: &RunSpec) -> Vec<String> {
 /// 不挂 `target/` —— 挂了会盖掉烘焙进去的预热缓存,任务就必然超时。
 /// 挂目录而不是挂单个文件:单文件 bind mount 在 Docker Desktop 的
 /// 9p / virtiofs 共享上最容易出怪问题,而 `demo/src/` 里只有一个文件。
+///
+/// **没有 `--rm`,也没有 `/out` 挂载**:产物要从容器里 `docker cp` 出来
+/// (见 [`crate::runner`]),容器必须活到那一步。清理由 runner 的兜底守卫
+/// 显式 `docker rm -f` 负责 —— 宁可多留一个容器等守卫收,也不能让
+/// `--rm` 在 `docker cp` 之前就把文件系统一起删掉。
 pub fn run_args(spec: &RunSpec) -> Vec<String> {
     let mut a: Vec<String> = vec!["run".into()];
     a.extend(limit_args(spec));
-    a.push("--rm".into());
     a.push("--name".into());
     a.push(spec.name.clone());
     a.push("-v".into());
@@ -194,8 +212,6 @@ pub fn run_args(spec: &RunSpec) -> Vec<String> {
         spec.workdir,
         "demo/src"
     ));
-    a.push("-v".into());
-    a.push(format!("{}:/out:rw", spec.out_dir.display()));
     a.push("--workdir".into());
     a.push(spec.workdir.clone());
     a.push(spec.image.clone());
@@ -231,8 +247,12 @@ pub fn image_prune_args(filter: &str) -> Vec<String> {
     ]
 }
 
-pub fn kill_args(name: &str) -> Vec<String> {
-    vec!["kill".into(), name.into()]
+/// 从容器里取产物,`-` 表示 tar 流走 stdout。
+///
+/// 这样产物**从不落在宿主文件系统上** —— 服务不建 `out/` 目录、不留
+/// 副本、也不需要给一条 HTTP 路由去守着一个可被猜 id 读走的文件。
+pub fn cp_args(name: &str, path: &str) -> Vec<String> {
+    vec!["cp".into(), format!("{name}:{path}"), "-".into()]
 }
 
 /// 删掉一个容器。RA 会话的销毁钩子用它:容器一没,里面的 exec 和
@@ -435,7 +455,6 @@ mod tests {
             name: "r2g-task1".into(),
             image: "rust2genshin-play:0123456".into(),
             src_dir: PathBuf::from("/data/tasks/task1/src"),
-            out_dir: PathBuf::from("/data/tasks/task1/out"),
             workdir: "/opt/rust2genshin".into(),
             target: "beyond-server".into(),
             cpus: Some(2),
@@ -452,10 +471,6 @@ mod tests {
         s.target = "classic-server".into();
         let cmd = container_command(&s);
         assert!(cmd.contains("--target ./genshin-unknown-classic-server.json"), "{cmd}");
-        assert!(
-            cmd.contains("cp target/genshin-unknown-classic-server/release/rust2genshin_demo.gia /out/"),
-            "{cmd}"
-        );
         assert!(!cmd.contains("beyond-server"), "{cmd}");
     }
 
@@ -463,9 +478,21 @@ mod tests {
     fn container_command_defaults_to_beyond() {
         let cmd = container_command(&spec());
         assert!(cmd.contains("--target ./genshin-unknown-beyond-server.json"), "{cmd}");
-        assert!(
-            cmd.contains("cp target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia /out/"),
-            "{cmd}"
+    }
+
+    #[test]
+    fn artifact_path_follows_the_selected_target() {
+        // 命令与取产物路径必须指向同一个 triple —— 这条就是那个「写死其中
+        // 一处」的锁:选经典时不能去超限目录里找一个不存在的文件。
+        let mut s = spec();
+        s.target = "classic-server".into();
+        assert_eq!(
+            container_artifact_path(&s),
+            "/opt/rust2genshin/target/genshin-unknown-classic-server/release/rust2genshin_demo.gia"
+        );
+        assert_eq!(
+            container_artifact_path(&spec()),
+            "/opt/rust2genshin/target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia"
         );
     }
 
@@ -479,7 +506,6 @@ mod tests {
             "--pids-limit", "256",
             "--user", "1001",
             "--tmpfs", "/tmp",
-            "--rm",
         ] {
             assert!(a.contains(&want.to_string()), "argv 缺 {want}:{a:?}");
         }
@@ -490,6 +516,14 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["--memory-swap", "1536m"]));
         assert!(!a.contains(&"--read-only".to_string()), "cargo 要写 target/,不能只读");
         assert!(!a.iter().any(|s| s.contains("/var/run/docker.sock")));
+    }
+
+    #[test]
+    fn run_args_has_no_rm_so_the_artifact_survives_until_cp() {
+        // `--rm` 会在容器退出时把文件系统一起删掉,`docker cp` 随后就取不到
+        // 产物了。这条钉住那个错误的修复方向。
+        let a = run_args(&spec());
+        assert!(!a.contains(&"--rm".to_string()), "任务容器不能带 --rm:{a:?}");
     }
 
     #[test]
@@ -515,19 +549,17 @@ mod tests {
     }
 
     #[test]
-    fn run_args_mounts_only_src_and_out() {
+    fn run_args_mounts_only_src() {
         let a = run_args(&spec());
         let vols: Vec<String> = a
             .windows(2)
             .filter(|w| w[0] == "-v")
             .map(|w| w[1].clone())
             .collect();
+        // 产物不再经过宿主目录:它由 `docker cp` 从容器里直接取。
         assert_eq!(
             vols,
-            vec![
-                "/data/tasks/task1/src:/opt/rust2genshin/demo/src:ro".to_string(),
-                "/data/tasks/task1/out:/out:rw".to_string(),
-            ]
+            vec!["/data/tasks/task1/src:/opt/rust2genshin/demo/src:ro".to_string()]
         );
         assert!(
             !vols.iter().any(|v| v.contains("target")),
@@ -550,8 +582,15 @@ mod tests {
         let cmd = &a[img + 3];
         assert!(cmd.contains("--offline"));
         assert!(cmd.contains("-Zbuild-std=core"));
-        assert!(cmd.contains("cp target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia /out/"));
         assert_eq!(a.len(), img + 4, "命令之后不该再有别的参数");
+    }
+
+    #[test]
+    fn cp_args_read_the_container_and_write_tar_to_stdout() {
+        let a = cp_args("r2g-task1", "/opt/rust2genshin/target/x/rust2genshin_demo.gia");
+        assert_eq!(a[0], "cp");
+        assert_eq!(a[1], "r2g-task1:/opt/rust2genshin/target/x/rust2genshin_demo.gia");
+        assert_eq!(a[2], "-", "源必须是容器内的绝对路径,目标是 stdout 的 tar");
     }
 
     #[test]
@@ -572,7 +611,6 @@ mod tests {
 
     #[test]
     fn misc_args() {
-        assert_eq!(kill_args("r2g-t1"), vec!["kill", "r2g-t1"]);
         assert_eq!(
             image_ls_args("label=rust2genshin.play=1"),
             vec![
@@ -631,7 +669,6 @@ mod tests {
             name: "r2g-ra-1".into(),
             image: "img:tag".into(),
             src_dir: PathBuf::from("/src"),
-            out_dir: PathBuf::from("/out"),
             workdir: "/w".into(),
             target: "beyond-server".into(),
             cpus: Some(2),

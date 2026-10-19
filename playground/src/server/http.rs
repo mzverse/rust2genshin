@@ -4,14 +4,14 @@
 //! 这一层不做业务判断 —— 所有"能不能跑"都在 `queue` 和 `bake` 里。
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Instant,
 };
 
 use axum::{
     Json, Router,
-    extract::{Path as AxPath, State},
+    extract::State,
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -69,19 +69,6 @@ pub fn sample_path(cfg: &Config) -> PathBuf {
     cfg.repo_dir.join(crate::protocol::SOURCE_FILE)
 }
 
-/// `/artifact/<id>` 的解析。**这是唯一的路径拼接点**,所以两道锁都放在这里:
-/// 先按 id 的字符合法性挡掉 `../../etc/passwd` 这类,再 canonicalize 确认
-/// 结果真的在 `tasks/` 底下(软链接、盘符大小写这类 canonicalize 才能识破)。
-pub fn resolve_artifact(tasks_root: &Path, id: &str) -> Option<PathBuf> {
-    if !crate::job::is_valid_task_id(id) {
-        return None;
-    }
-    let p = tasks_root.join(id).join("out").join(crate::job::ARTIFACT_NAME);
-    let real = p.canonicalize().ok()?;
-    let root = tasks_root.canonicalize().ok()?;
-    real.starts_with(&root).then_some(real)
-}
-
 /// `/sample` 上用两个响应头捎回「样例出自哪个 commit / 镜像出自哪个
 /// commit」。不用 JSON 包一层是因为正文要原样进编辑器 —— 包了的话前端
 /// 每次都得剥一层。名字定成常量,`router` 里的 expose 列表和这里必须
@@ -127,7 +114,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/status", get(status))
         .route("/sample", get(sample))
-        .route("/artifact/{id}", get(artifact))
         .route("/admin/rebuild", post(admin_rebuild))
         .route("/ws", get(crate::server::ws::ws_upgrade))
         .layer(cors)
@@ -188,29 +174,6 @@ async fn sample(State(st): State<Arc<AppState>>) -> Response {
         }
     }
     res
-}
-
-async fn artifact(State(st): State<Arc<AppState>>, AxPath(id): AxPath<String>) -> Response {
-    let Some(path) = resolve_artifact(st.jobs.tasks_root(), &id) else {
-        return (StatusCode::NOT_FOUND, "没有这个产物").into_response();
-    };
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!(
-                        "attachment; filename=\"{}\"",
-                        crate::job::ARTIFACT_NAME
-                    ),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "没有这个产物").into_response(),
-    }
 }
 
 /// webhook 路径上的 `git pull`。返回 `Some(原因)` 表示 pull 没成功(但烘焙
@@ -300,6 +263,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use std::path::Path;
     use crate::{
         bake::Baker,
         config::resolve,
@@ -515,60 +479,6 @@ mod tests {
             res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
             "默认白名单不该给陌生站点回 ACAO",
         );
-    }
-
-    #[test]
-    fn artifact_ids_never_escape_the_tasks_dir() {
-        // 用真目录:root 不存在的话 canonicalize 一律失败,所有断言都会
-        // "因为错误的原因通过"。
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().to_path_buf();
-        let jobs = JobStore::new(root.clone());
-        let p = jobs.prepare("deadbeef", "x").unwrap();
-        std::fs::write(&p.artifact, b"gia").unwrap();
-
-        assert!(resolve_artifact(&root, "deadbeef").is_some(), "正常 id 要能过");
-        for bad in [
-            "../secrets", "..%2fsecrets", "a/b", "", "..", "deadbeef/../x",
-            ".", "/etc/passwd", "C:\\x", "..%00", "%2f", " deadbeef", "任务",
-        ] {
-            assert_eq!(resolve_artifact(&root, bad), None, "{bad:?} 不该能过");
-        }
-        assert_eq!(resolve_artifact(&root, "0123456789abcdef"), None, "目录不存在就是 None");
-    }
-
-    #[tokio::test]
-    async fn artifact_404s_on_traversal() {
-        // Review Focus #4:id 里塞 `..` 只能得到 404,绝不能读到 tasks/ 外面。
-        let d = tempfile::tempdir().unwrap();
-        // 在 tasks/ 外面放一份"机密",确认拿不到。
-        std::fs::create_dir_all(d.path().join("data")).unwrap();
-        std::fs::write(d.path().join("data/secret.gia"), b"secret").unwrap();
-        let st = ready_state(d.path()).await;
-        let p = st.jobs.prepare("deadbeef", "x").unwrap();
-        std::fs::write(&p.artifact, b"gia").unwrap();
-
-        assert_eq!(
-            get(Arc::clone(&st), "/artifact/deadbeef").await.status(),
-            StatusCode::OK
-        );
-        for bad in ["%2e%2e%2fsecret.gia", "..", "a%2Fb", "%2e%2e"] {
-            let res = get(Arc::clone(&st), &format!("/artifact/{bad}")).await;
-            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{bad} 不该能读到东西");
-        }
-    }
-
-    #[tokio::test]
-    async fn artifact_download_has_a_filename() {
-        let d = tempfile::tempdir().unwrap();
-        let st = ready_state(d.path()).await;
-        let p = st.jobs.prepare("deadbeef", "x").unwrap();
-        std::fs::write(&p.artifact, b"gia").unwrap();
-        let res = get(st, "/artifact/deadbeef").await;
-        assert!(res.headers()[header::CONTENT_DISPOSITION]
-            .to_str()
-            .unwrap()
-            .contains("rust2genshin_demo.gia"));
     }
 
     #[tokio::test]

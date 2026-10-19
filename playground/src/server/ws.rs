@@ -68,6 +68,7 @@ pub fn describe_error(e: &RunnerError, task: &str) -> ServerMsg {
         ),
         RunnerError::Spawn(why) => (None, format!("起不了容器:{why}")),
         RunnerError::Decode(why) => (None, format!("读容器输出失败:{why}")),
+        RunnerError::Fetch(why) => (None, format!("从容器里取产物失败:{why}")),
     };
     ServerMsg::Failed {
         task: task.to_string(),
@@ -97,7 +98,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
 
     // 任务往这条通道里塞消息,不直接碰 socket —— 于是"任务在跑"和
     // "读循环还活着"是两件事,排队期间照样能看见断开和 cancel。
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Outbound>();
     // 任务名和 handle 一起存:`cancel` 要把 task 原样回给客户端,光有
     // handle 是 abort 不出名字来的。
     let mut job: Option<(String, JoinHandle<()>)> = None;
@@ -215,7 +216,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                     loop {
                                         match events.recv().await {
                                             Ok(Event::Tokens(data)) => {
-                                                if ftx.send(ServerMsg::LspTokens { data }).is_err() {
+                                                if ftx.send(Outbound::from(ServerMsg::LspTokens { data })).is_err() {
                                                     break;
                                                 }
                                             }
@@ -234,7 +235,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                                     })
                                                     .collect();
                                                 if ftx
-                                                    .send(ServerMsg::LspDiagnostics { items })
+                                                    .send(Outbound::from(ServerMsg::LspDiagnostics { items }))
                                                     .is_err()
                                                 {
                                                     return;
@@ -255,7 +256,7 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                                         }),
                                                     })
                                                     .collect();
-                                                if ftx.send(ServerMsg::LspCompletion { request_id, items }).is_err() {
+                                                if ftx.send(Outbound::from(ServerMsg::LspCompletion { request_id, items })).is_err() {
                                                     break;
                                                 }
                                             }
@@ -325,7 +326,19 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
             out = rx.recv() => {
                 match out {
                     None => break,
-                    Some(m) => {
+                    Some(o) => {
+                        let (m, artifact) = o.split();
+                        if let Some(bytes) = artifact {
+                            // 产物是独立一帧,裸 `.gia` 字节。
+                            // **不 base64、不走 HTTP**:连接上本来就只有一个
+                            // 任务,前端拿到的是哪次编译的产物不存在歧义。
+                            // 槽位的收摊判在 `finished` 那条上已经做过了。
+                            if send_binary(&mut sink, &bytes).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        let Some(m) = m else { continue };
                         let terminal = matches!(m, ServerMsg::Finished { .. } | ServerMsg::Failed { .. });
                         // 消息的终结性与槽位的可复用性**不是同一个集合**:
                         // `Error{Internal}`(建目录 / 写 meta 失败)也意味着那个
@@ -371,6 +384,43 @@ where
 {
     let json = serde_json::to_string(m).expect("ServerMsg 一定能序列化");
     sink.send(Message::Text(json.into())).await
+}
+
+/// 发裸的 `.gia` 字节。
+async fn send_binary<S>(sink: &mut S, bytes: &[u8]) -> Result<(), axum::Error>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    sink.send(Message::Binary(bytes.to_vec().into())).await
+}
+
+/// 任务往读循环递的东西:一条 [`ServerMsg`],外加**可选的产物字节**。
+///
+/// 产物单独走二进制帧而不是塞进 JSON —— `.gia` 是一堆非 UTF-8 的字节,
+/// JSON 里只能 base64(体积 +33%)或者退化成字符串数组。分成两帧之后
+/// 「控制消息」与「二进制数据」在协议上就分开了,前端也是同一套
+/// `WebSocket.binaryType` 处理器接。
+enum Outbound {
+    Msg(ServerMsg),
+    /// 编译成功后的产物,紧跟在其 `Finished` 之后发。
+    Artifact(Vec<u8>),
+}
+
+impl Outbound {
+    /// 拆成「要发的那条消息」与「紧随其后的产物」。二者只会有一个有值 ——
+    /// 产物是独立的一帧,由 `run_one` 在 `Finished` **之后**再排一条。
+    fn split(self) -> (Option<ServerMsg>, Option<Vec<u8>>) {
+        match self {
+            Outbound::Msg(m) => (Some(m), None),
+            Outbound::Artifact(b) => (None, Some(b)),
+        }
+    }
+}
+
+impl From<ServerMsg> for Outbound {
+    fn from(m: ServerMsg) -> Self {
+        Outbound::Msg(m)
+    }
 }
 
 fn bad_request(why: impl Into<String>) -> ServerMsg {
@@ -420,7 +470,7 @@ fn start(
     ip: &str,
     source: String,
     target: Option<String>,
-    tx: &mpsc::UnboundedSender<ServerMsg>,
+    tx: &mpsc::UnboundedSender<Outbound>,
 ) -> Result<(String, JoinHandle<()>), ServerMsg> {
     validate_submit(&source, target.as_deref())?;
     // 校验过一次就把它定下来:下面 meta 与 JobSpec 都要用它。漏掉任何
@@ -453,7 +503,7 @@ fn start(
             position: ticket.position(),
             queue: snap.waiting,
             max_jobs: snap.max_jobs,
-        });
+        }.into());
     }
 
     let state = Arc::clone(state);
@@ -468,10 +518,12 @@ fn start(
         let _ = tx.send(ServerMsg::Started {
             task: task.clone(),
             image_commit: commit.clone(),
-        });
+        }.into());
 
-        let outcome = run_one(&state, &task, &source, &tag, &commit, &target, &tx).await;
-        let _ = tx.send(outcome);
+        // 成功时是两条:`finished` + 产物二进制帧;失败时只有一条。
+        for o in run_one(&state, &task, &source, &tag, &commit, &target, &tx).await {
+            let _ = tx.send(o);
+        }
         // _guard 与 ticket 在这里 drop:额度、IP、镜像计数一起还。
     });
     Ok((spawned, handle))
@@ -484,12 +536,12 @@ async fn run_one(
     tag: &str,
     commit: &str,
     target: &str,
-    tx: &mpsc::UnboundedSender<ServerMsg>,
-) -> ServerMsg {
+    tx: &mpsc::UnboundedSender<Outbound>,
+) -> Vec<Outbound> {
     let paths = match state.jobs.prepare(task, source) {
         Ok(p) => p,
         Err(e) => {
-            return err(ErrorCode::Internal, format!("建任务目录失败:{e}"));
+            return vec![err(ErrorCode::Internal, format!("建任务目录失败:{e}")).into()];
         }
     };
     let meta = JobMeta {
@@ -504,7 +556,7 @@ async fn run_one(
         source_bytes: source.len(),
     };
     if let Err(e) = state.jobs.write_meta(&paths, &meta) {
-        return err(ErrorCode::Internal, format!("写 meta 失败:{e}"));
+        return vec![err(ErrorCode::Internal, format!("写 meta 失败:{e}")).into()];
     }
 
     let spec = JobSpec {
@@ -522,17 +574,26 @@ async fn run_one(
             task: sink_task.clone(),
             stream,
             text: text.to_string(),
-        });
+        }.into());
     });
 
     match state.runner.run(&spec, log).await {
-        Ok(out) => ServerMsg::Finished {
-            task: task.to_string(),
-            ok: true,
-            bytes: out.artifact_bytes,
-            download: format!("/artifact/{task}"),
-        },
-        Err(e) => describe_error(&e, task),
+        Ok(out) => {
+            let bytes = out.artifact_bytes();
+            // 先 `finished`,再产物 —— 前端收到前者就知道「等一个二进制帧」,
+            // 收到后者才把下载按钮点亮。顺序反了会让人对着一个还看不见的
+            // 按钮等。
+            vec![
+                ServerMsg::Finished {
+                    task: task.to_string(),
+                    ok: true,
+                    bytes,
+                }
+                .into(),
+                Outbound::Artifact(out.artifact),
+            ]
+        }
+        Err(e) => vec![describe_error(&e, task).into()],
     }
 }
 
@@ -546,7 +607,7 @@ mod tests {
         config::resolve,
         gc::DiskGate,
         image::ImageRegistry,
-        job::{ARTIFACT_NAME, JobStore},
+        job::JobStore,
         queue::Queue,
         repo::Repo,
         server::http::{router, AppState},
@@ -701,6 +762,20 @@ mod tests {
             }
         }
         out
+    }
+
+    /// 读一条二进制帧。**中间的文本帧会被跳过** —— 调用方只关心产物。
+    async fn read_binary(ws: &mut Ws) -> Vec<u8> {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("产物来晚了")
+                .expect("连接断了")
+                .unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Binary(b) = msg {
+                return b.to_vec();
+            }
+        }
     }
 
     async fn connect(url: &str) -> Ws {
@@ -985,17 +1060,59 @@ mod tests {
             other => panic!("期望 log,得到 {other:?}"),
         }
         let task = match &msgs[2] {
-            ServerMsg::Finished { ok, bytes, download, task } => {
+            ServerMsg::Finished { ok, bytes, task } => {
                 assert!(*ok);
                 assert_eq!(*bytes, 15860);
-                assert_eq!(download, &format!("/artifact/{task}"));
                 task.clone()
             }
             other => panic!("期望 finished,得到 {other:?}"),
         };
         assert_eq!(runner.calls(), vec![task.clone()], "任务 id 要和 runner 收到的一致");
-        assert!(st.jobs.artifact_of(&task).is_some(), "产物要真落在盘上");
         assert_eq!(st.queue.snapshot().running, 0, "跑完要把额度还回去");
+
+        // 产物紧跟在 finished 之后,以裸字节二进制帧过来。
+        assert_eq!(read_binary(&mut ws).await, vec![0u8; 15860]);
+    }
+
+    #[tokio::test]
+    async fn the_artifact_arrives_as_a_binary_frame_and_never_touches_the_disk() {
+        let runner = FakeRunner::new(Behavior::Ok {
+            lines: vec![(Stream::Stdout, "Compiling
+".into())],
+            bytes: 5,
+        });
+        let (_d, url, st) = spawn(Arc::clone(&runner)).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await; // hello
+        send(&mut ws, submit("fn main() {}")).await;
+        let msgs = read_n(&mut ws, 3).await; // started / log / finished
+        let task = match &msgs[2] {
+            ServerMsg::Finished { task, .. } => task.clone(),
+            other => panic!("期望 finished,得到 {other:?}"),
+        };
+        assert_eq!(read_binary(&mut ws).await, vec![0u8; 5]);
+        assert!(
+            !st.jobs.tasks_root().join(&task).join("out").exists(),
+            "产物不许落宿主盘:目录里连 out/ 都不该有"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_compile_sends_no_artifact_frame() {
+        // 失败路径不能顺手补一个空二进制帧:前端会把 0 字节当成一次产物。
+        let (_d, url, _st) = spawn(FakeRunner::new(Behavior::Fail { lines: vec![], code: 101 })).await;
+        let mut ws = connect(&url).await;
+        read_n(&mut ws, 1).await;
+        send(&mut ws, submit("fn main() {}")).await;
+        let msgs = read_n(&mut ws, 2).await; // started / failed
+        assert!(matches!(msgs[1], ServerMsg::Failed { .. }), "{:?}", msgs[1]);
+        let next = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
+        let closed = match &next {
+            Ok(None) | Err(_) => true,
+            Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))) => true,
+            _ => false,
+        };
+        assert!(closed, "failed 之后不该再有产物帧,却收到 {next:?}");
     }
 
     #[tokio::test]
@@ -1050,6 +1167,8 @@ mod tests {
         send(&mut ws, submit("fn main() {}")).await;
         let msgs = read_n(&mut ws, 3).await; // started / log / finished
         assert!(matches!(msgs[2], ServerMsg::Finished { .. }), "{:?}", msgs[2]);
+        // 第一单收尾时还有一帧产物要排空,否则下面读到的是它而不是回音。
+        read_binary(&mut ws).await;
 
         send(&mut ws, submit("fn main() {}")).await;
         let back = tokio::time::timeout(Duration::from_secs(5), ws.next())
@@ -1379,9 +1498,5 @@ mod tests {
         assert_eq!(meta.image_commit, "aaa1111");
         assert_eq!(meta.target, "beyond-server");
         assert_eq!(meta.source_bytes, "fn main() {}".len());
-        assert_eq!(
-            st.jobs.artifact_of(&task).unwrap().file_name().unwrap(),
-            ARTIFACT_NAME
-        );
     }
 }

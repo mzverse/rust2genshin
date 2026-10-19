@@ -160,13 +160,12 @@ impl SessionMaker {
         let tag = self.baker.status().serving_tag?;
         let name = format!("r2g-ra-{}", self.next.fetch_add(1, Ordering::SeqCst));
 
-        // 2. 待命容器。不挂 demo/src、不挂 /out:RA 的 workspace 在镜像内,
+        // 2. 待命容器。不挂 demo/src:RA 的 workspace 在镜像内,
         //    源码由 `write_source` 灌进去。
         let spec = RunSpec {
             name: name.clone(),
             image: tag,
             src_dir: PathBuf::new(),
-            out_dir: PathBuf::new(),
             workdir: RA_WORKDIR.into(),
             // RA 容器只跑 `dd`/`sleep`,不跑 `container_command` ——
             // 目标选择对分析工作区没有意义,给个默认值满足结构体。

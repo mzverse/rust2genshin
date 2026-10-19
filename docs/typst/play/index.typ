@@ -133,9 +133,10 @@
           #html_elem("pre", id: "play-log", class: "play-log")
         ]
         #html_elem("div", class: "play-panel", id: "play-panel-preview", attrs: ("hidden": ""))[
-          #html_elem("div", class: "play-preview")[
-            节点图预览还在做,敬请期待。
-          ]
+          // 这一格**故意留空**(连空白字符都没有):`.play-preview:empty::before`
+          // 会在它空着的时候画出「待编译」。写成 `#html_elem("div", class: "play-preview")[]` 就会
+          // 多出一个缩进换行的文本节点,`:empty` 立刻不成立。
+          #html_elem("div", class: "play-preview")
         ]
       ]
   ]

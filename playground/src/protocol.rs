@@ -84,11 +84,13 @@ pub enum ServerMsg {
         stream: Stream,
         text: String,
     },
+    /// 编译成功。**产物紧跟着这一条以二进制帧发过来**(裸 `.gia` 字节,
+    /// 见 [`crate::server::ws`]),不再有下载链接 —— 产物只在服务与前端
+    /// 的内存里各存一份,宿主磁盘上不留副本。
     Finished {
         task: String,
         ok: bool,
         bytes: u64,
-        download: String,
     },
     /// 客户端点了「取消」,服务端已经把那一单 abort 掉了。
     ///
@@ -313,7 +315,6 @@ mod tests {
             task: "t1".into(),
             ok: true,
             bytes: 15860,
-            download: "/artifact/t1".into(),
         };
         assert_eq!(round_trip(&m), m);
         // `bytes` 必须是 **JSON 数字**(不是字符串),`ok` 是 bool ——
@@ -325,7 +326,6 @@ mod tests {
                 "task": "t1",
                 "ok": true,
                 "bytes": 15860,
-                "download": "/artifact/t1",
             })
         );
         assert!(serde_json::to_value(&m).unwrap()["bytes"].is_number());

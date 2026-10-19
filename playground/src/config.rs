@@ -26,11 +26,13 @@ pub struct Config {
     /// 多久给连接发一个 WebSocket ping。**别关掉**:前面那层 nginx 的 stream
     /// 模块按「最后一次有字节」掐空闲连接(`proxy_timeout`),排队等镜像的
     /// 那几十秒里一条业务消息都没有,不给它续命连接就被悄悄关掉,`finished`
-    /// 连同 .gia 下载链接一起丢在半路。
+    /// 连同紧随其后的 .gia 二进制帧一起丢在半路。
     pub keepalive: Duration,
     pub keep_images: usize,
     pub build_cache_max: u64,
     pub min_free_disk: u64,
+    /// 任务目录(`src/` 与 `meta.json`)的保留时长。产物不落盘了 —— 这个
+    /// 值现在管的是**源码**那份拷贝,不是 .gia。
     pub artifact_ttl: Duration,
     pub allowed_origins: Vec<String>,
     pub trust_proxy: bool,

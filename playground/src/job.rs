@@ -1,10 +1,13 @@
-//! 任务目录:`<data>/tasks/<task-id>/{src/lib.rs, out/rust2genshin_demo.gia, meta.json}`
+//! 任务目录:`<data>/tasks/<task-id>/{src/lib.rs, meta.json}`
 //!
 //! 这里有一处**必须**做对的地方:每次任务都要**新写** `src/lib.rs`,
 //! 不能复制文件时保留原 mtime。cargo 的失效判定是 mtime 比较 —— 用户这份
 //! 文件如果比镜像里烘焙时那份产物还旧,cargo 会认为 `rust2genshin-demo`
 //! 是 fresh、跳过编译,容器就把**烘焙时那个样例编出的 .gia** 当用户的结果
 //! 交出去。一个没有任何报错的错答案。新写文件天然让 mtime 是"现在"。
+//!
+//! 任务目录里**只有源码**:产物不落宿主盘,它留在容器里,编译完用
+//! `docker cp <容器>:<路径> -` 当 tar 流取回内存(见 [`crate::runner`])。
 
 use std::{
     fs,
@@ -18,15 +21,14 @@ use std::{
 pub struct JobPaths {
     pub dir: PathBuf,
     pub src_dir: PathBuf,
-    pub out_dir: PathBuf,
-    /// 容器里 `cp ... /out/` 落下来的位置,也就是挂载回宿主后的路径。
-    pub artifact: PathBuf,
 }
 
+/// 产物文件名。宿主上只是**拼进容器内路径**用的常量
+/// (见 [`crate::docker::container_artifact_path`])。
 pub const ARTIFACT_NAME: &str = "rust2genshin_demo.gia";
 
-/// 只允许 `[A-Za-z0-9-]`,长度 1..=64。id 是服务自己生成的,这个函数是
-/// `/artifact/<id>` 的输入校验 —— 它挡的是 `../` 那类构造,不是用户输入错误。
+/// 只允许 `[A-Za-z0-9-]`,长度 1..=64。id 是服务自己生成的,这个函数挡的是
+/// `../` 那类构造 —— `meta.json` 的路径是由它拼出来的。
 pub fn is_valid_task_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -76,36 +78,20 @@ impl JobStore {
         assert!(is_valid_task_id(task), "任务 id 由 new_task_id() 生成");
         let dir = self.tasks_root.join(task);
         let src_dir = dir.join("src");
-        let out_dir = dir.join("out");
         fs::create_dir_all(&src_dir)?;
-        fs::create_dir_all(&out_dir)?;
 
-        // out/ 是宿主目录 bind mount 进容器,容器以 uid 1001 跑。
-        // Linux 上服务进程多半不是 1001,不给 0777 的话容器写不进去。
+        // src/ 是宿主目录 bind mount 进容器(只读),容器以 uid 1001 跑。
+        // Linux 上服务进程多半不是 1001,不给 0755 的话容器读不到。
         // Windows / macOS 的 Docker Desktop 忽略这个位,无害。
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&out_dir, fs::Permissions::from_mode(0o777))?;
             fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o755))?;
         }
 
         // 不要拷贝:拷贝会保留原 mtime。见文件头那段。
         fs::write(src_dir.join("lib.rs"), source)?;
-        Ok(JobPaths {
-            artifact: out_dir.join(ARTIFACT_NAME),
-            dir,
-            src_dir,
-            out_dir,
-        })
-    }
-
-    pub fn artifact_of(&self, task: &str) -> Option<PathBuf> {
-        if !is_valid_task_id(task) {
-            return None;
-        }
-        let p = self.tasks_root.join(task).join("out").join(ARTIFACT_NAME);
-        p.is_file().then_some(p)
+        Ok(JobPaths { dir, src_dir })
     }
 
     pub fn meta_of(&self, task: &str) -> PathBuf {
@@ -162,12 +148,12 @@ mod tests {
         let (_d, s) = store();
         let p = s.prepare("t1", "fn main() {}").unwrap();
         assert!(p.src_dir.is_dir());
-        assert!(p.out_dir.is_dir());
         assert_eq!(
             fs::read_to_string(p.src_dir.join("lib.rs")).unwrap(),
             "fn main() {}"
         );
-        assert_eq!(p.artifact, p.out_dir.join(ARTIFACT_NAME));
+        // 产物不落宿主盘:任务目录里除了 src 和 meta.json 不该有别的东西。
+        assert!(!p.dir.join("out").exists());
     }
 
     #[test]
@@ -183,7 +169,7 @@ mod tests {
         // 造一个"烘焙时的产物",mtime 是一小时前。
         let (_d, s) = store();
         let p = s.prepare("t1", "old").unwrap();
-        let baked = p.out_dir.join("baked.gia");
+        let baked = p.dir.join("baked.gia");
         fs::write(&baked, b"baked").unwrap();
         let long_ago = SystemTime::now() - Duration::from_secs(3600);
         let f = fs::File::options().write(true).open(&baked).unwrap();
@@ -204,15 +190,6 @@ mod tests {
         let p = s.prepare("t1", "x").unwrap();
         fs::remove_dir_all(&p.dir).unwrap();
         assert!(s.prepare("t1", "y").is_ok(), "服务在跑时 cargo clean 删掉 target/ 也要能扛");
-    }
-
-    #[tokio::test]
-    async fn artifact_of_is_none_before_the_task_ran() {
-        let (_d, s) = store();
-        assert_eq!(s.artifact_of("t1"), None);
-        let p = s.prepare("t1", "x").unwrap();
-        fs::write(&p.artifact, b"gia").unwrap();
-        assert_eq!(s.artifact_of("t1"), Some(p.artifact));
     }
 
     #[test]

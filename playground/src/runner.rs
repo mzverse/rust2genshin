@@ -1,11 +1,15 @@
 //! 跑一个任务容器。
 //!
-//! 退出码非 0 → 编译失败;**退出码 0 但没有 `/out/*.gia` 也判失败** ——
-//! 那会给出一个指向不存在文件的下载链接,或者更糟:把上一次的产物当成
-//! 这一次的结果。超时是唯一需要服务自己解释的失败(要带上已用时),其余
-//! 一律把 cargo 的原文推给前端,服务不解析。
+//! 退出码非 0 → 编译失败;**退出码 0 但取不到产物也判失败** ——
+//! 那会把一次「其实没编出东西」的编译报成成功。超时是唯一需要服务自己
+//! 解释的失败(要带上已用时),其余一律把 cargo 的原文推给前端,服务不解析。
+//!
+//! 产物**不落宿主盘**:容器跑完(且**没有** `--rm`)之后用
+//! `docker cp <容器>:<路径> -` 把 tar 流从 stdout 读回来,解出 `.gia`
+//! 的字节直接交给上层推给前端。这样服务不需要 `out/` 目录、不留副本,
+//! 也没有一条能被猜 id 读走的 HTTP 路由。
 
-use std::{sync::Arc, time::Duration};
+use std::{io::Read, sync::Arc, time::Duration};
 
 use thiserror::Error;
 
@@ -28,7 +32,14 @@ pub struct JobSpec {
 pub struct RunOutcome {
     pub exit_code: Option<i32>,
     pub elapsed: Duration,
-    pub artifact_bytes: u64,
+    /// `.gia` 的字节。**已经在内存里** —— 上层直接推给前端,不再落盘。
+    pub artifact: Vec<u8>,
+}
+
+impl RunOutcome {
+    pub fn artifact_bytes(&self) -> u64 {
+        self.artifact.len() as u64
+    }
 }
 
 #[derive(Debug, Error)]
@@ -41,14 +52,16 @@ pub enum RunnerError {
     Timeout(Duration),
     #[error("解析容器输出失败:{0}")]
     Decode(#[from] FrameError),
+    #[error("从容器里取产物失败:{0}")]
+    Fetch(String),
 }
 
 pub type LogSink = Arc<dyn Fn(Stream, &str) + Send + Sync>;
 
-/// 只有"退出码 0 且产物在"才算成功。产物大小由调用方给出(`None` = 文件不在)。
-pub fn verdict(code: Option<i32>, artifact_bytes: Option<u64>) -> Result<u64, RunnerError> {
-    match (code, artifact_bytes) {
-        (Some(0), Some(n)) => Ok(n),
+/// 只有"退出码 0 且产物取到了"才算成功。
+pub fn verdict(code: Option<i32>, artifact: Option<Vec<u8>>) -> Result<Vec<u8>, RunnerError> {
+    match (code, artifact) {
+        (Some(0), Some(bytes)) if !bytes.is_empty() => Ok(bytes),
         (code, _) => Err(RunnerError::NoArtifact { code }),
     }
 }
@@ -118,19 +131,20 @@ impl DockerRunner {
     }
 }
 
-/// 容器的兜底守卫:**只要容器没被证实退出,`Drop` 就补一发 `docker kill`**。
+/// 容器的兜底守卫:**只要容器没被证实收干净,`Drop` 就补一发 `docker rm -f`**。
 ///
 /// 为什么必须有它:任务 future 会被上层 `JoinHandle::abort()` 取消(用户点
-/// cancel / 关标签页)。abort 是**直接把 future 丢掉** —— `run` 里那些
-/// `docker kill` 一行都不会跑,而 `--rm` 只在容器**退出时**清理。一个
-/// `loop {}` 的容器被丢下就会一直跑,一直占着 2 个 CPU + 1.5GB。
+/// cancel / 关标签页)。abort 是**直接把 future 丢掉** —— `run` 里那条
+/// `docker rm` 一行都不会跑,而任务容器**故意不带 `--rm`**(产物要等
+/// `docker cp` 之后才取)。一个 `loop {}` 的容器被丢下就会一直跑,一直占着
+/// 2 个 CPU + 1.5GB,还在镜像里留一个容器条目。
 ///
 /// 用 `std::process::Command` 而不是 tokio:`Drop` 里没法 await,而这一发
 /// 只要求"发出去、有人收尸",不要求看着它结束。
 struct ContainerGuard {
     docker: String,
     name: String,
-    /// 已经确认容器退出了(正常 `wait()` 返回)。
+    /// 容器已经被证实收掉(正常 `wait()` 后我们主动 `docker rm -f` 过)。
     exited: std::sync::atomic::AtomicBool,
 }
 
@@ -143,7 +157,7 @@ impl ContainerGuard {
         }
     }
 
-    /// 容器确认退出 —— 之后不再补刀。
+    /// 容器确认收干净 —— 之后不再补刀。
     fn mark_exited(&self) {
         self.exited
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -158,7 +172,7 @@ impl Drop for ContainerGuard {
         }
         // best-effort:这一步没有第二条路可走,失败只能吭声。
         match Command::new(&self.docker)
-            .args(crate::docker::kill_args(&self.name))
+            .args(crate::docker::rm_args(&self.name))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -167,7 +181,7 @@ impl Drop for ContainerGuard {
             Ok(mut c) => {
                 tracing::warn!(
                     target: "runner",
-                    "容器 {} 未确认退出,已补发 docker kill",
+                    "容器 {} 未确认收掉,已补发 docker rm -f",
                     self.name
                 );
                 // 收尸:不 wait 会留僵尸。短命线程,不值得上线程池。
@@ -177,7 +191,7 @@ impl Drop for ContainerGuard {
             }
             Err(e) => tracing::warn!(
                 target: "runner",
-                "容器 {} 未确认退出,补发 docker kill 失败:{e};容器可能残留",
+                "容器 {} 未确认收掉,补发 docker rm -f 失败:{e};容器可能残留",
                 self.name
             ),
         }
@@ -192,7 +206,6 @@ impl JobRunner for DockerRunner {
             name: name.clone(),
             image: job.image_tag.clone(),
             src_dir: job.paths.src_dir.clone(),
-            out_dir: job.paths.out_dir.clone(),
             workdir: self.opts.workdir.clone(),
             target: job.target.clone(),
             cpus: self.opts.cpus,
@@ -236,12 +249,10 @@ impl JobRunner for DockerRunner {
         let mut timed_out = false;
         let status = match tokio::time::timeout(self.opts.timeout, child.wait()).await {
             Ok(Ok(s)) => {
-                // 只有拿到退出码才算"容器确认退出"。`child.wait()` 成功但
-                // `code()` 为 `None` 时,docker CLI 是被信号杀死的 —— daemon
-                // 侧的容器可能还活着。这时不卸甲,交给守卫的 Drop 去补刀。
-                if s.code().is_some() {
-                    guard.mark_exited();
-                }
+                // 这里**不卸甲**:守卫现在管的是「容器有没有被收掉」,而
+                // 容器不带 `--rm`,`docker run` 正常退出后条目还在,得由
+                // 后面那次显式 `docker rm -f` 才算收干净。`code()` 为
+                // `None` 更是明显没走正常路径。
                 Some(s)
             }
             // `wait()` 自己报错:读不到容器状态,不卸甲,让守卫兜底。
@@ -249,29 +260,29 @@ impl JobRunner for DockerRunner {
             Err(_) => {
                 timed_out = true;
                 // 光 kill CLI 不够:容器由 daemon 持着,CLI 只是个 attached
-                // client。必须先 `docker kill`,再收 CLI。
+                // client。必须先让 daemon 把容器收掉,再收 CLI。
                 //
                 // 两层封顶:这一发自己不许无限等;清不掉就**不卸甲**,
                 // 交给守卫的 Drop 再补一发。
                 match tokio::time::timeout(
                     FORCED_STOP_TIMEOUT,
-                    self.docker(&crate::docker::kill_args(&name)),
+                    self.docker(&crate::docker::rm_args(&name)),
                 )
                 .await
                 {
                     Ok(Ok(out)) if out.status.success() => guard.mark_exited(),
                     Ok(Ok(out)) => tracing::warn!(
                         target: "runner",
-                        "docker kill {name} 退出码 {:?};交给兜底守卫重试",
+                        "docker rm -f {name} 退出码 {:?};交给兜底守卫重试",
                         out.status.code()
                     ),
                     Ok(Err(e)) => tracing::warn!(
                         target: "runner",
-                        "docker kill {name} 起不来:{e};交给兜底守卫重试"
+                        "docker rm -f {name} 起不来:{e};交给兜底守卫重试"
                     ),
                     Err(_) => tracing::warn!(
                         target: "runner",
-                        "docker kill {name} 超过 {FORCED_STOP_TIMEOUT:?};交给兜底守卫重试"
+                        "docker rm -f {name} 超过 {FORCED_STOP_TIMEOUT:?};交给兜底守卫重试"
                     ),
                 }
                 let _ = child.kill().await;
@@ -303,17 +314,93 @@ impl JobRunner for DockerRunner {
             Err(_join) => {}
         }
 
-        // 产物已经落在宿主挂进来的 out/ 上;容器由上面的守卫保证会被收掉
-        // (`--rm` 只在容器**退出**时清理,杀不掉的容器它管不了)。
-        let bytes = std::fs::metadata(&job.paths.artifact).ok().map(|m| m.len());
+        // 产物在容器自己的文件系统里 —— 现在去取。**取完才算成功**,
+        // 顺序不能反:先 rm 容器,产物就跟着没了。
+        //
+        // 只在容器确实停了之后取:cp 报"容器不在运行"比报"文件不存在"更难懂,
+        // 而 verdict 已经会把退出码非 0 的那次判成失败。
         let code = status.as_ref().and_then(|s| s.code());
-        let n = verdict(code, bytes)?;
+        let artifact = match self.fetch_artifact(&name, &spec).await {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                // 取不出来本身不是最终结论:退出码非 0 时真正的错因是编译失败,
+                // 把 verdict 的 `NoArtifact { code }` 留给上层,别抢它的台词。
+                tracing::warn!(target: "runner", "取产物失败:{e}");
+                None
+            }
+        };
+
+        // 收容器。守卫的 Drop 是兜底,这里是正常路径 —— 成功了就卸甲,
+        // 不让每次编译都在日志里留一条「已补发 docker rm -f」。
+        match self.docker(&crate::docker::rm_args(&name)).await {
+            Ok(out) if out.status.success() => guard.mark_exited(),
+            Ok(out) => tracing::warn!(
+                target: "runner",
+                "docker rm -f {name} 退出码 {:?};交给兜底守卫重试",
+                out.status.code()
+            ),
+            Err(e) => tracing::warn!(
+                target: "runner",
+                "docker rm -f {name} 起不来:{e};交给兜底守卫重试"
+            ),
+        }
+
+        let artifact = verdict(code, artifact)?;
         Ok(RunOutcome {
             exit_code: code,
             elapsed,
-            artifact_bytes: n,
+            artifact,
         })
     }
+}
+
+impl DockerRunner {
+    /// `docker cp <容器>:<路径> -` 把产物作为 tar 流读回来,解出文件内容。
+    ///
+    /// tar 里可能有前导的 pax 头,也可能有多条记录;取**最后一个**普通文件
+    /// 条目的内容 —— `docker cp` 对单文件产出的是一条记录,多取是为了容错
+    /// 老版本 docker 附带的元数据条目。全程在内存里,宿主一个字节都不落。
+    async fn fetch_artifact(
+        &self,
+        name: &str,
+        spec: &crate::docker::RunSpec,
+    ) -> Result<Vec<u8>, String> {
+        let path = crate::docker::container_artifact_path(spec);
+        let out = self
+            .docker(&crate::docker::cp_args(name, &path))
+            .await
+            .map_err(|e| format!("docker cp 起不来:{e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "docker cp 退出码 {:?}:{}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        extract_one(&out.stdout)
+    }
+}
+
+/// 从一段 tar 字节里取出唯一的普通文件内容。
+fn extract_one(tar: &[u8]) -> Result<Vec<u8>, String> {
+    let mut ar = tar::Archive::new(std::io::Cursor::new(tar));
+    let mut found: Option<Vec<u8>> = None;
+    let entries = ar
+        .entries()
+        .map_err(|e| format!("产物不是合法 tar:{e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar 条目损坏:{e}"))?;
+        // 目录 / 符号链接没有内容可取,跳过。
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("读 tar 条目失败:{e}"))?;
+        found = Some(buf);
+    }
+    found.ok_or_else(|| "tar 里没有普通文件条目".to_string())
 }
 
 async fn read_frames<R>(r: R, log: LogSink) -> Result<(), FrameError>
@@ -345,13 +432,13 @@ mod tests {
     fn zero_exit_with_artifact_is_ok() {
         // `RunnerError` 里有 `std::io::Error`(非 `PartialEq`),`Result` 整体比不了,
         // 所以取 `Ok` 的那一侧比较 —— 断言的意思不变。
-        assert_eq!(verdict(Some(0), Some(15860)).unwrap(), 15860);
+        assert_eq!(verdict(Some(0), Some(vec![7u8; 8])).unwrap(), vec![7u8; 8]);
     }
 
     #[test]
     fn nonzero_exit_is_failure_even_with_artifact() {
         // cargo 有时会先写产物再报错(后端自己 warn/err 也算非 0)。
-        match verdict(Some(101), Some(100)) {
+        match verdict(Some(101), Some(vec![0u8; 100])) {
             Err(RunnerError::NoArtifact { code }) => assert_eq!(code, Some(101)),
             other => panic!("期望 NoArtifact,得到 {other:?}"),
         }
@@ -361,6 +448,16 @@ mod tests {
     fn zero_exit_without_artifact_is_failure() {
         // 这条抓的就是"cargo 判 fresh、跳过编译"那种静默错答案。
         match verdict(Some(0), None) {
+            Err(RunnerError::NoArtifact { code }) => assert_eq!(code, Some(0)),
+            other => panic!("期望 NoArtifact,得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_artifact_counts_as_missing() {
+        // 空字节同样判失败:宁可报"没有产物",也别把 0 字节的下载链接
+        // 当成一次成功编译交出去。
+        match verdict(Some(0), Some(Vec::new())) {
             Err(RunnerError::NoArtifact { code }) => assert_eq!(code, Some(0)),
             other => panic!("期望 NoArtifact,得到 {other:?}"),
         }
@@ -380,5 +477,54 @@ mod tests {
         // 变体自己的契约:报的是"超时了多少",不是"没有产物"。
         let e = RunnerError::Timeout(Duration::from_secs(15));
         assert!(e.to_string().contains("15"), "{e}");
+    }
+
+    /// 造一个只含单个文件的 tar 字节,用来喂 [`extract_one`]。
+    fn tar_of(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(body.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, name, body).unwrap();
+        b.into_inner().unwrap()
+    }
+
+    #[test]
+    fn extract_one_reads_the_single_file_out_of_the_tar() {
+        // 这就是 `docker cp <path> -` 的产物形状:一个 tar,一条记录。
+        let got = extract_one(&tar_of("rust2genshin_demo.gia", b"GIA!")).unwrap();
+        assert_eq!(got, b"GIA!");
+    }
+
+    #[test]
+    fn extract_one_skips_metadata_entries_and_takes_the_file() {
+        // 老版本 docker 的 cp 会在文件前后附目录 / pax 记录;真实内容不能被它们挤掉。
+        let mut b = tar::Builder::new(Vec::new());
+        let mut d = tar::Header::new_gnu();
+        d.set_entry_type(tar::EntryType::Directory);
+        d.set_size(0);
+        d.set_cksum();
+        b.append(&d, std::io::empty()).unwrap();
+        let mut f = tar::Header::new_gnu();
+        f.set_size(4);
+        f.set_mode(0o644);
+        f.set_cksum();
+        b.append_data(&mut f, "nested/rust2genshin_demo.gia", &b"GIA!"[..])
+            .unwrap();
+        let raw = b.into_inner().unwrap();
+        assert_eq!(extract_one(&raw).unwrap(), b"GIA!");
+    }
+
+    #[test]
+    fn extract_one_rejects_a_tar_without_a_file() {
+        // 只有目录的 tar 要报"没有普通文件",而不是把空 Vec 当产物交出去。
+        let mut b = tar::Builder::new(Vec::new());
+        let mut d = tar::Header::new_gnu();
+        d.set_entry_type(tar::EntryType::Directory);
+        d.set_size(0);
+        d.set_cksum();
+        b.append(&d, std::io::empty()).unwrap();
+        assert!(extract_one(&b.into_inner().unwrap()).is_err());
     }
 }

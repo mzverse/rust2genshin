@@ -4,7 +4,7 @@
 
 #set raw(lang: "rust");
 
-`rust2genshin-playground` 是文档站#link("/play/index.html")[「摆弄」页]的后端：一个独立的 web 服务，接受一份 Rust 源码，排队、在*一次性 docker 容器*里跑 `cargo build`，把日志实时推回浏览器，成功后给出可下载的 `.gia`。
+`rust2genshin-playground` 是文档站#link("/play/index.html")[「摆弄」页]的后端：一个独立的 web 服务，接受一份 Rust 源码，排队、在*一次性 docker 容器*里跑 `cargo build`，把日志实时推回浏览器，成功后把 `.gia` 经 WebSocket 二进制帧送回浏览器（不落服务端磁盘、无下载路由）。
 
 它是*服务*而不是*构建工具* —— 编译环境由它自己维护：从本地仓库烘一份镜像（工具链 + 预热好的依赖），每个任务起一个一次性容器；`main` 的 push 触发重烘焙。
 
@@ -37,12 +37,12 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_MAX_QUEUE`], [`64`], [排队等待的任务数上限；超出后新任务被拒。],
     [`PLAYGROUND_JOB_TIMEOUT`], [`15`], [单个任务的超时，*秒*。],
     [`PLAYGROUND_JOB_CPUS`], [`2`], [任务容器的 CPU 限额。设成 `0` 或 `none` 则*不加* `--cpus` —— 宿主的 cgroup 没挂 cpu 控制器时，docker 会拒掉整个 `docker run`（`NanoCPUs can not be set…`），退出码 125，一条任务日志都没有。],
-    [`PLAYGROUND_KEEPALIVE`], [`25`], [空闲连接多久发一个 WebSocket ping，*秒*。必须*短于*前面那层 nginx stream 的 `proxy_timeout`（部署上是 60s）：排队等镜像时一条业务消息都没有，不主动出声连接会被 nginx 悄悄关掉，`finished` 连同 `.gia` 下载链接一起丢在半路。],
+    [`PLAYGROUND_KEEPALIVE`], [`25`], [空闲连接多久发一个 WebSocket ping，*秒*。必须*短于*前面那层 nginx stream 的 `proxy_timeout`（部署上是 60s）：排队等镜像时一条业务消息都没有，不主动出声连接会被 nginx 悄悄关掉，`finished` 连同紧随其后的 `.gia` 二进制帧一起丢在半路。],
     [`PLAYGROUND_JOB_MEMORY`], [`1536m`], [任务容器的内存限额，同时给 `--memory` 和 `--memory-swap`。设成 `none` 则两个都不加 —— cgroup v1 不支持 `kmem.limit_in_bytes` 时，runc 建容器就会炸（`failed to write 1 to memory.kmem.limit_in_bytes`）。别写 `1.5g`，docker 对小数容量不友好。],
     [`PLAYGROUND_KEEP_IMAGES`], [`2`], [镜像 GC 保留几个最近在用的 tag。],
     [`PLAYGROUND_BUILD_CACHE_MAX`], [`10GB`], [`docker builder prune --keep-storage` 的值 —— 注意是*留到*多少而不是*删到*多少（见「磁盘」）。支持 `10GB` / `512m` / `1024`，倍数一律 1024 进制。],
     [`PLAYGROUND_MIN_FREE_DISK`], [`5GB`], [磁盘水位：低于这个值就不再接新任务。量的是 docker 的 data root（镜像层和 builder cache 都在那），不是数据目录。],
-    [`PLAYGROUND_ARTIFACT_TTL`], [`1800`], [产物的存活时间，*秒*（默认半小时）。过期由后台 GC 清掉。],
+    [`PLAYGROUND_ARTIFACT_TTL`], [`1800`], [任务目录（`src/` 与 `meta.json`）的存活时间，*秒*（默认半小时）。过期由后台 GC 清掉。产物不落盘，见下文。],
     [`PLAYGROUND_ALLOWED_ORIGINS`], [`https://mzverse.github.io,http://127.0.0.1:3000,http://localhost:3000`], [WebSocket 握手时校验的 Origin 白名单，逗号分隔。WebSocket 不受 CORS 保护，这句话就是全部防线（`playground/src/server/mod.rs` 的 `origin_allowed`）。],
     [`PLAYGROUND_TRUST_PROXY`], [`false`], [*只在后端前面确实挂着一个反代时才设 `1`。* 为真时才信 `X-Forwarded-For` 头来决定客户端 IP；否则任何客户端都能伪造这个头，绕过「每 IP 一个任务」的限制（`playground/src/server/mod.rs:19-34` 的 `client_ip`）。],
     [`PLAYGROUND_FORCE_REBAKE`], [`false`], [启动时忽略本地现成的镜像，强制重烘一遍。],
@@ -82,7 +82,7 @@ cargo run -p rust2genshin-playground
 
 两块盘、两套清理，别混起来：
 
-- *任务目录* —— `target/playground/` 下是每个任务的工作目录，按 `PLAYGROUND_ARTIFACT_TTL` 过期清掉。
+- *任务目录* —— `target/playground/` 下是每个任务的工作目录（只有 `src/lib.rs` 与 `meta.json`），按 `PLAYGROUND_ARTIFACT_TTL` 过期清掉。*.gia 不在里面*:它留在容器里，编译完用 `docker cp <容器>:<路径> -` 当 tar 流取回内存。因此任务容器**不带 `--rm`**（否则取不到），清理由 `ContainerGuard` 的 `docker rm -f` 负责。
 - *镜像和 builder cache* —— 走 docker 自己的 data root（不是项目里的 `target/`）。镜像按 label 清，只认本服务烘的那些，*绝不碰宿主上别人的镜像*。
 
 一条要紧的副作用：`docker builder prune` 是*全局*的 —— builder cache 没有 label、在这台机器上被所有项目共享，所以那一下清的是*所有* builder 的缓存，不只是我们的（`playground/src/docker.rs:166-169`）。还有 `PLAYGROUND_BUILD_CACHE_MAX` 传的是 `--keep-storage`，语义是*留到*多少，超预算的丢最旧的。
