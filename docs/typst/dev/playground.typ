@@ -82,7 +82,7 @@ cargo run -p rust2genshin-playground
 
 两块盘、两套清理，别混起来：
 
-- *任务目录* —— `target/playground/` 下是每个任务的工作目录（只有 `src/lib.rs` 与 `meta.json`），按 `PLAYGROUND_ARTIFACT_TTL` 过期清掉。*.gia 不在里面*:它留在容器里，编译完用 `docker cp <容器>:<路径> -` 当 tar 流取回内存。因此任务容器**不带 `--rm`**（否则取不到），清理由 `ContainerGuard` 的 `docker rm -f` 负责。
+- *任务目录* —— `target/playground/` 下是每个任务的工作目录（只有 `src/lib.rs` 与 `meta.json`），按 `PLAYGROUND_ARTIFACT_TTL` 过期清掉。*.gia 不在里面*:它留在容器里，编译完用 `docker cp <容器>:<路径> -` 当 tar 流取回内存。因此任务容器*不带 `--rm`*（否则取不到），清理由 `ContainerGuard` 的 `docker rm -f` 负责。
 - *镜像和 builder cache* —— 走 docker 自己的 data root（不是项目里的 `target/`）。镜像按 label 清，只认本服务烘的那些，*绝不碰宿主上别人的镜像*。
 
 一条要紧的副作用：`docker builder prune` 是*全局*的 —— builder cache 没有 label、在这台机器上被所有项目共享，所以那一下清的是*所有* builder 的缓存，不只是我们的（`playground/src/docker.rs:166-169`）。还有 `PLAYGROUND_BUILD_CACHE_MAX` 传的是 `--keep-storage`，语义是*留到*多少，超预算的丢最旧的。
@@ -150,3 +150,11 @@ cargo test -p rust2genshin-playground
 *工作目录别丢。* `--file` 是按 docker *客户端*的 CWD 解析的，不是按 context 解析。服务得用 `-w <repo_dir>` 起 —— 代码现在会拼绝对路径，但第三方 Dockerfile 未必。
 
 另外这台宿主上 cgroup 的 cpu 与 kmem 控制器都不可用，`PLAYGROUND_JOB_CPUS=0` 和 `PLAYGROUND_JOB_MEMORY=none` 是必须的，见上面的配置表。两个 `LSP_` 版本（`PLAYGROUND_LSP_CPUS=0`、`PLAYGROUND_LSP_MEMORY=none`）同理 —— 它们控制的是 RA 容器，漏掉的话编译照常、编辑框永远「分析中」。
+
+*构建脚本要把 `RUSTUP_HOME` / `CARGO_HOME` 挂到宿主上。* 服务本体的编译跑在一个 `docker run --rm rust:…` 里（`build-playground.sh`），而 `rust-toolchain.toml` 钉的是 nightly —— 不挂缓存的话 `/usr/local/rustup` 与 `/usr/local/cargo` 随容器一起消失，*每次构建都要重下整个 nightly（含 1.5 GB 的 `rustc-dev`）和整个 registry 索引*。这不是慢，是脆：镜像源抖一下（rsproxy 返回 504）构建就整个失败。挂两个宿主目录出去即可：
+
+```shell
+-v "$CACHE/rustup:/cargo-home/rustup" -v "$CACHE/cargo:/cargo-home/cargo"
+```
+
+第一次跑要付一次全量下载的钱（本机约 13 分钟），之后同一份代码重建是*秒级*（本机 2.5 s，`cargo` 自己都在 0.3 s 内 `Finished`）。

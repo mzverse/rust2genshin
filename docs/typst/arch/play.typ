@@ -89,7 +89,7 @@ docker
     [服务端 → 客户端], [`queued`], [排队位次与当前队列长度。],
     [服务端 → 客户端], [`started`], [容器开始跑；带 `task` 与 `image_commit`。],
     [服务端 → 客户端], [`log`], [`{task, stream, text}`；stdout / stderr 分开。],
-    [服务端 → 客户端], [`finished`], [成功；带产物字节数。产物**紧跟其后**以二进制帧发过来。],
+    [服务端 → 客户端], [`finished`], [成功；带产物字节数。产物*紧跟其后*以二进制帧发过来。],
     [服务端 → 客户端], [`failed`], [失败；`exit_code` 可空，`message` 是给用户看的。],
     [服务端 → 客户端], [`cancelled`], [`abort` 本身静默，必须显式回这一条。],
     [服务端 → 客户端], [`error`], [请求被拒：`not_ready` / `ip_busy` / `queue_full` / `bad_request` / `internal`。],
@@ -135,7 +135,7 @@ submit
 两个关键判断：
 
 - *退出码 0 但没产物也是失败*。cargo 判 fresh、跳过编译时，容器会交出上一次的 `.gia` —— 那是没有报错的错答案。
-- *产物不落宿主盘*。容器**故意不带 `--rm`**（否则 `docker cp` 之前文件系统就被删了），跑完用 `docker cp <容器>:<路径> -` 把 tar 从 stdout 读回来解出字节，直接推给前端。清理由 `ContainerGuard` 的 `docker rm -f` 负责。
+- *产物不落宿主盘*。容器*故意不带 `--rm`*（否则 `docker cp` 之前文件系统就被删了），跑完用 `docker cp <容器>:<路径> -` 把 tar 从 stdout 读回来解出字节，直接推给前端。清理由 `ContainerGuard` 的 `docker rm -f` 负责。
 - *判定顺序是超时 → 解码 → verdict*。被 kill 的容器会在帧中间截断，先判解码会把正常超时误报成“读输出失败”。
 
 容器离开正常路径时（用户取消、进程被杀）由 `ContainerGuard::Drop` 补一发 `docker rm -f` —— 任务容器不带 `--rm`，一个死循环容器否则会一直占住 CPU 和内存，还会留下一个容器条目。
@@ -151,7 +151,7 @@ Baker: Idle ─bake→ Baking ─ok→ Ready(serving)
                        └─fail→ Ready(旧 serving) + baking.state = failed
 ```
 
-*镜像身份由两个值组成*：tag 是 `镜像:短sha[-dirty]`，label 是**全长 sha**。GC 按 label 找，启动复用按 label 读 commit，二者必须同时对上才能算同一份镜像。
+*镜像身份由两个值组成*：tag 是 `镜像:短sha[-dirty]`，label 是*全长 sha*。GC 按 label 找，启动复用按 label 读 commit，二者必须同时对上才能算同一份镜像。
 
 几条设计约束：
 
@@ -190,13 +190,13 @@ server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docke
 
 *编辑器只借 CodeMirror 的词法层*：`@codemirror/lang-rust` 提供括号匹配等结构信息，*不装* `syntaxHighlighting`；颜色全部来自服务端语义 token。缩进是自写的 `indentService`（`lang-rust` 没有提供任何缩进规则）。
 
-Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个包会拖进第二份 `@codemirror/view`，facet 值认不出来。有选区时 Tab 给选区覆盖的每一行加一个 `indentUnit`（空行跳过），Shift+Tab 从行首削掉一个单位；选区终点落在下一行行首时那一行不算。缩进单位走 `languageDataAt("indentUnit", pos)`，退化的情形（页面里不会发生）才回落到常量 `INDENT`。派发事务时**不给** `selection`：不给的话 CodeMirror 默认把选区跟着 `changes` 映射，正是这里要的；写成 `{ ranges, map: true }` 反而过不了校验 —— esm.sh 拉回来的 `@codemirror/state` 与 view 内那份不是同一个实例。
+Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个包会拖进第二份 `@codemirror/view`，facet 值认不出来。有选区时 Tab 给选区覆盖的每一行加一个 `indentUnit`（空行跳过），Shift+Tab 从行首削掉一个单位；选区终点落在下一行行首时那一行不算。缩进单位走 `languageDataAt("indentUnit", pos)`，退化的情形（页面里不会发生）才回落到常量 `INDENT`。派发事务时*不给* `selection`：不给的话 CodeMirror 默认把选区跟着 `changes` 映射，正是这里要的；写成 `{ ranges, map: true }` 反而过不了校验 —— esm.sh 拉回来的 `@codemirror/state` 与 view 内那份不是同一个实例。
 
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
 
 *重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。
 
-*产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物**立刻作废** —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。预览面板空着时用 `.play-preview:empty::before` 画一个居中的「待编译」，收到产物后换成居中的文件名与体积：`:empty` 既是状态也是内容，没有占位元素需要记得删。
+*产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物*立刻作废* —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。预览面板空着时用 `.play-preview:empty::before` 画一个居中的「待编译」，收到产物后换成居中的文件名与体积：`:empty` 既是状态也是内容，没有占位元素需要记得删。
 
 *选区与光标由 CodeMirror 自绘*（`drawSelection()`）：浏览器原生的光标在选区非空时会被隐藏，拖动或 Shift 选中后看不到落点；自绘层则在选区头部始终画一根光标。
 
