@@ -31,6 +31,7 @@ import {
     diagnosticsField,
     decorationField,
 } from "./lsp-client.js";
+import { loadSchema, decodeBundle, collectGraphs, collectNodeDecls, buildGraphElement } from "./gia.js";
 
 /* 后端地址表。**页面里不给看也不给改** —— 写死在这儿,原因有三个:
  *   - 地址一改就要重新构建页面,不是访客该管的事;
@@ -1466,11 +1467,11 @@ function ready() {
             // 「下载」按钮**不在这里点亮** —— 它跟着产物帧走。产物是
             // 另一条消息,万一它没到,按钮早亮起来只会让人点出空气。
         },
-        // 编译产物:裸 `.gia` 字节。存在内存里,顺带在预览面板占个位。
+        // 编译产物：裸 `.gia` 字节。存在内存里，同时启动异步预览。
         onArtifact: (data) => {
             artifactBytes = new Uint8Array(data);
             dlBtn.hidden = false;
-            showArtifactNote(artifactBytes.length);
+            startPreview(artifactBytes); // 不 await：界面先停在 is-parsing
         },
         onCancelled: () => {
             // 和 finished/failed 一样收摊。状态不标红:取消是用户自己按的,
@@ -1534,7 +1535,7 @@ function ready() {
         // 上一份产物立刻作废:留着它,一次编译失败之后用户点「下载」拿到的
         // 还是上一次的图 —— 而界面上根本看不出来不是这次的。
         artifactBytes = null;
-        clearPreview();
+        resetPreview();
         const target = targetSel ? targetSel.value : null;
         client.submit(editor.getText(), target);
     });
@@ -1566,20 +1567,146 @@ function ready() {
         log: $("play-panel-log"),
         preview: $("play-panel-preview"),
     };
-    // 预览面板里真正放占位文字的那块。**空着的时候用 CSS 的
-    // `.play-preview:empty::before` 画一个「待编译」** —— 不占 DOM、
-    // 不用在 JS 里插一个元素再记得删掉,`:empty` 自己就是状态。
+
+    // ---- 预览:class 状态 + 双层侧栏 + ui-graph ----
     const preview = panels.preview.querySelector(".play-preview");
+    const previewMessage = $("play-preview-message");
+    const previewFile = $("play-preview-file");
+    const previewCanvas = $("play-graph-canvas");
+    const graphList = preview.querySelector(".preview-graph-list");
+    const graphView = preview.querySelector(".preview-graph-view");
+    const structView = preview.querySelector(".preview-struct-view");
+    const railButtons = preview.querySelectorAll(".preview-rail-button");
 
-    const clearPreview = () => {
-        preview.textContent = "";
-        preview.removeAttribute("data-state");
+    const PREVIEW_STATES = ["is-empty", "is-parsing", "is-ready", "is-error"];
+    const previewState = {
+        generation: 0,   // 每次产物 / 每次点编译都 ++，旧解析据此作废
+        graphs: [],      // collectGraphs 的结果
+        templates: [],   // 与 graphs 同序；空图是 null
+        selected: 0,
+        mounted: -1,     // 画布当前挂的是第几张图
+        view: "graph",
     };
 
-    const showArtifactNote = (bytes) => {
-        preview.dataset.state = "artifact";
-        preview.textContent = `产物 ${ARTIFACT_NAME} · ${formatBytes(bytes)}`;
+    const setPreviewState = (state, message = "") => {
+        preview.classList.remove(...PREVIEW_STATES);
+        preview.classList.add(state);
+        previewMessage.textContent = message;
     };
+
+    // 挂载的三个前提缺一不可：已就绪、预览选项卡可见、当前是图视图。
+    // ui-graph 在 connectedCallback 里量尺寸，祖先 display:none 时量到的全是 0。
+    const previewVisible = () => !panels.preview.hidden && previewState.view === "graph";
+
+    const mountSelected = () => {
+        if (!preview.classList.contains("is-ready") || !previewVisible()) return;
+        const i = previewState.selected;
+        const graph = previewState.graphs[i];
+        if (!graph || previewState.mounted === i) return;
+        previewState.mounted = i;
+        if (graph.nodeCount === 0) {
+            const note = document.createElement("div");
+            note.className = "preview-canvas-note";
+            note.textContent = "这张图没有节点";
+            previewCanvas.replaceChildren(note);
+            return;
+        }
+        // template 是 detach 的元素：第一次挂进来时才第一次量尺寸。
+        previewCanvas.replaceChildren(previewState.templates[i]);
+    };
+
+    const fillGraphList = (size) => {
+        previewFile.textContent = `${ARTIFACT_NAME} · ${formatBytes(size)}`;
+        graphList.querySelectorAll(".preview-graph-item").forEach((el) => el.remove());
+        previewState.graphs.forEach((graph, i) => {
+            const item = document.createElement("button");
+            item.type = "button";
+            item.className = "preview-graph-item";
+            item.classList.toggle("is-empty-graph", graph.nodeCount === 0);
+            item.title = graph.name;
+            item.toggleAttribute("data-active", i === previewState.selected);
+
+            const name = document.createElement("span");
+            name.className = "preview-graph-name";
+            name.textContent = graph.name;
+            const count = document.createElement("span");
+            count.className = "preview-graph-count";
+            count.textContent = String(graph.nodeCount);
+            item.append(name, count);
+
+            item.addEventListener("click", () => {
+                previewState.selected = i;
+                graphList.querySelectorAll(".preview-graph-item")
+                    .forEach((el, j) => el.toggleAttribute("data-active", j === i));
+                mountSelected();
+            });
+            graphList.appendChild(item);
+        });
+    };
+
+    const setView = (view) => {
+        previewState.view = view;
+        graphView.hidden = view !== "graph";
+        structView.hidden = view !== "struct";
+        railButtons.forEach((b) =>
+            b.toggleAttribute("data-active", b.dataset.view === view));
+        if (view === "graph") requestAnimationFrame(mountSelected);
+    };
+    railButtons.forEach((b) =>
+        b.addEventListener("click", () => setView(b.dataset.view)));
+
+    // 点编译立即把上一份产物作废：generation 让在跑的解析停手。
+    const resetPreview = () => {
+        previewState.generation++;
+        previewState.graphs = [];
+        previewState.templates = [];
+        previewState.selected = 0;
+        previewState.mounted = -1;
+        previewCanvas.replaceChildren();
+        setView("graph");
+        setPreviewState("is-empty", "待编译");
+    };
+
+    const startPreview = async (bytes) => {
+        const gen = ++previewState.generation;
+        previewState.graphs = [];
+        previewState.templates = [];
+        previewState.selected = 0;
+        previewState.mounted = -1;
+        previewCanvas.replaceChildren();
+        setView("graph");
+        setPreviewState("is-parsing", "解析产物…");
+        try {
+            if (!client.url) throw new Error("还没连上后端");
+            const origin = httpOrigin(client.url);
+            const type = await loadSchema(origin);
+            if (gen !== previewState.generation) return;
+            const bundle = decodeBundle(type, bytes);
+            const graphs = collectGraphs(bundle);
+            const decls = collectNodeDecls(bundle);
+            const templates = [];
+            for (const graph of graphs) {
+                if (gen !== previewState.generation) return;
+                templates.push(
+                    graph.nodeCount > 0 ? buildGraphElement(graph.graph, decls) : null);
+                // 让出主线程：图多时不至于整页卡住。
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            if (gen !== previewState.generation) return;
+            previewState.graphs = graphs;
+            previewState.templates = templates;
+            const first = graphs.findIndex((g) => g.nodeCount > 0);
+            previewState.selected = first >= 0 ? first : 0;
+            fillGraphList(bytes.length);
+            setPreviewState("is-ready");
+            requestAnimationFrame(mountSelected);
+        } catch (err) {
+            if (gen !== previewState.generation) return;
+            // 产物本身是好的，下载不受影响；只是预览画不出来。
+            setPreviewState("is-error", `解析失败：${err.message}`);
+        }
+    };
+
     tabs.forEach((tab) => {
         tab.addEventListener("click", () => {
             const want = tab.dataset.tab;
@@ -1587,6 +1714,8 @@ function ready() {
             for (const [name, panel] of Object.entries(panels)) {
                 panel.hidden = name !== want;
             }
+            // hidden 先落到 DOM 上，下一帧再挂载，尺寸才是真的。
+            if (want === "preview") requestAnimationFrame(mountSelected);
         });
     });
 

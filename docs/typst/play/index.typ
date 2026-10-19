@@ -25,6 +25,15 @@
     ))[]
 })[]
 
+// 预览用的 `ui-graph` 来自 `lib/graph.typ` 那套自定义元素。这里只需要注册
+// （脚本 + 样式），不产生元素实例 —— 内容由 `play/gia.js` 在运行时建。
+// **必须复用 graph.typ 里那个注册函数**：`template.typ` 的 `.dedup()` 按
+// 注册函数判等，另写一个内容相同的闭包去不掉，`graph.js` 会被加载两次，
+// 第二次 `const SVG_NS` 直接报「已声明」。
+#import "/lib/graph.typ": graph_register
+#graph_register()
+
+
 // 页面里**不出现**后端地址,也不给改:地址表写死在 script.js 的
 // `BACKENDS` 里。
 #html_elem("div", class: "play")[
@@ -133,10 +142,44 @@
           #html_elem("pre", id: "play-log", class: "play-log")
         ]
         #html_elem("div", class: "play-panel", id: "play-panel-preview", attrs: ("hidden": ""))[
-          // 这一格**故意留空**(连空白字符都没有):`.play-preview:empty::before`
-          // 会在它空着的时候画出「待编译」。写成 `#html_elem("div", class: "play-preview")[]` 就会
-          // 多出一个缩进换行的文本节点,`:empty` 立刻不成立。
-          #html_elem("div", class: "play-preview")
+          // 状态由 class 驱动（is-empty / is-parsing / is-ready / is-error）：
+          // 非就绪时 .preview-shell 整体隐藏，只剩一句状态文字。不再用 :empty ——
+          // 骨架现在是固定的，内容由 script.js 填。
+          #html_elem("div", class: "play-preview is-empty")[
+            #html_elem("div", class: "preview-message", id: "play-preview-message")[待编译]
+            #html_elem("div", class: "preview-shell")[
+              // 外层：只有图标的视图栏
+              #html_elem("nav", class: "preview-rail")[
+                #html_elem("button", type: "button", class: "preview-rail-button", attrs: (
+                  "data-view": "graph",
+                  "data-active": "",
+                  "title": "节点图",
+                  "aria-label": "节点图",
+                ))[
+                  #html_elem("i", class: "material-icons")[account_tree]
+                ]
+                #html_elem("button", type: "button", class: "preview-rail-button", attrs: (
+                  "data-view": "struct",
+                  "title": "结构体",
+                  "aria-label": "结构体",
+                ))[
+                  #html_elem("i", class: "material-icons")[data_object]
+                ]
+              ]
+              #html_elem("div", class: "preview-panes")[
+                #html_elem("div", class: "preview-graph-view")[
+                  // 内层：文件信息 + 所有图的名称
+                  #html_elem("nav", class: "preview-graph-list")[
+                    #html_elem("div", class: "preview-file", id: "play-preview-file")
+                  ]
+                  #html_elem("div", class: "preview-graph-canvas", id: "play-graph-canvas")
+                ]
+                #html_elem("div", class: "preview-struct-view", attrs: ("hidden": ""))[
+                  #html_elem("div", class: "preview-message")[结构体 · 待完善]
+                ]
+              ]
+            ]
+          ]
         ]
       ]
   ]

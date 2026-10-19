@@ -35,13 +35,22 @@
  * 元素
  * ------------------------------------------------------------------ */
 
+/// 注册本体。单独抽出来是因为 `.dedup()` 按**注册函数**判等:所有用到
+/// `ui-graph` 的页面必须传同一个函数值,否则同样的标签会被发两遍,
+/// 第二个 `graph.js` 会在 `const SVG_NS` 上重复声明。
+#let graph_register_impl = () => {
+  import_script("/lib/js/graph.js");
+  import_style("/lib/css/graph.css");
+}
+
+/// 只要注册、不要元素(`play/index.typ` 用)。注册内容与 `graph_element` 相同,
+/// 且共享同一个函数值 —— 两者出现在同一页也只会引一次脚本。
+#let graph_register() = custom_element(graph_register_impl, [])
+
 /// 注册用的外壳。`ui-graph` 和 `ui-graph-node` 共用同一份注册:内容一字不差,
 /// `template.typ` 那边的 `.dedup()` 会合成一个,同一个页面里图和单独的节点
 /// 混着用也只会引一次脚本。
-#let graph_element(ele) = custom_element(() => {
-  import_script("/lib/js/graph.js");
-  import_style("/lib/css/graph.css");
-}, ele)
+#let graph_element(ele) = custom_element(graph_register_impl, ele)
 
 /// 一根引脚。位置参数:`dir`、`kind`、`type`,后面挂可选的 `[label]`。
 ///

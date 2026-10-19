@@ -131,6 +131,12 @@
     --graph-box: #fff;
     --graph-border: #c9cbd4;
     --graph-accent: #11566c;
+    /* 系统调用节点的标题按控制流形态分三色:纯数据(没有控制引脚)、
+     * 事件(只有控制出)、其它(有控制入)。三色和 accent 拉开距离,
+     * 免得和连线/边框混成一种角色。 */
+    --graph-title-pure: #9a5b00;
+    --graph-title-event: #6b3aa0;
+    --graph-title-exec: #1f6b3a;
     --graph-reset-bg: rgba(255, 255, 255, 0.9);
     /* 未定义时露出来的说明框,与画布底色刻意不同 */
     --graph-fallback-bg: #f7f8fa;
@@ -249,6 +255,10 @@
     --graph-box: #24242c;
     --graph-border: #3a3a45;
     --graph-accent: #4fd1e0;
+    /* 系统调用标题的三色,浅色版提亮到深底上够读。 */
+    --graph-title-pure: #f0b45c;
+    --graph-title-event: #c9a0f5;
+    --graph-title-exec: #8fdc9e;
     /* 比 --graph-box(#24242c) 亮一档,否则 .g-reset:hover 在深色下等于
      * 没变化(hover 目标 --graph-box 恰好就是 rest 的实色)。 */
     --graph-reset-bg: rgba(58, 58, 69, 0.9);

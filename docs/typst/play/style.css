@@ -677,46 +677,191 @@ body:has(main > .play) main {
     outline-offset: 1px;
 }
 
-/* 预览页现在还只是个占位。用和日志盒一样的外框,免得一切过去时整块区域
- * 突然空掉、像是坏了。 */
+/* ---- 预览：状态与骨架 ----
+ *
+ * 状态是 `.play-preview` 上的四个互斥 class。非就绪时 `.preview-shell`
+ * 整体 display:none —— 交互结构不参与布局，只剩一句居中的状态文字。
+ */
 .play-preview {
+    display: flex;
     flex: 1 1 0;
     min-height: 0;
-    overflow: auto;
-    padding: 10px 12px;
-    color: var(--muted);
+    overflow: hidden;
+    padding: 0;
+    color: var(--fg);
     background-color: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
 }
-
-/* 空着的时候中央显示「待编译」。
- *
- * 用 `:empty` 而不是插一个占位元素再记得删:DOM 里没有东西可忘,清空
- * 预览只要一句 `textContent = ""`,状态与内容永远对得上。
- *
- * `display: grid` + `place-content: center` 是让**伪元素**也能居中的
- * 最短写法(伪元素不是 flex/grid 容器,给它 `margin: auto` 之类不灵)。
- * 注意 `:empty` 对**空白字符**同样不成立 —— `index.typ` 里这个 div
- * 必须是紧挨着 `[]` 的空体。 */
-.play-preview:empty,
-.play-preview[data-state="artifact"] {
-    display: grid;
-    place-content: center;
+.play-preview > .preview-message {
+    margin: auto;
+    padding: 10px 12px;
     text-align: center;
+    color: var(--muted);
 }
-.play-preview:empty::before {
-    content: "待编译";
-    /* 空态是个大标题,不是一个提示行 —— 「待编译」是这块地方唯一的
-     * 内容,按正文大小印出来会像没做完。 */
+/* 就绪后骨架接管，状态文字必须整块让位 —— 光清空文字它仍占 padding */
+.play-preview.is-ready > .preview-message {
+    display: none;
+}
+.play-preview.is-empty > .preview-message {
     font-size: 2em;
 }
+.play-preview.is-error > .preview-message {
+    color: var(--err);
+}
 
-/* 收到产物之后那行占位:和「待编译」一样居中,但用正文色 —— 它说的是
- * 「东西在这儿」,不是「还没有东西」。 */
-.play-preview[data-state="artifact"] {
+.play-preview > .preview-shell {
+    display: none;
+}
+.play-preview.is-ready > .preview-shell {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* 外层：只有图标的图 / 结构体切换 */
+.preview-rail {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    border-right: 1px solid var(--border);
+}
+.preview-rail-button {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+.preview-rail-button .material-icons {
+    font-size: 20px;
+}
+.preview-rail-button:hover {
     color: var(--fg);
+    background-color: var(--border-soft);
+}
+.preview-rail-button[data-active] {
+    color: var(--accent);
+    background-color: var(--border-soft);
+}
+.preview-rail-button:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.preview-panes {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+}
+.preview-graph-view {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+}
+/* 两处都显式写了 display，必须自己压掉 hidden —— 和 .play-panel[hidden] 同理 */
+.preview-graph-view[hidden],
+.preview-struct-view[hidden] {
+    display: none;
+}
+
+/* 内层：所有图的名称 */
+.preview-graph-list {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    width: 180px;
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+    background-color: var(--graph-canvas);
+}
+.preview-file {
+    flex: none;
+    padding: 8px 10px;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border-soft);
+}
+.preview-graph-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 10px;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+.preview-graph-item:hover,
+.preview-graph-item[data-active] {
+    background-color: var(--border-soft);
+}
+.preview-graph-item[data-active] {
+    color: var(--accent);
+}
+.preview-graph-item.is-empty-graph {
+    color: var(--muted);
+}
+.preview-graph-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.preview-graph-count {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 画布：ui-graph 铺满；不写 data-height，高度交给 CSS */
+.preview-graph-canvas {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+.preview-graph-canvas > ui-graph {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+}
+.preview-canvas-note {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    color: var(--muted);
+}
+
+.preview-struct-view {
+    display: grid;
+    flex: 1 1 0;
+    min-height: 0;
+    place-items: center;
+    color: var(--muted);
 }
 
 /* 手机上「示例 + 下拉 + 载入」本身就占了不少宽度,把下拉框的宽度收一收,

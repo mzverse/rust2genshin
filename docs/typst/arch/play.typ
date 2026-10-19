@@ -204,7 +204,9 @@ Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个�
 
 *重连重新握手*：页面空闲断开后重连会重新 `hello` → `lsp_open`，前端销毁旧 `LspClient`、清空挂起请求，然后对新会话重新 `initialize` / `didOpen`。已有 decoration 可以保留到新结果到达 —— 新会话的 token 一定是针对当前文档的，不再需要「`lsp_ready` 之前丢弃 token」的规则。
 
-*产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物*立刻作废* —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。预览面板空着时用 `.play-preview:empty::before` 画一个居中的「待编译」，收到产物后换成居中的文件名与体积：`:empty` 既是状态也是内容，没有占位元素需要记得删。
+*产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物*立刻作废* —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。
+
+*预览在浏览器里解码*：收到产物后前端异步取同一个后端的 `/proto/asset.proto`（路由只 `tokio::fs::read` 仓库里那份文件，不 embed），用 protobuf.js 解析 schema 并解开 `.gia` 的 proto 负载。服务端不参与解码。解析完把每张图构建成一个 detach 的 `<ui-graph>` 模板（与站点其它节点图共用同一套自定义元素），再按需要挂进画布。挂载时机不是「解析完」而是「预览选项卡可见且当前是图视图」：`ui-graph` 在 `connectedCallback` 里量节点尺寸，祖先 `display:none` 时量到的全是 0。切走不卸载，所以平移、缩放、拖动的位置都留着。预览失败只影响预览，下载照常可用。
 
 *选区与光标由 CodeMirror 自绘*（`drawSelection()`）：浏览器原生的光标在选区非空时会被隐藏，拖动或 Shift 选中后看不到落点；自绘层则在选区头部始终画一根光标。
 

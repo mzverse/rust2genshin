@@ -50,6 +50,10 @@ const PIN_PX = 11;
 const LABEL_GAP = 4;
 const MID_GAP = 12;
 
+// 引脚旁的附加信息(<pin-info>)离引脚形状有多远。它排在节点**外侧**,
+// 和盒子里的引脚名分居边界两边。
+const PIN_INFO_GAP = 10;
+
 // 量尺寸之前,节点那个 <foreignObject> 先按这个尺寸支起来(见 ui-graph.#build)。
 const FO_PROBE_W = 400;
 const FO_PROBE_H = 200;
@@ -94,6 +98,11 @@ const NODE_CSS = `
         /* 标题是投影进来的裸文本节点,没法单独给它设 margin,靠盒子的上内边距
          * 把它压到标题条中间去。 */
         padding: ${NODE_HEAD_PAD}px ${NODE_PAD_X}px 0; }
+    /* 系统调用标题按控制流形态上色。data-role 由调用方写在 light DOM
+     * 的 <ui-graph-node> 上,这里只负责挑 token。 */
+    :host([data-role="pure"]) .g-box { color: var(--graph-title-pure); }
+    :host([data-role="event"]) .g-box { color: var(--graph-title-event); }
+    :host([data-role="exec"]) .g-box { color: var(--graph-title-exec); }
     :host(:hover) .g-box { border-color: var(--graph-accent); }
     :host(.hot) .g-box { border-color: var(--graph-accent); border-width: 2.5px; }
     :host(.dim) { opacity: .28; }
@@ -383,6 +392,14 @@ class GraphNode extends HTMLElement {
 
 customElements.define('ui-graph-node', GraphNode);
 
+/* <pin-info> —— 引脚旁边的一小段附加信息(默认值 / 复合图导出的端口)。
+ *
+ * 和 <connection> 一样只是**数据载体**:它是 <ui-graph> 的直接子节点,
+ * 用 data-node / data-dir / data-kind / data-index 指出哪根引脚,真正的
+ * 文字由 ui-graph 在影子树里渲染到节点外侧。这里不写行为,定义它只是让
+ * 这个标签名有个归属,和 ui-graph-node 摆在一起好找。 */
+customElements.define('pin-info', class extends HTMLElement {});
+
 /* ------------------------------------------------------------------ *
  * ui-graph —— 整张图
  * ------------------------------------------------------------------ */
@@ -413,6 +430,8 @@ customElements.define('ui-graph', class extends HTMLElement {
         // 每个节点连着哪些边。悬停高亮和拖动重画都按邻接走,不然一个节点
         // 得扫一遍全部边。
         this.adj = new Map();
+        // 节点 → 挂在它引脚旁的信息标(#renderPinInfos 填)。
+        this.pinInfos = new Map();
 
         // 节点就是文档里写的那些 <ui-graph-node> —— id 直接用 HTML 的 id。
         // id 可以不给(单独摆一个看看时不必费劲起名),那种节点不进 byId,
@@ -475,6 +494,11 @@ customElements.define('ui-graph', class extends HTMLElement {
             .g-edge.data { stroke-dasharray: 5 4; }
             .g-edge.dim { opacity: .12; }
             .g-edge.hot { stroke-width: 2.4; }
+            /* 引脚旁的信息标。挂在节点外侧,只读 —— 不接指针,免得挡拖动。 */
+            .g-pin-info { font-family: inherit; font-size: ${PIN_PX}px; line-height: 1.2;
+                color: var(--subtle); white-space: nowrap; width: max-content;
+                pointer-events: none; }
+            .g-pin-info.extern { color: var(--graph-accent); }
             /* 重置按钮。挂在 .graph-root 上,不进 .g-layer,所以不跟着缩放
              * 平移走 —— 一直待在视口右上角,按的就是"忘掉我拖过的一切"。 */
             .g-reset { position: absolute; top: 6px; right: 6px; z-index: 1;
@@ -583,7 +607,11 @@ customElements.define('ui-graph', class extends HTMLElement {
             this.adj.get(to).push(e);
         }
 
+        // 先建信息标、量出文字宽 —— 自动布局要给第一列让出左侧那一点,
+        // 不然最左边的默认值会被视口裁掉。位置等节点落位后再算。
+        this.#renderPinInfos(svg);
         this.#layout();
+        this.#placePinInfos();
 
         for (const e of this.edges) {
             e.hit = el('path', { class: 'g-edge-hit' }, edgeLayer);
@@ -660,8 +688,8 @@ customElements.define('ui-graph', class extends HTMLElement {
             }
         }
 
-        // 落坐标
-        let x = PAD;
+        // 落坐标。第一列左边让出信息标的位置,否则最左的默认值会被视口裁掉。
+        let x = PAD + (this.pinLeftExtra || 0);
         for (const col of cols) {
             const cw = Math.max(...col.map(v => v.w));
             let y = PAD;
@@ -680,6 +708,86 @@ customElements.define('ui-graph', class extends HTMLElement {
         const d = edgePath(fp.x, fp.y, tp.x, tp.y);
         e.el.setAttribute('d', d);
         e.hit.setAttribute('d', d);
+    }
+
+    /** 在引脚旁摆上 <pin-info> 的文字。
+     *
+     * 和 connection 一样,light DOM 里的 <pin-info> 只是数据载体:用
+     * data-node / data-dir / data-kind / data-index 指出引脚(序号是组内
+     * 序号,和 connection 的两端一样),文字写在自己的内容里。
+     *
+     * 位置在节点**外侧** —— 入口在左边界左边、出口在右边界右边。盒子里
+     * 那侧已经占了引脚名,这样两边不会撞。 */
+    #renderPinInfos(svg) {
+        // #rebuild 会整层重来,旧的信息标连同它们的 fo 一起被扔掉了。
+        this.pinInfos = new Map();
+        const layer = el('g', { class: 'g-pin-infos' }, svg);
+        for (const pi of this.querySelectorAll('pin-info')) {
+            const node = this.byId.get(pi.getAttribute('data-node'));
+            const dir = pi.getAttribute('data-dir');
+            const kind = pi.getAttribute('data-kind');
+            const index = pi.getAttribute('data-index');
+            if (!node || !dir || !kind || index == null) {
+                console.error(`graph: pin-info 引用了不存在的节点:${pi.getAttribute('data-node')}`, pi);
+                continue;
+            }
+            const pinId = `${kind}-${dir}-${index}`;
+            if (!node.hasPin(pinId)) {
+                console.error(`graph: 节点 ${node.id} 的第 ${index} 根 ${kind}-${dir} 引脚不存在`, pi);
+                continue;
+            }
+            const text = (pi.textContent || '').trim();
+            if (!text) continue;
+            // extern 的 data 里只写序号,前缀由这里补 —— 数据保持最小,
+            // 显示格式归渲染层管。
+            const infoKind = pi.getAttribute('kind') || 'default';
+
+            const fo = el('foreignObject', {
+                class: 'g-pin-info-fo',
+                width: FO_PROBE_W,
+                height: FO_PROBE_H,
+            }, layer);
+            const div = document.createElementNS(XHTML_NS, 'div');
+            div.className = `g-pin-info ${infoKind}`;
+            div.textContent = infoKind === 'extern' ? `extern[${text}]` : text;
+            fo.appendChild(div);
+
+            const entry = { node, dir, pinId, fo, div, w: 0, h: 0 };
+            this.#measurePinInfo(entry);
+            const list = this.pinInfos.get(node);
+            if (list) list.push(entry);
+            else this.pinInfos.set(node, [entry]);
+        }
+        // 第一列左边要让出的宽度。只影响横向起点,不影响别的。
+        this.pinLeftExtra = 0;
+        for (const list of this.pinInfos.values()) {
+            for (const e of list) {
+                if (e.dir === 'in') this.pinLeftExtra = Math.max(this.pinLeftExtra, e.w + PIN_INFO_GAP);
+            }
+        }
+    }
+
+    #measurePinInfo(e) {
+        const r = e.div.getBoundingClientRect();
+        e.w = Math.ceil(r.width);
+        e.h = Math.ceil(r.height);
+        e.fo.setAttribute('width', e.w);
+        e.fo.setAttribute('height', e.h);
+    }
+
+    #placePinInfos() {
+        for (const list of this.pinInfos.values()) {
+            for (const e of list) this.#placePinInfo(e);
+        }
+    }
+
+    /** 把信息标摆到引脚外侧。拖动节点时只重算位置,不重建。 */
+    #placePinInfo(e) {
+        const a = e.node.worldAnchor(e.pinId);
+        if (!a) return;
+        // 入口右对齐到引脚外侧,出口左对齐 —— 文字朝节点外延伸。
+        e.fo.setAttribute('x', e.dir === 'in' ? a.x - PIN_INFO_GAP - e.w : a.x + PIN_INFO_GAP);
+        e.fo.setAttribute('y', a.y - e.h / 2);
     }
 
     // ---- 拖动 / 缩放 ----
@@ -774,8 +882,10 @@ customElements.define('ui-graph', class extends HTMLElement {
                 Math.round(start.ox + (p.x - start.sx)),
                 Math.round(start.oy + (p.y - start.sy)),
             );
-            // 引脚的相对坐标没变,只有盒子动了 —— 只重画挂在它身上的那些线。
+            // 引脚的相对坐标没变,只有盒子动了 —— 只重画挂在它身上的那些线
+            // 和引脚旁的信息标。
             for (const e of this.adj.get(dragging)) this.#redrawEdge(e);
+            for (const e of this.pinInfos.get(dragging) ?? []) this.#placePinInfo(e);
         });
 
         const end = ev => {
