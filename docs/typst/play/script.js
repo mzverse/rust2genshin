@@ -18,7 +18,7 @@
 
 import { EditorView, ViewPlugin, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
-import { defaultKeymap, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
+import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
 import { autocompletion, closeBrackets, closeBracketsKeymap, startCompletion } from "https://esm.sh/@codemirror/autocomplete@6";
 import { search, searchKeymap, highlightSelectionMatches } from "https://esm.sh/@codemirror/search@6";
 import { indentService, indentUnit } from "https://esm.sh/@codemirror/language@6";
@@ -1194,10 +1194,16 @@ function ready() {
                 // 悄悄退回只剩主选区(命令本身仍返回 true)。官方推荐
                 // 的 `basicSetup` 里一直带着它。
                 EditorState.allowMultipleSelections.of(true),
+                // Ctrl-D 删整行。`searchKeymap` 里也有一条 `Mod-d`(选中
+                // 下一个相同词),所以这条必须注册在它**前面**:同优先级
+                // 的 keymap 先到先得,放在后面就永远轮不到。命令用官方的
+                // `deleteLine`,多行选区、选区结束在行首、只剩一行这些
+                // 边界都处理过了。
+                keymap.of([{ key: "Mod-d", run: deleteLine }]),
                 // 搜索面板:`Ctrl-F` 打开、`F3` / `Ctrl-G` 上下一个、
-                // `Ctrl-Shift-L` 选中全部匹配、`Ctrl-Alt-G` 跳行、`Mod-d`
-                // 选中下一个相同词。`search()` 提供面板状态,`top: true`
-                // 把它放在编辑器上方(默认在下方,会顶着日志面板)。
+                // `Ctrl-Shift-L` 选中全部匹配、`Ctrl-Alt-G` 跳行。
+                // `search()` 提供面板状态,`top: true` 把它放在编辑器
+                // 上方(默认在下方,会顶着日志面板)。
                 search({ top: true }),
                 keymap.of(searchKeymap),
                 // 选中一段文字后把文档里其余的相同片段淡淡标出来,
@@ -1306,10 +1312,6 @@ function ready() {
                         },
                     },
                 ]),
-                // 这里原来绑 `Mod-d` 删整行,现在让给 `searchKeymap` 的
-                // 「选中下一个相同词」(编辑器里的通行约定)。删整行还在:
-                // `defaultKeymap` 的 `Shift-Mod-k` 就是 `deleteLine`,边界
-                // (多行选区、选区结束在行首、只剩一行)处理得一样好。
                 // 撤销/重做。显式装上 `historyKeymap`(`Mod-z` / `Mod-y` /
                 // `Mod-Shift-z`),不要依赖编辑器的默认绑定 —— GitHub Pages
                 // 上页面的 `Mod` 在 Windows/Linux 是 Ctrl、在 macOS 是 Cmd,
