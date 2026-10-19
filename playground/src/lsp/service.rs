@@ -9,13 +9,13 @@
 //! 1. 从 [`Baker`] 拿 serving 镜像的 tag —— 没有就说明还没烘好,返回 `None`;
 //! 2. `docker run -d` 起一个待命容器;
 //! 3. `docker exec -i ... rust-analyzer` 起 RA([`DockerExec`],裸管道);
-//! 4. `initialize` → 订阅事件 → `didOpen(PLACEHOLDER)`;
-//! 5. 在 `lsp_boot_timeout` 内收到第一条诊断或 token 才算就绪。
+//! 4. `initialize` → `didOpen(PLACEHOLDER)`;
+//! 5. 服务端用自己的 id 拉一次 `textDocument/diagnostic`，在
+//!    `lsp_boot_timeout` 内拿到响应即算就绪。
 //!
-//! 第 4 步**必须先订阅再 didOpen**:RA 可能立刻推诊断,晚一步就漏掉
-//! 就绪信号。第 5 步认两种事件:计划原先只认 Diagnostics,但占位内容
-//! 零错误时 RA 未必发它;`didOpen` 会主动请求 token,Tokens 是更可靠的
-//! 兜底。
+//! 第 4 步灌一份占位内容是为了把 crate graph 拉热。第 5 步只看「有响应」，
+//! 不看诊断内容：拿到响应就说明 RA 已经能应答分析请求。请求在交棒前一定
+//! `await` 完，交棒后 `Pending` 必为空。
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -23,9 +23,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::broadcast;
 
 use crate::bake::Baker;
 use crate::config::Config;
@@ -33,10 +33,11 @@ use crate::docker::{RA_WORKDIR, RunSpec, rm_args, run_detached_args};
 use crate::lsp::docker_exec::DockerExec;
 use crate::lsp::exec::{RaCommand, RaProcess};
 use crate::lsp::pool::{Acquire, Handle, Pool, PoolError};
-use crate::lsp::session::{Event, Session};
+use crate::lsp::session::{DOC_URI, Session};
 
-/// 待命会话打开文档用的占位内容。用户源码在 `LspChange` 时用 didChange
-/// 全文替换;同一个 URI 再 didOpen 一次是 LSP 协议违规。
+/// 待命会话打开文档用的占位内容。它只负责把 crate graph 拉热 —— 交棒
+/// 前服务端会补一条 `didClose`,用户的源码随后由浏览器自己的 `didOpen`
+/// 打开。
 const PLACEHOLDER: &str = "// playground: waiting for user source\n";
 
 /// 服务进程里唯一的 RA 运行时。`new` 不启后台任务(测试要能造一个不碰
@@ -62,10 +63,20 @@ impl LspService {
         Arc::new(Self { cfg, pool })
     }
 
-    /// 取一个会话。池里有活的直接给,没有就现造;造不出来是
+    /// 取一个会话。池里有活的直接给，没有就现造；造不出来是
     /// [`PoolError::Create`](crate::lsp::pool::PoolError::Create)。
+    ///
+    /// 返回前保证**没有打开的文档**：池里的会话可能还带着上一份占位或
+    /// 上一个浏览器的 overlay。补一条 `didClose` 之后，浏览器的 `didOpen`
+    /// 永远合法，也不需要把 didOpen 改写成 didChange。
     pub async fn acquire(&self) -> Result<Acquire, PoolError> {
-        self.pool.acquire().await
+        let acq = self.pool.acquire().await?;
+        if let Err(e) = acq.session().did_close().await {
+            tracing::warn!("交棒前 didClose 失败,丢弃这个会话:{e}");
+            acq.release(false).await;
+            return Err(PoolError::Create);
+        }
+        Ok(acq)
     }
 
     /// 把用户源码写进容器里的 RA workspace。
@@ -196,8 +207,7 @@ impl SessionMaker {
         };
         let session = Arc::new(Session::new(Arc::clone(&proc)));
 
-        // 4. 先订阅再 didOpen —— 见文件头。
-        let mut events = session.subscribe();
+        // 4. 灌一份占位内容把 crate graph 拉热 —— 见文件头。
         if let Err(e) = session.initialize().await {
             tracing::warn!("RA initialize 失败:{e}");
             teardown(&name, &session).await;
@@ -209,27 +219,18 @@ impl SessionMaker {
             return None;
         }
 
-        // 5. 第一条 Diagnostics 或 Tokens 即就绪。收不到 = 这次冷启动
-        //    失败,清理后让补池循环重建。
-        let ready = tokio::time::timeout(self.cfg.lsp_boot_timeout, async {
-            loop {
-                match events.recv().await {
-                    Ok(Event::Diagnostics(_) | Event::Tokens(_)) => return true,
-                    // 补全响应等其它事件与「就绪」无关。
-                    Ok(_) => continue,
-                    // 慢消费者丢几条不影响就绪判断。
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    // reader 退出 = 会话死了。
-                    Err(broadcast::error::RecvError::Closed) => return false,
-                }
-            }
-        })
-        .await;
-        if !matches!(ready, Ok(true)) {
-            tracing::warn!(
-                timeout = ?self.cfg.lsp_boot_timeout,
-                "RA 就绪超时,丢弃这次会话"
-            );
+        // 5. 就绪判据：服务端用自己的 id 拉一次诊断，拿到响应即说明 crate
+        //    graph 已加载。这里只等「有响应」，不看诊断内容；请求在交棒前
+        //    一定 await 完，交棒后 Pending 必为空。
+        if let Err(e) = session
+            .request(
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": DOC_URI } }),
+                self.cfg.lsp_boot_timeout,
+            )
+            .await
+        {
+            tracing::warn!("RA 就绪探测失败,丢弃这次会话:{e}");
             teardown(&name, &session).await;
             return None;
         }

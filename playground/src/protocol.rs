@@ -1,14 +1,14 @@
 //! WebSocket 的信封消息。
 //!
-//! **可扩展 + 连接长开**是两条硬约束,不是为了好看:将来要加
-//! `{"type":"lsp", ...}` 的双向转发(rust-analyzer 代码提示),不需要动
-//! 现有分支。写成"一提交一连接就关"就得推倒重来。
+//! **可扩展 + 连接长开**是两条硬约束,不是为了好看:`{"type":"lsp", ...}`
+//! 的双向转发(rust-analyzer 代码提示)就靠它,不需要为每个 LSP 能力
+//! 各加一种消息。写成"一提交一连接就关"就得推倒重来。
 
 use serde::{Deserialize, Serialize};
 
 use crate::docker::Stream;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// `hello` 里报的路径,将来 LSP 的 `file://` URI 才有对应物。
 pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// 源码上限 1 MiB。正常一份 `demo/src/lib.rs` 是几 KB;设上限是为了
@@ -43,18 +43,9 @@ pub enum ClientMsg {
     Cancel {},
     /// 请求开一个 RA 会话;服务端就绪后回 `lsp_ready`。
     LspOpen {},
-    /// 编辑器里的源码变了。服务端据此给 RA 发 `did_change`。
-    LspChange { source: String },
-    /// 补全是请求-应答,而 `ServerMsg` 是单向广播流 —— 没有这条消息,
-    /// 服务端就没有任何入口知道「用户要补全了」,`ServerMsg::LspCompletion`
-    /// 永远发不出来。`request_id` 由前端产生,服务端原样用作 JSON-RPC 的
-    /// `id` 并原样回显。
-    ///
-    /// `line` / `column` 是**0 基**坐标(LSP 的 `Position` 就是 0 基);
-    /// `column` 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端
-    /// CodeMirror 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算
-    /// 就会错。
-    LspCompletion { request_id: u32, line: u32, column: u32 },
+    /// 一条原样的 LSP 报文。`message` 在语义上就是 JSON-RPC 报文本身，
+    /// 服务端只解析 `method` / `id` 用于握手与落盘拦截，其余字段不碰。
+    Lsp { message: serde_json::Value },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,62 +100,12 @@ pub enum ServerMsg {
         code: ErrorCode,
         message: String,
     },
-    /// RA 会话就绪。`file` 是 `file://` URI 对应的那个路径。
-    LspReady { file: String },
-    /// RA 的 semanticTokens delta 数组,原样透传。**不在服务端拆** ——
-    /// 拆成 (deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
-    /// 是 Task 10 的 CodeMirror 扩展的活。`tokenType` 是索引,指向
-    /// `lsp/session.rs` 里 `TOKEN_TYPES` 的同一份顺序。
-    LspTokens { data: Vec<u32> },
-    /// 当前文件的**完整**诊断集合。
-    ///
-    /// LSP 的 `publishDiagnostics` 语义就是整份重发:一次推送里的 `items`
-    /// 取代上一份,空数组表示「全清空」。
-    ///
-    /// 早先的协议是一条诊断一条消息,而空集合时**一条都不发** —— 前端
-    /// 既分不清一批何时结束,也永远收不到清空信号,旧诊断只能一路累积;
-    /// 文档一改,那些坐标就指到别的文字上,波浪线再也擦不掉。
-    LspDiagnostics { items: Vec<LspDiagnosticItem> },
-    LspCompletion { request_id: u32, items: Vec<CompletionItem> },
-}
-
-/// 一条诊断。坐标是**0 基**(LSP 的 `Position` 就是 0 基),`column`
-/// 按 **UTF-16 code unit** 算,不是字节也不是字符数 —— 前端 CodeMirror
-/// 默认也是 UTF-16,两边不用换算;但要按 `str::len()` 去算就会错。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LspDiagnosticItem {
-    pub line: u32,
-    pub column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-    /// LSP 的 `DiagnosticSeverity`:1=Error、2=Warning、3=Information、
-    /// 4=Hint。`0` 在 LSP 里是未使用值,前端收到 0 应视为 Information。
-    pub severity: u8,
-    pub message: String,
-}
-
-/// 补全项上的**展示用**注释。
-///
-/// 客户端在 `initialize` 里声明 `labelDetailsSupport` 之后,RA 不再把
-/// `(as Trait)` / `(alias a, b)` 拼进 `label`,而是拆到这里 —— 这正是
-/// 「trait 方法补全时把 `(as Trait1)` 插进代码」的根因。前端只拿它渲染,
-/// 插入代码时用 `label`。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompletionLabelDetails {
-    /// 短标注,通常是 `(as Trait)` 或 `(alias popcount, popcnt)`。
-    pub detail: Option<String>,
-    /// 签名描述,如 `const fn(self) -> u32`。与顶层 `detail` 同值,
-    /// 保留两份是为了前端可以只依赖 `labelDetails`。
-    pub description: Option<String>,
-}
-
-/// 补全列表的一项。`insertText` 先不做 —— RA 默认给的与 `label` 一致。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompletionItem {
-    pub label: String,
-    pub kind: Option<u32>,
-    pub detail: Option<String>,
-    pub label_details: Option<CompletionLabelDetails>,
+    /// RA 会话就绪。`file` 是 `file://` URI 对应的那个路径；`uri` 是那个
+    /// `file://` URI 本身，前端要拿它填 `textDocument.uri`。
+    LspReady { file: String, uri: String },
+    /// 一条原样的 LSP 报文（RA → 浏览器）。管道断开时服务端也用它
+    /// 发一条合成的 `exit` 通知，前端据此视为传输终止。
+    Lsp { message: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,7 +217,7 @@ mod tests {
             serde_json::to_value(&m).unwrap(),
             serde_json::json!({
                 "type": "hello",
-                "protocol": 2,
+                "protocol": 3,
                 "image_commit": "abc1234",
                 "file": "demo/src/lib.rs",
                 "max_jobs": 8,
@@ -432,74 +373,58 @@ mod tests {
     }
 
     #[test]
-    fn lsp_completion_reports_the_cursor() {
-        let m = ClientMsg::LspCompletion { request_id: 7, line: 3, column: 12 };
-        let j = serde_json::to_string(&m).unwrap();
-        assert_eq!(j, r#"{"type":"lsp_completion","request_id":7,"line":3,"column":12}"#);
-        assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
+    fn protocol_version_is_3() {
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]
-    fn lsp_tokens_is_a_raw_u32_array() {
-        let m = ServerMsg::LspTokens { data: vec![0, 0, 3, 6, 0] };
-        let j = serde_json::to_string(&m).unwrap();
-        assert!(j.contains(r#""data":[0,0,3,6,0]"#), "{j}");
-    }
-
-    #[test]
-    fn lsp_completion_roundtrips() {
-        let m = ServerMsg::LspCompletion {
-            request_id: 7,
-            items: vec![CompletionItem {
-                label: "foo".into(),
-                kind: Some(3),
-                detail: None,
-                label_details: None,
-            }],
-        };
+    fn client_lsp_envelope_roundtrips_verbatim() {
+        // LSP 报文必须原样躺在 `message` 里：服务端不重命名字段、
+        // 不重组结构，否则前端拿到的就不是它发出去的那条。
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "textDocument/completion",
+            "params": { "position": { "line": 3, "character": 12 } }
+        });
+        let m = ClientMsg::Lsp { message: message.clone() };
         assert_eq!(round_trip(&m), m);
-        let v = serde_json::to_value(&m).unwrap();
-        assert_eq!(v["type"], "lsp_completion");
-        assert_eq!(v["items"][0]["label"], "foo");
-        assert_eq!(v["items"][0]["kind"], 3);
-        assert_eq!(v["items"][0]["detail"], serde_json::Value::Null);
-    }
-
-    #[test]
-    fn protocol_version_is_2() {
-        assert_eq!(PROTOCOL_VERSION, 2);
-    }
-
-    /// 诊断必须是**一整份**往外发:前端靠这一条区分「这批结束了」,
-    /// 而空数组是唯一的「清空」信号。按条发的旧形状会让旧诊断永远擦不掉。
-    #[test]
-    fn diagnostics_travel_as_one_complete_set() {
-        let empty = ServerMsg::LspDiagnostics { items: vec![] };
         assert_eq!(
-            serde_json::to_value(&empty).unwrap(),
-            serde_json::json!({ "type": "lsp_diagnostics", "items": [] })
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "lsp", "message": message })
         );
+    }
 
-        let one = ServerMsg::LspDiagnostics {
-            items: vec![LspDiagnosticItem {
-                line: 1,
-                column: 2,
-                end_line: 1,
-                end_column: 5,
-                severity: 1,
-                message: "mismatched types".into(),
-            }],
+    #[test]
+    fn server_lsp_envelope_roundtrips_verbatim() {
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": "file:///x", "diagnostics": [] }
+        });
+        let m = ServerMsg::Lsp { message: message.clone() };
+        assert_eq!(round_trip(&m), m);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "type": "lsp", "message": message })
+        );
+    }
+
+    #[test]
+    fn lsp_ready_carries_the_document_uri() {
+        // 前端要拿它填 textDocument.uri；只给相对路径不够。
+        let m = ServerMsg::LspReady {
+            file: SOURCE_FILE.into(),
+            uri: "file:///opt/ra/ws/demo/src/lib.rs".into(),
         };
         assert_eq!(
-            serde_json::to_value(&one).unwrap(),
+            serde_json::to_value(&m).unwrap(),
             serde_json::json!({
-                "type": "lsp_diagnostics",
-                "items": [{
-                    "line": 1, "column": 2, "end_line": 1, "end_column": 5,
-                    "severity": 1, "message": "mismatched types"
-                }]
+                "type": "lsp_ready",
+                "file": "demo/src/lib.rs",
+                "uri": "file:///opt/ra/ws/demo/src/lib.rs",
             })
         );
-        assert_eq!(round_trip(&one), one);
+        assert_eq!(round_trip(&m), m);
     }
 }

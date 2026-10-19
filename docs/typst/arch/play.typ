@@ -83,8 +83,7 @@ docker
     [客户端 → 服务端], [`submit`], [`{source, target?}`；开始一次编译。],
     [客户端 → 服务端], [`cancel`], [取消这一单；服务端回 `cancelled`。],
     [客户端 → 服务端], [`lsp_open`], [取一个 RA 会话；幂等。],
-    [客户端 → 服务端], [`lsp_change`], [`{source}`；写盘 + `didChange` 全文替换。],
-    [客户端 → 服务端], [`lsp_completion`], [`{request_id, line, column}`；0 基、UTF-16 列。],
+    [客户端 → 服务端], [`lsp`], [`{message}`；原样 JSON-RPC 报文。除握手与 `didOpen` / `didChange` 外全部转发。],
     [服务端 → 客户端], [`hello`], [连接后第一条：协议版本、镜像 commit、目标表、`lsp_supported`。],
     [服务端 → 客户端], [`queued`], [排队位次与当前队列长度。],
     [服务端 → 客户端], [`started`], [容器开始跑；带 `task` 与 `image_commit`。],
@@ -93,7 +92,8 @@ docker
     [服务端 → 客户端], [`failed`], [失败；`exit_code` 可空，`message` 是给用户看的。],
     [服务端 → 客户端], [`cancelled`], [`abort` 本身静默，必须显式回这一条。],
     [服务端 → 客户端], [`error`], [请求被拒：`not_ready` / `ip_busy` / `queue_full` / `bad_request` / `internal`。],
-    [服务端 → 客户端], [`lsp_ready` / `lsp_tokens` / `lsp_diagnostics` / `lsp_completion`], [RA 就绪、语义 token、*整份*诊断、补全结果。],
+    [服务端 → 客户端], [`lsp`], [`{message}`；RA 的原始报文。管道断开时发一条合成的 `exit` 通知（`params.reason`），前端据此清高亮与诊断。],
+    [服务端 → 客户端], [`lsp_ready`], [`{file, uri}`；会话已取得，前端拿 `uri` 填 `textDocument.uri`。],
 )
 
 两条不变量：
@@ -165,22 +165,26 @@ Baker: Idle ─bake→ Baking ─ok→ Ready(serving)
 
 ```text
 浏览器编辑器
-   │ lsp_change / lsp_completion（经 playground WebSocket）
+   │ lsp（除握手外原样转发）
    ▼
 server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docker exec ──▶ rust-analyzer
    ▲               │             │          │
-   └── lsp_tokens / lsp_diagnostics / lsp_completion ── Event ◀──┘
+   └── lsp（含合成的 exit）──── Event ◀─────┘
 ```
 
 *镜像里另烘一份分析工作区* `/opt/ra/ws`：只有 `demo` / `lib` / `lib-internal`，没有 `core`。`core` 依赖 `rustc_private`，RA 解析它要把整个编译器 sysroot 拖进来，冷启动从 11 秒涨到 84 秒。
 
-*会话创建五步，顺序不能乱*：拿 serving tag → `docker run -d` 待命容器 → `docker exec -i rust-analyzer` → `initialize` → *先 `subscribe` 再 `didOpen(占位)`* → 收到第一条诊断或 token 才算就绪。先订阅是为了不漏掉 RA 立刻推来的消息；占位内容让用户源码可以用 `didChange` 全文替换（同一 URI 重复 `didOpen` 是协议违规）。
+*会话创建*：拿 serving tag → `docker run -d` 待命容器 → `docker exec -i rust-analyzer` → `initialize` → `didOpen(占位)` → 服务端用自己的 id 拉一次 `textDocument/diagnostic`，拿到响应即就绪。池里的会话跨连接复用，交棒前由服务端补 `didClose`，所以浏览器的 `didOpen` 永远合法。
+
+*服务端只拦六种消息*：`initialize` 用缓存的响应按浏览器 id 回放；`initialized` 与 `shutdown` / `exit` 吞掉；`didOpen` / `didChange` 先把全文写进容器再转发。其余请求、通知、响应原样双向转发。
+
+*关闭信号是一条合成的 `exit` 通知*（`params.reason` 带原因）：RA 管道断开时会话不可再用，服务端往 `lsp` 信封里塞一条 `exit`，前端收到即清高亮、诊断并 reject 挂起的请求。不用 `shutdown` —— 它是带 `id` 的请求，会诱发一次无意义的应答。
 
 *池只做状态机*：空闲数不超过下限（默认 1）、取用时用会话自己的探针查活、坏的就销毁重造、空闲超 TTL 由回收循环 `docker rm -f`。
 
-*诊断是拉取式的*：RA 1.10x 只在 `didOpen` / `didChange` 后由服务端主动拉 `textDocument/diagnostic`，`publishDiagnostics` 基本不再推送；`workspace/diagnostic/refresh` 到达时也要再拉。RA 对没变的内容只回 `unchanged`，所以会话缓存最近一份完整集合用于回放。
+*语义 token 与诊断都是前端主动拉的*：`initialize` 响应里的 legend 由前端用来把索引翻成名字；诊断走 `textDocument/diagnostic`，`unchanged` 保留上一份，同时兼容推送式 `publishDiagnostics`。服务端不解析这两类结果。
 
-*语义 token 的索引由服务端翻译*：RA 不按客户端上报的 legend 编码，而是按自己那份的字母序发索引；`Session` 在 `initialize` 后按*名字*把 RA 的下标翻成 `TOKEN_TYPES` 的下标再转发，对不上的名字编码成越界哨兵，前端跳过。
+*待命阶段没有浏览器，RA 的请求得有人应答*：reader 发现某帧带 `id` 而 `broadcast` 没有订阅者时替它回 `result: null`，否则 RA 会一直等、会话永远不就绪。有订阅者时服务端不抢答 —— 抢答会和浏览器的响应撞成两条同 id 的响应。
 
 = 前端
 
@@ -198,7 +202,7 @@ Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个�
 
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
 
-*重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。
+*重连重新握手*：页面空闲断开后重连会重新 `hello` → `lsp_open`，前端销毁旧 `LspClient`、清空挂起请求，然后对新会话重新 `initialize` / `didOpen`。已有 decoration 可以保留到新结果到达 —— 新会话的 token 一定是针对当前文档的，不再需要「`lsp_ready` 之前丢弃 token」的规则。
 
 *产物只在两头的内存里*：后端用一条二进制帧（裸 `.gia` 字节，socket 上设了 `binaryType = "arraybuffer"`）把它送过来，前端存进 `artifactBytes`，「下载」按钮做的事是 `Blob` + 临时 `<a download>`。没有下载链接、也没有第二次 HTTP 往返。点「编译」会把上一份产物*立刻作废* —— 留着它，一次编译失败之后用户点下载拿到的还是上一次的图，而界面上看不出来。预览面板空着时用 `.play-preview:empty::before` 画一个居中的「待编译」，收到产物后换成居中的文件名与体积：`:empty` 既是状态也是内容，没有占位元素需要记得删。
 

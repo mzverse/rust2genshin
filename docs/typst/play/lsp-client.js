@@ -1,71 +1,38 @@
-/* lsp-client.js —— CodeMirror 与 LSP 协议的薄桥。
+/* lsp-client.js —— 编辑器和 RA 之间的最小 JSON-RPC 层。
  *
- * 服务端按 Task 6 的协议把 RA 的事件/响应拆成 `LspTokens` / `LspDiagnostic`
- * / `LspCompletion` 透传过来。前端拿到的是 RAW 数据:
- *   - `LspTokens.data` 是 RA `semanticTokens/full` 的 delta 数组,索引值是
- *     LSP 标准 `tokenTypes` 的顺序 —— 与 `playground/src/lsp/session.rs:42`
- *     同一份固定表(见本文件 `TOKEN_TYPES`)。不在表里的索引视为「无颜色」跳过,
- *     不让一个未识别的 token 拉崩整段高亮。
- *   - `LspDiagnostic` 是 0 基 (line,column)..(end_line,end_column),按
- *     UTF-16 code unit 算(CodeMirror 默认也是 UTF-16,直接相加即可)。
- *   - `LspCompletion` 按 `request_id` 回显;前端 2 s 兜底 + 在途替换:发出去
- *     还没回就再发一条,旧 Promise 直接 resolve([]) —— 不排队,排队会和
- *     300 ms 内的下次按键撞上,弹窗会列错位的内容。
+ * 服务端只做会话与管道：除 initialize / initialized / shutdown / exit /
+ * didOpen / didChange 外，消息一律原样双向转发（见
+ * docs/superpowers/specs/2026-10-19-play-lsp-raw-proxy-design.md）。
+ * 所以这里自己发请求、自己消费结果：
+ *   - semantic tokens：用 initialize 响应里的真实 legend 把索引翻成名字，
+ *     再映射到 `cm-tok-*`；名字不在支持列表里的 token 跳过。
+ *   - 诊断：拉取式 `textDocument/diagnostic`（`full` 整份替换、
+ *     `unchanged` 保留上一份），同时兼容推送式 `publishDiagnostics`。
+ *   - 补全：300 ms 去抖 + 2 s 兜底 + 在途替换。
  *
- * 编辑器去抖 300 ms:早于此 RA 看到半行代码,晚于此人补全体感差
- * (Review Focus 第 1 条)。
- *
- * 高亮与诊断是两个独立的 decoration 层,可同时存在于同一 range
- * (Review Focus 第 5 条):高亮是 `Decoration.mark` 配 `cm-tok-*` class,
- * 诊断是 `Decoration.mark` 配 `cm-diag-*` class —— 两类 class 都同时
- * 挂在元素上,各自显示自己的颜色与下划线。
+ * 高亮与诊断是两个独立的 decoration 层，可同时存在于同一 range。
  */
 
 import { Decoration, EditorView } from "https://esm.sh/@codemirror/view@6";
 import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@6";
 
-/* LSP 标准 `tokenTypes` 的固定顺序。
- *
- * 必须与 `playground/src/lsp/session.rs:42` 同顺序 —— 服务端在
- * `initialize` 能力里把这个表报给 RA,RA 按这个顺序回 `tokenType` 索引;
- * 前端按同顺序把索引映射到 CSS class,顺序错一档整个高亮就乱。
- *
- * 不接收来自浏览器的 legend:服务端不向前端转发 `initialize` 响应
- * (Task 6 的协议),前端不依赖任何外部数据源 —— 协议层只透传 raw data。
- *
- * 而这里的下标**已经是我们的下标**:RA 按它自己那份 legend 编码,服务端
- * 在 `initialize` 之后按名字翻译过了(见 `playground/src/lsp/session.rs`
- * 的 `TokenLegend`)。表对不上时表现为整段颜色错位(比如关键字变斜体)。 */
-const TOKEN_TYPES = [
-    "namespace",      // 0
-    "type",           // 1
-    "class",          // 2
-    "enum",           // 3
-    "interface",      // 4
-    "struct",         // 5
-    "typeParameter",  // 6
-    "parameter",      // 7
-    "variable",       // 8
-    "property",       // 9
-    "enumMember",     // 10
-    "event",          // 11
-    "function",       // 12
-    "method",         // 13
-    "macro",          // 14
-    "keyword",        // 15
-    "modifier",       // 16
-    "comment",        // 17
-    "string",         // 18
-    "number",         // 19
-    "regexp",         // 20
-    "operator",       // 21
-    "decorator",      // 22
-];
+/* 我们真的有样式的 token 名。`style.css` 里每个名字都有一条
+ * `.cm-tok-<name>`；不在表里的名字没有 class，直接跳过。 */
+const SUPPORTED_TOKENS = new Set([
+    "namespace", "type", "class", "enum", "interface", "struct",
+    "typeParameter", "parameter", "variable", "property", "enumMember",
+    "event", "function", "method", "macro", "keyword", "modifier",
+    "comment", "string", "number", "regexp", "operator", "decorator",
+]);
+
+/* RA 没有上报 legend 时的兜底顺序（LSP 标准顺序）。RA 1.10x 总会报，
+ * 这里只是防御：没有 legend 就什么都画不出来更糟。 */
+const FALLBACK_TOKEN_TYPES = [...SUPPORTED_TOKENS];
 
 /* LSP `CompletionItemKind` → CodeMirror `Completion.type`。
  *
- * CodeMirror 的内置 type 是字符串表(见 codemirror/autocomplete 的命名);
- * 映射不到的降级到 "variable",不至于弹窗里没图标。 */
+ * CodeMirror 的内置 type 是字符串表（见 codemirror/autocomplete 的命名）；
+ * 映射不到的降级到 "variable"，不至于弹窗里没图标。 */
 export function kindToType(kind) {
     if (kind == null) return "variable";
     switch (kind) {
@@ -103,11 +70,8 @@ export function kindToType(kind) {
 export const setTokensEffect = StateEffect.define();
 export const setDiagnosticsEffect = StateEffect.define();
 
-/* 当前 token delta 数组(`LspTokens.data` 原样存)。`null` 表示 RA 还没给过 —
- * 创建时是 null,收到首帧 tokens 后切到数组。
- *
- * 持有原数组而不是解好的 range 列表,因为文档变化时 range 跟着平移,
- * 但 delta 是绝对坐标,跟着移动需要重新解一遍 —— 在 `buildDecorations` 里做。 */
+/* 当前 token 数据：`{ data, types }`。`types` 是 initialize 响应里的
+ * legend，解码时逐项查名字。`null` 表示还没收到过。 */
 export const tokensField = StateField.define({
     create() { return null; },
     update(value, tr) {
@@ -118,8 +82,7 @@ export const tokensField = StateField.define({
     },
 });
 
-/* 当前诊断列表(merge 后的最终状态,服务端按 LSP 语义一次给完整集合;
- * connection-level 上 LspDiagnostic 一条一条来,这里按 range key 去重累加)。 */
+/* 当前诊断列表（整份）。空数组就是清空。 */
 export const diagnosticsField = StateField.define({
     create() { return []; },
     update(value, tr) {
@@ -130,12 +93,9 @@ export const diagnosticsField = StateField.define({
     },
 });
 
-/* 把 RA delta 数组解成一组 (from, to, typeIndex) —— typeIndex 是 TOKEN_TYPES
- * 里的索引,不在表里的丢弃(防御性:legend 漂移 / 旧数据时不炸)。
- *
- * delta 编码:LSP 用相对前一个 token 的位移来压缩。deltaLine > 0 时 startChar
- * 是新一行的绝对字符偏移,否则是相对前一个 token 的字符偏移。 */
-function decodeTokens(doc, data) {
+/* delta 数组是 5 个一组 `(Δline, Δstart, len, type, modifiers)`。
+ * 解码时把 type 索引查成名字；名字不在 SUPPORTED_TOKENS 里就跳过。 */
+function decodeTokens(doc, data, types) {
     const out = [];
     if (!data || data.length === 0) return out;
     let line = 0;
@@ -144,52 +104,49 @@ function decodeTokens(doc, data) {
         const dLine = data[i];
         const dStart = data[i + 1];
         const length = data[i + 2];
-        const tokenType = data[i + 3];
-        // data[i + 4] 是 tokenModifiers,前端不染 modifier —— 留给后续按需扩展。
+        const typeIndex = data[i + 3];
         if (dLine > 0) {
             line += dLine;
             startChar = dStart;
         } else {
             startChar += dStart;
         }
-        if (tokenType < 0 || tokenType >= TOKEN_TYPES.length) continue;
-        // CodeMirror 行号是 1 基,LSP 是 0 基;这里用 `line + 1`。
-        // 越界(line 超过 doc 行数)说明 RA 给的 token 是在它重发过程中文档又变了,
-        // 丢掉这一项而不是让 editor 抛 RangeError。
+        const name = types[typeIndex];
+        if (!name || !SUPPORTED_TOKENS.has(name)) continue;
         if (line < 0 || line >= doc.lines) continue;
         const lineObj = doc.line(line + 1);
         const from = lineObj.from + startChar;
         const to = from + length;
-        // `from >= to` 都丢:CM 的 Mark decoration **不允许空 range**,抛
-        // `RangeError: Mark decorations may not be empty` —— 一抛整个
-        // decoration 字段的事务都失败,后面的高亮/诊断全不显示。
+        // 空 range 会让 `Decoration.mark` 抛 RangeError，整批装饰失败。
         if (from < 0 || to > doc.length || from >= to) continue;
-        out.push({ from, to, type: tokenType });
+        out.push({ from, to, name });
     }
     return out;
 }
 
-/* 诊断 → CodeMirror range。同上,越界丢。 */
+/* LSP `Diagnostic`（原始形状）→ CodeMirror range。越界丢。 */
 function diagnosticRanges(doc, diags) {
     const out = [];
     for (const d of diags) {
-        if (d.line < 0 || d.line >= doc.lines) continue;
-        if (d.end_line < 0 || d.end_line >= doc.lines) continue;
-        const fromLine = doc.line(d.line + 1);
-        const toLine = doc.line(d.end_line + 1);
-        let from = fromLine.from + d.column;
-        let to = toLine.from + d.end_column;
+        const range = d && d.range;
+        if (!range || !range.start || !range.end) continue;
+        const line = range.start.line;
+        const endLine = range.end.line;
+        if (line < 0 || line >= doc.lines) continue;
+        if (endLine < 0 || endLine >= doc.lines) continue;
+        const fromLine = doc.line(line + 1);
+        const toLine = doc.line(endLine + 1);
+        let from = fromLine.from + range.start.character;
+        let to = toLine.from + range.end.character;
         if (from < 0 || to > doc.length) continue;
-        // RA 的零长诊断(典型:`unexpected end of input`,位置在文件末尾)
-        // 会让 `Decoration.mark().range(x, x)` 抛 RangeError,整个 decoration
-        // 事务失败。往可用的方向借一个字符,让波浪线至少有地方画;文档为空
-        // 时借不到,只能丢。
+        // RA 的零长诊断会让 `Decoration.mark().range(x, x)` 抛 RangeError；
+        // 往可用的方向借一个字符。
         if (from === to) {
             if (to < doc.length) to += 1;
             else if (from > 0) from -= 1;
             else continue;
         }
-        out.push({ from, to, severity: d.severity, message: d.message });
+        out.push({ from, to, severity: d.severity ?? 1, message: d.message || "" });
     }
     return out;
 }
@@ -197,37 +154,28 @@ function diagnosticRanges(doc, diags) {
 function severityClass(sev) {
     if (sev === 1) return "cm-diag-error";
     if (sev === 2) return "cm-diag-warning";
-    // LSP 0 在规范里是「未使用值」,服务端允许把它当 Information 处理
-    // (playground/src/protocol.rs:127 的注释)。
     if (sev === 3 || sev === 0) return "cm-diag-info";
     if (sev === 4) return "cm-diag-hint";
     return null;
 }
 
-/* 单个 decoration 字段:高亮(`cm-tok-*`)和诊断(`cm-diag-*`)两层同时叠加。
- * 是两个独立的 DecorationSet 子树,各自只染对应 class —— 同一 range 可同时
- * 被两层覆盖,各自不抢颜色。 */
+/* 高亮与诊断两层同时叠加。 */
 function buildDecorations(state) {
     const tokens = state.field(tokensField, false);
     const diags = state.field(diagnosticsField, false);
     const doc = state.doc;
     const out = [];
     if (tokens) {
-        const decoded = decodeTokens(doc, tokens);
-        for (const t of decoded) {
+        for (const t of decodeTokens(doc, tokens.data, tokens.types)) {
             out.push(
-                Decoration.mark({ class: "cm-tok-" + TOKEN_TYPES[t.type] })
-                    .range(t.from, t.to)
+                Decoration.mark({ class: "cm-tok-" + t.name }).range(t.from, t.to)
             );
         }
     }
     if (diags) {
-        const decoded = diagnosticRanges(doc, diags);
-        for (const d of decoded) {
+        for (const d of diagnosticRanges(doc, diags)) {
             const cls = severityClass(d.severity);
             if (!cls) continue;
-            // RA 的说明挂成 `title`:悬停波浪线就能看到原文。之前只画了
-            // 红线、把 message 丢了,用户只能看到「这里错了」却不知道错在哪。
             const spec = { class: cls };
             if (d.message) spec.attributes = { title: d.message };
             out.push(Decoration.mark(spec).range(d.from, d.to));
@@ -236,18 +184,11 @@ function buildDecorations(state) {
     return out;
 }
 
-/* 暴露给 `EditorView.decorations.from`。文档变化时 `map(changes)` 让 decorations
- * 跟着移动 —— 字符插入 / 删除不会让整段高亮飞掉。 */
 export const decorationField = StateField.define({
     create() { return Decoration.none; },
     update(deco, tr) {
         if (tr.effects.some((e) => e.is(setTokensEffect) || e.is(setDiagnosticsEffect))) {
-            // 第二个参数**必须**是 true:`buildDecorations` 是先塞完全部 token、
-            // 再塞全部诊断,两段各自有序而拼起来不一定 —— 一个诊断落在某个
-            // token 前面就乱序了。默认 `set` 假定输入已排序,乱序直接抛
-            // `Ranges must be added sorted by from position and startSide`,
-            // 整个 decoration 事务失败,高亮和波浪线一起消失。
-            // (样本里没有诊断,所以只有用户改出错误时才复现。)
+            // 第二个参数必须为 true：两层拼起来不一定有序。
             return Decoration.set(buildDecorations(tr.state), true);
         }
         if (tr.docChanged) return deco.map(tr.changes);
@@ -259,74 +200,154 @@ export const decorationField = StateField.define({
 const DEBOUNCE_MS = 300;
 const COMPLETION_TIMEOUT_MS = 2000;
 
-/* `LspClient` 只做两件事:
- *   - 收 `LspTokens` / `LspDiagnostic` / `LspCompletion`,dispatch 给 editor
- *   - editor 文档变化时去抖 300 ms,再发 `LspChange`
- *
- * `LspCompletion` 的请求-应答靠 `request_id` 配对 + 2 s 兜底 timeout:
- * 超过 2 s 就当 RA 没响应,resolve([]),CodeMirror 的弹窗不卡死。
- *
- * 在途替换:新请求发出时旧 Promise 直接 resolve([]),不排队 —— 排队会和
- * 300 ms 内的下次按键撞上,弹窗里显示错位的内容。 */
+/* 把 RA 的补全响应当成两种形状收：裸数组或 `{ items }`；字段名
+ * `labelDetails` 归一成 `label_details`，与 `script.js` 的渲染保持一致。 */
+function normalizeCompletion(result) {
+    const items = Array.isArray(result)
+        ? result
+        : (result && Array.isArray(result.items) ? result.items : []);
+    return items
+        .filter((item) => item && typeof item.label === "string")
+        .map((item) => ({
+            label: item.label,
+            kind: item.kind ?? null,
+            detail: item.detail ?? null,
+            label_details: item.labelDetails
+                ? {
+                    detail: item.labelDetails.detail ?? null,
+                    description: item.labelDetails.description ?? null,
+                }
+                : null,
+        }));
+}
+
 export class LspClient {
     /**
      * @param {object} opts
      * @param {import('@codemirror/view').EditorView} opts.view
-     * @param {(msg: object) => void} opts.send 把消息发到 ws(已经 JSON 序列化好;
-     *     这里只关心能不能送到,序列化是 ws.send 的活)。
-     * @param {(text: string) => void} [opts.onStatus] UI 状态更新;
-     *     在 lsp_ready 时被调用一次。
+     * @param {(msg: object) => void} opts.send
+     * @param {(text: string) => void} [opts.onStatus]
      */
     constructor(opts) {
         this.view = opts.view;
         this.send = opts.send;
         this.onStatus = opts.onStatus || (() => {});
+        this.uri = null;
         this._ready = false;
+        this._disposed = false;
+        this._nextId = 1;
+        this._version = 0;
+        this._tokenTypes = FALLBACK_TOKEN_TYPES;
+        this._pending = new Map();
+        this._completionIds = new Set();
         this._debounceTimer = null;
         this._pendingSource = null;
-        this._nextRequestId = 1;
-        this._pendingCompletions = new Map();
     }
 
-    /** 编辑器建好之后调用一次,会发 `LspOpen`。 */
+    /** 编辑器建好之后调用一次，会发 `lsp_open`。 */
     open() {
         this.send({ type: "lsp_open" });
     }
 
-    /** `LspReady` 到达。状态切到就绪,并把当前文档内容同步给 RA ——
-     * 占位内容是服务端在补池时 did_open 进去的,RA 看到的是
-     * `// playground: waiting for user source`。需要把用户的实际源码
-     * (可能为空 / 可能是已载入的样例)一次性发过去,RA 才会出第一帧 tokens / 诊断。 */
-    onReady() {
+    /** `lsp_ready` 到达：开始握手。 */
+    onReady(uri) {
+        this.uri = uri;
+        this.onStatus("分析中…");
+        this._initialize();
+    }
+
+    async _initialize() {
+        let result;
+        try {
+            result = await this._request("initialize", {
+                // 服务端不转发这条；capabilities 以服务端待命时报的那份为准。
+                processId: null,
+                rootUri: null,
+                capabilities: {},
+            });
+        } catch {
+            return; // 断线 / 合成的 exit：状态由 onClosed 统一收。
+        }
+        if (this._disposed || !this.view) return;
+
+        const legend = result &&
+            result.capabilities &&
+            result.capabilities.semanticTokensProvider &&
+            result.capabilities.semanticTokensProvider.legend;
+        const names = legend && legend.tokenTypes;
+        this._tokenTypes = Array.isArray(names) && names.length
+            ? names
+            : FALLBACK_TOKEN_TYPES;
+
+        this._notify("initialized", {});
         this._ready = true;
         this.onStatus("已就绪 · 分析在线");
+        this._version = 1;
+        this._notify("textDocument/didOpen", {
+            textDocument: {
+                uri: this.uri,
+                languageId: "rust",
+                version: 1,
+                text: this.view.state.doc.toString(),
+            },
+        });
+        this._refreshTokens();
+        this._refreshDiagnostics();
+    }
+
+    /** 一条 RA 的 LSP 报文。 */
+    handleMessage(message) {
+        if (!message || typeof message !== "object") return;
+        if (typeof message.method === "string") {
+            if (message.method === "exit") {
+                // 服务端合成的关闭信号（规范里 exit 是客户端→服务端，
+                // 这里是本项目唯一的反向帧）。
+                this.onClosed((message.params && message.params.reason) || "分析器已退出");
+                return;
+            }
+            if (message.id !== undefined && message.id !== null) {
+                // RA 的请求：统一回 null，漏答会让它挂起。
+                this._sendMessage({ jsonrpc: "2.0", id: message.id, result: null });
+                if (message.method === "workspace/semanticTokens/refresh") {
+                    this._refreshTokens();
+                } else if (message.method === "workspace/diagnostic/refresh") {
+                    this._refreshDiagnostics();
+                }
+                return;
+            }
+            if (message.method === "textDocument/publishDiagnostics") {
+                this._publishDiagnostics(message.params);
+            }
+            return;
+        }
+        const entry = this._pending.get(message.id);
+        if (!entry) return;
+        this._pending.delete(message.id);
+        if (entry.timer !== null) clearTimeout(entry.timer);
+        if (message.error) {
+            entry.reject(new Error(message.error.message || "LSP error"));
+        } else {
+            entry.resolve(message.result);
+        }
+    }
+
+    /** 收到合成的 `exit`：清高亮/诊断，挂起的请求全部收掉。 */
+    onClosed(message) {
+        this._ready = false;
+        for (const [, entry] of this._pending) {
+            if (entry.timer !== null) clearTimeout(entry.timer);
+            entry.reject(new Error(message || "LSP closed"));
+        }
+        this._pending.clear();
+        this._completionIds.clear();
         if (this.view) {
-            // 不走去抖:这时编辑器的当前内容和服务端占位内容是两份,
-            // 必须把整份立即推给 RA,否则 RA 重算的 semanticTokens 仍基于占位内容。
-            this.send({ type: "lsp_change", source: this.view.state.doc.toString() });
+            this.view.dispatch({ effects: setTokensEffect.of(null) });
+            this.view.dispatch({ effects: setDiagnosticsEffect.of([]) });
         }
+        this.onStatus("代码分析离线");
     }
 
-    /** 一条 server 消息(`type` 已经剥好)。 */
-    onMessage(msg) {
-        switch (msg.type) {
-            case "lsp_ready":
-                this.onReady();
-                break;
-            case "lsp_tokens":
-                this._applyTokens(msg.data || []);
-                break;
-            case "lsp_diagnostics":
-                // 一整份取代上一份,空数组就是清空 —— 直接替换,不合并。
-                this._setDiagnostics(msg.items || []);
-                break;
-            case "lsp_completion":
-                this._resolveCompletion(msg.request_id, msg.items || []);
-                break;
-        }
-    }
-
-    /** 编辑器的文档变化。外部(主线程)直接调。 */
+    /** 编辑器的文档变化。外部（主线程）直接调。 */
     onDocChanged(source) {
         this._pendingSource = source;
         if (this._debounceTimer !== null) clearTimeout(this._debounceTimer);
@@ -336,96 +357,130 @@ export class LspClient {
         }, DEBOUNCE_MS);
     }
 
-    /** 把还没发出去的文档改动立刻推给服务端。
-     *
-     * `lsp_change` 的去抖(300 ms)比 CodeMirror 的补全去抖(100 ms)长,
-     * 不主动冲一下的话补全请求会跑在**旧文**上:RA 收到的是一个它还没
-     * 见的行/列(刚敲的字符还在旧文本之外),于是回空数组 —— 「`obj.`
-     * 和 `path::` 按下后不弹补全」的根因就是这个时序差。服务端按收到的
-     * 顺序逐条处理,先 change 后 completion 就是确定的。 */
+    /** 立刻推掉还没发的改动：补全请求不能跑在旧文上。 */
     _flushChange() {
         if (this._debounceTimer !== null) {
             clearTimeout(this._debounceTimer);
             this._debounceTimer = null;
         }
-        const s = this._pendingSource;
+        const source = this._pendingSource;
         this._pendingSource = null;
-        // 没 ready 就丢 —— 服务端 LspChange 在未 open 时回 BadRequest。
-        // onReady 会重新同步当前文档,这里静默丢没问题。
-        if (s === null || !this._ready) return;
-        this.send({ type: "lsp_change", source: s });
+        if (source === null || !this._ready || !this.view) return;
+        const version = ++this._version;
+        this._notify("textDocument/didChange", {
+            textDocument: { uri: this.uri, version },
+            contentChanges: [{ text: source }],
+        });
+        this._refreshTokens();
+        this._refreshDiagnostics();
     }
 
-    /** 用户触发补全。返回 Promise<items>。
-     *
-     * 在途替换:已有挂起的直接 resolve([]) 并清掉 timer。2 s 内 RA 没回
-     * 就 resolve([]),不让弹窗空转。LSP 未就绪时直接返回空数组 —— 服务端
-     * 收到未 open 的 LspCompletion 会回 BadRequest,前端没理由踩这条。 */
+    /** 用户触发补全。返回 Promise<items>。 */
     requestCompletion(line, column) {
         if (!this._ready) return Promise.resolve([]);
-        // 先冲掉还没发的 `lsp_change`(见 `_flushChange` 的注释)。
         this._flushChange();
-        for (const [, entry] of this._pendingCompletions) {
-            clearTimeout(entry.timer);
-            entry.resolve([]);
+        // 在途替换：旧请求直接 resolve(null)，不排队。
+        for (const id of this._completionIds) {
+            const entry = this._pending.get(id);
+            if (!entry) continue;
+            if (entry.timer !== null) clearTimeout(entry.timer);
+            this._pending.delete(id);
+            entry.resolve(null);
         }
-        this._pendingCompletions.clear();
-        const id = this._nextRequestId++;
+        this._completionIds.clear();
+
+        const id = this._nextId++;
         return new Promise((resolve) => {
             const timer = setTimeout(() => {
-                this._pendingCompletions.delete(id);
+                this._pending.delete(id);
+                this._completionIds.delete(id);
                 resolve([]);
             }, COMPLETION_TIMEOUT_MS);
-            this._pendingCompletions.set(id, { resolve, timer });
-            this.send({ type: "lsp_completion", request_id: id, line, column });
+            this._pending.set(id, {
+                resolve: (result) => resolve(normalizeCompletion(result)),
+                reject: () => resolve([]),
+                timer,
+            });
+            this._completionIds.add(id);
+            this._sendMessage({
+                jsonrpc: "2.0",
+                id,
+                method: "textDocument/completion",
+                params: {
+                    textDocument: { uri: this.uri },
+                    position: { line, character: column },
+                },
+            });
         });
     }
 
-    /** 销毁:清掉 timer 与挂起的补全 Promise。
-     *
-     * **连接重连时必须调。** 否则旧实例挂着的去抖 timer 会在新实例已经
-     * `lsp_open` 之后触发,拿旧编辑框的内容发一条 `lsp_change` 过去 ——
-     * 一次多余的 RA 往返,以及一个用户没见过的中间状态。 */
+    /** 销毁：连接重连时必须调，清掉 timer 与挂起请求。 */
     dispose() {
+        this._disposed = true;
+        this._ready = false;
         if (this._debounceTimer !== null) {
             clearTimeout(this._debounceTimer);
             this._debounceTimer = null;
         }
         this._pendingSource = null;
-        for (const [, entry] of this._pendingCompletions) {
-            clearTimeout(entry.timer);
-            entry.resolve([]);
+        for (const [, entry] of this._pending) {
+            if (entry.timer !== null) clearTimeout(entry.timer);
+            entry.reject(new Error("LSP client disposed"));
         }
-        this._pendingCompletions.clear();
+        this._pending.clear();
+        this._completionIds.clear();
     }
 
-    _applyTokens(data) {
-        if (!this.view) return;
-        // **新会话还没拿到用户文档之前算出来的 token 不能往编辑器里画。**
-        // 重连时服务端一订阅上 RA 就可能转发一帧旧内容的 token(占位源码、
-        // 同一个池里上一份文档,或 workspace 重载触发的 refresh),它们先于
-        // `lsp_ready` 或紧跟着到达;直接应用会把编辑器里已有的高亮整片擦掉,
-        // 要等 `onReady` 推过去的整份文档分析完才恢复。
-        // `onReady` 是「已把当前文档同步给 RA」的分界,此后的帧才是针对
-        // 用户代码的。首发连接同理:编辑器本来是空的,丢一帧不亏。
+    _sendMessage(message) {
+        this.send({ type: "lsp", message });
+    }
+
+    _notify(method, params) {
+        this._sendMessage({ jsonrpc: "2.0", method, params });
+    }
+
+    _request(method, params) {
+        const id = this._nextId++;
+        return new Promise((resolve, reject) => {
+            this._pending.set(id, { resolve, reject, timer: null });
+            this._sendMessage({ jsonrpc: "2.0", id, method, params });
+        });
+    }
+
+    _refreshTokens() {
         if (!this._ready) return;
-        this.view.dispatch({ effects: setTokensEffect.of(data) });
+        this._request("textDocument/semanticTokens/full", {
+            textDocument: { uri: this.uri },
+        }).then((result) => {
+            if (!this._ready || !this.view || !result) return;
+            const data = Array.isArray(result.data) ? result.data : [];
+            this.view.dispatch({
+                effects: setTokensEffect.of({ data, types: this._tokenTypes }),
+            });
+        }).catch(() => {});
     }
 
-    /* 整份替换。`lsp_diagnostics` 携带的是 RA 对当前文档的完整诊断集合
-     * (LSP `publishDiagnostics` 语义),空数组 = 全清空。**不能累积**:
-     * 旧实现把新诊断并进上一份,而服务端当时清空时一条消息都不发,于是
-     * 旧坐标永久留在列表里 —— 文档一改它指向别的文字,波浪线擦不掉。 */
+    _refreshDiagnostics() {
+        if (!this._ready) return;
+        this._request("textDocument/diagnostic", {
+            textDocument: { uri: this.uri },
+        }).then((result) => {
+            if (!this._ready || !result) return;
+            // `unchanged` 不带 items：保留现有那一份。
+            if (result.kind === "unchanged") return;
+            const items = Array.isArray(result) ? result : result.items;
+            if (Array.isArray(items)) this._setDiagnostics(items);
+        }).catch(() => {});
+    }
+
+    _publishDiagnostics(params) {
+        if (!this.view || !params) return;
+        if (params.uri !== this.uri) return;
+        this._setDiagnostics(params.diagnostics || []);
+    }
+
     _setDiagnostics(list) {
         if (!this.view) return;
         this.view.dispatch({ effects: setDiagnosticsEffect.of(list) });
-    }
-
-    _resolveCompletion(request_id, items) {
-        const entry = this._pendingCompletions.get(request_id);
-        if (!entry) return;
-        clearTimeout(entry.timer);
-        this._pendingCompletions.delete(request_id);
-        entry.resolve(items);
     }
 }

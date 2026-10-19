@@ -115,7 +115,7 @@ cargo run -p rust2genshin-playground
 
 *会话池是有代价的。* 一个待命的 RA 会话在 `did_open` 之后吃 839 MB；`PLAYGROUND_LSP_POOL_MIN` 乘以这个数就是这部分常驻内存。空闲超过 `PLAYGROUND_LSP_IDLE_TTL` 会话被 `docker rm -f` 收掉，RA 进程随之消失 —— 不靠谁的 `Drop`，也不靠连接断开。
 
-*待命会话里已经有文档了。* 补池建会话时会先 `did_open` 一行占位内容，所以用户第一次连接时*不该再 didOpen 一遍*（同一个 URI 重复 didOpen 是协议违规）；用户的源码走 `LspChange` 全文替换。
+*待命会话里已经有文档了。* 补池建会话时会先 `did_open` 一行占位内容把 crate graph 拉热。会话交棒给浏览器之前（`LspService::acquire`）与归还时（连接收尾）服务端各补一条 `didClose`，所以池里那个 URI 在交给浏览器时一定是关闭状态，浏览器的 `didOpen` 永远合法；用户的源码走 `didChange` 全文替换。
 
 *目标选择只影响编译。* 顶部的「目标」下拉框列的是 `hello.targets`，由服务端那张表驱动（`playground/src/protocol.rs` 的 `TARGETS`）；超限与经典模式的差别只在 `--target` 指向哪份 spec、`-gamemode` 传什么，LSP 链路完全不感知。切换目标后要重新编译才生效（它改的是编译产物，不是编辑器状态）。重连 WebSocket 会把下拉框重置回第一项。
 

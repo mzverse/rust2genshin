@@ -8,10 +8,11 @@
  * 与 `lsp-client.js` 的分工:
  *   - script.js 管「WS 连上 / 发 submit / 收消息」+ UI 状态(target 选择器、
  *     日志面板、拖动条、选项卡、样例载入);
- *   - lsp-client.js 管「LspTokens / LspDiagnostic / LspCompletion → CodeMirror
- *     编辑器 → LspChange / LspCompletion」的具体实现(去抖 300 ms、2 s 兜底、
- *     在途替换)。CodeMirror 的 effects / fields 也定义在那儿,这一个文件
- *     集中 LSP 相关的内容。
+ *   - lsp-client.js 管「LSP 报文 ↔ CodeMirror」:自己发 initialize /
+ *     didOpen / didChange / semanticTokens / 诊断 / 补全请求,收到 `lsp`
+ *     信封后自己解析。script.js 只做透传。
+ *     CodeMirror 的 effects / fields 也定义在那儿,这一个文件集中 LSP
+ *     相关的内容。
  *
  * 后端地址不归页面管 —— 见下面 `BACKENDS` 的注释。
  */
@@ -155,6 +156,9 @@ class PlayClient {
         // LSP 消息路由回调。脚本在收到 hello 并决定启用 LSP 后才设上;
         // 在此之前 LSP 消息一律不处理 —— 服务端不应该发,但保险起见。
         this.onLsp = null;
+        // `lsp_ready { file, uri }` 的回调。和 onLsp 一样在 hello
+        // 决定启用 LSP 后才设上。
+        this.onLspReady = null;
         // 正在进行的重连。打字会连续触发 `ensureConnected`,不合并的话
         // 一次断线会同时开出一堆 socket,谁最后 resolve 谁赢 —— 其余的全
         // 泄漏成幽灵连接。
@@ -337,12 +341,12 @@ class PlayClient {
     /* 公开的发消息接口 —— LSP / 提交 / 取消都走它。
      * 每次发送都算一次操作,把空闲断连的计时推后。
      * readyState 不是 1 就顺手拉一次后台重连:空闲 90 秒后前端会主动断开
-     * (见 `IDLE_DISCONNECT_MS`),用户下次打字(tokens / 补全 / lsp_change)
-     * 就是这条路径 —— 以前这里只入队不重连,于是必须点一次「编译」才活过来。
+     * (见 `IDLE_DISCONNECT_MS`),用户下次打字(tokens / 补全 / `lsp`
+     * 报文)就是这条路径 —— 以前这里只入队不重连,于是必须点一次「编译」才活过来。
      *
      * LSP 消息**不入队**:重连后服务端会重新 hello,`onHello` 会新建
-     * `LspClient`、重发 `lsp_open` 并整份同步文档。旧会话的 `lsp_change` /
-     * `lsp_completion` 到新会话里要么撞 BadRequest,要么 request_id 对不上。
+     * `LspClient`、重发 `lsp_open` 并整份同步文档。旧会话的报文到新会话里
+     * 要么撞 BadRequest,要么 JSON-RPC id 对不上。
      * 其余消息(取消、提交)保留入队语义。 */
     send(o) {
         this.touch();
@@ -350,7 +354,8 @@ class PlayClient {
             this.ws.send(JSON.stringify(o));
             return;
         }
-        if (typeof o.type === "string" && !o.type.startsWith("lsp_")) {
+        if (typeof o.type === "string"
+            && !o.type.startsWith("lsp_") && o.type !== "lsp") {
             this.pending.push(o);
         }
         this.ensureConnected();
@@ -389,12 +394,12 @@ class PlayClient {
                 this.handlers.onError(m);
                 break;
             case "lsp_ready":
-            case "lsp_tokens":
-            case "lsp_diagnostics":
-            case "lsp_completion":
-                // LSP 消息路由到客户端(若已挂上)。`onLsp` 默认 null,
-                // 脚本在 hello 决定启用 LSP 之后才设上。
-                if (this.onLsp) this.onLsp(m);
+                if (this.onLspReady) this.onLspReady(m);
+                break;
+            case "lsp":
+                // RA 的原始报文,交给 LspClient 自己配对/消费。
+                // 合成的 `exit` 也在里面,由 LspClient 自己收掉。
+                if (this.onLsp) this.onLsp(m.message);
                 break;
             default:
                 // 认不出来的消息不忽略 —— 记一行。将来加 lsp 消息时,
@@ -1318,7 +1323,7 @@ function ready() {
                 // 少一个绑定就是「按了没反应」。
                 history(),
                 keymap.of(historyKeymap),
-                // 文档变化 → LspClient 去抖 300 ms 后发 LspChange。
+                // 文档变化 → LspClient 去抖 300 ms 后发 didChange。
                 // `lsp` 可能为 null,check 一下避免无谓调用。
                 EditorView.updateListener.of((u) => {
                     if (!u.docChanged) return;
@@ -1425,14 +1430,15 @@ function ready() {
             if (m.lsp_supported) {
                 // 重连会再走一次这里。上一个实例必须先销毁:它挂着的去抖
                 // timer 会在新会话 lsp_open 之后才触发,拿旧内容发一条
-                // lsp_change 过去。
+                // 过期的报文过去。
                 if (lsp) lsp.dispose();
                 lsp = new LspClient({
                     view,
                     send: (msg) => client.send(msg),
                     onStatus: (text) => setStatus(text, "ok"),
                 });
-                client.onLsp = (msg) => lsp.onMessage(msg);
+                client.onLspReady = (m) => { if (lsp) lsp.onReady(m.uri); };
+                client.onLsp = (message) => { if (lsp) lsp.handleMessage(message); };
                 // 发 LspOpen —— 服务端在池里建一个 RA 会话,准备好了回 LspReady。
                 lsp.open();
                 // 高亮要等 RA 就绪才出现,这之前给一条「分析中…」让用户
@@ -1442,7 +1448,9 @@ function ready() {
             } else {
                 // 服务端这次说没有 LSP(可能这次连的是没开这功能的那台)。
                 // 同理要清掉上一个实例,否则它还在发消息。
-                if (lsp) { lsp.dispose(); lsp = null; client.onLsp = null; }
+                if (lsp) { lsp.dispose(); lsp = null; }
+                client.onLspReady = null;
+                client.onLsp = null;
                 appendLog("stdout", "── 服务端 LSP 关闭,编辑框无高亮 ──\n");
             }
         },

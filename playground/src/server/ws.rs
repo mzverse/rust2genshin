@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use tokio::{
     sync::{broadcast, mpsc},
     task::JoinHandle,
@@ -27,7 +28,10 @@ use tokio::{
 use crate::{
     docker::Stream,
     job::JobMeta,
-    lsp::{pool::Acquire, session::Event},
+    lsp::{
+        pool::Acquire,
+        session::{DOC_URI, Event},
+    },
     protocol::{ClientMsg, ErrorCode, MAX_SOURCE_BYTES, PROTOCOL_VERSION, SOURCE_FILE, ServerMsg},
     runner::{JobSpec, RunnerError},
     server::{AppState, client_key_of, origin_allowed},
@@ -207,71 +211,46 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                             continue;
                                         }
                                     };
-                                // 不在这里 didOpen:待命会话补池时已经 didOpen
-                                // 过占位内容,同一个 URI 再 didOpen 是 LSP
-                                // 协议违规。用户源码走 LspChange 的 didChange。
+                                // `acquire` 交棒前已经补过 didClose，所以这里不用再管文档开关。
                                 let mut events = acq.session().subscribe();
                                 let ftx = tx.clone();
                                 let forwarding = tokio::spawn(async move {
                                     loop {
                                         match events.recv().await {
-                                            Ok(Event::Tokens(data)) => {
-                                                if ftx.send(Outbound::from(ServerMsg::LspTokens { data })).is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            Ok(Event::Diagnostics(list)) => {
-                                                // 整份转发。空 vec 也要发 —— 它
-                                                // 是「清空」的唯一信号。
-                                                let items = list
-                                                    .into_iter()
-                                                    .map(|d| crate::protocol::LspDiagnosticItem {
-                                                        line: d.line,
-                                                        column: d.column,
-                                                        end_line: d.end_line,
-                                                        end_column: d.end_column,
-                                                        severity: d.severity,
-                                                        message: d.message,
-                                                    })
-                                                    .collect();
+                                            Ok(Event::Message(message)) => {
                                                 if ftx
-                                                    .send(Outbound::from(ServerMsg::LspDiagnostics { items }))
+                                                    .send(Outbound::from(ServerMsg::Lsp { message }))
                                                     .is_err()
                                                 {
-                                                    return;
-                                                }
-                                            }
-                                            Ok(Event::Completed { request_id, items }) => {
-                                                let items = items
-                                                    .into_iter()
-                                                    .map(|i| crate::protocol::CompletionItem {
-                                                        label: i.label,
-                                                        kind: i.kind,
-                                                        detail: i.detail,
-                                                        label_details: i.label_details.map(|d| {
-                                                            crate::protocol::CompletionLabelDetails {
-                                                                detail: d.detail,
-                                                                description: d.description,
-                                                            }
-                                                        }),
-                                                    })
-                                                    .collect();
-                                                if ftx.send(Outbound::from(ServerMsg::LspCompletion { request_id, items })).is_err() {
                                                     break;
                                                 }
                                             }
-                                            // 慢消费者丢几条不值得断连;会话关闭才收工。
+                                            // 慢消费者丢几条不值得断连。
                                             Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                                            Err(broadcast::error::RecvError::Closed) => break,
+                                            Err(broadcast::error::RecvError::Closed) => {
+                                                let _ = ftx.send(Outbound::from(ServerMsg::Lsp {
+                                                    message: closed_frame("分析器已退出"),
+                                                }));
+                                                break;
+                                            }
                                         }
                                     }
                                 });
                                 lsp_conn = Some(LspConn { acq, forwarding });
-                                if send(&mut sink, &ServerMsg::LspReady { file: SOURCE_FILE.to_string() }).await.is_err() {
+                                if send(
+                                    &mut sink,
+                                    &ServerMsg::LspReady {
+                                        file: SOURCE_FILE.to_string(),
+                                        uri: DOC_URI.to_string(),
+                                    },
+                                )
+                                .await
+                                .is_err()
+                                {
                                     break;
                                 }
                             }
-                            Ok(ClientMsg::LspChange { source }) => {
+                            Ok(ClientMsg::Lsp { message }) => {
                                 // 不把 `&LspConn` 借到 await 对面去:`Handle`
                                 // 里的销毁钩子是 `FnOnce`(非 Sync),借它会让
                                 // 整个 `run_socket` future 变成 !Send。
@@ -283,39 +262,94 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                     }
                                     continue;
                                 };
-                                let Some(svc) = state.lsp.clone() else {
-                                    if send(&mut sink, &err(ErrorCode::Internal, "代码分析功能已关闭")).await.is_err() {
-                                        break;
+
+                                match route_lsp_method(message.get("method").and_then(Value::as_str)) {
+                                    LspRoute::Initialize => {
+                                        let Some(cached) = session.initialize_result() else {
+                                            if send(
+                                                &mut sink,
+                                                &err(ErrorCode::Internal, "分析器还没初始化完"),
+                                            )
+                                            .await
+                                            .is_err()
+                                            {
+                                                break;
+                                            }
+                                            continue;
+                                        };
+                                        let reply = initialize_reply(&message, &cached);
+                                        if send(&mut sink, &ServerMsg::Lsp { message: reply })
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
                                     }
-                                    continue;
-                                };
-                                // 先写盘再 didChange:否则 RA 可能先看到
-                                // didChange、再从磁盘读到旧内容。
-                                if let Err(e) = svc.write_source(&container, &source).await {
-                                    if send(&mut sink, &err(ErrorCode::Internal, e)).await.is_err() {
-                                        break;
+                                    // RA 在待命阶段已经收过 initialized；shutdown /
+                                    // exit 会杀掉池里共享的进程。
+                                    LspRoute::Swallow => {}
+                                    LspRoute::Store => {
+                                        let Some(svc) = state.lsp.clone() else {
+                                            if send(
+                                                &mut sink,
+                                                &err(ErrorCode::Internal, "代码分析功能已关闭"),
+                                            )
+                                            .await
+                                            .is_err()
+                                            {
+                                                break;
+                                            }
+                                            continue;
+                                        };
+                                        // 先写盘再转发：RA 可能先处理 didOpen、再从
+                                        // 磁盘读 workspace 成员。
+                                        let Some(text) = document_text(&message) else {
+                                            if send(
+                                                &mut sink,
+                                                &bad_request("didOpen / didChange 必须带全文"),
+                                            )
+                                            .await
+                                            .is_err()
+                                            {
+                                                break;
+                                            }
+                                            continue;
+                                        };
+                                        if let Err(e) = svc.write_source(&container, text).await {
+                                            if !lsp_failed(
+                                                &mut sink,
+                                                &mut lsp_conn,
+                                                format!("写源码失败:{e}"),
+                                            )
+                                            .await
+                                            {
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                        if let Err(e) = session.send_raw(&message).await
+                                            && !lsp_failed(
+                                                &mut sink,
+                                                &mut lsp_conn,
+                                                format!("分析器断开了:{e}"),
+                                            )
+                                            .await
+                                        {
+                                            break;
+                                        }
                                     }
-                                    continue;
-                                }
-                                if let Err(e) = session.did_change(&source).await
-                                    && send(&mut sink, &err(ErrorCode::Internal, format!("分析器没接住这次修改:{e}"))).await.is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Ok(ClientMsg::LspCompletion { request_id, line, column }) => {
-                                let Some(session) =
-                                    lsp_conn.as_ref().map(|c| Arc::clone(c.acq.session()))
-                                else {
-                                    if send(&mut sink, &bad_request("先发 lsp_open")).await.is_err() {
-                                        break;
+                                    LspRoute::Forward => {
+                                        if let Err(e) = session.send_raw(&message).await
+                                            && !lsp_failed(
+                                                &mut sink,
+                                                &mut lsp_conn,
+                                                format!("分析器断开了:{e}"),
+                                            )
+                                            .await
+                                        {
+                                            break;
+                                        }
                                     }
-                                    continue;
-                                };
-                                if let Err(e) = session.request_completion(request_id, line, column).await
-                                    && send(&mut sink, &err(ErrorCode::Internal, format!("补全请求失败:{e}"))).await.is_err()
-                                {
-                                    break;
                                 }
                             }
                         }
@@ -367,15 +401,100 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
     // 让下一个请求再用一次坏 handle。
     if let Some(c) = lsp_conn.take() {
         c.forwarding.abort();
-        let alive = c.acq.session().is_alive();
+        let session = Arc::clone(c.acq.session());
+        // 浏览器没发过 didClose 的话替它补一条，池里的会话回到
+        // 「没有打开文档」的状态。
+        if let Err(e) = session.did_close().await {
+            tracing::debug!("归还会话前 didClose 失败:{e}");
+        }
+        let alive = session.is_alive();
         c.acq.release(alive).await;
     }
 }
 
-/// 一条连接持有的 RA 会话,以及把事件转成 `ServerMsg` 的转发任务。
+/// 一条连接持有的 RA 会话，以及把 RA 帧中继给前端的任务。
 struct LspConn {
     acq: Acquire,
     forwarding: JoinHandle<()>,
+}
+
+/// 服务端对一条浏览器 LSP 消息的处理方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LspRoute {
+    /// 用缓存的 `initialize` 结果按浏览器 id 回复，不转发。
+    Initialize,
+    /// 吞掉：RA 已经收过，或会杀死共享进程。
+    Swallow,
+    /// 落盘后原样转发。
+    Store,
+    /// 原样转发。
+    Forward,
+}
+
+fn route_lsp_method(method: Option<&str>) -> LspRoute {
+    match method {
+        Some("initialize") => LspRoute::Initialize,
+        Some("initialized" | "shutdown" | "exit") => LspRoute::Swallow,
+        Some("textDocument/didOpen" | "textDocument/didChange") => LspRoute::Store,
+        _ => LspRoute::Forward,
+    }
+}
+
+/// `didOpen` 的 `textDocument.text`，或 `didChange` 的
+/// `contentChanges[0].text`。拿不到全文返回 `None`：带 `range` 的增量
+/// 不能用来落盘，宁可回 bad_request 也不写半份内容。
+fn document_text(message: &Value) -> Option<&str> {
+    let params = message.get("params")?;
+    match message.get("method")?.as_str()? {
+        "textDocument/didOpen" => params.get("textDocument")?.get("text")?.as_str(),
+        "textDocument/didChange" => params.get("contentChanges")?.get(0)?.get("text")?.as_str(),
+        _ => None,
+    }
+}
+
+/// 用待命阶段缓存的 `result`，按**浏览器的 id** 回一条 initialize 应答。
+fn initialize_reply(request: &Value, cached: &Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": request.get("id").cloned().unwrap_or(Value::Null),
+        "result": cached,
+    })
+}
+
+/// 服务端合成的关闭信号：一条 `exit` 通知。`exit` 在规范里是客户端→
+/// 服务端，这里是本项目唯一的反向合成帧；前端收到即视为传输终止。
+/// 不用 `shutdown`：它是带 id 的请求，会诱发一次没有意义的应答。
+fn closed_frame(reason: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": { "reason": reason },
+    })
+}
+
+/// 管道断了：发一次合成的 `exit`，销毁会话（不回池）。
+/// 返回 false 表示这条 WebSocket 也该断（消息发不出去）。
+async fn lsp_failed<S>(
+    sink: &mut S,
+    conn: &mut Option<LspConn>,
+    why: String,
+) -> bool
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    let sent = send(
+        sink,
+        &ServerMsg::Lsp {
+            message: closed_frame(&why),
+        },
+    )
+    .await
+    .is_ok();
+    if let Some(c) = conn.take() {
+        c.forwarding.abort();
+        c.acq.release(false).await;
+    }
+    sent
 }
 
 async fn send<S>(sink: &mut S, m: &ServerMsg) -> Result<(), axum::Error>
@@ -941,14 +1060,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lsp_change_without_open_is_a_bad_request() {
-        // 没开会话就发源码:要明确回「先发 lsp_open」,不能静默吞掉 ——
+    async fn lsp_message_without_open_is_a_bad_request() {
+        // 没开会话就发 LSP 消息:要明确回「先发 lsp_open」,不能静默吞掉 ——
         // 前端会一直以为自己在等分析结果。
         let (_d, url, _st) =
             spawn_with_lsp(FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 })).await;
         let mut ws = connect(&url).await;
         read_n(&mut ws, 1).await; // hello
-        send(&mut ws, ClientMsg::LspChange { source: "fn main() {}".into() }).await;
+        send(
+            &mut ws,
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "textDocument/completion",
+                    "params": {},
+                }),
+            },
+        )
+        .await;
         match read_n(&mut ws, 1).await[0].clone() {
             ServerMsg::Error { code, message } => {
                 assert_eq!(code, ErrorCode::BadRequest);
@@ -958,11 +1088,102 @@ mod tests {
         }
     }
 
-    /// 真起一个 RA 会话,走完整条链路,再验证断开后会话回池、能被下一条
+    #[test]
+    fn lsp_routes_only_the_handshake_and_text_sync() {
+        assert_eq!(route_lsp_method(Some("initialize")), LspRoute::Initialize);
+        for m in ["initialized", "shutdown", "exit"] {
+            assert_eq!(route_lsp_method(Some(m)), LspRoute::Swallow, "{m}");
+        }
+        for m in ["textDocument/didOpen", "textDocument/didChange"] {
+            assert_eq!(route_lsp_method(Some(m)), LspRoute::Store, "{m}");
+        }
+        for m in [
+            "textDocument/definition",
+            "textDocument/completion",
+            "textDocument/diagnostic",
+            "textDocument/semanticTokens/full",
+        ] {
+            assert_eq!(route_lsp_method(Some(m)), LspRoute::Forward, "{m}");
+        }
+        // 没有 method 的帧是浏览器对 RA 请求的响应，也必须转发。
+        assert_eq!(route_lsp_method(None), LspRoute::Forward);
+    }
+
+    #[test]
+    fn document_text_requires_full_text() {
+        let open = serde_json::json!({
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "text": "fn main() {}" } },
+        });
+        assert_eq!(document_text(&open), Some("fn main() {}"));
+
+        let change = serde_json::json!({
+            "method": "textDocument/didChange",
+            "params": { "contentChanges": [{ "text": "fn x() {}" }] },
+        });
+        assert_eq!(document_text(&change), Some("fn x() {}"));
+
+        // 缺文本 / 空 changes / 带 range 的增量：都拿不到全文，不能落盘。
+        assert_eq!(
+            document_text(&serde_json::json!({
+                "method": "textDocument/didOpen",
+                "params": {},
+            })),
+            None
+        );
+        assert_eq!(
+            document_text(&serde_json::json!({
+                "method": "textDocument/didChange",
+                "params": { "contentChanges": [] },
+            })),
+            None
+        );
+        assert_eq!(
+            document_text(&serde_json::json!({
+                "method": "textDocument/didChange",
+                "params": { "contentChanges": [{ "range": {} }] },
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn initialize_reply_uses_the_browser_id_and_the_cached_result() {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 17,
+            "method": "initialize",
+            "params": {},
+        });
+        let cached = serde_json::json!({
+            "capabilities": {
+                "semanticTokensProvider": {
+                    "legend": { "tokenTypes": ["keyword"] }
+                }
+            }
+        });
+        let reply = initialize_reply(&request, &cached);
+        assert_eq!(reply["jsonrpc"], "2.0");
+        assert_eq!(reply["id"], 17, "必须回浏览器的 id，不是内部 id");
+        assert_eq!(reply["result"], cached);
+    }
+
+    #[test]
+    fn closed_frame_is_an_exit_notification() {
+        // 关闭信号复用 LSP 的 exit 通知：无 id（不是请求，不需要应答），
+        // 原因放 params.reason。用 shutdown 的话前端还得回一条 null。
+        let frame = closed_frame("分析器已退出");
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["method"], "exit");
+        assert!(frame.get("id").is_none(), "exit 必须是通知");
+        assert_eq!(frame["params"]["reason"], "分析器已退出");
+    }
+
+    /// 真起一个 RA 会话,走一遍原样转发,再验证断开后会话回池、能被下一条
     /// 连接复用。需要本机有 docker 与烘好的镜像。
     #[tokio::test]
     #[ignore = "需要本机有 docker 与烘好的镜像"]
-    async fn lsp_session_serves_diagnostics_and_is_reused_after_disconnect() {
+    async fn lsp_session_forwards_raw_messages_and_is_reused_after_disconnect() {
         // 本机没有当前 HEAD 的镜像就跳过 —— 起不了 RA。
         let mut cfg = crate::config::load().expect("读配置");
         let repo = Repo::new(cfg.repo_dir.clone());
@@ -1006,21 +1227,99 @@ mod tests {
         read_n(&mut ws, 1).await; // hello
         send(&mut ws, ClientMsg::LspOpen {}).await;
         let ready = read_until(&mut ws, |m| matches!(m, ServerMsg::LspReady { .. })).await;
-        match ready {
-            ServerMsg::LspReady { file } => assert_eq!(file, SOURCE_FILE),
+        let uri = match ready {
+            ServerMsg::LspReady { file, uri } => {
+                assert_eq!(file, SOURCE_FILE);
+                assert_eq!(uri, DOC_URI, "前端要拿它填 textDocument.uri");
+                uri
+            }
             other => panic!("期望 lsp_ready,得到 {other:?}"),
-        }
+        };
 
-        // 有语法错 → RA 必然报一条;空 vec 是「清空」,不算。
+        // initialize：服务端用缓存的 result 按浏览器 id 回放。
         send(
             &mut ws,
-            ClientMsg::LspChange {
-                source: "fn main() { let x: i32 = \"not an int\"; }".into(),
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": { "processId": null, "rootUri": null, "capabilities": {} },
+                }),
             },
         )
         .await;
         read_until(&mut ws, |m| {
-            matches!(m, ServerMsg::LspDiagnostics { items } if items.iter().any(|d| !d.message.is_empty()))
+            matches!(m, ServerMsg::Lsp { message } if message["id"] == 1
+                && message["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"]
+                    .is_array())
+        })
+        .await;
+
+        send(
+            &mut ws,
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0", "method": "initialized", "params": {},
+                }),
+            },
+        )
+        .await;
+
+        // didOpen 的全文必须落盘并原样进 RA。
+        let text = "fn main() { let x: i32 = \"not an int\"; }";
+        send(
+            &mut ws,
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri, "languageId": "rust", "version": 1, "text": text,
+                    }},
+                }),
+            },
+        )
+        .await;
+
+        // 拉取式诊断：原样往返,RA 返回当前文件的诊断。
+        send(
+            &mut ws,
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "textDocument/diagnostic",
+                    "params": { "textDocument": { "uri": uri } },
+                }),
+            },
+        )
+        .await;
+        read_until(&mut ws, |m| {
+            matches!(m, ServerMsg::Lsp { message }
+                if message["id"] == 2
+                    && message["result"]["items"].as_array().is_some_and(|a| !a.is_empty()))
+        })
+        .await;
+
+        // 顺手证一下任意请求都能往返(不进入 UI)。
+        send(
+            &mut ws,
+            ClientMsg::Lsp {
+                message: serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "textDocument/definition",
+                    "params": {
+                        "textDocument": { "uri": uri },
+                        "position": { "line": 0, "character": 4 },
+                    },
+                }),
+            },
+        )
+        .await;
+        read_until(&mut ws, |m| {
+            matches!(m, ServerMsg::Lsp { message } if message["id"] == 3)
         })
         .await;
 
