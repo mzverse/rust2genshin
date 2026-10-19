@@ -24,8 +24,18 @@ pub fn count_to_five() {
 #[unsafe(no_mangle)]
 pub fn async_loop_demo() {
     let mut co = count_to_five();
-    // 一次 resume 推进一步,`#[async_loop]` 就是从这里往前跳回去的。
-    for _ in 0..6 {
-        co.resume();
-    }
+    // 暂时只能这样，协程待完善
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
+    co.resume();
 }
