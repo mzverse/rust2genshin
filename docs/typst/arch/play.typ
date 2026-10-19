@@ -190,6 +190,8 @@ server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docke
 
 *编辑器只借 CodeMirror 的词法层*：`@codemirror/lang-rust` 提供括号匹配等结构信息，*不装* `syntaxHighlighting`；颜色全部来自服务端语义 token。缩进是自写的 `indentService`（`lang-rust` 没有提供任何缩进规则）。
 
+Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个包会拖进第二份 `@codemirror/view`，facet 值认不出来。有选区时 Tab 给选区覆盖的每一行加一个 `indentUnit`（空行跳过），Shift+Tab 从行首削掉一个单位；选区终点落在下一行行首时那一行不算。缩进单位走 `languageDataAt("indentUnit", pos)`，退化的情形（页面里不会发生）才回落到常量 `INDENT`。派发事务时**不给** `selection`：不给的话 CodeMirror 默认把选区跟着 `changes` 映射，正是这里要的；写成 `{ ranges, map: true }` 反而过不了校验 —— esm.sh 拉回来的 `@codemirror/state` 与 view 内那份不是同一个实例。
+
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
 
 *重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。

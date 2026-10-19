@@ -1036,6 +1036,62 @@ function ready() {
         return OPENERS.includes(trimmed.slice(-1)) ? base + context.unit : base;
     };
 
+    /* 选区缩进(`dir` = +1)与反缩进(`dir` = -1)。
+     *
+     * 覆盖**每一个 range**,不是一个 `selection.main` —— 多光标下每个光标
+     * 自己那几行都要动。
+     *
+     * 几处边界,都是编辑器里「按了没反应」或「按了少一行」的那种:
+     *   - 选区正好结束在某一行的**行首**时,那行不算被选中。反缩进尤其
+     *     明显:光标在下一行开头按 Shift-Tab,用户想退的是上一行,不是把
+     *     一个没碰过的空行也退一级。
+     *   - 空行 / 只有空白的行在**缩进**时跳过。反缩进则照做:把它的前导
+     *     空白去掉,免得整段缩进里夹着几行别人看不见却占了列的空白。
+     *   - 反缩进最多去掉 `unit.length` 列,不足一格就全去掉。不能「不够
+     *     一格就不动」—— 顶格写的 2 空格代码否则永远退不出去。
+     *
+     * 选区跟着改动一起平移(`mapPos`),所以连按几次 Tab 之后选区仍然罩住
+     * 原来那些行,Shift-Tab 能原样退回来。
+     */
+    function reindent(view, dir) {
+        const state = view.state;
+        const changes = [];
+        let touched = false;
+        for (const range of state.selection.ranges) {
+            const unit = state.languageDataAt("indentUnit", range.from)[0] || INDENT;
+            // 先按 `from` 取 unit 没问题:缩进单位在整个文档里是一致的,
+            // 多份 language 配置各给各的在这页也不存在。
+            const first = state.doc.lineAt(range.from).number;
+            let lastLine = state.doc.lineAt(range.to);
+            if (lastLine.from === range.to && !range.empty) lastLine = lastLine.number > first
+                ? state.doc.lineAt(lastLine.from - 1)
+                : lastLine;
+            for (let n = first; n <= lastLine.number; n++) {
+                const line = state.doc.line(n);
+                const blank = line.text.trim() === "";
+                if (dir > 0 && blank) continue;
+                const ws = /^[ \t]*/.exec(line.text)[0];
+                if (dir > 0) {
+                    changes.push({ from: line.from, insert: unit });
+                } else {
+                    const cut = Math.min(ws.length, unit.length);
+                    if (cut === 0) continue;
+                    changes.push({ from: line.from, to: line.from + cut });
+                }
+                touched = true;
+            }
+        }
+        if (!touched) return false;
+        // **不给** `selection`:不给时 CodeMirror 默认把选区跟着 changes 映射,
+        // 正是这里要的(插入在行首,anchor 自然让出刚插进来的空格)。
+        // 写成 `{ ranges, map: true }` 反而会炸:esm.sh 拉回来的
+        // `@codemirror/state` 与 view 内那份不是同一个实例,那个形状造出的
+        // range 过不了校验,`applyTransaction` 里直接抛
+        // `Cannot read properties of undefined (reading 'length')`。
+        view.dispatch({ changes });
+        return true;
+    }
+
     /* 选区矩形对齐到整行。
      *
      * `drawSelection()` 的矩形量的是字形盒(12px 字约 14px 高),而行盒是
@@ -1162,39 +1218,63 @@ function ready() {
                 // `languageDataAt("indentOnInput")` 提供一个函数 ——
                 // `@codemirror/lang-rust` 不提供,配了也不触发。
                 indentService.of(rustIndent),
-                // Tab 缩进。挂**默认**优先级(不是 `Prec.high`):补全弹窗
-                // 开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
+                // Tab / Shift-Tab。挂**默认**优先级(不是 `Prec.high`):补全
+                // 弹窗开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
                 // 扩展列表靠后,于是弹窗开着时 Tab 归弹窗(选中下一项),
                 // 没开时才是这里。
                 // 没有用官方的 `indentWithTab`:从 esm.sh 加载时它带着另一份
                 // `@codemirror/view`,产出的扩展会被本页这份 `state` 判成
                 // 「Unrecognized extension value」直接让整个编辑器建不起来。
-                keymap.of([{
-                    key: "Tab",
-                    run: (v) => {
-                        const { from, to } = v.state.selection.main;
-                        // `languageDataAt` 返回的是**数组**(可能多层配置),
-                        // 直接拿它当字符串用会得到 `"    "` 的长度 5 之类。
-                        const unit = v.state.languageDataAt("indentUnit", from)[0] || INDENT;
-                        const line = v.state.doc.lineAt(from);
-                        const base = line.text.match(/^\s*/)[0];
-                        const col = from - line.from;
-                        let insert;
-                        if (to === from && col <= base.length) {
-                            // 还在行首的空白里:补到**下一层**,而不是加一格。
-                            insert = base + unit;
-                        } else {
-                            // 行中间:对齐到下一个制表位。
-                            const rest = col % unit.length;
-                            insert = " ".repeat(rest === 0 ? unit.length : unit.length - rest);
-                        }
-                        v.dispatch({
-                            changes: { from, to, insert },
-                            selection: { anchor: from + insert.length },
-                        });
-                        return true;
+                // 官方那对 `indentSelection` / `outdentSelection` 也没用 ——
+                // 它们走 `indentMore` facet,等于又把 language 的模块副本
+                // 掺进来。自己 dispatch 只有一处依赖(下面的 `reindent`)。
+                keymap.of([
+                    {
+                        key: "Tab",
+                        run: (v) => {
+                            const { from, to } = v.state.selection.main;
+                            // 有选区 = 对选区覆盖到的每一行缩进/反缩进。
+                            // 这一条以前是错的:它对 `from..to` 直接 dispatch
+                            // 插入空格,于是**把选中的代码整段替换掉了**。
+                            if (to !== from) return reindent(v, 1);
+                            // `languageDataAt` 返回的是**数组**(可能多层配置),
+                            // 直接拿它当字符串用会得到 `"    "` 的长度 5 之类。
+                            const unit = v.state.languageDataAt("indentUnit", from)[0] || INDENT;
+                            const line = v.state.doc.lineAt(from);
+                            const base = line.text.match(/^\s*/)[0];
+                            const col = from - line.from;
+                            let insert;
+                            if (col <= base.length) {
+                                // 还在行首的空白里:补到**下一层**,而不是加一格。
+                                insert = base + unit;
+                            } else {
+                                // 行中间:对齐到下一个制表位。
+                                const rest = col % unit.length;
+                                insert = " ".repeat(rest === 0 ? unit.length : unit.length - rest);
+                            }
+                            v.dispatch({
+                                changes: { from, to, insert },
+                                selection: { anchor: from + insert.length },
+                            });
+                            return true;
+                        },
                     },
-                }]),
+                    {
+                        key: "Shift-Tab",
+                        // 没有选区时也反缩进光标所在行 —— 用户在一行中间按
+                        // Shift-Tab 的意思多半是「这行退一级」,不是「什么
+                        // 都不做」。只在行首没有任何空白时才什么都不动,让
+                        // 这个键落到后面的绑定上。
+                        run: (v) => {
+                            if (v.state.selection.ranges.every((r) => r.empty)) {
+                                const { from } = v.state.selection.main;
+                                const line = v.state.doc.lineAt(from);
+                                if (!/^[ \t]+/.test(line.text)) return false;
+                            }
+                            return reindent(v, -1);
+                        },
+                    },
+                ]),
                 // Ctrl-D 删整行。`defaultKeymap` 里 `Mod-d` 绑的是
                 // `deleteCharAfter`(Emacs 风格删一个字符),要盖掉它就得排在
                 // `defaultKeymap` **之前** —— keymap 扩展按注册顺序匹配,
