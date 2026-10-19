@@ -69,6 +69,12 @@ pub fn sample_path(cfg: &Config) -> PathBuf {
     cfg.repo_dir.join(crate::protocol::SOURCE_FILE)
 }
 
+/// 浏览器解析 `.gia` 用的 schema。跟着仓库工作区走，不 embed ——
+/// 与 `/sample` 同一个理由：部署的就是当前仓库，进程启动时冻结反而会漂。
+pub fn proto_path(cfg: &Config) -> PathBuf {
+    cfg.repo_dir.join("core/proto/asset.proto")
+}
+
 /// `/sample` 上用两个响应头捎回「样例出自哪个 commit / 镜像出自哪个
 /// commit」。不用 JSON 包一层是因为正文要原样进编辑器 —— 包了的话前端
 /// 每次都得剥一层。名字定成常量,`router` 里的 expose 列表和这里必须
@@ -114,6 +120,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/status", get(status))
         .route("/sample", get(sample))
+        .route("/proto/asset.proto", get(asset_proto))
         .route("/admin/rebuild", post(admin_rebuild))
         .route("/ws", get(crate::server::ws::ws_upgrade))
         .layer(cors)
@@ -174,6 +181,13 @@ async fn sample(State(st): State<Arc<AppState>>) -> Response {
         }
     }
     res
+}
+
+async fn asset_proto(State(st): State<Arc<AppState>>) -> Response {
+    let Ok(bytes) = tokio::fs::read(proto_path(&st.cfg)).await else {
+        return (StatusCode::NOT_FOUND, "asset.proto 不在仓库里").into_response();
+    };
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response()
 }
 
 /// webhook 路径上的 `git pull`。返回 `Some(原因)` 表示 pull 没成功(但烘焙
@@ -428,6 +442,30 @@ mod tests {
     async fn sample_is_404_when_the_file_is_gone() {
         let d = tempfile::tempdir().unwrap();
         let res = get(ready_state(d.path()).await, "/sample").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn proto_is_served_from_the_repo() {
+        let d = tempfile::tempdir().unwrap();
+        let proto = d.path().join("core/proto/asset.proto");
+        std::fs::create_dir_all(proto.parent().unwrap()).unwrap();
+        let body = b"package rust2genshin;\nmessage AssetBundleData {}\n";
+        std::fs::write(&proto, body).unwrap();
+        let res = get(ready_state(d.path()).await, "/proto/asset.proto").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], body);
+    }
+
+    #[tokio::test]
+    async fn proto_is_404_when_missing() {
+        let d = tempfile::tempdir().unwrap();
+        let res = get(ready_state(d.path()).await, "/proto/asset.proto").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
