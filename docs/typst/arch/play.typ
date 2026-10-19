@@ -192,6 +192,10 @@ server::ws ──▶ LspService ──▶ Pool ──▶ Session ──▶ docke
 
 Tab / Shift+Tab 在 `script.js` 里自己写，没用 `indentWithTab`：那个包会拖进第二份 `@codemirror/view`，facet 值认不出来。有选区时 Tab 给选区覆盖的每一行加一个 `indentUnit`（空行跳过），Shift+Tab 从行首削掉一个单位；选区终点落在下一行行首时那一行不算。缩进单位走 `languageDataAt("indentUnit", pos)`，退化的情形（页面里不会发生）才回落到常量 `INDENT`。派发事务时*不给* `selection`：不给的话 CodeMirror 默认把选区跟着 `changes` 映射，正是这里要的；写成 `{ ranges, map: true }` 反而过不了校验 —— esm.sh 拉回来的 `@codemirror/state` 与 view 内那份不是同一个实例。
 
+*查找与多选走官方的 `@codemirror/search`*：`search()` + `searchKeymap` 给编辑器装上面板（`Mod-f` 打开、`Enter` / `F3` / `Mod-g` 找下一个、`Escape` 关）；`Mod-d` 选中下一个相同词、`Mod-Shift-l` 选中全部匹配。后两条都是往选区里*加段*的命令，所以必须同时开 `EditorState.allowMultipleSelections.of(true)` —— CM 默认只保留一段，`applyTransaction` 会用 `asSingle()` 把多出来的段悄悄丢掉（命令仍返回 `true`），表现就是按键有反应但选区不变。面板配色在 `style.css` 里单独写：CM 的 `.cm-button` 背景是 `background-image: linear-gradient(...)`，只改 `background-color` 盖不住，得连 `background-image: none` 一起给。
+
+`closeBrackets()` 只负责输入时自动配对；`Backspace` 一次删掉整对括号的绑定在 `closeBracketsKeymap` 里，要单独装，而且必须排在 `defaultKeymap` 之前 —— `Backspace` 在那边绑着 `deleteCharBackward`，keymap 先到先得。
+
 *高亮与诊断是两个独立 decoration 层*，可以叠在同一 range 上：一个字既是函数名又是错误位置时，两套 class 同时生效。诊断整份替换，空数组就是清空。
 
 *重连不擦高亮*：新会话在收到 `lsp_ready` 之前转发的 token 帧一律丢弃 —— 那是 RA 对占位源码（或池里上一份文档）的分析结果，套到当前文档上会把已有高亮整片替换掉。`lsp_ready` 之后前端立刻整份同步文档，此后的 token 才是针对用户代码的。

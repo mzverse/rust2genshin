@@ -18,8 +18,9 @@
 
 import { EditorView, ViewPlugin, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
-import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
-import { autocompletion, closeBrackets, startCompletion } from "https://esm.sh/@codemirror/autocomplete@6";
+import { defaultKeymap, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
+import { autocompletion, closeBrackets, closeBracketsKeymap, startCompletion } from "https://esm.sh/@codemirror/autocomplete@6";
+import { search, searchKeymap, highlightSelectionMatches } from "https://esm.sh/@codemirror/search@6";
 import { indentService, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
@@ -1180,6 +1181,28 @@ function ready() {
                 // 选区,颜色见 style.css 的 `.cm-selectionBackground`。
                 drawSelection(),
                 snapSelectionToLine,
+                // `closeBrackets()` 只装了输入时自动配对,`Backspace` 一下删掉
+                // 整对的绑定(`closeBracketsKeymap`)要单独装 —— 源码里它只
+                // 返回 `[inputHandler, bracketState]`。必须排在
+                // `defaultKeymap` **之前**:`Backspace` 在那边绑着
+                // `deleteCharBackward`,keymap 按注册顺序匹配,先到先赢;
+                // 否则光标夹在 `()` 中间按退格只会删掉一个字符。
+                keymap.of(closeBracketsKeymap),
+                // CM 默认**只允许一段选区**,`applyTransaction` 里会把
+                // 事务的选区过一遍 `asSingle()`;下面的 `Ctrl-Shift-L` /
+                // `Mod-d` 都是往选区里加段的命令,不开这个 facet 就会
+                // 悄悄退回只剩主选区(命令本身仍返回 true)。官方推荐
+                // 的 `basicSetup` 里一直带着它。
+                EditorState.allowMultipleSelections.of(true),
+                // 搜索面板:`Ctrl-F` 打开、`F3` / `Ctrl-G` 上下一个、
+                // `Ctrl-Shift-L` 选中全部匹配、`Ctrl-Alt-G` 跳行、`Mod-d`
+                // 选中下一个相同词。`search()` 提供面板状态,`top: true`
+                // 把它放在编辑器上方(默认在下方,会顶着日志面板)。
+                search({ top: true }),
+                keymap.of(searchKeymap),
+                // 选中一段文字后把文档里其余的相同片段淡淡标出来,
+                // 比单独挂在搜索面板里更有用。
+                highlightSelectionMatches(),
                 closeBrackets(),
                 // 初始为可编辑;setBusy() 用 editableCompartment.reconfigure 切。
                 editableCompartment.of(EditorView.editable.of(true)),
@@ -1283,15 +1306,10 @@ function ready() {
                         },
                     },
                 ]),
-                // Ctrl-D 删整行。`defaultKeymap` 并没有占 `Mod-d`:它里面
-                // 只有 Emacs 风格的 `Ctrl-d`(`emacsStyleKeymap` 那段是以
-                // `mac:` 前缀并进去的,只在 macOS 生效),而 macOS 上 `Mod` 是
-                // Cmd —— 两边都不撞,所以这条挂在 `defaultKeymap` 之后照样生效。
-                //
-                // 命令用官方的 `deleteLine`,不自己 dispatch:它对多行选区
-                // (删整段)、选区正好结束在某行开头(不吞下一行)、文档只剩
-                // 一行(留一个空行而不是把文档删空)这些边界都处理过了。
-                keymap.of([{ key: "Mod-d", run: deleteLine }]),
+                // 这里原来绑 `Mod-d` 删整行,现在让给 `searchKeymap` 的
+                // 「选中下一个相同词」(编辑器里的通行约定)。删整行还在:
+                // `defaultKeymap` 的 `Shift-Mod-k` 就是 `deleteLine`,边界
+                // (多行选区、选区结束在行首、只剩一行)处理得一样好。
                 // 撤销/重做。显式装上 `historyKeymap`(`Mod-z` / `Mod-y` /
                 // `Mod-Shift-z`),不要依赖编辑器的默认绑定 —— GitHub Pages
                 // 上页面的 `Mod` 在 Windows/Linux 是 Ctrl、在 macOS 是 Cmd,

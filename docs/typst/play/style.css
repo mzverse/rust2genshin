@@ -421,6 +421,78 @@ body:has(main > .play) main {
     text-decoration: none;
 }
 
+/* ---- 搜索面板 ----
+ *
+ * `@codemirror/search` 的默认外观同样是浅色硬编码(`&light` 分支),页面
+ * 没开 `EditorView.darkTheme`,所以落到白底黑字。这里整体改回主题色。
+ *
+ * `.cm-panels` 的基础规则是 `&light .cm-panels{background:#f5f5f5}`,
+ * 权重是主题类 + 类名;多带一层 `.cm-editor` 压过它。 */
+.play-editor .cm-editor .cm-panels {
+    background-color: var(--surface);
+    color: var(--fg);
+}
+.play-editor .cm-editor .cm-panels.cm-panels-top {
+    border-bottom: 1px solid var(--border);
+}
+.play-editor .cm-editor .cm-panels.cm-panels-bottom {
+    border-top: 1px solid var(--border);
+}
+/* 面板里的控件:输入框、按钮、复选框文字。字色不跟主题走的话,深色下
+ * 是黑字贴深底,基本看不清。 */
+.play-editor .cm-editor .cm-panel.cm-search input,
+.play-editor .cm-editor .cm-panel.cm-search button {
+    background-color: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font: inherit;
+}
+.play-editor .cm-editor .cm-panel.cm-search button {
+    background-color: var(--hover);
+    /* CM 的 `.cm-button` 是 `background: linear-gradient(...)` —— 一条
+     * `background-image`,只盖 `background-color` 压不住它,按钮照旧是白
+     * 底浅字。显式清掉渐变。 */
+    background-image: none;
+    padding: 0 8px;
+    cursor: pointer;
+}
+.play-editor .cm-editor .cm-panel.cm-search button:hover {
+    background-color: var(--border-soft);
+}
+.play-editor .cm-editor .cm-panel.cm-search label {
+    color: var(--muted);
+}
+/* 关闭按钮:基础主题里给了它的定位和 `background-color: inherit`,别把
+ * 上面那套按钮底色套上去 —— 否则面板右上角会多出一个方块。 */
+.play-editor .cm-editor .cm-panel.cm-search button[name="close"] {
+    background-color: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1;
+}
+.play-editor .cm-editor .cm-panel.cm-search button[name="close"]:hover {
+    color: var(--fg);
+}
+/* 命中高亮。CM 的默认色是亮黄 / 青色(`&light` / `&dark` 两套都没被选到,
+ * 这里直接按 `--accent` 混色,和选区色同一路数,深浅主题共用一个式子。 */
+.play-editor .cm-editor .cm-searchMatch {
+    background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    border-radius: 2px;
+}
+.play-editor .cm-editor .cm-searchMatch.cm-searchMatch-selected {
+    background-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* 「选中下一个相同词」和 `highlightSelectionMatches` 用的是同一套
+ * `.cm-selectionMatch` 标记,比搜索命中更淡。 */
+.play-editor .cm-editor .cm-selectionMatch {
+    background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.play-editor .cm-editor .cm-selectionMatch.cm-selectionMatch-main {
+    background-color: transparent;
+}
+
 /* ---- 中间的拖动条 ----
  *
  * 独占中间那一列,而且跨两行(`grid-row: 1 / 3`)—— 表头那一段也有它,上下
