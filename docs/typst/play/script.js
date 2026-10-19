@@ -19,7 +19,7 @@
 import { EditorView, ViewPlugin, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from "https://esm.sh/@codemirror/view@6";
 import { EditorState, Compartment } from "https://esm.sh/@codemirror/state@6";
 import { defaultKeymap, deleteLine, history, historyKeymap } from "https://esm.sh/@codemirror/commands@6";
-import { autocompletion, closeBrackets } from "https://esm.sh/@codemirror/autocomplete@6";
+import { autocompletion, closeBrackets, startCompletion } from "https://esm.sh/@codemirror/autocomplete@6";
 import { indentService, indentUnit } from "https://esm.sh/@codemirror/language@6";
 import { rust } from "https://esm.sh/@codemirror/lang-rust@6";
 import {
@@ -1210,6 +1210,12 @@ function ready() {
                 // 注意它里面不含 Tab 绑定(Tab 在 `indentWithTab` 里,而那个
                 // 不能用,见下),所以和我们自己的 Tab handler 不打架。
                 keymap.of(defaultKeymap),
+                // Alt-/ 主动叫补全。`autocompletion()` 自带的那条是
+                // `Ctrl-Space` —— 别的应用里那是「输入法切换」,在一半的
+                // 键盘布局上还会被系统吃掉,所以另绑一个 Alt-/。
+                // `startCompletion` 返回「这次有没有真的开始」,起不来时返回
+                // false,键就继续往后传;它和 popup 自己的 keymap 不冲突。
+                keymap.of([{ key: "Alt-/", run: startCompletion }]),
                 rust(),
                 indentUnit.of(INDENT),
                 // 缩进只有 `indentService` 这一条真入口。`indentOnInput` 在这儿
@@ -1218,10 +1224,12 @@ function ready() {
                 // `languageDataAt("indentOnInput")` 提供一个函数 ——
                 // `@codemirror/lang-rust` 不提供,配了也不触发。
                 indentService.of(rustIndent),
-                // Tab / Shift-Tab。挂**默认**优先级(不是 `Prec.high`):补全
-                // 弹窗开着自己的 Tab 绑定,同优先级下先注册者先跑 —— 我们写在
-                // 扩展列表靠后,于是弹窗开着时 Tab 归弹窗(选中下一项),
-                // 没开时才是这里。
+                // Tab / Shift-Tab。挂**默认**优先级(不是 `Prec.high`)。
+                // 补全弹窗自己的 `completionKeymap` 里并没有 Tab(它只认
+                // 上下箭头、PageUp/Down、Enter、Escape),所以这里不必让路;
+                // 真正要压过它的是 snippet 的 `defaultSnippetKeymap`(Tab
+                // 跳到下一个占位),那份挂在 `Prec.highest` 上,只有 snippet
+                // 活着时才会吃掉这个键 —— 默认优先级正好在它下面。
                 // 没有用官方的 `indentWithTab`:从 esm.sh 加载时它带着另一份
                 // `@codemirror/view`,产出的扩展会被本页这份 `state` 判成
                 // 「Unrecognized extension value」直接让整个编辑器建不起来。
@@ -1275,10 +1283,10 @@ function ready() {
                         },
                     },
                 ]),
-                // Ctrl-D 删整行。`defaultKeymap` 里 `Mod-d` 绑的是
-                // `deleteCharAfter`(Emacs 风格删一个字符),要盖掉它就得排在
-                // `defaultKeymap` **之前** —— keymap 扩展按注册顺序匹配,
-                // 同一个键先跑到的赢。
+                // Ctrl-D 删整行。`defaultKeymap` 并没有占 `Mod-d`:它里面
+                // 只有 Emacs 风格的 `Ctrl-d`(`emacsStyleKeymap` 那段是以
+                // `mac:` 前缀并进去的,只在 macOS 生效),而 macOS 上 `Mod` 是
+                // Cmd —— 两边都不撞,所以这条挂在 `defaultKeymap` 之后照样生效。
                 //
                 // 命令用官方的 `deleteLine`,不自己 dispatch:它对多行选区
                 // (删整段)、选区正好结束在某行开头(不吞下一行)、文档只剩
