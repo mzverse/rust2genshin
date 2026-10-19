@@ -134,7 +134,7 @@ const IDLE_DISCONNECT_MS = 90_000;
 const ARTIFACT_NAME = "rust2genshin_demo.gia";
 
 /* 字节数给人看。`.gia` 实际就十几 KB,不需要正经的单位换算,但一位小数
- * 加上单位比裸数字好读 —— 预览面板里就靠它占位。 */
+ * 加上单位比裸数字好读 —— 状态行和预览面板共用它。 */
 function formatBytes(n) {
     if (n < 1024) return `${n} 字节`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
@@ -1426,7 +1426,7 @@ function ready() {
         onLog: (m) => appendLog(m.stream, m.text),
         onFinished: (m) => {
             setBusy(false);
-            setStatus(`编译成功 · ${m.bytes} 字节`, "ok");
+            setStatus(`编译成功 · ${formatBytes(m.bytes)}`, "ok");
             // 「下载」按钮**不在这里点亮** —— 它跟着产物帧走。产物是
             // 另一条消息,万一它没到,按钮早亮起来只会让人点出空气。
         },

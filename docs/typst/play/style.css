@@ -635,6 +635,9 @@ body:has(main > .play) main {
 }
 .play-preview:empty::before {
     content: "待编译";
+    /* 空态是个大标题,不是一个提示行 —— 「待编译」是这块地方唯一的
+     * 内容,按正文大小印出来会像没做完。 */
+    font-size: 2em;
 }
 
 /* 收到产物之后那行占位:和「待编译」一样居中,但用正文色 —— 它说的是
