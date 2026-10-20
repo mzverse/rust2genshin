@@ -439,6 +439,13 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
         self.externals.controls_in.push(Default::default());
     }
 
+    pub fn get_links(&self, key: LinkTarget) -> &Links {
+        match key {
+            LinkTarget::Node(node) => &self.get_node(node).links,
+            LinkTarget::Export => &self.externals,
+        }
+    }
+    
     fn get_links_mut(&mut self, key: LinkTarget) -> &mut Links {
         match key {
             LinkTarget::Node(node) => &mut self.get_node_mut(node).links,

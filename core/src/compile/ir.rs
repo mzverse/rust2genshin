@@ -25,10 +25,11 @@ impl NodeKindIr {
 
     pub fn is_pure(&self) -> bool {
         assert!(self.is_calc());
-        if let IrNodeId::Native(native) = &self.id {
-            *native != NODE_RANDOM_INT.id && *native != NODE_RANDOM_FLOAT.id
-        } else {
-            true
+        match &self.id {
+            IrNodeId::Local => false,
+            IrNodeId::Native(native) =>
+                *native != NODE_RANDOM_INT.id && *native != NODE_RANDOM_FLOAT.id,
+            _ => true,
         }
     }
 }
@@ -123,6 +124,9 @@ impl IrKind {
             IrKind::Mut(_) => panic!(),
             IrKind::Never => panic!(),
             IrKind::LocalRef(kind) => {
+                if !kind.is_storable() {
+                    panic!("Cannot store {kind}");
+                }
                 if let Some(kind) = kind.as_native()
                     && node_local(kind).is_some()
                 {
@@ -186,7 +190,10 @@ pub fn node_ir_local(kind: IrKind) -> NodeKindIr {
         0,
         0,
         vec![kind.clone().into()],
-        vec![IrKind::LocalRef(kind.clone().into()), kind],
+        // 值的出口类型：ADT 给 `PartialMut`。优化器沿值流分析时，ADT 的值交给
+        // `Modify` / 函数调用是**通过引用写**它，得靠这个类型认出来（非 ADT
+        // 的类型 `partial_mut` 原样返回）。
+        vec![IrKind::LocalRef(kind.clone().into()), IrKind::partial_mut(kind)],
     )
 }
 

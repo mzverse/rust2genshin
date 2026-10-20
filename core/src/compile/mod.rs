@@ -31,6 +31,7 @@ pub mod ty;
 pub mod helper;
 pub mod backend;
 pub mod link;
+pub mod loops;
 mod optimize;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;

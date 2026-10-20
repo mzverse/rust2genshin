@@ -626,6 +626,9 @@ fn type_label(kind: Option<&IrKind>) -> String {
         // `compile_ty` 对每个非原生类型都返回 `Adt(key)`,是最常见的非 native
         // 路径。key 本身就是类型名,加外壳既没信息量又会在 140px 宽的节点上溢出。
         Some(IrKind::Adt(key)) => key.clone(),
+        // `Local` 的值出口对 ADT 记的是 `PartialMut`（优化器按它认「通过引用写」），
+        // 标签上仍然只显示类型名。
+        Some(IrKind::PartialMut(key)) => key.clone(),
         Some(kind) => format!("{kind:?}"),
         None => String::new(),
     }

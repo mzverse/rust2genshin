@@ -4,6 +4,7 @@
 
 #![no_std]
 
+use core::ops::CoroutineState;
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
 #[allow(unused_imports)]
@@ -54,26 +55,42 @@ pub fn co() {
     }
 }
 
+/// 普通函数里的循环。IR 里这是控制流上的环，native 节点图里没有环 ——
+/// 改写成「有限循环」节点（见 core/src/compile/loops.rs）。
+#[unsafe(no_mangle)]
+pub fn test_loop() {
+    let mut i = 0;
+    while i < 5 {
+        log(i);
+        i += 1;
+    }
+}
+
 #[unsafe(no_mangle)]
 pub fn test_co() {
     let mut co = co();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
+    loop {
+        match co.resume() {
+            CoroutineState::Yielded(_) => {}
+            CoroutineState::Complete(_) => break,
+        }
+    }
+}
+
+/// 计算九九乘法表的总和
+#[unsafe(no_mangle)]
+pub fn times99() {
+    let mut sum = 0;
+    let mut i = 1;
+    while i < 10 {
+        let mut j = 1;
+        while j < 10 {
+            sum += i * j;
+            j += 1;
+        }
+        i += 1;
+    }
+    log(sum);
 }
 
 // use rust2genshin_lib::entity::Entity;

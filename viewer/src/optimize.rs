@@ -4,7 +4,10 @@
 //! 调用链上的每一条,顺序与它一致。单条规则的按钮**不做** `eliminate_solos`
 //! 那种「循环到不动点」—— 一次点击 = 一条规则在整张图上过一遍,
 //! 便于逐步观察是哪一步把图改坏的;要一步到位就点「一键优化」
-//! ([`optimize_all`]:Fn 全展开 + `Optimizer::optimize()` 到不动点)。
+//! ([`optimize_all`]:消除规则到不动点)。
+//!
+//! 另外两个批量操作各自独立:「链接全部」([`link_all`]:展开所有 Fn 节点)
+//! 与「循环改写」([`lower_loops_step`]:控制流里的环 → 有限循环节点)。
 //!
 //! 这里不碰 GPUI:全部输入输出是 `Doc` / `NodeRef` / `Point<f32>`,
 //! 所以能在 `cargo test` 里直接验证(右栏按钮只是这些函数的薄壳)。
@@ -15,6 +18,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use gpui::{Point, point};
 use rust2genshin::compile::ir::{IrNodeId, Optimizer};
+use rust2genshin::compile::link::Linker;
 use rust2genshin::node::NodeRef;
 
 use crate::doc::{Doc, NODE_H, NODE_W};
@@ -336,25 +340,22 @@ pub fn link_fn_node(
     }
 }
 
-/// 一键优化:`Optimizer::lower` 里 IR 段的**整条流水线** —— 先对**每个**
-/// `IrNodeId::Fn` 节点执行 `link_node`(右键「link」的批量版),再 `optimize()`
-/// (9 条消除规则跑到**不动点** + 控制边界收尾规整;右栏的单条规则按钮只过
-/// "一遍",这里到不动点)。
+/// 批量操作的公共外壳:存档 → 取图 → 跑一段会改图的闭包 → 放回 / 回滚 →
+/// 重展平 → 重建坐标。
 ///
-/// 数据流与 [`apply_rule`] 相同:存档 → 取图 → 防 panic → 放回 / 回滚 →
-/// 重展平 → 重建坐标;**整次点击只留一个存档**(一次 Ctrl+Z 全撤)。
-/// 展开 / 消除会冒出很多新节点、没有单一锚点,统一落到最右列停放位
-/// (`anchor = None`),和规则按钮一致;要排布再点「自动整理」。
-/// 没有任何变化时**不压撤销栈**(空档点了也白点),状态栏会说明。
+/// 闭包拿到当前图和它背后的 `Linker`(可能是 `None` —— 有些操作不用 linker)。
+/// 闭包返回 `Ok(文案)` = 成功、`Err(原因)` = 失败(失败时图已回滚)。
+/// **整次点击只留一个存档**(一次 Ctrl+Z 全撤);没有任何变化时不压栈。
 ///
-/// 和 [`link_fn_node`] 同一处注意:`link_node` 还动 `Linker` 的持久状态
-/// (展开缓存 / 资产),panic 回滚换不回它 —— 这条路径就是 core 自己在跑的
-/// 流程,panic 意味着 core 出错,状态栏会说明。
-pub fn optimize_all(
+/// 三种批量操作(优化 / 链接全部 / 循环改写)共用这一个外壳,保证护栏、
+/// 存档、回滚的行为完全一致 —— 差异只在闭包里。
+fn batch_apply(
     doc: &mut Doc,
     i: usize,
     refs: &[NodeRef],
     pos: &[Point<f32>],
+    label: &str,
+    f: impl FnOnce(&mut Optimizer, Option<&mut Linker>) -> Result<String, String>,
 ) -> ApplyResult {
     let noop = |status: String| ApplyResult {
         undo: None,
@@ -368,41 +369,44 @@ pub fn optimize_all(
     let Some(mut opt) = doc.take(i) else {
         return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
     };
-    let Some(linker) = doc.linker_mut(i) else {
-        doc.put(i, opt);
-        return noop("这张图背后的 Linker 不见了".to_string());
+    // 闭包整段都在护栏里 —— 中途任何一步 panic 都用点击前的字节整体回滚
+    // (`optimize()` 尾部对 `controls_in[0]` 的索引是可能 panic 的点之一,
+    // 见 core 里的注释)。
+    let result = {
+        let linker = doc.linker_mut(i);
+        catch_unwind(AssertUnwindSafe(|| f(&mut opt, linker)))
     };
-    let fns = opt
-        .graph
-        .get_nodes()
-        .iter()
-        .filter(|x| matches!(opt.graph.get_node(**x).kind.id, IrNodeId::Fn(_)))
-        .count();
-    // 展开 + 规则链整段都在护栏里 —— 中途任何一步 panic 都用点击前的字节
-    // 整体回滚(`optimize()` 尾部对 `controls_in[0]` 的索引是可能 panic 的
-    // 点之一,见 core 里的注释)。
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        for x in opt.graph.get_nodes() {
-            opt.link_node(linker, x);
-        }
-        opt.optimize();
-    }));
     match result {
-        Ok(()) => {
+        Ok(Ok(status)) => {
             doc.put(i, opt);
             doc.reflatten(i);
-            // 没变化就别骗用户"优化了" —— 第二次点击通常就是这种情形
+            // 没变化就别骗用户"改了" —— 第二次点击通常就是这种情形
             // (规则已到不动点、没有 Fn 可展开)。
             let changed = matches!(doc.encode(i), Ok(b) if b != bytes);
-            let undo = if changed { Some(bytes) } else { None };
             ApplyResult {
-                undo,
+                undo: if changed { Some(bytes) } else { None },
                 pos: reposition(doc, i, refs, pos, None),
                 status: if changed {
-                    format!("一键优化:展开 {fns} 个 Fn 节点 + 消除规则到不动点")
+                    status
                 } else {
-                    "一键优化:无变化(已是优化后的形态)".to_string()
+                    format!("{label}:无变化(已是这个形态)")
                 },
+            }
+        }
+        Ok(Err(e)) => {
+            // 图可能停在半改状态 —— 用点击前的字节整体换回来。
+            drop(opt);
+            let status = match doc.decode_into(i, &bytes) {
+                Ok(()) => {
+                    doc.reflatten(i);
+                    format!("{label}:失败,已回滚 —— {e}")
+                }
+                Err(e) => format!("{label}:失败后回滚也失败了:{e}"),
+            };
+            ApplyResult {
+                undo: None,
+                pos: reposition(doc, i, refs, pos, None),
+                status,
             }
         }
         Err(p) => {
@@ -410,12 +414,9 @@ pub fn optimize_all(
             let status = match doc.decode_into(i, &bytes) {
                 Ok(()) => {
                     doc.reflatten(i);
-                    format!(
-                        "一键优化:panic 已拦截,已回滚 —— {}",
-                        panic_message(p.as_ref())
-                    )
+                    format!("{label}:panic 已拦截,已回滚 —— {}", panic_message(p.as_ref()))
                 }
-                Err(e) => format!("一键优化:panic 后回滚也失败了:{e}"),
+                Err(e) => format!("{label}:panic 后回滚也失败了:{e}"),
             };
             ApplyResult {
                 undo: None,
@@ -424,6 +425,70 @@ pub fn optimize_all(
             }
         }
     }
+}
+
+/// 一键优化:消除规则跑到**不动点**(`Optimizer::optimize()`)。
+///
+/// **不含** `link_node`(展开 Fn 节点)—— 那是另一件事,单独是「链接全部」
+/// 按钮。core 的 `Optimizer::lower` 里两者是前后脚,但在 viewer 里拆开:
+/// 展开会把整张图换掉,和规则消除混在一起就看不出是哪一步改坏的。
+pub fn optimize_all(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+) -> ApplyResult {
+    batch_apply(doc, i, refs, pos, "一键优化", |opt, _linker| {
+        opt.optimize();
+        Ok("一键优化:消除规则到不动点".to_string())
+    })
+}
+
+/// 链接全部:把当前图里**所有** `IrNodeId::Fn` 节点展开成内联的复合节点
+/// (右键「link」的批量版)。
+///
+/// 和 [`link_fn_node`] 同一处注意:`link_node` 还动 `Linker` 的持久状态
+/// (展开缓存 / 资产),panic 回滚换不回它 —— 这条路径就是 core 自己在跑的
+/// 展开逻辑,panic 意味着 core 出错,状态栏会说明。
+pub fn link_all(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+) -> ApplyResult {
+    batch_apply(doc, i, refs, pos, "链接全部", |opt, linker| {
+        let Some(linker) = linker else {
+            return Err("这张图背后的 Linker 不见了".to_string());
+        };
+        let fns: Vec<NodeRef> = opt
+            .graph
+            .get_nodes()
+            .into_iter()
+            .filter(|x| matches!(opt.graph.get_node(*x).kind.id, IrNodeId::Fn(_)))
+            .collect();
+        for x in &fns {
+            opt.link_node(linker, *x);
+        }
+        Ok(format!("链接全部:展开 {} 个 Fn 节点", fns.len()))
+    })
+}
+
+/// 循环改写:把 IR 控制流上的**环**换成 native 的「有限循环」节点
+/// (core `compile::loops::lower_loops`)。
+///
+/// native 节点图里没有环(唯一例外是有限循环节点自己的跳出入口),所以
+/// 编译器的最后一步必须做这个改写。core 里它在 `optimize()` 之后跑;
+/// 这里做成独立按钮,方便单独看这一步的效果。
+pub fn lower_loops_step(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+) -> ApplyResult {
+    batch_apply(doc, i, refs, pos, "循环改写", |opt, _linker| {
+        rust2genshin::compile::loops::lower_loops(&mut opt.graph)
+            .map(|()| "循环改写:控制流里的环已换成有限循环节点".to_string())
+    })
 }
 
 /// 撤销一步:把存档换回去,再看 [`SnapshotKind`] 决定坐标以哪边为准。
@@ -470,15 +535,41 @@ mod tests {
     use super::*;
 
     use rust2genshin::compile::func::NodeGraphIr;
-    use rust2genshin::compile::ir::{FnInfo, IrKind, node_ir_local, node_ir_set_local};
+    use rust2genshin::compile::ir::{
+        FnInfo, IrKind, node_ir_local, node_ir_nop, node_ir_set_local, node_ir_switch,
+    };
     use rust2genshin::compile::link::Target;
+    use rust2genshin::node::control::NODE_FOR_CLOSED;
     use rust2genshin::node::{ExportDecl, Link, NodeGraphKind};
-    use rust2genshin::value::NativeKind;
+    use rust2genshin::value::{NativeKind, NativeValue};
 
     use crate::doc::flatten;
 
     fn int() -> IrKind {
         IrKind::Native(NativeKind::Int)
+    }
+
+    /// 一张**控制流里有环**的图:入口 → 头 → 体 → 头(回边),
+    /// 头的另一支走到函数出口。
+    ///
+    /// native 节点图里没有环(唯一例外是有限循环节点自己的跳出入口),
+    /// 所以编译器最后必须把这种环改写成「有限循环」节点。
+    fn cyclic_target() -> Target {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "loopfn");
+        g.push_export_control_in(ExportDecl::new(String::new(), None));
+        g.push_export_control_out(ExportDecl::new(String::new(), None));
+        let n0 = g.insert(node_ir_nop());
+        let head = g.insert(node_ir_switch(
+            IrKind::Native(NativeKind::Int),
+            vec![Box::new(1i32) as Box<dyn NativeValue>],
+        ));
+        let body = g.insert(node_ir_nop());
+        g.link_control(Link::export(0), Link::node(n0, 0));
+        g.link_control(Link::node(n0, 0), Link::node(head, 0));
+        g.link_control(Link::node(head, 1), Link::node(body, 0)); // 循环体
+        g.link_control(Link::node(head, 0), Link::export(0)); // 退出
+        g.link_control(Link::node(body, 0), Link::node(head, 0)); // 回边
+        target_with(g)
     }
 
     fn target_with(g: NodeGraphIr) -> Target {
@@ -807,10 +898,10 @@ mod tests {
         assert_eq!(new_pos, old_pos, "展开出来的节点应落在被 link 节点的原位");
     }
 
-    /// 一键优化:Fn 全部展开 + 规则到不动点,**整次点击一个存档** ——
-    /// 一次撤销回到点击前(Fn 节点带着原图回来)。
+    /// 一键优化**不包含**展开 Fn 节点 —— 展开是单独的「链接全部」按钮。
+    /// (把 `link_node` 塞回 `optimize_all` 的实现,这条测试会变红。)
     #[test]
-    fn optimize_all_expands_all_fn_nodes_and_undoes_in_one_step() {
+    fn optimize_all_does_not_expand_fn_nodes() {
         let t = crate::doc::fixture::linkable_target();
 
         let mut doc = flatten(t);
@@ -830,6 +921,40 @@ mod tests {
         );
 
         let r = optimize_all(&mut doc, gi, &refs, &pos);
+        assert!(
+            doc.graphs[gi]
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, IrNodeId::Fn(_))),
+            "一键优化不该展开 Fn 节点:{}",
+            r.status
+        );
+        assert!(!r.status.contains("展开"), "状态栏不该提展开:{}", r.status);
+    }
+
+    /// 「链接全部」:Fn 全部展开,**整次点击一个存档** ——
+    /// 一次撤销回到点击前(Fn 节点带着原图回来)。
+    #[test]
+    fn link_all_expands_all_fn_nodes_and_undoes_in_one_step() {
+        let t = crate::doc::fixture::linkable_target();
+
+        let mut doc = flatten(t);
+        let gi = doc
+            .graphs
+            .iter()
+            .position(|g| g.name == "caller")
+            .expect("caller 图存在");
+        let refs = refs_of(&doc, gi);
+        let pos = positions(&doc, gi);
+        assert!(
+            doc.graphs[gi]
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, IrNodeId::Fn(_))),
+            "前提:点击前有 Fn 节点"
+        );
+
+        let r = link_all(&mut doc, gi, &refs, &pos);
         let bytes = r.undo.expect("有变化就必须留下撤销存档");
         assert!(
             !doc.graphs[gi]
@@ -842,7 +967,6 @@ mod tests {
         assert!(r.status.contains("展开 1 个"), "状态栏:{}", r.status);
 
         // 一次 Ctrl+Z 全撤 —— 存档是点击前那一份;节点集合(含 Fn)逐一回来。
-        // (节点**数量**不锁:规则链同时在跑,展开加节点、消除减节点都合法。)
         doc.decode_into(gi, &bytes).expect("回滚");
         doc.reflatten(gi);
         assert!(
@@ -896,7 +1020,39 @@ mod tests {
         assert!(r.undo.is_some(), "两个 setter 应被消掉:{}", r.status);
         let remaining: Vec<NodeRef> = refs_of(&doc, 0);
         assert!(!remaining.contains(&s1) && !remaining.contains(&s3), "setter 们该没了");
-        assert!(r.status.contains("展开 0 个"), "状态栏:{}", r.status);
+        assert!(r.status.contains("不动点"), "状态栏:{}", r.status);
     }
+
+    /// 「循环改写」:控制流里的环被换成 native 的「有限循环」节点,
+    /// 改写之后图里不该再有环。
+    #[test]
+    fn lower_loops_turns_control_cycles_into_finite_loop_nodes() {
+        let mut doc = flatten(cyclic_target());
+        let gi = 0;
+        let refs = refs_of(&doc, gi);
+        let pos = positions(&doc, gi);
+
+        let r = lower_loops_step(&mut doc, gi, &refs, &pos);
+        assert!(r.undo.is_some(), "改写应当有变化:{}", r.status);
+        assert!(r.status.contains("有限循环"), "状态栏:{}", r.status);
+
+        // 图里应当多出一个有限循环节点(ID 5)。
+        let has_loop = doc.graphs[gi]
+            .nodes
+            .iter()
+            .any(|n| matches!(n.kind, IrNodeId::Native(ref id) if *id == NODE_FOR_CLOSED.id));
+        assert!(has_loop, "改写后应当有有限循环节点:{}", r.status);
+
+        // 改写后控制流里不该再有环(core 的 `check_no_control_cycle`)。
+        // 展平后的视图没有边,拿不到环 —— 解回 IR 图再查。
+        let bytes = doc.encode(gi).expect("编码");
+        let (info, _): (FnInfo, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).expect("解码");
+        assert!(
+            rust2genshin::compile::loops::check_no_control_cycle(&info.graph).is_ok(),
+            "改写后控制流还有环"
+        );
+    }
+
 }
 

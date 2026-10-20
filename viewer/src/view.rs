@@ -877,13 +877,34 @@ impl Viewer {
         cx.notify();
     }
 
-    /// 右栏「一键优化」:Fn 节点全部展开 + 消除规则跑到不动点 ——
-    /// core `Optimizer::lower` 在 IR 段的整条流水线(右键「link」的批量版)。
+    /// 右栏「一键优化」:消除规则跑到不动点。
+    /// **不含**展开 Fn 节点 —— 那是单独的「链接全部」按钮。
     /// 整次点击只留一个存档:一次 Ctrl+Z 回到点击前。
     pub fn optimize_all(&mut self, cx: &mut Context<Self>) {
+        self.batch_op(optimize::optimize_all, cx);
+    }
+
+    /// 右栏「链接全部」:把当前图里所有 Fn 节点展开成内联的复合节点
+    /// (右键「link」的批量版)。
+    pub fn link_all(&mut self, cx: &mut Context<Self>) {
+        self.batch_op(optimize::link_all, cx);
+    }
+
+    /// 右栏「循环改写」:把控制流里的环换成 native 的「有限循环」节点。
+    pub fn lower_loops(&mut self, cx: &mut Context<Self>) {
+        self.batch_op(optimize::lower_loops_step, cx);
+    }
+
+    /// 批量操作(优化 / 链接全部 / 循环改写)的公共外壳:
+    /// 取当前图的展平顺序与坐标 → 调 `f` → 存撤销档 → 换坐标 → 写状态栏。
+    fn batch_op(
+        &mut self,
+        f: fn(&mut Doc, usize, &[NodeRef], &[Point<f32>]) -> optimize::ApplyResult,
+        cx: &mut Context<Self>,
+    ) {
         let refs = self.current_refs();
         let pos = self.positions.get(self.current).cloned().unwrap_or_default();
-        let r = optimize::optimize_all(&mut self.doc, self.current, &refs, &pos);
+        let r = f(&mut self.doc, self.current, &refs, &pos);
         if let Some(bytes) = r.undo {
             self.undo_stack.entry(self.current).or_default().push(Snapshot {
                 bytes,
@@ -1519,10 +1540,41 @@ impl Render for Viewer {
                     .on_click(cx.listener(|v, _e, _w, cx| v.arrange(cx))),
             )
             .child(
-                // 一键优化:和右键「link」同一套执行方式(护栏 + 存档 + 回滚),
-                // 但跑的是整条流程 —— Fn 全展开 + 消除规则到不动点。
+                // 链接全部:把所有 Fn 节点展开成内联的复合节点
+                // (右键「link」的批量版)。和「一键优化」分开 —— 展开会把
+                // 整张图换掉,混在规则消除里看不出是哪一步改坏的。
+                div()
+                    .id("link_all")
+                    .px_2()
+                    .py_1()
+                    .mb_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .text_xs()
+                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
+                    .child("链接全部")
+                    .on_click(cx.listener(|v, _e, _w, cx| v.link_all(cx))),
+            )
+            .child(
+                // 一键优化:消除规则跑到不动点(不含展开 Fn)。
                 div()
                     .id("optimize_all")
+                    .px_2()
+                    .py_1()
+                    .mb_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .text_xs()
+                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
+                    .child("一键优化")
+                    .on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx))),
+            )
+            .child(
+                // 循环改写:控制流里的环 → native 的「有限循环」节点。
+                div()
+                    .id("lower_loops")
                     .px_2()
                     .py_1()
                     .mb_3()
@@ -1531,8 +1583,8 @@ impl Render for Viewer {
                     .overflow_hidden()
                     .text_xs()
                     .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("一键优化")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx))),
+                    .child("循环改写")
+                    .on_click(cx.listener(|v, _e, _w, cx| v.lower_loops(cx))),
             )
             .child(
                 div()
