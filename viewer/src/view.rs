@@ -1165,9 +1165,15 @@ impl Render for Viewer {
                 // 一点点也不该把字截掉半截(宁可让它伸出框外)。
                 for line in text.split('\n') {
                     // 每一行固定高度 —— 空行也要占位,不然多行注释会塌成一行。
+                    //
+                    // `whitespace_nowrap` 是必须的:默认会按容器宽折行,而
+                    // 宽度是按字宽**估**的 —— 差一两个像素时最后一个字母就被
+                    // 折到第二行,第二行又落在按估算行数给的框高外面(实测
+                    // "sum" 只剩 "su")。换行由注释里的 `\n` 决定,不该再折。
                     lines = lines.child(
                         div()
                             .h(px(COMMENT_LINE_H * nv.scale))
+                            .whitespace_nowrap()
                             .child(line.to_string()),
                     );
                 }

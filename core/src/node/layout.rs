@@ -66,7 +66,7 @@ pub const COMMENT_FONT_PX: f32 = 10.0;
 /// 注释框的行高(含行距)。
 pub const COMMENT_LINE_H: f32 = 13.0;
 /// 注释框左右内边距与边框之和。渲染时左右各留一半。
-pub const COMMENT_PAD_X: f32 = 16.0;
+pub const COMMENT_PAD_X: f32 = 12.0;
 /// 注释框上下内边距之和。
 pub const COMMENT_PAD_Y: f32 = 8.0;
 /// 注释框与节点之间的空隙。
