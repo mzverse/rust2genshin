@@ -174,6 +174,17 @@ class PlayClient {
         // 排队 / 编译中。空闲断连必须避开这段时间:服务端的语义是
         // 「断开 = 取消」,否则用户挂着页面等编译就会被自己人杀掉任务。
         this.busy = false;
+        // 服务端说「这个 IP 已经有另一个会话在用」(session_busy)。
+        // 置上之后**不再自动重连** —— 另一个标签页还在,重连只会把它
+        // 也顶掉或者一直收到同一条拒绝,变成退避死循环。
+        this._sessionRejected = false;
+        this._sessionBusyText = "";
+    }
+
+    /* 服务端拒绝了这个会话(同 IP 已有活连接)。停止自动重连。 */
+    rejectSession(message) {
+        this._sessionRejected = true;
+        this._sessionBusyText = message || "这个 IP 已经有另一个会话在用";
     }
 
     /* 从后端池里挑一个连上,把这个 socket 接过来用。
@@ -186,6 +197,13 @@ class PlayClient {
         if (this.ws && this.ws.readyState === 1) return true;
         // 已经有重连在跑:复用同一个 Promise,别再开第二条连接。
         if (this._connecting) return this._connecting;
+        // 被服务端以「同 IP 已有会话」拒过:自动重连只会一直收到同一条
+        // 拒绝。显式动作(点「编译」)可以再试一次 —— 那时另一个标签页
+        // 可能已经关了。
+        if (this._sessionRejected) {
+            if (!force) return false;
+            this._sessionRejected = false;
+        }
         if (!force && Date.now() - this._lastFailAt < RECONNECT_BACKOFF_MS) return false;
         this._connecting = this._connect();
         try {
@@ -263,6 +281,14 @@ class PlayClient {
                 // 兜底就不会改写到这句中性文案上。
                 this._idleClosing = false;
                 this.handlers.onStatus("空闲断开 · 打字或点「编译」会自动重连", "");
+                this.handlers.onIdle();
+                return;
+            }
+            // 会话被拒(同 IP 已有活连接):服务端发完那条拒绝就把连接
+            // 关了 —— 状态行要说清楚是「被拒」,不是「断了」,否则用户
+            // 只会看到一句没头没尾的「连接已断开」。
+            if (this._sessionRejected) {
+                this.handlers.onStatus(this._sessionBusyText, "warn");
                 this.handlers.onIdle();
                 return;
             }
@@ -1437,15 +1463,26 @@ function ready() {
                     view,
                     send: (msg) => client.send(msg),
                     onStatus: (text) => setStatus(text, "ok"),
+                    // 源码体量上限由服务端给(`Hello.lsp_max_source_bytes`),
+                    // 前端不写死 —— 运维改阈值不用重编前端。旧后端没这个
+                    // 字段就是不限。
+                    maxBytes: typeof m.lsp_max_source_bytes === "number"
+                        ? m.lsp_max_source_bytes
+                        : Infinity,
                 });
                 client.onLspReady = (m) => { if (lsp) lsp.onReady(m.uri); };
                 client.onLsp = (message) => { if (lsp) lsp.handleMessage(message); };
                 // 发 LspOpen —— 服务端在池里建一个 RA 会话,准备好了回 LspReady。
-                lsp.open();
-                // 高亮要等 RA 就绪才出现,这之前给一条「分析中…」让用户
-                // 知道编辑框不是坏了 —— 空黑框会让人以为是 bug。
-                const base = ready ? `就绪 · 镜像 ${c}` : "就绪";
-                setStatus(`${base} · 分析中…`, "pending");
+                // 源码超上限时 `open()` 自己会拒绝并给出提示,这时不该再把
+                // 状态行改成「分析中…」。
+                const opened = lsp.open();
+                if (opened !== false) {
+                    // 高亮要等 RA 就绪才出现,这之前给一条「分析中…」让用户
+                    // 知道编辑框不是坏了 —— 空黑框会让人以为是 bug。
+                    const base = ready ? `就绪 · 镜像 ${c}` : "就绪";
+                    setStatus(`${base} · 分析中…`, "pending");
+                }
+
             } else {
                 // 服务端这次说没有 LSP(可能这次连的是没开这功能的那台)。
                 // 同理要清掉上一个实例,否则它还在发消息。
@@ -1487,6 +1524,13 @@ function ready() {
         },
         onError: (m) => {
             setBusy(false);
+            // session_busy:同 IP 已经有另一个会话(另一个标签页)在用。
+            // 停掉自动重连 —— 再连也是同一条拒绝。
+            if (m.code === "session_busy") {
+                client.rejectSession(m.message);
+                setStatus(m.message, "warn");
+                return;
+            }
             // ip_busy 那条后端给的就是中文原文,直接显示。
             setStatus(m.message, m.code === "ip_busy" ? "warn" : "err");
         },

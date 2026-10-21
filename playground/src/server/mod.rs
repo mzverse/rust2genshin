@@ -3,6 +3,7 @@
 //! 模块,不动下面。
 
 pub mod http;
+pub mod session_gate;
 pub mod webhook;
 pub mod ws;
 

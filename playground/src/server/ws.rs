@@ -58,6 +58,19 @@ pub async fn ws_upgrade(
         .on_upgrade(move |socket| run_socket(socket, st, ip))
 }
 
+/// 源码是否超过代码分析的体量上限。
+///
+/// **按字节**(`str::len()` 是 UTF-8 字节数,一个中文字符 3 字节),不是
+/// 字符数 —— 前端算字节数必须用 `TextEncoder`,两边才对得上。
+pub fn exceeds_lsp_cap(text: &str, cap: usize) -> bool {
+    text.len() > cap
+}
+
+/// 超限时给用户看的话。**说清两个数**:用户得知道差多少。
+pub fn lsp_cap_message(len: usize, cap: usize) -> String {
+    format!("源码 {len} 字节,超过 {cap} 字节上限,代码分析已停用")
+}
+
 /// 失败转成给用户看的消息。**没有任何一条路径吞掉失败** ——
 /// 退出码 0 但没产物也走这里(见 runner::verdict)。
 pub fn describe_error(e: &RunnerError, task: &str) -> ServerMsg {
@@ -82,6 +95,27 @@ pub fn describe_error(e: &RunnerError, task: &str) -> ServerMsg {
 }
 
 pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
+    // 会话级占用:同一个 IP 同时只允许一条活连接。
+    //
+    // 编译限额只管得住「同时几个 cargo 在跑」,管不住 rust-analyzer ——
+    // 代码分析那条路不经过队列,一 IP 开 N 个标签页就能起 N 个 RA 容器
+    // (每个常驻 839 MB)。限流必须落在连接这一层。
+    //
+    // 取不到就**不回 hello**,只回一条 `session_busy` 错误然后关连接:
+    // 这个连接根本不该被当成可用会话。握手阶段就 403 的话,前端的自动
+    // 重连会变成「403 → 退避 → 再连 → 再 403」的死循环。
+    let _session = match state.sessions.acquire(&ip) {
+        Ok(g) => g,
+        Err(_) => {
+            let (mut sink, _stream) = socket.split();
+            let _ = send(
+                &mut sink,
+                &err(ErrorCode::SessionBusy, ErrorCode::session_busy_message()),
+            )
+            .await;
+            return;
+        }
+    };
     let bake = state.baker.status();
     let hello = ServerMsg::Hello {
         protocol: PROTOCOL_VERSION,
@@ -94,6 +128,9 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
         targets: crate::protocol::TARGETS.iter().map(|s| s.to_string()).collect(),
         // 装了 RA 运行时才有;DISABLED 时前端退回纯编译界面。
         lsp_supported: state.lsp.is_some(),
+        // 代码分析的源码体量上限。前端据此决定要不要开 LSP —— 阈值由
+        // 服务端说了算,前端不写死。
+        lsp_max_source_bytes: state.cfg.lsp_max_source_bytes,
     };
     let (mut sink, mut stream) = socket.split();
     if send(&mut sink, &hello).await.is_err() {
@@ -315,6 +352,31 @@ pub async fn run_socket(socket: WebSocket, state: Arc<AppState>, ip: String) {
                                             }
                                             continue;
                                         };
+                                        // 源码太大:不写盘、不转发给 RA。
+                                        //
+                                        // 这是**闸门**,前端的同款判断只是快路径
+                                        // (省一次往返、省一次 RA 冷启动)。阈值是
+                                        // 运维配置,不能只靠浏览器自觉。
+                                        //
+                                        // 按**字节**比(`str::len()` 是 UTF-8 字节数,
+                                        // 中文一个字 3 字节)—— 前端算字节数也得
+                                        // 用 TextEncoder,两边才对得上。
+                                        let cap = state.cfg.lsp_max_source_bytes;
+                                        if exceeds_lsp_cap(text, cap) {
+                                            if send(
+                                                &mut sink,
+                                                &err(
+                                                    ErrorCode::BadRequest,
+                                                    lsp_cap_message(text.len(), cap),
+                                                ),
+                                            )
+                                            .await
+                                            .is_err()
+                                            {
+                                                break;
+                                            }
+                                            continue;
+                                        }
                                         if let Err(e) = svc.write_source(&container, text).await {
                                             if !lsp_failed(
                                                 &mut sink,
@@ -789,6 +851,7 @@ mod tests {
             started: std::time::Instant::now(),
             cfg,
             lsp,
+            sessions: crate::server::session_gate::SessionGate::new(),
         })
     }
 
@@ -915,6 +978,26 @@ mod tests {
     }
 
     // ── 纯校验:不需要连接,不需要 docker ─────────────────────────────
+
+    #[test]
+    fn the_size_cap_counts_bytes_not_characters() {
+        // 三个中文字符 = 9 个 UTF-8 字节。按字符数(3)算的话这个文件
+        // 「才 3 个字」,实际上早就超了上限 —— 前端必须用 TextEncoder
+        // 算字节数,服务端这边是 `str::len()`。
+        let zh = "中文字";
+        assert_eq!(zh.len(), 9);
+        assert!(exceeds_lsp_cap(zh, 8));
+        assert!(!exceeds_lsp_cap(zh, 9), "正好卡在上限上不该拒");
+    }
+
+    #[test]
+    fn the_size_cap_message_names_both_numbers() {
+        // 用户得知道差多少:超了多少、上限是多少。
+        let m = lsp_cap_message(12_000, 10_240);
+        assert!(m.contains("12000"), "{m}");
+        assert!(m.contains("10240"), "{m}");
+        assert!(m.contains("代码分析"), "{m}");
+    }
 
     #[test]
     fn validate_rejects_empty_and_whitespace_only_sources() {
@@ -1212,6 +1295,7 @@ mod tests {
             started: std::time::Instant::now(),
             cfg,
             lsp: Some(Arc::clone(&svc)),
+            sessions: crate::server::session_gate::SessionGate::new(),
         });
 
         // 先直接取一次再放回,记下容器名。待命会话在池里只有这一个,
@@ -1509,23 +1593,67 @@ mod tests {
 
     #[tokio::test]
     async fn same_ip_on_a_second_connection_is_rejected() {
+        // 会话级限制:同一个 IP 同时只允许**一条**连接。第二条连接连
+        // `hello` 都拿不到 —— 直接回一条 `session_busy`,然后关掉。
+        //
+        // 这条限制存在的理由是 rust-analyzer:代码分析那条路不经过队列,
+        // 一 IP 开 N 个标签页就能起 N 个 RA 容器(每个常驻 839 MB)。
         let runner = FakeRunner::new(Behavior::Hang);
         let (_d, url, _st) = spawn(Arc::clone(&runner)).await;
         let mut a = connect(&url).await;
-        read_n(&mut a, 1).await;
+        read_n(&mut a, 1).await; // hello
         send(&mut a, submit("fn main() {}")).await;
         read_n(&mut a, 1).await; // started
 
         let mut b = connect(&url).await;
-        read_n(&mut b, 1).await; // hello
-        send(&mut b, submit("fn main() {}")).await;
         match read_n(&mut b, 1).await[0].clone() {
             ServerMsg::Error { code, message } => {
-                assert_eq!(code, ErrorCode::IpBusy);
-                assert_eq!(message, "请求过多，请稍后重试");
+                assert_eq!(code, ErrorCode::SessionBusy);
+                assert!(message.contains("另一个会话"), "{message}");
             }
-            other => panic!("期望 ip_busy,得到 {other:?}"),
+            other => panic!("期望 session_busy,得到 {other:?}"),
         }
+        // 服务端随后会关掉这条连接。
+        // 服务端随后会关掉这条连接 —— 关的表现有两种:流结束(`None`)或者
+        // 收到一个 Close 帧(axum 走的是正常关闭握手),两者都算「关了」。
+        let closed = match tokio::time::timeout(Duration::from_secs(5), b.next())
+            .await
+            .expect("5 秒内该关掉")
+        {
+            None => true,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => true,
+            // 复位也算关掉:服务端直接 drop 了 socket,没走关闭握手。
+            Some(Err(_)) => true,
+            other => panic!("被拒的连接该被关掉,却收到 {other:?}"),
+        };
+        assert!(closed, "被拒的连接该被关掉");
+    }
+
+    #[tokio::test]
+    async fn the_same_ip_can_connect_again_after_the_first_one_closes() {
+        // 会话占用随连接结束归还 —— 断了就该能再连,不然用户刷新一次
+        // 就再也用不了。
+        let runner = FakeRunner::new(Behavior::Ok { lines: vec![], bytes: 1 });
+        let (_d, url, st) = spawn(Arc::clone(&runner)).await;
+        let mut a = connect(&url).await;
+        read_n(&mut a, 1).await; // hello
+        assert_eq!(st.sessions.active(), 1);
+
+        drop(a);
+        // 等服务端那边看到断开、把占用还回来。
+        for _ in 0..100 {
+            if st.sessions.active() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(st.sessions.active(), 0, "断开后占用必须还回去");
+
+        let mut b = connect(&url).await;
+        assert!(
+            matches!(read_n(&mut b, 1).await[0], ServerMsg::Hello { .. }),
+            "同一个 IP 断开之后应该能再连"
+        );
     }
 
     #[tokio::test]
@@ -1619,12 +1747,13 @@ mod tests {
 
         drop(ws);
         for _ in 0..100 {
-            if st.queue.snapshot().running == 0 {
+            if st.queue.snapshot().running == 0 && st.sessions.active() == 0 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(st.queue.snapshot().running, 0, "断开后额度必须还回去");
+        assert_eq!(st.sessions.active(), 0, "断开后会话占用也必须还回去");
 
         // 而且同一个 IP 立刻能再提交。
         let mut again = connect(&url).await;
@@ -1719,6 +1848,7 @@ mod tests {
             started: std::time::Instant::now(),
             cfg,
             lsp: None,
+            sessions: crate::server::session_gate::SessionGate::new(),
         });
         // baker 必须 ready,否则先回 NotReady、测不到 Internal 这条路径。
         st.baker.request(BakeRequest::default());

@@ -65,6 +65,12 @@ pub struct Config {
     /// 同一套语义:宿主 cgroup 没挂 cpu 控制器时不传这个旗标,否则 docker
     /// 直接拒掉整个 `run`,待命池永远补不上。
     pub lsp_cpus: Option<u32>,
+    /// 代码分析的源码体量上限,**字节**。超过就不调 RA,只提示用户。
+    ///
+    /// RA 的 crate graph 随源码一起涨,内存与 CPU 一起涨;0 swap 的机器上
+    /// 大文件能把 RA 直接顶到 OOM。默认值见
+    /// [`crate::protocol::DEFAULT_LSP_MAX_SOURCE_BYTES`]。
+    pub lsp_max_source_bytes: usize,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -256,6 +262,11 @@ pub fn resolve(
         lsp_boot_timeout: Duration::from_secs(num_var("PLAYGROUND_LSP_BOOT_TIMEOUT", get, 30u64)?),
         lsp_memory: memory_var("PLAYGROUND_LSP_MEMORY", get, "2g")?,
         lsp_cpus: cpus_var("PLAYGROUND_LSP_CPUS", get)?,
+        lsp_max_source_bytes: num_var(
+            "PLAYGROUND_LSP_MAX_SOURCE_BYTES",
+            get,
+            crate::protocol::DEFAULT_LSP_MAX_SOURCE_BYTES,
+        )?,
     })
 }
 
@@ -414,6 +425,19 @@ mod tests {
         assert_eq!(c.lsp_idle_ttl, Duration::from_secs(90));
         assert_eq!(c.lsp_boot_timeout, Duration::from_secs(30));
         assert_eq!(c.lsp_memory.as_deref(), Some("2g"));
+        assert_eq!(
+            c.lsp_max_source_bytes,
+            crate::protocol::DEFAULT_LSP_MAX_SOURCE_BYTES
+        );
+    }
+
+    #[test]
+    fn the_lsp_size_cap_is_configurable() {
+        // 阈值是运维配置 —— 服务端据此拒绝超限的 didOpen,前端据此
+        // 提前不开 LSP。默认 10 KiB,能改。
+        let g = getter(&[("PLAYGROUND_LSP_MAX_SOURCE_BYTES", "2048")]);
+        let c = resolve(&g, Path::new("/repo/playground")).unwrap();
+        assert_eq!(c.lsp_max_source_bytes, 2048);
     }
 
     #[test]

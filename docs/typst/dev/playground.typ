@@ -56,6 +56,7 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_LSP_BOOT_TIMEOUT`], [`30`], [一个 RA 会话从建容器到就绪的上限，*秒*。超时算失败，池会换一个。],
     [`PLAYGROUND_LSP_MEMORY`], [`2g`], [RA 容器的内存限额。*每个待命会话就吃这么多*，宿主上按 `LSP_POOL_MIN` 线性涨。设成 `none` 则不加 `--memory`。],
     [`PLAYGROUND_LSP_CPUS`], [`2`], [RA 容器的 CPU 限额。与 `PLAYGROUND_JOB_CPUS` 是同一个限制：设成 `0` 或 `none` 则不加 `--cpus`。两个开关必须配成一样 —— 只关任务容器那一半，`docker run` 会在 RA 容器上失败（`NanoCPUs can not be set`），表现为「能编译、编辑框永远停在分析中」。],
+    [`PLAYGROUND_LSP_MAX_SOURCE_BYTES`], [`10240`], [代码分析的源码体量上限，*字节*（默认 10 KiB）。超过就不把源码送给 RA，编辑框只留 CodeMirror 的词法高亮，状态行提示「代码分析已停用」。按字节算（中文一个字 3 字节），前端用 `TextEncoder` 量，跟服务端 `str::len()` 对得上。],
 )
 
 布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
@@ -118,6 +119,12 @@ cargo run -p rust2genshin-playground
 *待命会话里已经有文档了。* 补池建会话时会先 `did_open` 一行占位内容把 crate graph 拉热。会话交棒给浏览器之前（`LspService::acquire`）与归还时（连接收尾）服务端各补一条 `didClose`，所以池里那个 URI 在交给浏览器时一定是关闭状态，浏览器的 `didOpen` 永远合法；用户的源码走 `didChange` 全文替换。
 
 *目标选择只影响编译。* 顶部的「目标」下拉框列的是 `hello.targets`，由服务端那张表驱动（`playground/src/protocol.rs` 的 `TARGETS`）；超限与经典模式的差别只在 `--target` 指向哪份 spec、`-gamemode` 传什么，LSP 链路完全不感知。切换目标后要重新编译才生效（它改的是编译产物，不是编辑器状态）。重连 WebSocket 会把下拉框重置回第一项。
+
+*源码太大就不分析。* 超过 `PLAYGROUND_LSP_MAX_SOURCE_BYTES`（默认 10 KiB）时，服务端不写盘、也不把源码转发给 RA —— 前端有同款判断，但那只是快路径（省一次往返、一次 RA 冷启动），闸门在服务端。超限时编辑框只剩 CodeMirror 的词法高亮（括号配对那些），语义高亮和诊断都不动，状态行写明「代码分析已停用」；把代码删回上限以下会自动恢复。阈值按*字节*算，中文一个字 3 字节。
+
+*同一个 IP 同时只允许一条会话。* 这条限制挂在*连接*层，不是编译层 —— 编译那条路的「每 IP 一个」早就有了，但它管不住 rust-analyzer：代码分析不经过队列，一个 IP 开 N 个标签页就能起 N 个 RA 容器（每个常驻 839 MB）。所以第二条连接握手成功后立刻收到一条 `session_busy`、然后被关掉，前端看到这条就不再自动重连（否则会变成「连上 → 被拒 → 退避 → 再连」的循环）。关掉另一个标签页之后，点一次「编译」可以再试。
+
+这里的 IP 是*归一化过的*（IPv6 按 /64 归并、IPv4-mapped 归一），在 /64 里换地址绕不过去。反代后面要看 `PLAYGROUND_TRUST_PROXY`。
 
 = `cargo clean` 与锁
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::docker::Stream;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// `hello` 里报的路径,将来 LSP 的 `file://` URI 才有对应物。
 pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// 源码上限 1 MiB。正常一份 `demo/src/lib.rs` 是几 KB;设上限是为了
@@ -18,6 +18,19 @@ pub const SOURCE_FILE: &str = "demo/src/lib.rs";
 /// 占 3 字节。前端若拿 JS 的 `source.length`(UTF-16 code unit)或
 /// `chars().count()` 去比这个上限,中文源码的判定就会和后端对不上。
 pub const MAX_SOURCE_BYTES: usize = 1 << 20;
+
+/// 代码分析（rust-analyzer）的源码体量上限，**字节**。
+///
+/// RA 的 crate graph 随源码一起涨，内存和 CPU 一起涨；源码太大时
+/// 「不分析」比「分析到一半被 OOM kill」好得多。
+///
+/// **按字节算**（`str::len()`），不是字符数：UTF-8 下一个中文字符占 3 字节。
+/// 前端算字节数必须用 `TextEncoder`，不能拿 JS 的 `String.length`
+/// （UTF-16 code unit 数）来比 —— 两边对不上就会一边以为超了、一边放行。
+///
+/// 这是**默认值**，实际阈值由 `Config::lsp_max_source_bytes`
+/// （`PLAYGROUND_LSP_MAX_SOURCE_BYTES`）决定，并通过 `hello` 告诉前端。
+pub const DEFAULT_LSP_MAX_SOURCE_BYTES: usize = 10 * 1024;
 
 /// 可选的目标平台。**这张表是唯一真源**:`hello.targets` 由它生成,
 /// `validate_submit` 的白名单问它。加一个目标只改这一处 —— 写成两份
@@ -60,6 +73,9 @@ pub enum ServerMsg {
         targets: Vec<String>,
         /// 旧后端没有 LSP,前端看到 `false` 就退回今天的行为。
         lsp_supported: bool,
+        /// 代码分析的源码体量上限,**字节**。前端据此决定要不要开
+        /// LSP —— 阈值由服务端说了算,前端不写死。
+        lsp_max_source_bytes: usize,
     },
     Queued {
         position: usize,
@@ -113,6 +129,12 @@ pub enum ServerMsg {
 pub enum ErrorCode {
     NotReady,
     IpBusy,
+    /// 同一个 IP 已经有另一条活连接了(会话级限制)。
+    ///
+    /// 与 [`Self::IpBusy`] 分开:那条说的是「这个 IP 已经有编译在跑」,
+    /// 这条说的是「这个 IP 已经有会话了」—— 前者重试有用,后者重连只会
+    /// 再被拒一次,前端要**停止自动重连**。
+    SessionBusy,
     QueueFull,
     BadRequest,
     Internal,
@@ -122,6 +144,12 @@ impl ErrorCode {
     /// NAT 后面多人共用一个出口 IP 会被误伤 —— 认了,但要把话说清楚。
     pub fn ip_busy_message() -> &'static str {
         "请求过多，请稍后重试"
+    }
+
+    /// 会话被占时的说法。**要说清是「另一个会话」**,不然用户只会
+    /// 以为自己网络不好,反复刷新。
+    pub fn session_busy_message() -> &'static str {
+        "这个 IP 已经有另一个会话在用（另一个标签页或窗口？）——本页不再自动重连"
     }
 }
 
@@ -212,18 +240,20 @@ mod tests {
             max_queue: 64,
             targets: vec!["beyond-server".into()],
             lsp_supported: false,
+            lsp_max_source_bytes: 10240,
         };
         assert_eq!(
             serde_json::to_value(&m).unwrap(),
             serde_json::json!({
                 "type": "hello",
-                "protocol": 3,
+                "protocol": 4,
                 "image_commit": "abc1234",
                 "file": "demo/src/lib.rs",
                 "max_jobs": 8,
                 "max_queue": 64,
                 "targets": ["beyond-server"],
                 "lsp_supported": false,
+                "lsp_max_source_bytes": 10240,
             })
         );
     }
@@ -346,12 +376,24 @@ mod tests {
         for (code, s) in [
             (ErrorCode::NotReady, "not_ready"),
             (ErrorCode::IpBusy, "ip_busy"),
+            (ErrorCode::SessionBusy, "session_busy"),
             (ErrorCode::QueueFull, "queue_full"),
             (ErrorCode::BadRequest, "bad_request"),
             (ErrorCode::Internal, "internal"),
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), serde_json::json!(s));
         }
+    }
+
+    #[test]
+    fn protocol_version_is_4() {
+        // v4 加了 `hello.lsp_max_source_bytes` 与 `ErrorCode::SessionBusy`。
+        assert_eq!(PROTOCOL_VERSION, 4);
+    }
+
+    #[test]
+    fn the_default_lsp_size_cap_is_10_kib() {
+        assert_eq!(DEFAULT_LSP_MAX_SOURCE_BYTES, 10 * 1024);
     }
 
     #[test]
@@ -370,11 +412,6 @@ mod tests {
         let j = serde_json::to_string(&m).unwrap();
         assert_eq!(j, r#"{"type":"lsp_open"}"#);
         assert_eq!(serde_json::from_str::<ClientMsg>(&j).unwrap(), m);
-    }
-
-    #[test]
-    fn protocol_version_is_3() {
-        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]

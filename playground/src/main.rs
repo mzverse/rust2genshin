@@ -318,6 +318,7 @@ async fn run(cfg: Config) -> Result<(), String> {
         started: std::time::Instant::now(),
         cfg: Arc::clone(&cfg),
         lsp,
+        sessions: crate::server::session_gate::SessionGate::new(),
     });
 
     // 1) 启动时先看本地有没有现成的镜像:有就拿来用,不重复烘。

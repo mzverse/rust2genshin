@@ -41,6 +41,7 @@ docker
     [`config`], [全部环境变量与默认值；空串等价于未设置。],
     [`server::http`], [路由、CORS、`/healthz` `/status` `/sample` `/admin/rebuild`；`AppState` 在这里定义。],
     [`server::ws`], [WebSocket 连接的生命周期：握手校验、消息分发、把任务输出转成 `ServerMsg`。],
+    [`server::session_gate`], [会话级占用表：同一个 IP 同时只允许一条活连接；占用随连接的 `Drop` 归还。],
     [`protocol`], [线协议的全部枚举与常量；`TARGETS` 是目标的唯一真源。],
     [`queue`], [并发额度 + 每 IP 一个 + 排队上限；额度靠 `Ticket` 的 `Drop` 归还。],
     [`job`], [任务目录布局 `<data>/tasks/<id>/{src/lib.rs, meta.json}`；每次新写源码。],
@@ -84,14 +85,14 @@ docker
     [客户端 → 服务端], [`cancel`], [取消这一单；服务端回 `cancelled`。],
     [客户端 → 服务端], [`lsp_open`], [取一个 RA 会话；幂等。],
     [客户端 → 服务端], [`lsp`], [`{message}`；原样 JSON-RPC 报文。除握手与 `didOpen` / `didChange` 外全部转发。],
-    [服务端 → 客户端], [`hello`], [连接后第一条：协议版本、镜像 commit、目标表、`lsp_supported`。],
+    [服务端 → 客户端], [`hello`], [连接后第一条：协议版本、镜像 commit、目标表、`lsp_supported`、`lsp_max_source_bytes`（代码分析的源码体量上限，*字节*）。],
     [服务端 → 客户端], [`queued`], [排队位次与当前队列长度。],
     [服务端 → 客户端], [`started`], [容器开始跑；带 `task` 与 `image_commit`。],
     [服务端 → 客户端], [`log`], [`{task, stream, text}`；stdout / stderr 分开。],
     [服务端 → 客户端], [`finished`], [成功；带产物字节数。产物*紧跟其后*以二进制帧发过来。],
     [服务端 → 客户端], [`failed`], [失败；`exit_code` 可空，`message` 是给用户看的。],
     [服务端 → 客户端], [`cancelled`], [`abort` 本身静默，必须显式回这一条。],
-    [服务端 → 客户端], [`error`], [请求被拒：`not_ready` / `ip_busy` / `queue_full` / `bad_request` / `internal`。],
+    [服务端 → 客户端], [`error`], [请求被拒：`not_ready` / `ip_busy` / `queue_full` / `session_busy` / `bad_request` / `internal`。],
     [服务端 → 客户端], [`lsp`], [`{message}`；RA 的原始报文。管道断开时发一条合成的 `exit` 通知（`params.reason`），前端据此清高亮与诊断。],
     [服务端 → 客户端], [`lsp_ready`], [`{file, uri}`；会话已取得，前端拿 `uri` 填 `textDocument.uri`。],
 )
@@ -100,6 +101,11 @@ docker
 
 - *一条连接一个任务*：`cancel` 才明确取消谁。任务跑在 spawn 出去的任务里，排队期间读循环不被阻塞。
 - *断开 = 取消*：任务 `abort`，`Ticket` / `ImageGuard` 随之 `Drop`，额度、IP 占用、镜像引用计数一步还清。
+
+两条限制挂在不同的层：
+
+- *每 IP 一条连接*（`server::session_gate`）。编译那条路本来就有「每 IP 一个」（`queue`），但 RA 那条*不经过队列* —— 同一 IP 开 N 个标签页就能起 N 个 RA 容器（每个常驻 839 MB）。所以限制定在*连接*层：占用随连接的 `Drop` 归还。第二条连接握手成功、随即收到一条 `session_busy` 然后被关掉 —— 不是 403，否则前端的自动重连会变成死循环。
+- *源码体量有闸门*。`didOpen` / `didChange` 带的全文超过 `PLAYGROUND_LSP_MAX_SOURCE_BYTES`（默认 10 KiB，按*字节*算）就不写盘、不转发给 RA。前端有同款判断，但那只算快路径 —— 阈值是运维配置，不能只靠浏览器自觉。
 
 == HTTP
 

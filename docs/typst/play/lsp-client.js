@@ -200,6 +200,16 @@ export const decorationField = StateField.define({
 const DEBOUNCE_MS = 300;
 const COMPLETION_TIMEOUT_MS = 2000;
 
+/* 源码体量上限 —— **字节**,不是字符数。服务端按 `str::len()`(UTF-8
+ * 字节)比,前端就得用 TextEncoder 算,两边才对得上。用
+ * `String.length` 的话一个中文算 1,跟服务端差三倍。
+ *
+ * 上限是服务端在 `Hello.lsp_max_source_bytes` 里给的,前端不写死:
+ * 运维改阈值不用重编前端。没拿到(旧后端)就是不限。 */
+function byteLength(text) {
+    return new TextEncoder().encode(text).length;
+}
+
 /* 把 RA 的补全响应当成两种形状收：裸数组或 `{ items }`；字段名
  * `labelDetails` 归一成 `label_details`，与 `script.js` 的渲染保持一致。 */
 function normalizeCompletion(result) {
@@ -227,11 +237,15 @@ export class LspClient {
      * @param {import('@codemirror/view').EditorView} opts.view
      * @param {(msg: object) => void} opts.send
      * @param {(text: string) => void} [opts.onStatus]
+     * @param {number} [opts.maxBytes] 源码体量上限(字节)。缺省 = 不限。
      */
     constructor(opts) {
         this.view = opts.view;
         this.send = opts.send;
         this.onStatus = opts.onStatus || (() => {});
+        this.maxBytes = typeof opts.maxBytes === "number" && isFinite(opts.maxBytes)
+            ? opts.maxBytes
+            : Infinity;
         this.uri = null;
         this._ready = false;
         this._disposed = false;
@@ -242,11 +256,52 @@ export class LspClient {
         this._completionIds = new Set();
         this._debounceTimer = null;
         this._pendingSource = null;
+        // 是否已经发出过 `lsp_open`。超限时**不发** —— 服务端那边会
+        // 起一个 RA 容器(常驻 839 MB),给一份根本不会分析的源码起它
+        // 是纯浪费。
+        this._opened = false;
+        // RA 那边是不是已经有这份文档了(`didOpen` 发过没有)。超限时
+        // 不发 `didOpen`,那 RA 手上一份文档都没有 —— 恢复时必须补
+        // `didOpen`,发 `didChange` 是非法的。
+        this._docOpen = false;
+        // 当前源码是不是超限。
+        this._overCap = false;
+    }
+
+    /* 源码是否超过上限。 */
+    _isOverCap(text) {
+        return byteLength(text) > this.maxBytes;
+    }
+
+    /* 超限时的提示。措辞与服务端那条一致(`ws.rs` 的 `lsp_cap_message`),
+     * 两边说出来的话像同一件事。 */
+    _reportOverCap(text) {
+        this.onStatus(
+            `源码 ${byteLength(text)} 字节,超过 ${this.maxBytes} 字节上限,代码分析已停用`);
+        // 高亮和诊断都是旧源码的结论 —— 留着比没有更糟。
+        this._clearDecorations();
+    }
+
+    _clearDecorations() {
+        if (!this.view) return;
+        this.view.dispatch({ effects: setTokensEffect.of(null) });
+        this.view.dispatch({ effects: setDiagnosticsEffect.of([]) });
     }
 
     /** 编辑器建好之后调用一次，会发 `lsp_open`。 */
     open() {
+        const text = this.view ? this.view.state.doc.toString() : "";
+        if (this._isOverCap(text)) {
+            // 超限:不开 RA 会话。等用户把代码删回上限以下,再补开。
+            this._overCap = true;
+            this._opened = false;
+            this._reportOverCap(text);
+            return false;
+        }
+        this._overCap = false;
+        this._opened = true;
         this.send({ type: "lsp_open" });
+        return true;
     }
 
     /** `lsp_ready` 到达：开始握手。 */
@@ -283,12 +338,22 @@ export class LspClient {
         this._ready = true;
         this.onStatus("已就绪 · 分析在线");
         this._version = 1;
+        const text = this.view.state.doc.toString();
+        // 握手这段时间里源码可能已经变大了 —— 再量一次,超限就别送
+        // `didOpen`。RA 那边开着会话但没有文档,不会白烧 CPU。
+        if (this._isOverCap(text)) {
+            this._overCap = true;
+            this._docOpen = false;
+            this._reportOverCap(text);
+            return;
+        }
+        this._docOpen = true;
         this._notify("textDocument/didOpen", {
             textDocument: {
                 uri: this.uri,
                 languageId: "rust",
                 version: 1,
-                text: this.view.state.doc.toString(),
+                text,
             },
         });
         this._refreshTokens();
@@ -365,7 +430,55 @@ export class LspClient {
         }
         const source = this._pendingSource;
         this._pendingSource = null;
-        if (source === null || !this._ready || !this.view) return;
+        if (source === null || !this.view) return;
+
+        // 超限 → 停发。RA 那边留着旧文档继续分析,高亮和诊断清掉 ——
+        // 那些结论是旧源码的,留着比没有更糟。
+        if (this._isOverCap(source)) {
+            if (!this._overCap) {
+                this._overCap = true;
+                this._reportOverCap(source);
+            }
+            return;
+        }
+        // 回落 → 恢复。超限期间根本没开过会话就现在开;开过的话把
+        // 全文重新推一遍(整份替换),让 RA 跟上来。
+        if (this._overCap) {
+            this._overCap = false;
+            this.onStatus("代码分析已恢复");
+            if (!this._opened) {
+                this._opened = true;
+                this.send({ type: "lsp_open" });
+                return;
+            }
+            if (!this._ready) return;
+            if (!this._docOpen) {
+                // RA 手上还没有这份文档(握手时就超限):补一次 `didOpen`。
+                // 只发 `didChange` 的话 RA 那边没有对应的文档,报文是
+                // 非法的。
+                this._docOpen = true;
+                this._version = 1;
+                this._notify("textDocument/didOpen", {
+                    textDocument: {
+                        uri: this.uri,
+                        languageId: "rust",
+                        version: 1,
+                        text: source,
+                    },
+                });
+            } else {
+                this._version++;
+                this._notify("textDocument/didChange", {
+                    textDocument: { uri: this.uri, version: this._version },
+                    contentChanges: [{ text: source }],
+                });
+            }
+            this._refreshTokens();
+            this._refreshDiagnostics();
+            return;
+        }
+
+        if (!this._ready || !this._opened) return;
         const version = ++this._version;
         this._notify("textDocument/didChange", {
             textDocument: { uri: this.uri, version },
@@ -377,7 +490,8 @@ export class LspClient {
 
     /** 用户触发补全。返回 Promise<items>。 */
     requestCompletion(line, column) {
-        if (!this._ready) return Promise.resolve([]);
+        // 超限期间 RA 手上是旧文档,补全会给出过时的候选 —— 不如不给。
+        if (!this._ready || this._overCap) return Promise.resolve([]);
         this._flushChange();
         // 在途替换：旧请求直接 resolve(null)，不排队。
         for (const id of this._completionIds) {

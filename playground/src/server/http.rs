@@ -43,6 +43,9 @@ pub struct AppState {
     /// RA 运行时。`None` = `PLAYGROUND_LSP_DISABLED` 或被测试关掉 ——
     /// `hello` 据此报 `lsp_supported: false`,前端退回纯编译界面。
     pub lsp: Option<Arc<crate::lsp::service::LspService>>,
+    /// 会话级占用表:同一个 IP 同时只允许一条活连接。
+    /// 见 [`crate::server::session_gate`]。
+    pub sessions: Arc<crate::server::session_gate::SessionGate>,
 }
 
 /// `/status` 的响应体。字段是给前端和运维看的,名字直接抄过去的
@@ -56,6 +59,8 @@ pub struct StatusBody {
     pub running: usize,
     pub waiting: usize,
     pub max_jobs: usize,
+    /// 当前的活连接数(会话级限制:每个 IP 一条)。
+    pub sessions: usize,
     pub head: Option<String>,
     pub dirty: Option<bool>,
     pub uptime_secs: u64,
@@ -155,6 +160,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<StatusBody> {
         running: snap.running,
         waiting: snap.waiting,
         max_jobs: snap.max_jobs,
+        sessions: st.sessions.active(),
         head,
         dirty,
         uptime_secs: st.started.elapsed().as_secs(),
@@ -332,6 +338,7 @@ mod tests {
             started: Instant::now(),
             cfg,
             lsp: None,
+            sessions: crate::server::session_gate::SessionGate::new(),
         })
     }
 
@@ -350,6 +357,7 @@ mod tests {
             started: st.started,
             cfg: Arc::new(c),
             lsp: st.lsp.clone(),
+            sessions: crate::server::session_gate::SessionGate::new(),
         })
     }
 
@@ -592,6 +600,7 @@ mod tests {
             started: Instant::now(),
             cfg,
             lsp: None,
+            sessions: crate::server::session_gate::SessionGate::new(),
         });
         (st, builder)
     }
