@@ -926,15 +926,31 @@ fn is_invariant(
 
 /// 认出「`i` 从 begin 数到 bound，每轮加一」这种计数循环。
 ///
-/// 条件（都在 IR 图上看）：
+/// 条件（都在 IR 图上看），每条都对应一个不能错的不变量：
+///
 /// - 区域的头是 bool 的 switch，它的值来自 `<` / `<=` 比较节点；
+///   —— 比较的结果决定走哪支，摘掉它就得保证那支真的是「循环体」。
 /// - 比较的第一个操作数是循环变量（局部变量），第二个是上界；
-/// - 循环变量全图只被写两次：循环外一次（初值）、循环内一次（加一）；
-/// - 循环内那次写的是「循环变量 + 1」（可以经一层拷贝）；
-/// - 加一支配回到循环头的边：每轮都走得到，且一轮只走一次；
-/// - 上界在循环里不变。
+///   —— 循环变量是 native 区间要数的那个数，上界是区间的终点。
+/// - 比较节点只被这个头用；
+///   —— 摘掉它才干净；被别人用就摘不掉，那就不特化。
+/// - 循环变量全图只被写两次：循环外一次（初值，且支配循环头）、循环内一次（加一）；
+///   —— 只有这两处写，才能说清每轮它怎么变、初值是多少。
+/// - 循环内那次写的是「循环变量 + 1」（可以经一层拷贝，拷贝得在加一之前）；
+///   —— 每轮恰好加一，native 的计数才跟得上循环变量。
+/// - 每一条回到循环头的边都被加一支配；
+///   —— 「连回循环开始的边都在 `i += 1` 之后」。`for` 的 `continue`
+///     执行更新部分（rustc 把自增提到体首），`while` 的 `continue`
+///     跳过更新部分 —— 后者 `i` 不增长，native 的计数会多跑，不能特化。
+/// - 上界在循环里不变；
+///   —— 区间的终点得是固定的值。
+/// - 循环体在循环里，正常结束在循环外；
+///   —— 循环体跑出循环、或者区间耗尽后跳回循环体内部，语义就全错了。
 ///
 /// 认出来就把区间填进有限循环节点：循环于是自己数到头，不用靠条件跳出。
+///
+/// 任何一条不满足都退回通用改写（区间取满、靠条件跳出）—— 那条路是
+/// 改动之前就有的，行为一定没变。特化只在这里「能证明等价」时才发生。
 fn detect_counting_loop(
     graph: &mut NodeGraphIr,
     cfg: &Cfg,
@@ -981,6 +997,17 @@ fn detect_counting_loop(
         LinkTarget::Node(n) => cfg.node_index[&n],
         LinkTarget::Export => 0,
     };
+    // 循环体得在循环里，正常结束得在循环外。
+    //
+    // 这两条是防误优化的底线：循环体跑出循环、或者区间耗尽后跳回循环
+    // 体内部，语义就全错了。正常结束可以是别的区域的头（`continue 外层`
+    // 的形状），那由 `case_target` 接到链尾，不算错。
+    if !region.nodes.contains(&cfg.node_index[&body]) {
+        return None;
+    }
+    if region.nodes.contains(&natural_exit) {
+        return None;
+    }
 
     // 头的值是比较的结果。
     let cmp_link = head.links.values_in[0].link?;
@@ -1973,11 +2000,90 @@ mod tests {
         assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
     }
 
+    /// 计数循环里有 `return`：两个出口（函数出口 + 正常结束），
+    /// 正常结束那个码在进循环前就设好，循环自然跑完时码没变。
+    #[test]
+    fn counting_loop_with_return_in_the_body_presets_the_normal_exit_code() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里加一条分支：一支走到 i += 1，一支直接 return。
+        let br = branch(&mut g);
+        g.unlink_control(Link::node(c.head, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(c.head, 1), Link::node(br, 0));
+        g.link_control(Link::node(br, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(br, 0), Link::export(0)); // return
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是 [0, 9]。
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        // 两个出口 → 有分派 switch，循环的 out[1] 接它。
+        let sw = g
+            .get_node(lp)
+            .links
+            .controls_out[1]
+            .first()
+            .and_then(|l| l.target.node())
+            .expect("out[1] 该接分派 switch");
+        let IrNodeId::Switch(values) = &g.get_node(sw).kind.id else {
+            panic!("out[1] 该接分派 switch");
+        };
+        assert_eq!(values.len(), 2, "两个退出目标该有两个 case");
+        // 正常结束那支的码，就是进循环前设的码。
+        let pre = g
+            .get_node(lp)
+            .links
+            .controls_in[0]
+            .first()
+            .and_then(|l| l.target.node())
+            .expect("进循环前该有个设码的节点");
+        let pre_code = int_of(&g, pre, 1).expect("设码节点得写一个整数");
+        let mut found = false;
+        for (k, v) in values.iter().enumerate() {
+            let code = *v.downcast_ref::<i32>().ok().unwrap();
+            let target = g
+                .get_node(sw)
+                .links
+                .controls_out[k]
+                .first()
+                .and_then(|l| l.target.node());
+            if target == Some(c.after) {
+                assert_eq!(code, pre_code, "正常结束那支的码该是循环前设的那个");
+                found = true;
+            }
+        }
+        assert!(found, "分派 switch 里该有正常结束那支");
+    }
+
+    /// 「正常结束」指回循环体内部时不能特化：区间耗尽后 native 会跳进
+    /// 循环体，语义就错了。
+    #[test]
+    fn counting_loop_whose_normal_exit_stays_inside_is_not_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 头为假时跳到体尾（而不是循环之后）。
+        let y = g.insert(node_ir_nop());
+        g.unlink_control(Link::node(c.body, 0), Link::node(c.head, 0));
+        g.link_control(Link::node(c.body, 0), Link::node(y, 0));
+        g.link_control(Link::node(y, 0), Link::node(c.head, 0));
+        g.unlink_control(Link::node(c.head, 0), Link::node(c.after, 0));
+        g.link_control(Link::node(c.head, 0), Link::node(y, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是满的：没特化。
+        assert_eq!(int_of(&g, lp, 0), Some(i32::MIN));
+        assert_eq!(int_of(&g, lp, 1), Some(i32::MAX));
+        assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
+    }
+
     /// 循环头的分支约定有两种：`if` 语句来的 case 列表是 [true]，
     /// MIR 的 `switchInt(bool)` 来的是 [false]。两种都得认。
     #[test]
-    fn counting_loop_head_with_true_case_list_is_recognized() {
-        let mut g = new_graph();
+    fn counting_loop_head_with_true_case_list_is_recognized() {        let mut g = new_graph();
         let var = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
         let init = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         g.set_value_in(Link::node(init, 0), ValueIn::link(Link::node(var, 0)));
