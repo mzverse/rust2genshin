@@ -275,12 +275,14 @@ pub fn rm_args(name: &str) -> Vec<String> {
 /// 过滤结果恒为空,清理等于没做)。宁可多列几十个容器名,再在
 /// `lsp::service::stale_ra_names` 里按前缀筛 —— 那是纯 Rust,行为可控。
 ///
-/// `--format {{.Names}}` 给的是**名字**而不是 ID —— ID 没法直接
-/// `docker rm`,还得再查一次名字。
+/// **不能带 `-q`**:docker 里 `--quiet` 和 `--format` 互斥,`-q` 优先 ——
+/// 实测 docker 19.03 会打 `WARNING: Ignoring custom format, because
+/// both --format and --quiet are set` 然后吐一串**容器 ID**。ID 没有
+/// `r2g-ra-` 前缀,会被前缀筛全丢掉,清理又变成空操作。
 pub fn container_ls_names_args() -> Vec<String> {
     vec![
         "ps".into(),
-        "-aq".into(),
+        "-a".into(),
         "--format".into(),
         "{{.Names}}".into(),
     ]
@@ -707,11 +709,18 @@ mod tests {
     /// 启动清理要列出容器名。**不能靠 `--filter name=`**:不同 docker 版本
     /// 对它的语义不一样(老版本子串匹配、新版本正则),实测老版本用正则
     /// 锚点匹配不到任何东西。宁可多列,筛选交给纯 Rust。
+    ///
+    /// **更不能带 `-q`**:docker 里 `--quiet` 和 `--format` 互斥,`-q` 优先,
+    /// 结果吐的是容器 ID —— ID 没有名字前缀,会被前缀筛全丢掉。
     #[test]
     fn container_ls_lists_all_names_without_a_filter() {
         let a = container_ls_names_args();
         assert_eq!(a[0], "ps");
-        assert!(a.contains(&"-aq".to_string()), "要连停掉的容器一起列:{a:?}");
+        assert!(a.contains(&"-a".to_string()), "要连停掉的容器一起列:{a:?}");
+        assert!(
+            !a.iter().any(|s| s == "-q" || s == "-aq"),
+            "不能带 -q —— 它会盖掉 --format,吐出的是 ID:{a:?}"
+        );
         assert!(
             !a.iter().any(|s| s.starts_with("name=")),
             "不靠 docker 的 name 过滤 —— 版本语义不一致:{a:?}"
