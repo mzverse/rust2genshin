@@ -1,7 +1,7 @@
 #import "/lib/lib.typ": *;
 #show: template;
 
-#let title = [复合节点];
+#let title = [开始];
 
 #import "/lib/graph.typ";
 #import "/lib/card.typ": *;
@@ -45,6 +45,10 @@ fn my_composite() {
 
     否则游戏认为它们是*没用的*
 ]
+
+如果您是在线体验，将代码输入后点击*编译*，然后在右侧的*预览*也查看生成的节点图
+
+本地编译则执行build-demo中的beyond-server，然后将得到的.gia导入游戏查看，或运行viewer查看
 
 = 参数
 

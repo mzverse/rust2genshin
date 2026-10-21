@@ -55,7 +55,7 @@ docs/typst/
 | 页 | 内容要点 | 来源 |
 |---|---|---|
 | `index.typ` | 总览 + 阅读路线图（新手 → 熟手 → 遇到问题的三条路径） | 新写 |
-| `getting-started.typ` | 装 rustup / protoc / nightly 三组件 → clone → 改 demo 模块名 + workspace `members` → `cargo run -p build-demo` → 产物路径 → 怎么验证（反解 `.gia` / viewer） | README「Build」扩写 |
+| `0.deploy.typ` | 装 rustup / protoc / nightly 三组件 → clone → 改 demo 模块名 + workspace `members` → `cargo run -p build-demo` → 产物路径 → 怎么验证（反解 `.gia` / viewer） | README「Build」扩写 |
 | `project.typ` | 项目定位、目标平台（目前仅服务器节点图）、产物是什么 | README「简介」 |
 | `export.typ` | `#[unsafe(no_mangle)]` / `export_name`、复合节点、**「主图始终导出，未导出或未被引用的资产无法导入」** | README 迁入 |
 | `events.typ` | `#[event_listener]` 用法；内置事件按 character / entity / player 分组列出 | README 迁入 + 补清单 |

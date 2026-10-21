@@ -1,8 +1,11 @@
 #import "/lib/lib.typ": *;
-#let title = [上手];
 #show: template;
 
+#let title = [部署];
+
 #set raw(lang: "rust");
+
+将此项目部署在本地，如果您选择先在线#link(<tag-playground>)[摆弄]，可暂时*跳过本节*
 
 = 前置
 
