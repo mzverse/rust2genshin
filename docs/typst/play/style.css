@@ -274,6 +274,7 @@ body:has(main > .play) main {
  * 颜色复用 `theme.css` 里那一组 `--code-syn-*` —— 那 8 个角色是为 Typst
  * 高亮挑的,但语义大体对得上 LSP 的 23 个类型:
  *   - 关键字 / 修饰符 / 装饰器 / typeParameter → attribute(深色读得清)
+ *     —— 关键字例外:它单用红色,见下面那条。
  *   - 函数 / 方法 / 类型 / 接口 / struct       → symbol(蓝)
  *   - 字符串 / 注释 / 数字                    → string / comment / literal
  *   - 命名空间 / 宏                          → markup / macro
@@ -298,7 +299,11 @@ body:has(main > .play) main {
 .play-editor .cm-tok-function       { color: var(--code-syn-symbol); }
 .play-editor .cm-tok-method         { color: var(--code-syn-symbol); }
 .play-editor .cm-tok-macro          { color: var(--code-syn-macro); }
-.play-editor .cm-tok-keyword        { color: var(--code-syn-attribute); font-weight: 600; }
+/* 关键字单开一色:红。不用 `--code-syn-attribute` —— 浅色主题下那是
+ * #301414,近乎纯黑,关键字成了一片黑块,读起来像代码坏了。红色既不抢
+ * 注释(comment 灰)、也不抢字符串(绿),在一屏彩色 token 里站得住。
+ * 顺带去掉加粗:粗体让红色显得更重,不如靠色相区分。 */
+.play-editor .cm-tok-keyword        { color: #d73948; }
 .play-editor .cm-tok-modifier       { color: var(--code-syn-attribute); }
 .play-editor .cm-tok-comment        { color: var(--code-syn-comment); font-style: italic; }
 .play-editor .cm-tok-string         { color: var(--code-syn-string); }
