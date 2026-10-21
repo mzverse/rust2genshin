@@ -9,6 +9,7 @@ use rust2genshin_lib::*;
 #[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 
+use core::ops::CoroutineState;
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
 
 #[asynchronous]
@@ -24,18 +25,10 @@ pub fn count_to_five() {
 #[unsafe(no_mangle)]
 pub fn async_loop_demo() {
     let mut co = count_to_five();
-    // 暂时只能这样，协程待完善
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
-    co.resume();
+    loop {
+        match co.resume() {
+            CoroutineState::Yielded(_) => {}
+            CoroutineState::Complete(_) => break,
+        }
+    }
 }

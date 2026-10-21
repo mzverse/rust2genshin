@@ -664,11 +664,19 @@ customElements.define('ui-graph', class extends HTMLElement {
             if (!changed) break;
         }
 
-        // 分列,列内保持文档顺序
+        // 分列,列内保持文档顺序。
+        //
+        // 层号不一定连续:松弛遇到环时,前驱的层号可能在后面几轮又涨上去,
+        // 而已经落位的节点不会跟着重算 —— 结果是某些层号根本没有节点。
+        // 直接拿层号当列下标,`cols` 就成了稀疏数组,后面的 `for (const v of
+        // cols[ci])` 撞上空洞会抛 "cols[ci] is not iterable"。所以先按
+        // 出现过的层号排序,换成紧凑的列号。
+        const levels = [...new Set(rank)].sort((a, b) => a - b);
+        const colOf = new Map(levels.map((r, i) => [r, i]));
         const cols = [];
         for (let i = 0; i < n; i++) {
-            const r = rank[i];
-            (cols[r] || (cols[r] = [])).push(this.nodes[i]);
+            const c = colOf.get(rank[i]);
+            (cols[c] || (cols[c] = [])).push(this.nodes[i]);
         }
 
         // 两轮重心排序:每列按「前驱的平均行号」排,让连线少交叉。平手一律
