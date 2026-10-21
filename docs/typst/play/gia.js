@@ -305,6 +305,15 @@ export function buildGraphElement(graph, decls = new Map()) {
         node.id = `n${n.index}`;
         node.textContent = nodeLabel(n, decls);
         node.title = `#${n.index}`;
+        // 注释(proto 的 `attached_comment`):作为节点的子元素挂上去,
+        // 节点自己会把它指给 shadow 里的 slot,显示在节点上方。
+        // 必须在 textContent 之后 append —— 那一步会清空子节点。
+        const comment = n.attachedComment?.text;
+        if (comment) {
+            const c = document.createElement("ui-graph-comment");
+            c.textContent = comment;
+            node.appendChild(c);
+        }
         // 系统调用按控制流形态分三类上色。复合节点/图形节点保持默认色。
         if ((n.shellRef ?? {}).kind === "SYS_CALL_STUB") {
             node.dataset.role = syscallRole(n, referenced);

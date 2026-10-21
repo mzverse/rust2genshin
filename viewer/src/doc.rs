@@ -87,7 +87,8 @@ pub fn load(path: &Path) -> Result<Target, String> {
 // **不要**在这里另起一份:core 的自动整理(`node::layout`)就是按这套尺寸
 // 排布坐标的,两份尺寸漂开的那一刻,框、字、间距和坐标就会互相压盖。
 pub use rust2genshin::node::layout::{
-    BASE_FONT_PX, NODE_H, NODE_W, PIN_GAP, node_height, node_width,
+    BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y,
+    NODE_H, NODE_W, PIN_GAP, comment_height, comment_width, node_height, node_width,
 };
 
 /// 节点标签。
@@ -333,6 +334,9 @@ pub struct NodeEntry {
     /// 用 `Debug` 格式化(`core/src/value.rs` 的 `NativeValue: Debug`,
     /// 具体值是 `bool` / `i32` / `f32` / `String` / `Vec3` 这些基本类型)。
     pub value_in_defaults: Vec<Option<String>>,
+    /// 节点上方的注释（`.ogia` 的 `Node::comment`，`.gia` 里编码成
+    /// `attached_comment`）。渲染成节点上方的小文本框。
+    pub comment: Option<String>,
     pub size: Size<f32>,
 }
 
@@ -751,6 +755,7 @@ fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
                 .iter()
                 .map(|v| v.default.as_ref().map(|d| format!("{d:?}")))
                 .collect(),
+            comment: node.comment.clone(),
             size: Size {
                 width,
                 height: node_height(pins),
@@ -840,6 +845,22 @@ mod tests {
     use rust2genshin::compile::ir::FnInfo;
     use rust2genshin::node::{ExportDecl, NodeGraphKind};
     use std::io::Write;
+
+    /// 注释要穿过展平层进 `NodeEntry` —— 渲染层只认 `NodeEntry`。
+    #[test]
+    fn comment_reaches_the_flattened_node() {
+        use rust2genshin::compile::ir::node_ir_nop;
+        let mut g = graph_named("t");
+        g.push_export_control_in(ExportDecl::new(String::new(), None));
+        let n = g.insert(node_ir_nop());
+        g.link_control(Link::export(0), Link::node(n, 0));
+        g.set_comment(n, Some("第一行
+第二行".into()));
+
+        let e = flatten_one("t".into(), &g);
+        assert_eq!(e.nodes[0].comment.as_deref(), Some("第一行
+第二行"));
+    }
 
     /// `NodeGraphIr` 没有 `Default` impl(core 侧只有 `NodeGraph::new`),所以只能显式构造。
     fn graph_named(name: &str) -> NodeGraphIr {

@@ -56,7 +56,10 @@ use rust2genshin::compile::ir::IrNodeId;
 use rust2genshin::compile::link::Target;
 use rust2genshin::node::NodeRef;
 
-use crate::doc::{BASE_FONT_PX, Doc, Edge, GraphEntry, NodeEntry, label};
+use crate::doc::{
+    BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y, Doc,
+    Edge, GraphEntry, NodeEntry, comment_height, comment_width, label,
+};
 use crate::optimize::{self, RULES, Snapshot};
 
 // Ctrl+Z → 撤销。`actions!` 展开出一个单元结构体 + `gpui::Action` 实现;
@@ -103,6 +106,13 @@ fn text_hi() -> gpui::Rgba {
 }
 fn text_dim() -> gpui::Rgba {
     rgba(0x8a93a6ff)
+}
+/// 注释框底色。比节点淡一档,读起来是「备注」而不是另一个节点。
+fn comment_bg() -> gpui::Rgba {
+    rgba(0x1b2130cc)
+}
+fn comment_border() -> gpui::Rgba {
+    rgba(0x8a93a655)
 }
 
 /// 节点类别色(描边用)。
@@ -151,6 +161,8 @@ struct NodeView {
     boundary: bool,
     /// 这一帧的缩放。字号要跟着它走 —— `text_xs()` 那种固定字号不随缩放变。
     scale: f32,
+    /// 节点上方的注释：文本 + 估算出来的宽高（世界坐标，未乘缩放）。
+    comment: Option<(String, f32, f32)>,
 }
 
 /// 一条边已经算好的三次贝塞尔(四个控制点,容器局部坐标)。
@@ -253,6 +265,13 @@ fn build_nodes(
                 border: node_color(&n.kind),
                 boundary: g.entry.contains(&i) || g.exit.contains(&i),
                 scale,
+                comment: n.comment.as_ref().map(|c| {
+                    (
+                        c.clone(),
+                        comment_width(c),
+                        comment_height(c),
+                    )
+                }),
             }
         })
         .collect()
@@ -1122,6 +1141,37 @@ impl Render for Viewer {
         // 用 div 而不是自绘,是为了白拿 GPUI 的命中测试 / hover / 事件系统。
         let mut layer = div().absolute().inset_0();
         for nv in nodes {
+            // 注释：贴在节点上方的小文本框,多行。布局已经为它留过位置
+            // (`node::layout` 的 `ch`),这里按同一个估算高度往上顶。
+            if let Some((text, cw, ch)) = &nv.comment {
+                let font = (COMMENT_FONT_PX * nv.scale).max(5.0);
+                let mut lines = div()
+                    .absolute()
+                    .left(px(nv.x))
+                    .top(px(nv.y - (COMMENT_GAP + *ch) * nv.scale))
+                    .w(px(*cw * nv.scale))
+                    .h(px(*ch * nv.scale))
+                    .flex()
+                    .flex_col()
+                    .px(px(COMMENT_PAD_X / 2.0 * nv.scale))
+                    .py(px(COMMENT_PAD_Y / 2.0 * nv.scale))
+                    .rounded(px(4.0 * nv.scale))
+                    .bg(comment_bg())
+                    .border_1()
+                    .border_color(comment_border())
+                    .text_color(text_dim())
+                    .text_size(px(font))
+                    .overflow_hidden();
+                for line in text.split('\n') {
+                    // 每一行固定高度 —— 空行也要占位,不然多行注释会塌成一行。
+                    lines = lines.child(
+                        div()
+                            .h(px(COMMENT_LINE_H * nv.scale))
+                            .child(line.to_string()),
+                    );
+                }
+                layer = layer.child(lines);
+            }
             let mut d = div()
                 .absolute()
                 .left(px(nv.x))
@@ -1710,11 +1760,36 @@ mod tests {
             value_in_exports: vec![],
             value_out_exports: vec![],
             value_in_defaults: vec![],
+            comment: None,
             size: Size {
                 width: NODE_W,
                 height: NODE_H,
             },
         }
+    }
+
+    /// 注释要跟着节点进 `NodeView`,并带上 core 那套尺寸估算 ——
+    /// 渲染时按它把文本框摆在节点上方。
+    #[test]
+    fn comments_reach_the_node_view_with_their_estimated_size() {
+        let mut n = node(1, 1, 0, 0);
+        n.comment = Some("第一行
+第二行".into());
+        let g = GraphEntry {
+            name: "t".to_string(),
+            index_of: HashMap::new(),
+            entry: vec![],
+            exit: vec![],
+            nodes: vec![n],
+            edges: vec![],
+        };
+        let pos = vec![point(40.0, 80.0)];
+        let ns = build_nodes(&g, &pos, point(0.0, 0.0), 2.0);
+        let (text, w, h) = ns[0].comment.as_ref().expect("注释没进 NodeView");
+        assert_eq!(text, "第一行
+第二行");
+        assert_eq!(*w, comment_width(text));
+        assert_eq!(*h, comment_height(text));
     }
 
     /// 值流边也从**侧边的 pin 位**进出(右出、左进),不再从节点中心的上下缘。

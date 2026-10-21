@@ -61,6 +61,42 @@ pub fn node_width(text: &str) -> f32 {
     NODE_W.max(text_w + PAD)
 }
 
+/// 注释框的字体大小。比节点标题小一号,贴在节点上方不抢眼。
+pub const COMMENT_FONT_PX: f32 = 10.0;
+/// 注释框的行高(含行距)。
+pub const COMMENT_LINE_H: f32 = 13.0;
+/// 注释框左右内边距之和。
+pub const COMMENT_PAD_X: f32 = 10.0;
+/// 注释框上下内边距之和。
+pub const COMMENT_PAD_Y: f32 = 8.0;
+/// 注释框与节点之间的空隙。
+pub const COMMENT_GAP: f32 = 6.0;
+
+/// 注释的行数(空串也算一行,`lines()` 对空串返回 0)。
+pub fn comment_lines(text: &str) -> usize {
+    text.lines().count().max(1)
+}
+
+/// 注释框的高度估算。渲染方直接用它,别各写一份。
+pub fn comment_height(text: &str) -> f32 {
+    comment_lines(text) as f32 * COMMENT_LINE_H + COMMENT_PAD_Y
+}
+
+/// 注释框的宽度估算:取最长那行,按和 [`node_width`] 同一套字宽估。
+///
+/// 估宽不估窄 —— 估算偏小会把字裁掉,偏大只是多留点边。
+pub fn comment_width(text: &str) -> f32 {
+    let widest = text
+        .lines()
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_ascii() { 6.0 } else { COMMENT_FONT_PX })
+                .sum::<f32>()
+        })
+        .fold(0.0f32, f32::max);
+    widest + COMMENT_PAD_X
+}
+
 /// 节点在布局里的**显示名** —— 宽度估算的依据。
 ///
 /// `IrNodeId` / `NativeNodeId` 都按同一套紧凑形式:`Native` 带 `kind` 与 `id`
@@ -104,13 +140,23 @@ pub fn layout_with<NodeId, Kind>(
     // 坐标,两边是同一套顺序 —— viewer 的展平就是这么对齐的。
     let mut w: Vec<f32> = Vec::new();
     let mut h: Vec<f32> = Vec::new();
+    let mut ch: Vec<f32> = Vec::new();
     let mut index_of: HashMap<NodeRef, usize> = HashMap::new();
     for (key, node) in graph.nodes.iter() {
         index_of.insert(NodeRef::from(key), w.len());
         let pins = (node.kind.controls_in_num + node.kind.values_in_types.len())
             .max(node.kind.controls_out_num + node.kind.values_out_types.len());
-        w.push(node_width(&label(&node.kind)));
+        let mut width = node_width(&label(&node.kind));
+        // 注释贴在节点上方:宽度参与列宽(不然长注释会压到邻居身上),
+        // 高度在列内打包时单独留出来(见 `pack`)。
+        let mut reserve = 0.0;
+        if let Some(comment) = &node.comment {
+            width = width.max(comment_width(comment));
+            reserve = comment_height(comment) + COMMENT_GAP;
+        }
+        w.push(width);
         h.push(node_height(pins));
+        ch.push(reserve);
     }
 
     // 边一律**从来源节点的 out 侧**发出(`links` 存的是双向的,
@@ -160,6 +206,7 @@ pub fn layout_with<NodeId, Kind>(
     let model = Model {
         w,
         h,
+        ch,
         edges,
         entry,
     };
@@ -198,6 +245,8 @@ struct Model {
     w: Vec<f32>,
     /// 每节点高度
     h: Vec<f32>,
+    /// 每节点上方为注释框预留的高度(注释高度 + 与节点的间距)。没有注释是 0。
+    ch: Vec<f32>,
     edges: Vec<Edge>,
     /// 入口块下标(控制流 BFS 起点)
     entry: Vec<usize>,
@@ -426,10 +475,15 @@ fn compute(m: &Model) -> Vec<(f32, f32)> {
     // 节点高度按 pin 数不同(见 [`node_height`]),这里不能再用常量 NODE_H ——
     // 层内推进也要逐节点加,否则高节点会和下一个叠上。
     let node_h = |i: usize| m.h.get(i).copied().unwrap_or(NODE_H);
+    // 注释是节点上方的一部分:列高与列内推进都要算上它。
+    let comment_h = |i: usize| m.ch.get(i).copied().unwrap_or(0.0);
     let heights: HashMap<i64, f32> = by_layer
         .iter()
         .map(|(&l, v)| {
-            let h = v.iter().map(|&i| node_h(i)).sum::<f32>();
+            let h = v
+                .iter()
+                .map(|&i| comment_h(i) + node_h(i))
+                .sum::<f32>();
             (l, h + NODE_GAP * v.len().saturating_sub(1) as f32)
         })
         .collect();
@@ -483,6 +537,9 @@ fn compute(m: &Model) -> Vec<(f32, f32)> {
         for (&l, nodes) in order.iter() {
             let mut cy = MARGIN + (max_h - heights[&l]) / 2.0;
             for &node in nodes.iter() {
+                // 注释先占位,节点本身的 y 落在它下面 —— `position` 仍然
+                // 表示节点盒子左上角,渲染方把注释画在它上方就行。
+                cy += comment_h(node);
                 y[node] = cy;
                 cy += node_h(node) + NODE_GAP;
             }
@@ -610,6 +667,7 @@ mod tests {
         Model {
             w: vec![NODE_W; n],
             h: vec![NODE_H; n],
+            ch: vec![0.0; n],
             edges,
             entry,
         }
@@ -645,6 +703,54 @@ mod tests {
             ],
             vec![0],
         )
+    }
+
+    /// 注释占用节点上方的高度:带注释的图里,节点会被往下推,
+    /// 上方那块空间留给注释框。
+    #[test]
+    fn a_comment_reserves_space_above_its_node() {
+        let build = |comment: Option<&str>| {
+            let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
+            let a = g.insert(crate::compile::ir::node_ir_nop());
+            g.push_export_control_in(ExportDecl::new(String::new(), None));
+            g.link_control(Link::export(0), Link::node(a, 0));
+            if let Some(c) = comment {
+                g.set_comment(a, Some(c.into()));
+            }
+            crate::node::layout::layout(&mut g);
+            g.get_node(a).position
+        };
+        let plain = build(None);
+        let commented = build(Some("第一行
+第二行"));
+        let reserve = comment_height("第一行
+第二行") + COMMENT_GAP;
+        // 列高多了 reserve,居中偏移少一半,节点净下移 reserve/2。
+        assert!(
+            (commented.1 - plain.1 - reserve / 2.0).abs() < 0.01,
+            "带注释 {:?},不带 {:?}", commented.1, plain.1
+        );
+        assert!(commented.1 >= MARGIN + reserve, "注释顶部跑出画布了");
+    }
+
+    /// 注释比节点宽时,列宽按注释算 —— 否则长注释会压到右边那一列身上。
+    #[test]
+    fn a_wide_comment_widens_its_column() {
+        let build = |comment: Option<&str>| {
+            let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
+            let a = g.insert(crate::compile::ir::node_ir_nop());
+            let b = g.insert(crate::compile::ir::node_ir_nop());
+            g.push_export_control_in(ExportDecl::new(String::new(), None));
+            g.link_control(Link::export(0), Link::node(a, 0));
+            g.link_control(Link::node(a, 0), Link::node(b, 0));
+            if let Some(c) = comment {
+                g.set_comment(a, Some(c.into()));
+            }
+            crate::node::layout::layout(&mut g);
+            g.get_node(b).position.0
+        };
+        let long = "这是一条很长很长的注释,长到比节点宽度还宽很多很多很多";
+        assert!(build(Some(long)) > build(None));
     }
 
     #[test]

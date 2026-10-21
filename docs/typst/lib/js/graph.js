@@ -46,6 +46,11 @@ const PAD = 12;          // 整张图四周留白
 const TITLE_PX = 14;
 const PIN_PX = 11;
 
+// 注释框:贴在节点上方,和节点之间留一道缝。宽度由内容决定(有上限),
+// 高度按行数走 —— 具体尺寸在 relayout 里量真实 DOM。
+const COMMENT_GAP = 6;
+const COMMENT_PX = 10;
+
 // 引脚形状到标签的空,以及同一行左右两个标签之间至少留的缝。
 const LABEL_GAP = 4;
 const MID_GAP = 12;
@@ -88,10 +93,14 @@ function whenReady(fn) {
  * 引脚排布算好后写回来。标题就是 slot 投影进来的那个文本节点,::slotted 只管
  * 元素、管不到文本 —— 所以字形得写在盒子上。 */
 const NODE_CSS = `
-    :host { display: block; position: relative; box-sizing: content-box;
-        padding: 0 ${BLEED}px; }
+    :host { display: flex; flex-direction: column; justify-content: flex-end;
+        position: relative; box-sizing: content-box; padding: 0 ${BLEED}px; }
+    /* 注释框那层。尺寸由里面的 <slot> 决定,relayout 量完把宽度/高度
+     * 写回宿主元素 —— 布局是拿宿主的 w/h 排的,不量就排不出避让。 */
+    .g-comment { position: relative; width: max-content; max-width: 320px;
+        margin-bottom: ${COMMENT_GAP}px; }
     .g-box { position: relative; width: max-content; min-width: ${NODE_MIN_W}px;
-        height: 100%; box-sizing: border-box; background: var(--graph-box);
+        box-sizing: border-box; background: var(--graph-box);
         border: 1.5px solid var(--graph-border); border-radius: 7px; overflow: hidden;
         font-family: inherit; font-size: ${TITLE_PX}px; font-weight: 600;
         line-height: 21px; color: var(--fg); white-space: nowrap;
@@ -161,6 +170,13 @@ class GraphNode extends HTMLElement {
         if (document.readyState === 'loading') return;
         this.built = true;
 
+        // 注释是节点的直系子元素 <ui-graph-comment>。它自己是一条数据载体,
+        // 内容(文本)由它自己的 shadow 里的 <slot> 投影;这里只把它指给
+        // 节点 shadow 里那个具名 slot。
+        this.comment = [...this.children].find(
+            (el) => el.tagName === 'UI-GRAPH-COMMENT') || null;
+        if (this.comment) this.comment.slot = 'comment';
+
         this.#readPins();
         this.#buildShadow();
 
@@ -220,6 +236,17 @@ class GraphNode extends HTMLElement {
         const style = document.createElement('style');
         style.textContent = NODE_CSS;
         shadow.appendChild(style);
+
+        // 注释投影到节点上方。wrapper 的尺寸就是注释框的尺寸,relayout
+        // 量它来决定节点整体高度。
+        if (this.comment) {
+            this.commentWrap = document.createElement('div');
+            this.commentWrap.className = 'g-comment';
+            const cs = document.createElement('slot');
+            cs.setAttribute('name', 'comment');
+            this.commentWrap.appendChild(cs);
+            shadow.appendChild(this.commentWrap);
+        }
 
         // 盒子里只有一个无名 <slot>,只接标题那段文本节点 —— 每根 pin 都带了
         // slot 名,被各自的标签 <slot> 认领去了,不会再落到这儿。
@@ -285,6 +312,17 @@ class GraphNode extends HTMLElement {
         }
         const extent = p => half(p) + LABEL_GAP + p.labelW;
 
+        // 先量注释:它在节点上方,整体高度 = 注释 + 缝 + 节点,引脚坐标
+        // 也要整体下移这么多。
+        let commentW = 0;
+        let commentH = 0;
+        if (this.commentWrap) {
+            const r = this.commentWrap.getBoundingClientRect();
+            commentW = Math.ceil(r.width);
+            commentH = Math.ceil(r.height);
+        }
+        this.commentH = commentH ? commentH + COMMENT_GAP : 0;
+
         this.rows = Math.max(1, ...this.pins.map(p => p.row + 1));
         // 左右各按行量:同一行的入口和出口在同一个 y 上,会撞。
         const rowIn = new Array(this.rows).fill(0);
@@ -310,12 +348,19 @@ class GraphNode extends HTMLElement {
             // 两边都有东西时中间再留一道缝,不然两个标签会贴上。
             w = Math.max(w, rowIn[i] + rowOut[i] + (rowIn[i] && rowOut[i] ? MID_GAP : 0));
         }
+        // 注释比节点宽时,节点也跟着它变宽 —— 不然长注释会被
+        // foreignObject 的矩形裁掉(它按节点矩形硬裁剪)。
+        w = Math.max(w, commentW);
         this.w = Math.ceil(w);
-        this.h = NODE_HEAD_H + PIN_TOP + this.rows * PIN_GAP + PIN_BOT;
+        const nodeH = NODE_HEAD_H + PIN_TOP + this.rows * PIN_GAP + PIN_BOT;
+        this.h = this.commentH + nodeH;
 
         // 盒子是 max-content,靠 min-width 撑到算出来的宽;元素宽度是盒子外宽
-        // 再加左右各一圈 BLEED(:host 的 padding)。
+        // 再加左右各一圈 BLEED(:host 的 padding)。盒子高度写死成节点自身
+        // 的高度 —— 上方那段留给注释,由 flex 的 justify-content: flex-end
+        // 把盒子压在底部。
         this.box.style.minWidth = `${this.w}px`;
+        this.box.style.height = `${nodeH}px`;
         this.style.width = `${this.w}px`;
         this.style.height = `${this.h}px`;
         // svg 盖住整个元素,连伸出去的那半截引脚一起。
@@ -333,7 +378,8 @@ class GraphNode extends HTMLElement {
             // 引脚坐标是相对**元素**左上角的;盒子从 BLEED 开始,所以边界正好
             // 落在 BLEED / BLEED + w 上。
             p.x = p.dir === 'in' ? BLEED : BLEED + this.w;
-            p.y = NODE_HEAD_H + PIN_TOP + p.row * PIN_GAP + PIN_GAP / 2;
+            // 注释占掉上方那段,引脚整体下移。
+            p.y = this.commentH + NODE_HEAD_H + PIN_TOP + p.row * PIN_GAP + PIN_GAP / 2;
             if (p.kind === 'ctrl') {
                 p.shape.setAttribute('points', [
                     `${p.x + CTRL_R},${p.y}`,
@@ -391,6 +437,41 @@ class GraphNode extends HTMLElement {
 }
 
 customElements.define('ui-graph-node', GraphNode);
+
+/* <ui-graph-comment> —— 节点上方的注释框。
+ *
+ * 和 <pin> / <connection> 一样是**数据载体**:内容就是它 light DOM 里的
+ * 文本(来自 `.gia` 的 `attached_comment.text`)。真正的框由它自己的
+ * shadow root 渲染,<slot> 把文本投影进来 —— 所以外面看到的是"一个贴着
+ * 节点上方的小文本框",排版和换行都在 shadow 里定死,不受页面样式影响。
+ *
+ * 尺寸(宽高)由 GraphNode 量这个元素的 rect 决定,布局拿它避让 ——
+ * 见 GraphNode.relayout。 */
+const COMMENT_CSS = `
+    :host { display: block; }
+    .g-note { display: block; box-sizing: border-box; width: 100%;
+        font-family: inherit; font-size: ${COMMENT_PX}px; line-height: 1.3;
+        color: var(--subtle); background: var(--graph-box);
+        border: 1px dashed var(--graph-border); border-radius: 4px;
+        padding: 4px 5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+`;
+
+class GraphComment extends HTMLElement {
+    connectedCallback() {
+        if (this.built) return;
+        this.built = true;
+        const shadow = this.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = COMMENT_CSS;
+        const box = document.createElement('div');
+        box.className = 'g-note';
+        // 无名 <slot>:把宿主 light DOM 里的文本节点整个投影进来。
+        box.appendChild(document.createElement('slot'));
+        shadow.append(style, box);
+    }
+}
+
+customElements.define('ui-graph-comment', GraphComment);
 
 /* <pin-info> —— 引脚旁边的一小段附加信息(默认值 / 复合图导出的端口)。
  *
