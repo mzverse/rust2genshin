@@ -1947,6 +1947,32 @@ mod tests {
         );
     }
 
+    /// `while` 形状的 `continue`：它跳过更新部分，`i` 不增长。
+    /// native 的计数跟 Rust 的迭代次数对不上，不能特化。
+    ///
+    /// `for` 形状的 `continue` 相反 —— 它执行更新部分（rustc 把自增提到
+    /// 体首），所以 `i` 照常增长，能特化（见上一个测试）。
+    #[test]
+    fn counting_loop_with_continue_before_the_increment_is_not_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里：先分支，`continue` 直接回头（跳过加一），另一支才加一。
+        let br = branch(&mut g);
+        g.unlink_control(Link::node(c.head, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(c.head, 1), Link::node(br, 0));
+        g.link_control(Link::node(br, 0), Link::node(c.head, 0)); // continue：跳过加一
+        g.link_control(Link::node(br, 1), Link::node(c.body, 0)); // 另一支才加一
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是满的：没特化。
+        assert_eq!(int_of(&g, lp, 0), Some(i32::MIN));
+        assert_eq!(int_of(&g, lp, 1), Some(i32::MAX));
+        // 比较的分支也还在。
+        assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
+    }
+
     /// 循环头的分支约定有两种：`if` 语句来的 case 列表是 [true]，
     /// MIR 的 `switchInt(bool)` 来的是 [false]。两种都得认。
     #[test]
