@@ -28,6 +28,7 @@
 
 use crate::compile::func::{node_ir_native, NodeGraphIr};
 use crate::compile::ir::{node_ir_local, node_ir_set_local, node_ir_switch, IrKind, IrNodeId, NodeKindIr};
+use crate::node::arithmetic::{node_add, node_less_equal, node_less_than, node_subtract};
 use crate::node::control::{NODE_BREAK, NODE_FOR_CLOSED};
 use crate::node::{Link, LinkTarget, NodeRef, ValueIn};
 use crate::value::{NativeKind, NativeValue};
@@ -63,6 +64,8 @@ struct Cfg {
     /// 函数入口：externals 的控制出端口 0 的目标（点号 + 目标点的控制入端口号）。
     /// 函数被调用时从这儿进。
     entry: Vec<(usize, usize)>,
+    /// 节点 → 点号。
+    node_index: HashMap<NodeRef, usize>,
 }
 
 impl Cfg {
@@ -117,6 +120,13 @@ impl Cfg {
             pred,
             edges,
             entry,
+            node_index: index
+                .iter()
+                .filter_map(|(p, i)| match p {
+                    Point::Node(n) => Some((*n, *i)),
+                    Point::Export => None,
+                })
+                .collect(),
         }
     }
 }
@@ -254,6 +264,8 @@ struct Regions {
     owner: Vec<usize>,
     /// 头 → 区域。根区域的头是函数入口。
     head_region: HashMap<usize, usize>,
+    /// 支配集合：点 → 支配它的点。
+    dom: HashMap<usize, HashSet<usize>>,
 }
 
 impl Regions {
@@ -270,6 +282,7 @@ fn analyze(cfg: &Cfg) -> Result<Regions, String> {
         regions: Vec::new(),
         owner: vec![0; n],
         head_region: HashMap::new(),
+        dom: HashMap::new(),
     };
     if cfg.entry.is_empty() {
         return Ok(empty);
@@ -398,6 +411,7 @@ fn analyze(cfg: &Cfg) -> Result<Regions, String> {
         regions,
         owner,
         head_region,
+        dom,
     })
 }
 
@@ -414,6 +428,31 @@ struct RegionNodes {
     code: HashMap<usize, i32>,
     /// 退出目标（点号）→「置码 + 跳出」链的入口。
     chain: HashMap<usize, NodeRef>,
+    /// 计数循环的区间。认出来时有限循环节点就带着真的起止值，
+    /// 循环自己数到头，不用靠条件跳出。
+    range: Option<CountRange>,
+    /// 认出计数循环后记下的东西（摘掉比较时要用）。
+    counting: Option<CountLoop>,
+    /// 「进循环前把退出码设成正常结束的码」那个节点。
+    pre_set: Option<NodeRef>,
+}
+
+/// 计数循环的区间：native「有限循环」节点的起止值（闭区间）。
+struct CountRange {
+    begin: ValueIn,
+    end: ValueIn,
+}
+
+/// 认出计数循环后记下的东西。
+struct CountLoop {
+    /// 循环头：那个 bool 的 switch，要摘掉。
+    head: NodeRef,
+    /// 比较节点，要摘掉。
+    cmp: NodeRef,
+    /// 循环体的起点（原来比较的 true 分支）。
+    body: NodeRef,
+    /// 正常结束的目标（原来比较的 false 分支，点号）。
+    natural_exit: usize,
 }
 
 /// 边在改造后的分类。
@@ -467,6 +506,20 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
     let mut nodes: Vec<RegionNodes> = (0..regions.regions.len())
         .map(|_| RegionNodes::default())
         .collect();
+
+    // 2.5 认出计数循环：「i 从 begin 数到 bound，每轮加一」。认得出来的，
+    //     有限循环节点就带着真的区间，循环自己数到头就结束；比较和分支
+    //     也就没用了，摘掉。
+    for i in 0..regions.regions.len() {
+        if !regions.regions[i].is_loop {
+            continue;
+        }
+        if let Some((range, counting)) = detect_counting_loop(graph, &cfg, &regions, i) {
+            nodes[i].range = Some(range);
+            nodes[i].counting = Some(counting);
+        }
+    }
+
     for (i, r) in regions.regions.iter().enumerate() {
         if !r.is_loop {
             continue;
@@ -541,11 +594,22 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
             EdgeAction::Drop => graph.unlink_control(from, to),
             EdgeAction::Entry(r) => {
                 graph.unlink_control(from, to);
-                let lp = nodes[*r].loop_node.unwrap();
-                graph.link_control(from, Link::node(lp, 0));
+                // 有「进循环前设码」那个节点时，入口先经过它。
+                match nodes[*r].pre_set {
+                    Some(s) => graph.link_control(from, Link::node(s, 0)),
+                    None => {
+                        let lp = nodes[*r].loop_node.unwrap();
+                        graph.link_control(from, Link::node(lp, 0));
+                    }
+                }
             }
             EdgeAction::Exit(r, v) => {
                 graph.unlink_control(from, to);
+                // 计数循环的正常结束不走「置码 + 跳出」：它靠区间耗尽
+                // 自然结束，循环的 out[1] 就是它。
+                if nodes[*r].counting.as_ref().is_some_and(|c| c.natural_exit == *v) {
+                    continue;
+                }
                 let chain = *nodes[*r]
                     .chain
                     .get(v)
@@ -558,6 +622,10 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
     // 6. 根区域的入口边（函数被调用时的那一条）改接到根的有限循环。
     if regions.regions[0].is_loop {
         let lp = nodes[0].loop_node.unwrap();
+        let head = match nodes[0].pre_set {
+            Some(s) => Link::node(s, 0),
+            None => Link::node(lp, 0),
+        };
         for (to, in_port) in &cfg.entry {
             let from = Link::export(0);
             let to = match cfg.points[*to] {
@@ -565,8 +633,19 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
                 Point::Node(n) => Link::node(n, *in_port),
             };
             graph.unlink_control(from, to);
-            graph.link_control(from, Link::node(lp, 0));
+            graph.link_control(from, head);
         }
+    }
+
+    // 7. 摘掉计数循环的比较和分支：区间已经说明了循环从哪数到哪，
+    //    那个条件恒真，留着只是白算一遍。
+    for i in 0..regions.regions.len() {
+        let Some(c) = &nodes[i].counting else {
+            continue;
+        };
+        let (head, cmp) = (c.head, c.cmp);
+        graph.remove(head);
+        graph.remove(cmp);
     }
 
     check_control_outs(graph)?;
@@ -642,12 +721,26 @@ fn build_region(
         ));
     }
 
-    // 有限循环。区间取满，循环不会自然结束，只靠「跳出循环」结束。
+    // 有限循环。区间取满，循环不会自然结束，只靠「跳出循环」结束；
+    // 认出计数循环时区间是真的，循环自己数到头就结束。
     let lp = graph.insert(node_ir_native(NODE_FOR_CLOSED.clone()));
-    graph.set_default(Link::node(lp, 0), Some(DEAD_LOOP_BEGIN.into()));
-    graph.set_default(Link::node(lp, 1), Some(DEAD_LOOP_END.into()));
-    // 循环体入口。
-    graph.link_control(Link::node(lp, 0), Link::node(head_node, 0));
+    match &nodes[i].range {
+        Some(r) => {
+            graph.set_value_in(Link::node(lp, 0), r.begin.clone());
+            graph.set_value_in(Link::node(lp, 1), r.end.clone());
+        }
+        None => {
+            graph.set_default(Link::node(lp, 0), Some(DEAD_LOOP_BEGIN.into()));
+            graph.set_default(Link::node(lp, 1), Some(DEAD_LOOP_END.into()));
+        }
+    }
+    // 循环体入口。计数循环的比较和分支摘掉了（区间已经说明了起止），
+    // 循环体直接从比较的 true 那支进。
+    let body = match &nodes[i].counting {
+        Some(c) => c.body,
+        None => head_node,
+    };
+    graph.link_control(Link::node(lp, 0), Link::node(body, 0));
 
     nodes[i].loop_node = Some(lp);
 
@@ -671,6 +764,11 @@ fn build_region(
     // switch 和置码的 setter。
     if targets.len() == 1 {
         let v = targets[0];
+        // 计数循环的正常结束不走「跳出循环」：它靠区间耗尽自然结束，
+        // 出口是 out[1]。这条链没人用。
+        if nodes[i].counting.as_ref().is_some_and(|c| c.natural_exit == v) {
+            return Ok(());
+        }
         let brk = graph.insert(node_ir_native(NODE_BREAK.clone()));
         graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
         nodes[i].chain.insert(v, brk);
@@ -691,7 +789,13 @@ fn build_region(
     nodes[i].switch = Some(sw);
 
     // 每个退出目标一条「置码 + 跳出」链：set(码) -> break -> 有限循环的 in[1]。
+    // 正常结束不走这条链：它靠区间耗尽自然结束，退出码在进循环前就设好了。
     for v in targets {
+        if let Some(c) = &nodes[i].counting
+            && c.natural_exit == v
+        {
+            continue;
+        }
         let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
         graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
         graph.set_value_in(Link::node(set, 1), ValueIn::value(nodes[i].code[&v].into()));
@@ -700,7 +804,290 @@ fn build_region(
         graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
         nodes[i].chain.insert(v, set);
     }
+
+    // 进循环前把退出码设成「正常结束」那个码。循环自然结束时码没变，
+    // 分派 switch 就落到正常结束那支，不用落到 default。
+    if let Some(c) = &nodes[i].counting {
+        let code = nodes[i].code[&c.natural_exit];
+        let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
+        graph.set_value_in(Link::node(set, 1), ValueIn::value(code.into()));
+        graph.link_control(Link::node(set, 0), Link::node(lp, 0));
+        nodes[i].pre_set = Some(set);
+    }
     Ok(())
+}
+
+/// 写 `local` 的那些节点。`local` 是局部变量节点，写它的入口是它的
+/// 第 0 个值出口（`LocalRef::setter`）。
+fn local_writers(graph: &NodeGraphIr, local: NodeRef) -> Vec<NodeRef> {
+    graph
+        .get_nodes()
+        .into_iter()
+        .filter(|n| {
+            let node = graph.get_node(*n);
+            node.kind.id == IrNodeId::SetLocal
+                && node.links.values_in[0].link == Some(Link::node(local, 0))
+        })
+        .collect()
+}
+
+/// `a` 支配 `b` 吗 —— 从入口到 `b` 的每条路径都经过 `a`。
+fn dominates(regions: &Regions, cfg: &Cfg, a: NodeRef, b: NodeRef) -> bool {
+    let Some(d) = regions.dom.get(&cfg.node_index[&b]) else {
+        return false;
+    };
+    d.contains(&cfg.node_index[&a])
+}
+
+/// 这个值在循环里不变吗：不依赖循环变量，也不依赖循环里被改的局部变量。
+fn is_invariant(
+    graph: &NodeGraphIr,
+    cfg: &Cfg,
+    regions: &Regions,
+    i: usize,
+    var: NodeRef,
+    node: NodeRef,
+    seen: &mut HashSet<NodeRef>,
+) -> bool {
+    if !seen.insert(node) {
+        // 值流里有环，追不出底。
+        return false;
+    }
+    let n = graph.get_node(node);
+    match &n.kind.id {
+        IrNodeId::Local => {
+            if node == var {
+                return false;
+            }
+            // 循环里没被改过就是不变的。
+            !local_writers(graph, node)
+                .iter()
+                .any(|w| regions.regions[i].nodes.contains(&cfg.node_index[w]))
+        }
+        _ if n.kind.is_calc() => n.links.values_in.iter().all(|v| match &v.link {
+            Some(l) => match l.target.node() {
+                Some(m) => is_invariant(graph, cfg, regions, i, var, m, seen),
+                // 函数入口的值在循环里不变。
+                None => true,
+            },
+            None => true,
+        }),
+        _ => false,
+    }
+}
+
+/// 认出「`i` 从 begin 数到 bound，每轮加一」这种计数循环。
+///
+/// 条件（都在 IR 图上看）：
+/// - 区域的头是 bool 的 switch，它的值来自 `<` / `<=` 比较节点；
+/// - 比较的第一个操作数是循环变量（局部变量），第二个是上界；
+/// - 循环变量全图只被写两次：循环外一次（初值）、循环内一次（加一）；
+/// - 循环内那次写的是「循环变量 + 1」（可以经一层拷贝）；
+/// - 加一支配回到循环头的边：每轮都走得到，且一轮只走一次；
+/// - 上界在循环里不变。
+///
+/// 认出来就把区间填进有限循环节点：循环于是自己数到头，不用靠条件跳出。
+fn detect_counting_loop(
+    graph: &mut NodeGraphIr,
+    cfg: &Cfg,
+    regions: &Regions,
+    i: usize,
+) -> Option<(CountRange, CountLoop)> {
+    let region = &regions.regions[i];
+    let head_node = point_node(cfg, region.head);
+    let head = graph.get_node(head_node);
+
+    // 头是 bool 的 switch：第 0 支是 false（跳出），最后一支是 true（循环体）。
+    let IrNodeId::Switch(values) = &head.kind.id else {
+        return None;
+    };
+    if !matches!(
+        head.kind.values_in_types[0],
+        Some(IrKind::Native(NativeKind::Bool))
+    ) {
+        return None;
+    }
+    if values.len() != 1 && values.len() != 2 {
+        return None;
+    }
+    if *values[0].downcast_ref::<bool>().ok()? != false {
+        return None;
+    }
+    if values.len() == 2 && *values[1].downcast_ref::<bool>().ok()? != true {
+        return None;
+    }
+    // 第 0 支是 false（跳出），true 那支是循环体；true 不在 case 列表里
+    // 时就是 default 支。
+    let true_port = values
+        .iter()
+        .position(|v| v.downcast_ref::<bool>().ok() == Some(&true))
+        .unwrap_or(values.len());
+    let body = head.links.controls_out[true_port].first()?.target.node()?;
+    let natural_exit = head.links.controls_out[0].first()?.target.node()?;
+
+    // 头的值是比较的结果。
+    let cmp_link = head.links.values_in[0].link?;
+    let cmp_node = cmp_link.target.node()?;
+    if cmp_link.index != 0 {
+        return None;
+    }
+    // 比较只被这个头用，摘掉它才干净。
+    if graph.get_node(cmp_node).links.values_out[0].len() != 1 {
+        return None;
+    }
+    let cmp = graph.get_node(cmp_node);
+    let cmp_id = cmp.kind.id.as_native()?;
+    let inclusive = if *cmp_id == node_less_equal(NativeKind::Int).id {
+        true
+    } else if *cmp_id == node_less_than(NativeKind::Int).id {
+        false
+    } else {
+        return None;
+    };
+
+    // 比较的第一个操作数是循环变量，第二个是上界。
+    let var_link = cmp.links.values_in[0].link?;
+    let var = var_link.target.node()?;
+    if var_link.index != 1 || graph.get_node(var).kind.id != IrNodeId::Local {
+        return None;
+    }
+    let bound = cmp.links.values_in[1].clone();
+
+    // 循环变量全图只被写两次：循环外的初值、循环内的加一。
+    let writers = local_writers(graph, var);
+    if writers.len() != 2 {
+        return None;
+    }
+    let in_region = |w: &NodeRef| region.nodes.contains(&cfg.node_index[w]);
+    let inside: Vec<NodeRef> = writers.iter().copied().filter(in_region).collect();
+    let outside: Vec<NodeRef> = writers.iter().copied().filter(|w| !in_region(w)).collect();
+    if inside.len() != 1 || outside.len() != 1 {
+        return None;
+    }
+    let inc = inside[0];
+    let init = outside[0];
+    // 加一得是本区域自己的：落在内层循环里的话，一轮里会加好几次。
+    if regions.owner_of(cfg.node_index[&inc]) != i {
+        return None;
+    }
+    // 初值得在进循环之前执行。
+    if !dominates(regions, cfg, init, head_node) {
+        return None;
+    }
+
+    // 循环内那次写：「循环变量 + 1」，可以经一层拷贝。
+    let inc_node = graph.get_node(inc);
+    let add_link = inc_node.links.values_in[1].link?;
+    let add_node = add_link.target.node()?;
+    if add_link.index != 0 {
+        return None;
+    }
+    if graph.get_node(add_node).kind.id.as_native()? != &node_add(NativeKind::Int).id {
+        return None;
+    }
+    let add = graph.get_node(add_node);
+    let is_one = |v: &ValueIn| {
+        v.link.is_none() && v.default.as_ref().and_then(|d| d.downcast_ref::<i32>().ok()) == Some(&1)
+    };
+    let other = if is_one(&add.links.values_in[0]) {
+        &add.links.values_in[1]
+    } else if is_one(&add.links.values_in[1]) {
+        &add.links.values_in[0]
+    } else {
+        return None;
+    };
+    let other_link = other.link?;
+    let other_local = other_link.target.node()?;
+    if other_link.index != 1 || graph.get_node(other_local).kind.id != IrNodeId::Local {
+        return None;
+    }
+    if other_local != var {
+        // 一层拷贝：这个局部变量在区域里只被写一次，写的是循环变量的读值。
+        let copies: Vec<NodeRef> = local_writers(graph, other_local)
+            .into_iter()
+            .filter(in_region)
+            .collect();
+        if copies.len() != 1 {
+            return None;
+        }
+        if regions.owner_of(cfg.node_index[&copies[0]]) != i {
+            return None;
+        }
+        if graph.get_node(copies[0]).links.values_in[1].link != Some(Link::node(var, 1)) {
+            return None;
+        }
+        // 拷贝得在加一之前。
+        if !dominates(regions, cfg, copies[0], inc) {
+            return None;
+        }
+    }
+
+    // 回到头的边只能有一条，源节点得被加一支配：每轮都走得到加一，
+    // 且一轮只走一次（中间没有 continue）。
+    let back: Vec<usize> = cfg
+        .edges
+        .iter()
+        .filter(|e| e.to == region.head && region.nodes.contains(&e.from))
+        .map(|e| e.from)
+        .collect();
+    if back.len() != 1 {
+        return None;
+    }
+    if !dominates(regions, cfg, inc, point_node(cfg, back[0])) {
+        return None;
+    }
+
+    // 初值。
+    let init_node = graph.get_node(init);
+    let begin = init_node.links.values_in[1].clone();
+    match &begin.link {
+        Some(l) => {
+            let src = l.target.node()?;
+            if !is_invariant(graph, cfg, regions, i, var, src, &mut HashSet::new()) {
+                return None;
+            }
+        }
+        // 常量初值：得是 int。
+        None => {
+            begin.default.as_ref()?.downcast_ref::<i32>().ok()?;
+        }
+    }
+
+    // 终点：`i < bound` 数到 bound - 1，`i <= bound` 数到 bound。
+    let end = match (&bound.link, &bound.default) {
+        (None, Some(d)) => {
+            let b = *d.downcast_ref::<i32>().ok()?;
+            let e = if inclusive { b } else { b.checked_sub(1)? };
+            ValueIn::value(e.into())
+        }
+        (Some(l), _) => {
+            let src = l.target.node()?;
+            if !is_invariant(graph, cfg, regions, i, var, src, &mut HashSet::new()) {
+                return None;
+            }
+            if inclusive {
+                ValueIn::link(*l)
+            } else {
+                // 上界减一。
+                let sub = graph.insert(node_ir_native(node_subtract(NativeKind::Int)));
+                graph.set_value_in(Link::node(sub, 0), ValueIn::link(*l));
+                graph.set_value_in(Link::node(sub, 1), ValueIn::value(1i32.into()));
+                ValueIn::link(Link::node(sub, 0))
+            }
+        }
+        _ => return None,
+    };
+
+    Some((
+        CountRange { begin, end },
+        CountLoop {
+            head: head_node,
+            cmp: cmp_node,
+            body,
+            natural_exit: cfg.node_index[&natural_exit],
+        },
+    ))
 }
 
 /// 区域 `i` 的 switch 里，退出目标 `v` 对应的分支该连到哪。
@@ -1293,5 +1680,174 @@ mod tests {
 
         let e = lower_loops(&mut g).unwrap_err();
         assert!(e.contains("不可约"), "错误信息不对：{e}");
+    }
+
+    /// 一个「`i` 从 0 数到 bound」的计数循环。
+    ///
+    /// 形状跟 rustc 编译 `for i in 0..bound` 出来的一样：初值 → 头
+    /// （比较 + 分支）→ 体（`i += 1`）→ 回到头。
+    struct CountLoop {
+        /// 局部变量 `i`。
+        var: NodeRef,
+        /// 初值那个节点（`i = 0`）。
+        init: NodeRef,
+        /// 比较节点 `i < bound`。
+        cmp: NodeRef,
+        /// 循环头（分支节点）。
+        head: NodeRef,
+        /// 循环体（`i += 1` 那个节点）。
+        body: NodeRef,
+        /// 正常结束之后。
+        after: NodeRef,
+    }
+
+    fn counting_loop(g: &mut NodeGraphIr, bound: i32) -> CountLoop {
+        let var = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        // 初值：i = 0
+        let init = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(init, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(init, 1), ValueIn::value(0i32.into()));
+        // 比较：i < bound
+        let cmp = g.insert(node_ir_native(node_less_than(NativeKind::Int)));
+        g.set_value_in(Link::node(cmp, 0), ValueIn::link(Link::node(var, 1)));
+        g.set_value_in(Link::node(cmp, 1), ValueIn::value(bound.into()));
+        // 头：bool 的分支。第 0 支是 false（跳出），第 1 支是 true（体）。
+        let head = g.insert(node_ir_switch(
+            IrKind::Native(NativeKind::Bool),
+            vec![Box::new(false) as Box<dyn NativeValue>],
+        ));
+        g.set_value_in(Link::node(head, 0), ValueIn::link(Link::node(cmp, 0)));
+        // 体：i += 1
+        let add = g.insert(node_ir_native(node_add(NativeKind::Int)));
+        g.set_value_in(Link::node(add, 0), ValueIn::link(Link::node(var, 1)));
+        g.set_value_in(Link::node(add, 1), ValueIn::value(1i32.into()));
+        let body = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(body, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(body, 1), ValueIn::link(Link::node(add, 0)));
+        let after = g.insert(node_ir_nop());
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(head, 0));
+        g.link_control(Link::node(head, 1), Link::node(body, 0)); // 真 → 体
+        g.link_control(Link::node(head, 0), Link::node(after, 0)); // 假 → 跳出
+        g.link_control(Link::node(body, 0), Link::node(head, 0)); // 回边
+        CountLoop {
+            var,
+            init,
+            cmp,
+            head,
+            body,
+            after,
+        }
+    }
+
+    /// 节点某个值入脚上的整数常量。
+    fn int_of(g: &NodeGraphIr, n: NodeRef, port: usize) -> Option<i32> {
+        g.get_node(n).links.values_in[port]
+            .default
+            .as_ref()
+            .and_then(|d| d.downcast_ref::<i32>().ok())
+            .copied()
+    }
+
+    /// 计数循环：有限循环节点带上真的区间，那个恒真的比较摘掉。
+    #[test]
+    fn counting_loop_gets_a_real_range() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间 [0, 9]：闭区间，`i < 10` 数到 9。
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        // 比较的分支摘了：图里不该再有分支节点。
+        assert!(
+            find_node(&g, is_switch).is_none(),
+            "比较的分支不该留着"
+        );
+        // 循环体挂在 out[0]，退出挂 out[1]。
+        assert!(
+            g.get_node(lp)
+                .links
+                .controls_out[0]
+                .iter()
+                .any(|t| t.target.node() == Some(c.body))
+        );
+        assert!(
+            g.get_node(lp)
+                .links
+                .controls_out[1]
+                .iter()
+                .any(|t| t.target.node() == Some(c.after))
+        );
+        // 进循环前是初值那个节点。
+        assert!(
+            g.get_node(lp)
+                .links
+                .controls_in[0]
+                .contains(&Link::node(c.init, 0))
+        );
+    }
+
+    /// 循环体里还有别的出口（break）时，「正常结束」也算一个分支：
+    /// 进循环前就把退出码设成正常结束那个码，循环自然结束时码没变，
+    /// 分派 switch 就落到正常结束那支，而不是 default。
+    #[test]
+    fn counting_loop_with_extra_break_presets_the_normal_exit_code() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里加一条分支：一支走到 i += 1，一支跳出循环。
+        let br = branch(&mut g);
+        let brk_to = g.insert(node_ir_nop());
+        g.unlink_control(Link::node(c.head, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(c.head, 1), Link::node(br, 0));
+        g.link_control(Link::node(br, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(br, 0), Link::node(brk_to, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 循环的 out[1] 接分派 switch。
+        let sw = g
+            .get_node(lp)
+            .links
+            .controls_out[1]
+            .first()
+            .and_then(|l| l.target.node())
+            .expect("out[1] 该接分派 switch");
+        let IrNodeId::Switch(values) = &g.get_node(sw).kind.id else {
+            panic!("out[1] 该接分派 switch");
+        };
+        assert_eq!(values.len(), 2, "两个退出目标该有两个 case");
+        // 进循环前那个设码的节点。
+        let pre = g
+            .get_node(lp)
+            .links
+            .controls_in[0]
+            .first()
+            .and_then(|l| l.target.node())
+            .expect("进循环前该有个设码的节点");
+        assert!(
+            matches!(g.get_node(pre).kind.id, IrNodeId::SetLocal),
+            "进循环前那个节点该是设码"
+        );
+        let pre_code = int_of(&g, pre, 1).expect("设码节点得写一个整数");
+        // 正常结束那支的码就是循环前设的码。
+        let mut found = false;
+        for (k, v) in values.iter().enumerate() {
+            let code = *v.downcast_ref::<i32>().ok().unwrap();
+            let target = g
+                .get_node(sw)
+                .links
+                .controls_out[k]
+                .first()
+                .and_then(|l| l.target.node());
+            if target == Some(c.after) {
+                assert_eq!(code, pre_code, "正常结束那支的码该是循环前设的那个");
+                found = true;
+            }
+        }
+        assert!(found, "分派 switch 里该有正常结束那支");
     }
 }

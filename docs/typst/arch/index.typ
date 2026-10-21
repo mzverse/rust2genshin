@@ -21,6 +21,7 @@ Rust → 节点图。
 #list(
     link("/arch/compile/index.html", [编译管线]) + [ —— 入口点从哪来、一个入口怎么展开、`lower`],
     link("/arch/compile/locals.html", [局部变量]) + [ —— MIR 的 `Local` / `Place` 投影怎么变成节点图的局部变量],
+    link("/arch/compile/loops.html", [循环改写]) + [ —— IR 里的控制流环怎么变成有限循环节点、计数循环怎么认出来],
     link("/arch/compile/cast.html", [类型转换]) + [ —— `as` 怎么变成转换节点],
 )
 
