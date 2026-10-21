@@ -49,6 +49,7 @@ cargo run -p rust2genshin-playground
     [`PLAYGROUND_IMAGE`], [`rust2genshin-play`], [烘出来的镜像名（tag 里会再带 short sha 和 `-dirty`）。],
     [`PLAYGROUND_ADMIN_TOKEN`], [无], [`/admin/rebuild` 的运维手工触发凭证（`Authorization: Bearer <token>`）。与 `GITHUB_WEBHOOK_SECRET` 一起决定这条路由能不能被调用 —— 两个都没配就是 403，不做「没配就放行」。],
     [`GITHUB_WEBHOOK_SECRET`], [无], [校验 GitHub webhook 的 HMAC 签名（`X-Hub-Signature-256`）。和上一个一样，未设则不接受这条路。],
+    [`PLAYGROUND_PULL_INTERVAL`], [`300`], [后台每多少秒 `git pull` 一次，拉到新提交就重烘焙，*秒*。设 `0` 关掉轮询、只靠 webhook。],
 
     [`PLAYGROUND_LSP_DISABLED`], [`false`], [*整个关掉代码分析。* 为真时服务端不建任何 rust-analyzer 容器，`hello.lsp_supported` 报 false，编辑框退化成纯文本 —— 页面其余部分照常能用。],
     [`PLAYGROUND_LSP_POOL_MIN`], [`1`], [后台维持几个*待命*的 RA 会话。设 `0` 表示不预热：每个请求现场起一个，冷启动 11 秒（裁剪过 workspace，见「编辑器与 rust-analyzer」）。],
@@ -60,6 +61,20 @@ cargo run -p rust2genshin-playground
 )
 
 布尔变量的写法：`1` / `true` / `yes` 为真，`0` / `false` / `no` 为假，其余报错。
+
+= 自动跟进 main：轮询与 webhook
+
+两条路都能触发「拉到新提交 → 重烘焙」，互相独立：
+
+- *轮询*（默认开，`PLAYGROUND_PULL_INTERVAL=300`）：后台每 5 分钟跑一次
+  `git pull --ff-only`，只看它的 stdout —— `Already up to date.` 以外就是
+  拉到了东西，随即触发烘焙。pull 失败记进 `/status` 的 `pull_failure`，
+  不打断循环，下一轮再试。这条路不需要任何外部配置。
+- *webhook*（默认关，要配 secret）：GitHub 推事件到达即触发，延迟更低。
+  没配 `GITHUB_WEBHOOK_SECRET` 时这条路由直接 403。
+
+两者可以同时开：先到的那条触发烘焙，后到的在烘焙进行中会被折叠成一次
+（`Baker::request` 只保留最新的 pending）。
 
 = webhook 怎么配
 

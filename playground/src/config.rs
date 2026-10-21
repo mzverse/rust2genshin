@@ -47,6 +47,8 @@ pub struct Config {
     pub cargo_mirror: Option<String>,
     pub webhook_secret: Option<String>,
     pub admin_token: Option<String>,
+    /// 多久轮询一次 `git pull`。零 = 关掉轮询，只靠 webhook。
+    pub pull_interval: Duration,
     /// 一键关掉整条 LSP 链路(回到纯 cargo build + 诊断)。
     pub lsp_disabled: bool,
     /// 热池里常驻的 rust-analyzer 进程数。一个 RA 常驻 839 MB,服务器 0 swap,
@@ -256,6 +258,7 @@ pub fn resolve(
         cargo_mirror: raw("PLAYGROUND_CARGO_MIRROR", get),
         webhook_secret: raw("GITHUB_WEBHOOK_SECRET", get),
         admin_token: raw("PLAYGROUND_ADMIN_TOKEN", get),
+        pull_interval: Duration::from_secs(num_var("PLAYGROUND_PULL_INTERVAL", get, 300u64)?),
         lsp_disabled: bool_var("PLAYGROUND_LSP_DISABLED", get)?,
         lsp_pool_min: num_var("PLAYGROUND_LSP_POOL_MIN", get, 1usize)?,
         lsp_idle_ttl: Duration::from_secs(num_var("PLAYGROUND_LSP_IDLE_TTL", get, 90u64)?),

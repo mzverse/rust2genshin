@@ -11,6 +11,7 @@ mod config;
 mod docker;
 mod gc;
 mod gc_loop;
+mod pull_loop;
 mod image;
 mod image_builder;
 mod job;
@@ -351,7 +352,17 @@ async fn run(cfg: Config) -> Result<(), String> {
         }
     });
 
-    // 2) gc 循环。
+    // 2) 轮询：webhook 没配也能自动跟进 main。
+    tokio::spawn({
+        let repo = Arc::clone(&repo);
+        let cfg = Arc::clone(&cfg);
+        let baker = Arc::clone(&baker);
+        async move {
+            pull_loop::run(repo, cfg.clone(), baker, cfg.pull_interval).await;
+        }
+    });
+
+    // 3) gc 循环。
     tokio::spawn({
         let cfg = Arc::clone(&cfg);
         let jobs = Arc::clone(&jobs);
