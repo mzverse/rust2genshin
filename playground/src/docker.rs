@@ -267,20 +267,20 @@ pub fn rm_args(name: &str) -> Vec<String> {
     vec!["rm".into(), "-f".into(), name.into()]
 }
 
-/// 列 RA 待命容器的名字。启动清理用它把上一实例的遗留挑出来。
+/// 列容器名字。启动清理用它把上一实例遗留的 RA 容器挑出来。
 ///
-/// `--filter name=` 是 docker 的**正则**匹配,匹配整个名字(不是子串,
-/// 也不是 glob)。这里用 `^r2g-ra-` 锚定开头,免得 `my-r2g-ra-x` 这种
-/// 名字被顺手捞进来。
+/// **刻意不用 `--filter name=`**:docker 的 name 过滤在不同版本里语义
+/// 不一样 —— 老版本是子串匹配,新版本才当正则用,而正则里的 `^` 锚点
+/// 在某些版本上匹配不到东西(实测服务器上的 docker 19.03 就是如此,
+/// 过滤结果恒为空,清理等于没做)。宁可多列几十个容器名,再在
+/// `lsp::service::stale_ra_names` 里按前缀筛 —— 那是纯 Rust,行为可控。
 ///
 /// `--format {{.Names}}` 给的是**名字**而不是 ID —— ID 没法直接
 /// `docker rm`,还得再查一次名字。
-pub fn ra_container_ls_args() -> Vec<String> {
+pub fn container_ls_names_args() -> Vec<String> {
     vec![
         "ps".into(),
         "-aq".into(),
-        "--filter".into(),
-        format!("name=^{RA_CONTAINER_PREFIX}"),
         "--format".into(),
         "{{.Names}}".into(),
     ]
@@ -704,16 +704,17 @@ mod tests {
         }
     }
 
-    /// 启动清理要按前缀列出 RA 容器。名字用正则锚定开头,输出格式要名字
-    /// 而不是 ID —— ID 没法直接 `docker rm`。
+    /// 启动清理要列出容器名。**不能靠 `--filter name=`**:不同 docker 版本
+    /// 对它的语义不一样(老版本子串匹配、新版本正则),实测老版本用正则
+    /// 锚点匹配不到任何东西。宁可多列,筛选交给纯 Rust。
     #[test]
-    fn ra_container_ls_anchors_the_prefix_and_asks_for_names() {
-        let a = ra_container_ls_args();
+    fn container_ls_lists_all_names_without_a_filter() {
+        let a = container_ls_names_args();
         assert_eq!(a[0], "ps");
         assert!(a.contains(&"-aq".to_string()), "要连停掉的容器一起列:{a:?}");
         assert!(
-            a.contains(&"name=^r2g-ra-".to_string()),
-            "名字过滤要锚定开头,免得捞到 my-r2g-ra-x:{a:?}"
+            !a.iter().any(|s| s.starts_with("name=")),
+            "不靠 docker 的 name 过滤 —— 版本语义不一致:{a:?}"
         );
         assert!(
             a.contains(&"{{.Names}}".to_string()),

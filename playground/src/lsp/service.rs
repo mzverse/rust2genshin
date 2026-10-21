@@ -131,7 +131,7 @@ impl LspService {
     ///
     /// **必须在补池之前调用**:正在用的容器不能删。
     pub async fn cleanup_stale_containers(&self) -> usize {
-        let listed = match run_docker_capture(crate::docker::ra_container_ls_args()).await {
+        let listed = match run_docker_capture(crate::docker::container_ls_names_args()).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("列遗留 RA 容器失败,跳过清理:{e}");
@@ -347,9 +347,9 @@ async fn run_docker_capture(args: Vec<String>) -> Result<String, String> {
 
 /// 从 docker 列出的容器名里挑出**该清的**。
 ///
-/// docker 的 `--filter name=` 是正则匹配,理论上会漏(比如名字里带正则
-/// 元字符);这里再按前缀过一道,确保只碰 `r2g-ra-` 开头的,别人的容器
-/// 一个都不动。
+/// 列的是**全部**容器(不靠 docker 的 `--filter name=` —— 那个过滤在不同
+/// 版本里语义不一样,老版本连正则锚点都匹配不到东西)。这里按前缀过一道,
+/// 确保只碰 `r2g-ra-` 开头的,别人的容器一个都不动。
 pub fn stale_ra_names(listed: &[String]) -> Vec<String> {
     listed
         .iter()
