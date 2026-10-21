@@ -69,6 +69,7 @@
      *   macro     宏调用 `vec!` `cargo!`
      *   markup    标记语言原文 `<custom-element>` / 转义 `\<`
      *   attribute Rust 属性 `#[..]` `#![..]`
+     *   keyword   关键字(摆弄页的语义高亮专用,Typst 代码块里用不到)
      *   plain     围栏 / 反引号等没有高亮的原文 */
     --code-syn-comment: #74747c;
     --code-syn-string: #198810;
@@ -78,6 +79,8 @@
     --code-syn-macro: #16718d;
     --code-syn-markup: #1d6c76;
     --code-syn-attribute: #301414;
+    /* 关键字单开一色:红。浅色底上 #d73948 对比度 4.6:1,够用。 */
+    --code-syn-keyword: #d73948;
     --code-syn-plain: #6b6b6f;
 
     /* 代码块控件(经 ::part() 进 code-block 的 shadow) */
@@ -210,6 +213,10 @@
     /* 比 macro 暗一档,两个青靠明度分开而不是靠色相 */
     --code-syn-markup: #3f9fa8;
     --code-syn-attribute: #dfa3ad;
+    /* 关键字的浅色值 #d73948 压在深色底上只有 3.3:1,读不出来 —— 跟
+     * --code-inline-fg 一样,换成同色相提亮后的红(那个值的实测数据
+     * 见上面那段注释)。 */
+    --code-syn-keyword: #ff8080;
     /* plain 比 comment 亮一档:没高亮的正文该最显眼,注释该退后 */
     --code-syn-plain: #a8a8b0;
 
