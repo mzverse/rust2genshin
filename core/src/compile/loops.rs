@@ -945,7 +945,7 @@ fn detect_counting_loop(
     let head_node = point_node(cfg, region.head);
     let head = graph.get_node(head_node);
 
-    // 头是 bool 的 switch：第 0 支是 false（跳出），最后一支是 true（循环体）。
+    // 头是 bool 的 switch：true 那支是循环体，false 那支是跳出。
     let IrNodeId::Switch(values) = &head.kind.id else {
         return None;
     };
@@ -958,24 +958,29 @@ fn detect_counting_loop(
     if values.len() != 1 && values.len() != 2 {
         return None;
     }
-    if *values[0].downcast_ref::<bool>().ok()? != false {
-        return None;
+    // case 列表里可能有 false、可能有 true，也可能只有其中一个 ——
+    // 缺的那个走 default 支。两种来源的约定相反：
+    // - MIR 的 `switchInt(bool)`：case 是 [false]，所以 false 在第 0 支；
+    // - `if` 语句来的：case 是 [true]，所以 true 在第 0 支。
+    // 两种都得认，否则一半的循环头会被漏掉。
+    let mut false_port = None;
+    let mut true_port = None;
+    for (k, v) in values.iter().enumerate() {
+        match v.downcast_ref::<bool>().ok()? {
+            false => false_port = Some(k),
+            true => true_port = Some(k),
+        }
     }
-    if values.len() == 2 && *values[1].downcast_ref::<bool>().ok()? != true {
-        return None;
-    }
-    // 第 0 支是 false（跳出），true 那支是循环体；true 不在 case 列表里
-    // 时就是 default 支。
-    let true_port = values
-        .iter()
-        .position(|v| v.downcast_ref::<bool>().ok() == Some(&true))
-        .unwrap_or(values.len());
+    // 缺的那个走 default 支（在 case 列表之后）。
+    let false_port = false_port.unwrap_or(values.len());
+    let true_port = true_port.unwrap_or(values.len());
     let body = head.links.controls_out[true_port].first()?.target.node()?;
-    let natural_exit = head.links.controls_out[0].first()?.target.node()?;
-    // 「正常结束」得真的离开这个循环、又不跳进别的循环：它是区间耗尽时
-    // 自然落到的位置。落在区域内部的话它根本不是退出；是某个区域的头
-    // 的话那是 `continue 外层`，语义对不上。
-    let natural_exit = cfg.node_index[&natural_exit];
+    // 「正常结束」是区间耗尽时自然落到的位置 —— 多半是循环之后的代码，
+    // 也可能就是函数出口（循环是函数体的最后一句）。
+    let natural_exit = match head.links.controls_out[false_port].first()?.target {
+        LinkTarget::Node(n) => cfg.node_index[&n],
+        LinkTarget::Export => 0,
+    };
 
     // 头的值是比较的结果。
     let cmp_link = head.links.values_in[0].link?;
@@ -1074,19 +1079,25 @@ fn detect_counting_loop(
         }
     }
 
-    // 回到头的边只能有一条，源节点得被加一支配：每轮都走得到加一，
-    // 且一轮只走一次（中间没有 continue）。
+    // 回到头的边：可以有多条（`continue` 和正常路径各一条），但每一条
+    // 都得被加一支配 —— 也就是「连回循环开始的边都在 i+=1 之后」。
+    // 这样每轮都恰好加一次，native 的计数才跟得上循环变量。
+    //
+    // 加一在体首还是体尾都行：rustc 常把 `for` 的自增提到体首，
+    // `continue` 跳的是旧值的副本。
     let back: Vec<usize> = cfg
         .edges
         .iter()
         .filter(|e| e.to == region.head && region.nodes.contains(&e.from))
         .map(|e| e.from)
         .collect();
-    if back.len() != 1 {
+    if back.is_empty() {
         return None;
     }
-    if !dominates(regions, cfg, inc, point_node(cfg, back[0])) {
-        return None;
+    for b in &back {
+        if !dominates(regions, cfg, inc, point_node(cfg, *b)) {
+            return None;
+        }
     }
 
     // 初值。
@@ -1895,5 +1906,91 @@ mod tests {
             }
         }
         assert!(found, "分派 switch 里该有正常结束那支");
+    }
+
+    /// `continue` 的形状：循环体里有两条路回到头（`continue` 一条、
+    /// 正常路径一条），但两条都在 `i += 1` 之后 —— 每轮都恰好加一次，
+    /// 所以照样能特化。
+    ///
+    /// 跳出分支是函数出口（循环是函数体的最后一句）也算正常结束。
+    #[test]
+    fn counting_loop_with_continue_is_still_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里加一条分支：一支直接回到头（continue），一支先做点事再回。
+        let br = branch(&mut g);
+        let work = g.insert(node_ir_nop());
+        g.unlink_control(Link::node(c.body, 0), Link::node(c.head, 0));
+        g.link_control(Link::node(c.body, 0), Link::node(br, 0));
+        g.link_control(Link::node(br, 0), Link::node(c.head, 0)); // continue
+        g.link_control(Link::node(br, 1), Link::node(work, 0)); // 干活
+        g.link_control(Link::node(work, 0), Link::node(c.head, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是 [0, 9]。
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        // 循环头的分支摘了，只剩体里那个分支。
+        assert_eq!(find_node(&g, is_switch), Some(br), "比较的分支不该留着");
+        // 两条回到头的边都删掉了（链断 = 一轮结束）。
+        assert!(g.get_node(br).links.controls_out[0].is_empty());
+        assert!(g.get_node(work).links.controls_out[0].is_empty());
+        // 循环体挂在 out[0]。
+        assert!(
+            g.get_node(lp)
+                .links
+                .controls_out[0]
+                .iter()
+                .any(|t| t.target.node() == Some(c.body))
+        );
+    }
+
+    /// 循环头的分支约定有两种：`if` 语句来的 case 列表是 [true]，
+    /// MIR 的 `switchInt(bool)` 来的是 [false]。两种都得认。
+    #[test]
+    fn counting_loop_head_with_true_case_list_is_recognized() {
+        let mut g = new_graph();
+        let var = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        let init = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(init, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(init, 1), ValueIn::value(0i32.into()));
+        let cmp = g.insert(node_ir_native(node_less_than(NativeKind::Int)));
+        g.set_value_in(Link::node(cmp, 0), ValueIn::link(Link::node(var, 1)));
+        g.set_value_in(Link::node(cmp, 1), ValueIn::value(10.into()));
+        // case 列表是 [true]：true 在第 0 支，false 在 default 支。
+        let head = g.insert(node_ir_switch(
+            IrKind::Native(NativeKind::Bool),
+            vec![Box::new(true) as Box<dyn NativeValue>],
+        ));
+        g.set_value_in(Link::node(head, 0), ValueIn::link(Link::node(cmp, 0)));
+        let add = g.insert(node_ir_native(node_add(NativeKind::Int)));
+        g.set_value_in(Link::node(add, 0), ValueIn::link(Link::node(var, 1)));
+        g.set_value_in(Link::node(add, 1), ValueIn::value(1i32.into()));
+        let body = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(body, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(body, 1), ValueIn::link(Link::node(add, 0)));
+        let after = g.insert(node_ir_nop());
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(head, 0));
+        g.link_control(Link::node(head, 0), Link::node(body, 0)); // true → 体
+        g.link_control(Link::node(head, 1), Link::node(after, 0)); // false → 跳出
+        g.link_control(Link::node(body, 0), Link::node(head, 0)); // 回边
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        assert!(find_node(&g, is_switch).is_none(), "比较的分支不该留着");
+        assert!(
+            g.get_node(lp)
+                .links
+                .controls_out[0]
+                .iter()
+                .any(|t| t.target.node() == Some(body))
+        );
     }
 }
