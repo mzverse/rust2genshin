@@ -32,7 +32,7 @@ use crate::node::arithmetic::{node_add, node_less_equal, node_less_than, node_su
 use crate::node::control::{NODE_BREAK, NODE_FOR_CLOSED};
 use crate::node::{Link, LinkTarget, NodeRef, ValueIn};
 use crate::value::{NativeKind, NativeValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// 死循环用的区间。有限循环是闭区间，每次加一，所以 i32::MAX 走不到 ——
 /// 循环靠「跳出循环」结束，不会自然结束。
@@ -415,44 +415,82 @@ fn analyze(cfg: &Cfg) -> Result<Regions, String> {
     })
 }
 
-/// 每个区域在改造后要用的节点。
-#[derive(Default)]
-struct RegionNodes {
+/// 一个区域的改写计划：循环怎么表达、退出往哪走。
+///
+/// 建节点时一次填好，后面接线、改边、摘节点都只读它 —— 不再有
+/// 「半成品状态槽」。
+struct RegionPlan {
+    /// 循环节点怎么驱动。
+    mode: LoopMode,
+    /// 退出目标（点号）→ 退出码。按目标点号排序，码从 1 开始。
+    exits: BTreeMap<usize, i32>,
     /// 有限循环节点。
-    loop_node: Option<NodeRef>,
-    /// 退出码局部变量。
-    local: Option<NodeRef>,
-    /// 循环之后的 switch。
-    switch: Option<NodeRef>,
-    /// 退出目标（点号）→ 退出码。
-    code: HashMap<usize, i32>,
-    /// 退出目标（点号）→「置码 + 跳出」链的入口。
-    chain: HashMap<usize, NodeRef>,
-    /// 计数循环的区间。认出来时有限循环节点就带着真的起止值，
-    /// 循环自己数到头，不用靠条件跳出。
-    range: Option<CountRange>,
-    /// 认出计数循环后记下的东西（摘掉比较时要用）。
-    counting: Option<CountLoop>,
-    /// 「进循环前把退出码设成正常结束的码」那个节点。
+    loop_node: NodeRef,
+    /// 多出口时的分派 switch。
+    dispatch: Option<NodeRef>,
+    /// 退出目标 →「置码 + 跳出」链的入口。自然结束不在表里。
+    chain: BTreeMap<usize, NodeRef>,
+    /// 进循环前把退出码设成「正常结束」那个码的节点。
     pre_set: Option<NodeRef>,
 }
 
-/// 计数循环的区间：native「有限循环」节点的起止值（闭区间）。
-struct CountRange {
-    begin: ValueIn,
-    end: ValueIn,
+impl RegionPlan {
+    /// 计数循环自然结束的目标（点号）。
+    fn natural_exit(&self) -> Option<usize> {
+        match &self.mode {
+            LoopMode::Counting(c) => Some(c.natural_exit),
+            LoopMode::Conditional => None,
+        }
+    }
+
+    /// 这个退出目标要不要一条「置码 + 跳出」链。自然结束不用：
+    /// 它靠区间耗尽，出口是有限循环的 out[1]。
+    fn needs_chain(&self, target: usize) -> bool {
+        self.natural_exit() != Some(target)
+    }
+
+    /// 进循环的控制入口。有预置退出码的节点时先经过它。
+    fn entry(&self) -> Link {
+        match self.pre_set {
+            Some(set) => Link::node(set, 0),
+            None => Link::node(self.loop_node, 0),
+        }
+    }
 }
 
-/// 认出计数循环后记下的东西。
-struct CountLoop {
-    /// 循环头：那个 bool 的 switch，要摘掉。
+/// 循环节点怎么驱动。
+enum LoopMode {
+    /// 认不出循环规律：区间取满，靠条件跳出。循环体入口就是区域的头。
+    Conditional,
+    /// 计数循环：区间是真的，循环自己数到头。
+    Counting(CountingLoop),
+}
+
+/// 认出来的计数循环。
+struct CountingLoop {
+    /// 循环头：那个 bool 的 switch，改写完要摘掉。
     head: NodeRef,
-    /// 比较节点，要摘掉。
+    /// 比较节点，改写完要摘掉。
     cmp: NodeRef,
     /// 循环体的起点（原来比较的 true 分支）。
     body: NodeRef,
     /// 正常结束的目标（原来比较的 false 分支，点号）。
     natural_exit: usize,
+    /// 区间起点。
+    begin: ValueIn,
+    /// 区间终点怎么算。
+    end: EndSpec,
+}
+
+/// 区间终点的算法。检测阶段只看图，不建节点；建节点时再落成值。
+#[derive(Clone)]
+enum EndSpec {
+    /// 常量终点。
+    Const(i32),
+    /// 直接引用那个值（`i <= bound`）。
+    Link(Link),
+    /// 引用值减一（`i < bound` 对应 `[begin, bound - 1]`）。
+    MinusOne(Link),
 }
 
 /// 边在改造后的分类。
@@ -463,12 +501,15 @@ enum EdgeAction {
     /// 回边 / `continue`：删掉，这一轮的链到这儿就断。
     Drop,
     /// 区域入口：改接到有限循环的 in[0]。
-    Entry(usize),
+    Entry { region: usize },
     /// 退出：改接到「置码 + 跳出」链。
-    Exit(usize, usize),
+    Exit { region: usize, target: usize },
 }
 
 /// 把图里的控制流环改写成有限循环节点。
+///
+/// 分四段：认出每个区域是什么循环 → 给边分类、收集退出目标 →
+/// 由外向内建节点 → 全局接线（分派、入口、改边、摘节点）。
 pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
     check_control_outs(graph)?;
     let cfg = Cfg::build(graph);
@@ -478,82 +519,50 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
         return Ok(());
     }
 
-    // 1. 给每条边定分类。
-    let mut actions: Vec<EdgeAction> = Vec::with_capacity(cfg.edges.len());
-    for e in &cfg.edges {
-        actions.push(classify(&cfg, &regions, e));
-    }
-
-    // 2. 收集每个区域的退出目标，分配退出码。
-    //    一条边可能同时跨好几层（比如内层循环里 return 到了最外层之外），
-    //    中间每一层都要记着这个目标：它得为这个目标建一条「置码 + 跳出」
-    //    链，内层的分派才能一层层往上抛。只记最内层的话，中间层不会
-    //    被 break，循环会接着跑下一轮。
-    let mut exits: Vec<HashSet<usize>> = vec![HashSet::new(); regions.regions.len()];
-    for (_e, a) in cfg.edges.iter().zip(&actions) {
-        if let EdgeAction::Exit(r, v) = a {
-            let mut cur = *r;
-            loop {
-                exits[cur].insert(*v);
-                // 目标还在父区域里的话，这条边没出父区域，父区域不用管。
-                match regions.regions[cur].parent {
-                    Some(p) if !regions.regions[p].nodes.contains(&v) => cur = p,
-                    _ => break,
-                }
-            }
-        }
-    }
-    let mut nodes: Vec<RegionNodes> = (0..regions.regions.len())
-        .map(|_| RegionNodes::default())
+    // 1. 认出每个循环区域是什么循环。只读图，不改图。
+    let mut modes: Vec<Option<LoopMode>> = (0..regions.regions.len())
+        .map(|_| None)
         .collect();
-
-    // 2.5 认出计数循环：「i 从 begin 数到 bound，每轮加一」。认得出来的，
-    //     有限循环节点就带着真的区间，循环自己数到头就结束；比较和分支
-    //     也就没用了，摘掉。
-    for i in 0..regions.regions.len() {
-        if !regions.regions[i].is_loop {
-            continue;
-        }
-        if let Some((range, counting)) = detect_counting_loop(graph, &cfg, &regions, i) {
-            nodes[i].range = Some(range);
-            nodes[i].counting = Some(counting);
-        }
-    }
-
     for (i, r) in regions.regions.iter().enumerate() {
-        if !r.is_loop {
-            continue;
-        }
-        let mut targets: Vec<usize> = exits[i].iter().copied().collect();
-        targets.sort();
-        for (k, v) in targets.iter().enumerate() {
-            // 码从 1 开始：局部变量的初值 0 不与任何 case 相等，
-            // 走 default（default 不连任何东西）。
-            nodes[i].code.insert(*v, k as i32 + 1);
+        if r.is_loop {
+            modes[i] = Some(match detect_counting_loop(graph, &cfg, &regions, i) {
+                Some(c) => LoopMode::Counting(c),
+                None => LoopMode::Conditional,
+            });
         }
     }
 
-    // 3. 建节点。由外向内，外层先把「跳出外层」的链接备好。
+    // 2. 给每条边定分类。
+    let actions: Vec<EdgeAction> = cfg.edges.iter().map(|e| classify(&regions, e)).collect();
+
+    // 3. 收集每个区域的退出目标，分配退出码。
+    let mut exits = collect_exits(&cfg, &regions, &actions);
+
+    // 4. 建节点。由外向内，外层先把「跳出外层」的链接备好。
     let mut order: Vec<usize> = (0..regions.regions.len()).collect();
     order.sort_by_key(|i| std::cmp::Reverse(depth(&regions, *i)));
+    let mut plans: Vec<Option<RegionPlan>> = (0..regions.regions.len())
+        .map(|_| None)
+        .collect();
     for i in order {
-        if !regions.regions[i].is_loop {
+        let Some(mode) = modes[i].take() else {
             continue;
-        }
-        build_region(graph, &cfg, &regions, &mut nodes, i)?;
+        };
+        let exits = std::mem::take(&mut exits[i]);
+        plans[i] = Some(build_region(graph, &cfg, &regions, i, mode, exits)?);
     }
 
-    // 4. 接线：只有一处退出目标的，循环的 out[1] 直接接目标；多处的，
-    //    由 switch 按退出码分派。
+    // 5. 接线：循环的 out[1] 接退出目标 —— 单出口直接接，多出口经 switch。
     //    `continue 外层` 的目标是个祖先区域的头，那种分支要接到「链尾」——
     //    链在那里断掉，外层就进入下一轮。链尾节点只在真需要时建。
-    let need_dead_end = exits.iter().enumerate().any(|(i, targets)| {
-        targets.iter().any(|v| {
-            // 目标区域就是本层的父层 —— 那种 continue 要把链断在链尾。
-            regions
-                .head_region
-                .get(v)
-                .is_some_and(|a| *a != i && regions.regions[i].parent == Some(*a))
+    let need_dead_end = plans.iter().enumerate().any(|(i, plan)| {
+        plan.as_ref().is_some_and(|plan| {
+            plan.exits.keys().any(|v| {
+                regions
+                    .head_region
+                    .get(v)
+                    .is_some_and(|a| *a != i && regions.regions[i].parent == Some(*a))
+            })
         })
     });
     let dead_end = if need_dead_end {
@@ -561,28 +570,31 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
     } else {
         None
     };
-    for i in 0..regions.regions.len() {
-        if !regions.regions[i].is_loop || exits[i].is_empty() {
+    for (i, plan) in plans.iter().enumerate() {
+        let Some(plan) = plan else {
+            continue;
+        };
+        if plan.exits.is_empty() {
             continue;
         }
-        let mut targets: Vec<usize> = exits[i].iter().copied().collect();
-        targets.sort();
-        if targets.len() == 1 {
-            // 只有一处退出目标：没有 switch，有限循环的 out[1] 直接接目标。
-            let lp = nodes[i].loop_node.unwrap();
-            let to = case_target(&cfg, &regions, &nodes, i, targets[0], dead_end)?;
-            graph.link_control(Link::node(lp, 1), to);
-            continue;
-        }
-        let sw = nodes[i].switch.unwrap();
-        for (k, v) in targets.iter().enumerate() {
-            let to = case_target(&cfg, &regions, &nodes, i, *v, dead_end)?;
-            // switch 的第 k 支是第 k 个 case，最后一支是 default。
-            graph.link_control(Link::node(sw, k), to);
+        match plan.dispatch {
+            // 多个退出目标：switch 的第 k 支对第 k 个码，最后一支是 default。
+            Some(sw) => {
+                for (k, target) in plan.exits.keys().enumerate() {
+                    let to = case_target(&cfg, &regions, &plans, i, *target, dead_end)?;
+                    graph.link_control(Link::node(sw, k), to);
+                }
+            }
+            // 只有一个退出目标：没有 switch，out[1] 直接接目标。
+            None => {
+                let target = *plan.exits.keys().next().unwrap();
+                let to = case_target(&cfg, &regions, &plans, i, target, dead_end)?;
+                graph.link_control(Link::node(plan.loop_node, 1), to);
+            }
         }
     }
 
-    // 5. 改边。
+    // 6. 改边。
     for (e, a) in cfg.edges.iter().zip(&actions) {
         let from = Link::node(point_node(&cfg, e.from), e.out);
         let to = match cfg.points[e.to] {
@@ -592,40 +604,30 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
         match a {
             EdgeAction::Keep => (),
             EdgeAction::Drop => graph.unlink_control(from, to),
-            EdgeAction::Entry(r) => {
+            EdgeAction::Entry { region } => {
                 graph.unlink_control(from, to);
-                // 有「进循环前设码」那个节点时，入口先经过它。
-                match nodes[*r].pre_set {
-                    Some(s) => graph.link_control(from, Link::node(s, 0)),
-                    None => {
-                        let lp = nodes[*r].loop_node.unwrap();
-                        graph.link_control(from, Link::node(lp, 0));
-                    }
-                }
+                let entry = plans[*region].as_ref().unwrap().entry();
+                graph.link_control(from, entry);
             }
-            EdgeAction::Exit(r, v) => {
+            EdgeAction::Exit { region, target } => {
                 graph.unlink_control(from, to);
-                // 计数循环的正常结束不走「置码 + 跳出」：它靠区间耗尽
-                // 自然结束，循环的 out[1] 就是它。
-                if nodes[*r].counting.as_ref().is_some_and(|c| c.natural_exit == *v) {
-                    continue;
+                let plan = plans[*region].as_ref().unwrap();
+                match plan.chain.get(target) {
+                    Some(chain) => graph.link_control(from, Link::node(*chain, 0)),
+                    // 自然结束：靠区间耗尽，这条边随循环头的分支一起消失。
+                    None => assert_eq!(
+                        plan.natural_exit(),
+                        Some(*target),
+                        "区域 {region} 缺退出目标 {target} 的链，它又不是正常结束"
+                    ),
                 }
-                let chain = *nodes[*r]
-                    .chain
-                    .get(v)
-                    .unwrap_or_else(|| panic!("区域 {r} 缺退出目标 {v} 的链"));
-                graph.link_control(from, Link::node(chain, 0));
             }
         }
     }
 
-    // 6. 根区域的入口边（函数被调用时的那一条）改接到根的有限循环。
-    if regions.regions[0].is_loop {
-        let lp = nodes[0].loop_node.unwrap();
-        let head = match nodes[0].pre_set {
-            Some(s) => Link::node(s, 0),
-            None => Link::node(lp, 0),
-        };
+    // 7. 根区域的入口边（函数被调用时的那一条）改接到根的有限循环。
+    if let Some(plan) = &plans[0] {
+        let head = plan.entry();
         for (to, in_port) in &cfg.entry {
             let from = Link::export(0);
             let to = match cfg.points[*to] {
@@ -637,15 +639,14 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
         }
     }
 
-    // 7. 摘掉计数循环的比较和分支：区间已经说明了循环从哪数到哪，
+    // 8. 摘掉计数循环的比较和分支：区间已经说明了循环从哪数到哪，
     //    那个条件恒真，留着只是白算一遍。
-    for i in 0..regions.regions.len() {
-        let Some(c) = &nodes[i].counting else {
-            continue;
-        };
-        let (head, cmp) = (c.head, c.cmp);
-        graph.remove(head);
-        graph.remove(cmp);
+    for plan in plans.iter().flatten() {
+        if let LoopMode::Counting(c) = &plan.mode {
+            let (head, cmp) = (c.head, c.cmp);
+            graph.remove(head);
+            graph.remove(cmp);
+        }
     }
 
     check_control_outs(graph)?;
@@ -665,7 +666,7 @@ fn depth(regions: &Regions, i: usize) -> usize {
 }
 
 /// 边该归哪一类。
-fn classify(_cfg: &Cfg, regions: &Regions, e: &Edge) -> EdgeAction {
+fn classify(regions: &Regions, e: &Edge) -> EdgeAction {
     let owner = regions.owner_of(e.from);
     // 不可达的点不归任何区域，它的边原样保留。
     if owner == usize::MAX {
@@ -680,16 +681,16 @@ fn classify(_cfg: &Cfg, regions: &Regions, e: &Edge) -> EdgeAction {
                 EdgeAction::Drop
             } else {
                 // continue 外层：跳出内层，落到外层的头上。
-                EdgeAction::Exit(owner, e.to)
+                EdgeAction::Exit { region: owner, target: e.to }
             }
         } else {
-            EdgeAction::Entry(r)
+            EdgeAction::Entry { region: r }
         }
     } else if e.to == 0 {
         // 函数出口是伪点，不属于任何区域。从循环体里出去（return）才算
         // 退出；根区域（不是循环）本来就该直接接出口。
         if regions.regions[owner].is_loop {
-            EdgeAction::Exit(owner, e.to)
+            EdgeAction::Exit { region: owner, target: e.to }
         } else {
             EdgeAction::Keep
         }
@@ -698,21 +699,63 @@ fn classify(_cfg: &Cfg, regions: &Regions, e: &Edge) -> EdgeAction {
         if owner_v == owner {
             EdgeAction::Keep
         } else {
-            EdgeAction::Exit(owner, e.to)
+            EdgeAction::Exit { region: owner, target: e.to }
         }
     }
 }
 
+/// 每个区域的退出目标 → 退出码。
+///
+/// 一条边可能同时跨好几层（比如内层循环里 return 到了最外层之外），
+/// 中间每一层都要记着这个目标：它得为这个目标建一条「置码 + 跳出」
+/// 链，内层的分派才能一层层往上抛。只记最内层的话，中间层不会
+/// 被 break，循环会接着跑下一轮。
+///
+/// 码从 1 开始：局部变量的初值 0 不与任何 case 相等，走 default
+/// （default 不连任何东西）。
+fn collect_exits(
+    cfg: &Cfg,
+    regions: &Regions,
+    actions: &[EdgeAction],
+) -> Vec<BTreeMap<usize, i32>> {
+    let mut targets: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); regions.regions.len()];
+    for (_e, a) in cfg.edges.iter().zip(actions) {
+        let EdgeAction::Exit { region, target } = a else {
+            continue;
+        };
+        let mut cur = *region;
+        loop {
+            targets[cur].insert(*target);
+            match regions.regions[cur].parent {
+                Some(p) if !regions.regions[p].nodes.contains(target) => cur = p,
+                _ => break,
+            }
+        }
+    }
+    targets
+        .into_iter()
+        .map(|set| {
+            set.into_iter()
+                .enumerate()
+                .map(|(k, v)| (v, k as i32 + 1))
+                .collect()
+        })
+        .collect()
+}
+
 /// 建一个区域的节点：有限循环、退出码局部变量、switch、「置码 + 跳出」链。
+///
+/// `mode` 说循环怎么驱动，`exits` 是退出目标 → 退出码。返回的计划
+/// 是后续接线、改边唯一的依据。
 fn build_region(
     graph: &mut NodeGraphIr,
     cfg: &Cfg,
     regions: &Regions,
-    nodes: &mut [RegionNodes],
     i: usize,
-) -> Result<(), String> {
-    let head = regions.regions[i].head;
-    let head_node = point_node(cfg, head);
+    mode: LoopMode,
+    exits: BTreeMap<usize, i32>,
+) -> Result<RegionPlan, String> {
+    let head_node = point_node(cfg, regions.regions[i].head);
     let head_links = graph.get_node(head_node).links.controls_in.len();
     if head_links != 1 {
         return Err(format!(
@@ -721,101 +764,105 @@ fn build_region(
         ));
     }
 
-    // 有限循环。区间取满，循环不会自然结束，只靠「跳出循环」结束；
-    // 认出计数循环时区间是真的，循环自己数到头就结束。
+    // 有限循环。认不出循环规律时区间取满，只靠条件跳出。
     let lp = graph.insert(node_ir_native(NODE_FOR_CLOSED.clone()));
-    match &nodes[i].range {
-        Some(r) => {
-            graph.set_value_in(Link::node(lp, 0), r.begin.clone());
-            graph.set_value_in(Link::node(lp, 1), r.end.clone());
-        }
-        None => {
+    let body = match &mode {
+        LoopMode::Conditional => {
             graph.set_default(Link::node(lp, 0), Some(DEAD_LOOP_BEGIN.into()));
             graph.set_default(Link::node(lp, 1), Some(DEAD_LOOP_END.into()));
+            head_node
         }
-    }
-    // 循环体入口。计数循环的比较和分支摘掉了（区间已经说明了起止），
-    // 循环体直接从比较的 true 那支进。
-    let body = match &nodes[i].counting {
-        Some(c) => c.body,
-        None => head_node,
+        LoopMode::Counting(c) => {
+            let begin = c.begin.clone();
+            let end = materialize_end(graph, &c.end);
+            graph.set_value_in(Link::node(lp, 0), begin);
+            graph.set_value_in(Link::node(lp, 1), end);
+            // 比较和分支摘掉之后，循环体从比较的 true 那支进。
+            c.body
+        }
     };
     graph.link_control(Link::node(lp, 0), Link::node(body, 0));
 
-    nodes[i].loop_node = Some(lp);
+    let mut plan = RegionPlan {
+        mode,
+        exits,
+        loop_node: lp,
+        dispatch: None,
+        chain: BTreeMap::new(),
+        pre_set: None,
+    };
 
     // 没有退出目标（`loop {}`）：out[1] 悬空，不需要退出码和分派。
-    let mut targets: Vec<usize> = nodes[i].code.keys().copied().collect();
-    targets.sort();
-    if targets.is_empty() {
-        return Ok(());
+    if plan.exits.is_empty() {
+        return Ok(plan);
     }
     // native switch 的分支数上限。
-    if targets.len() > 10 {
+    if plan.exits.len() > 10 {
         return Err(format!(
             "区域 {} 有 {} 条退出路径，超过 switch 上限（10）",
             i,
-            targets.len()
+            plan.exits.len()
         ));
     }
 
-    // 只有一处退出目标：不用分派。跳出节点直接接在有限循环的 in[1] 上，
-    // 循环的 out[1] 就是那个目标（步骤 4 里接）。不生成退出码变量、
-    // switch 和置码的 setter。
-    if targets.len() == 1 {
-        let v = targets[0];
-        // 计数循环的正常结束不走「跳出循环」：它靠区间耗尽自然结束，
-        // 出口是 out[1]。这条链没人用。
-        if nodes[i].counting.as_ref().is_some_and(|c| c.natural_exit == v) {
-            return Ok(());
+    if plan.exits.len() > 1 {
+        // 多个退出目标：一个退出码局部变量 + 循环之后的 switch 按码分派。
+        let local = graph.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        let values: Vec<Box<dyn NativeValue>> =
+            plan.exits.values().map(|code| (*code).into()).collect();
+        let sw = graph.insert(node_ir_switch(IrKind::Native(NativeKind::Int), values));
+        graph.set_value_in(Link::node(sw, 0), ValueIn::link(Link::node(local, 1)));
+        graph.link_control(Link::node(lp, 1), Link::node(sw, 0));
+        plan.dispatch = Some(sw);
+
+        // 每个需要「置码 + 跳出」的退出目标一条链。
+        for (&target, &code) in &plan.exits {
+            if !plan.needs_chain(target) {
+                continue;
+            }
+            let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+            graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
+            graph.set_value_in(Link::node(set, 1), ValueIn::value(code.into()));
+            let brk = graph.insert(node_ir_native(NODE_BREAK.clone()));
+            graph.link_control(Link::node(set, 0), Link::node(brk, 0));
+            graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
+            plan.chain.insert(target, set);
         }
-        let brk = graph.insert(node_ir_native(NODE_BREAK.clone()));
-        graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
-        nodes[i].chain.insert(v, brk);
-        return Ok(());
-    }
 
-    // 退出码局部变量。
-    let local = graph.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
-
-    // 循环之后的 switch：按退出码分派。
-    let values: Vec<Box<dyn NativeValue>> =
-        targets.iter().map(|v| nodes[i].code[v].into()).collect();
-    let sw = graph.insert(node_ir_switch(IrKind::Native(NativeKind::Int), values));
-    graph.set_value_in(Link::node(sw, 0), ValueIn::link(Link::node(local, 1)));
-    graph.link_control(Link::node(lp, 1), Link::node(sw, 0));
-
-    nodes[i].local = Some(local);
-    nodes[i].switch = Some(sw);
-
-    // 每个退出目标一条「置码 + 跳出」链：set(码) -> break -> 有限循环的 in[1]。
-    // 正常结束不走这条链：它靠区间耗尽自然结束，退出码在进循环前就设好了。
-    for v in targets {
-        if let Some(c) = &nodes[i].counting
-            && c.natural_exit == v
-        {
-            continue;
+        // 进循环前把码设成「正常结束」那个。循环自然跑完时码没变，
+        // 分派 switch 就落到正常结束那支，不落到 default。
+        if let Some(code) = plan.natural_exit().and_then(|natural| plan.exits.get(&natural).copied()) {
+            let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+            graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
+            graph.set_value_in(Link::node(set, 1), ValueIn::value(code.into()));
+            graph.link_control(Link::node(set, 0), Link::node(lp, 0));
+            plan.pre_set = Some(set);
         }
-        let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
-        graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
-        graph.set_value_in(Link::node(set, 1), ValueIn::value(nodes[i].code[&v].into()));
-        let brk = graph.insert(node_ir_native(NODE_BREAK.clone()));
-        graph.link_control(Link::node(set, 0), Link::node(brk, 0));
-        graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
-        nodes[i].chain.insert(v, set);
+    } else {
+        // 只有一处退出目标：不用分派，也不生成退出码变量和 switch。
+        // 跳出节点直接接在有限循环的 in[1] 上，out[1] 就是那个目标。
+        let target = *plan.exits.keys().next().unwrap();
+        if plan.needs_chain(target) {
+            let brk = graph.insert(node_ir_native(NODE_BREAK.clone()));
+            graph.link_control(Link::node(brk, 0), Link::node(lp, 1));
+            plan.chain.insert(target, brk);
+        }
     }
+    Ok(plan)
+}
 
-    // 进循环前把退出码设成「正常结束」那个码。循环自然结束时码没变，
-    // 分派 switch 就落到正常结束那支，不用落到 default。
-    if let Some(c) = &nodes[i].counting {
-        let code = nodes[i].code[&c.natural_exit];
-        let set = graph.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
-        graph.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(local, 0)));
-        graph.set_value_in(Link::node(set, 1), ValueIn::value(code.into()));
-        graph.link_control(Link::node(set, 0), Link::node(lp, 0));
-        nodes[i].pre_set = Some(set);
+/// 把区间终点落成值：常量直接用，`<` 的引用值插一个减法节点算 `- 1`。
+fn materialize_end(graph: &mut NodeGraphIr, end: &EndSpec) -> ValueIn {
+    match end {
+        EndSpec::Const(v) => ValueIn::value((*v).into()),
+        EndSpec::Link(l) => ValueIn::link(*l),
+        EndSpec::MinusOne(l) => {
+            let sub = graph.insert(node_ir_native(node_subtract(NativeKind::Int)));
+            graph.set_value_in(Link::node(sub, 0), ValueIn::link(*l));
+            graph.set_value_in(Link::node(sub, 1), ValueIn::value(1i32.into()));
+            ValueIn::link(Link::node(sub, 0))
+        }
     }
-    Ok(())
 }
 
 /// 写 `local` 的那些节点。`local` 是局部变量节点，写它的入口是它的
@@ -893,7 +940,7 @@ fn detect_counting_loop(
     cfg: &Cfg,
     regions: &Regions,
     i: usize,
-) -> Option<(CountRange, CountLoop)> {
+) -> Option<CountingLoop> {
     let region = &regions.regions[i];
     let head_node = point_node(cfg, region.head);
     let head = graph.get_node(head_node);
@@ -925,6 +972,10 @@ fn detect_counting_loop(
         .unwrap_or(values.len());
     let body = head.links.controls_out[true_port].first()?.target.node()?;
     let natural_exit = head.links.controls_out[0].first()?.target.node()?;
+    // 「正常结束」得真的离开这个循环、又不跳进别的循环：它是区间耗尽时
+    // 自然落到的位置。落在区域内部的话它根本不是退出；是某个区域的头
+    // 的话那是 `continue 外层`，语义对不上。
+    let natural_exit = cfg.node_index[&natural_exit];
 
     // 头的值是比较的结果。
     let cmp_link = head.links.values_in[0].link?;
@@ -1055,11 +1106,11 @@ fn detect_counting_loop(
     }
 
     // 终点：`i < bound` 数到 bound - 1，`i <= bound` 数到 bound。
+    // 这里只描述怎么算，不建节点 —— 检测阶段不该改图。
     let end = match (&bound.link, &bound.default) {
         (None, Some(d)) => {
             let b = *d.downcast_ref::<i32>().ok()?;
-            let e = if inclusive { b } else { b.checked_sub(1)? };
-            ValueIn::value(e.into())
+            EndSpec::Const(if inclusive { b } else { b.checked_sub(1)? })
         }
         (Some(l), _) => {
             let src = l.target.node()?;
@@ -1067,27 +1118,22 @@ fn detect_counting_loop(
                 return None;
             }
             if inclusive {
-                ValueIn::link(*l)
+                EndSpec::Link(*l)
             } else {
-                // 上界减一。
-                let sub = graph.insert(node_ir_native(node_subtract(NativeKind::Int)));
-                graph.set_value_in(Link::node(sub, 0), ValueIn::link(*l));
-                graph.set_value_in(Link::node(sub, 1), ValueIn::value(1i32.into()));
-                ValueIn::link(Link::node(sub, 0))
+                EndSpec::MinusOne(*l)
             }
         }
         _ => return None,
     };
 
-    Some((
-        CountRange { begin, end },
-        CountLoop {
-            head: head_node,
-            cmp: cmp_node,
-            body,
-            natural_exit: cfg.node_index[&natural_exit],
-        },
-    ))
+    Some(CountingLoop {
+        head: head_node,
+        cmp: cmp_node,
+        body,
+        natural_exit,
+        begin,
+        end,
+    })
 }
 
 /// 区域 `i` 的 switch 里，退出目标 `v` 对应的分支该连到哪。
@@ -1097,7 +1143,7 @@ fn detect_counting_loop(
 fn case_target(
     cfg: &Cfg,
     regions: &Regions,
-    nodes: &[RegionNodes],
+    plans: &[Option<RegionPlan>],
     i: usize,
     v: usize,
     dead_end: Option<NodeRef>,
@@ -1130,7 +1176,7 @@ fn case_target(
     if let Some(p) = regions.regions[i].parent
         && regions.regions[p].is_loop
         && !regions.regions[p].nodes.contains(&v)
-        && let Some(chain) = nodes[p].chain.get(&v)
+        && let Some(chain) = plans[p].as_ref().and_then(|plan| plan.chain.get(&v))
     {
         return Ok(Link::node(*chain, 0));
     }
