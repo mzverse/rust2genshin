@@ -11,27 +11,7 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
-// pub struct Range<T>(T, T, T);
-//
-// impl<T: AddAssign + PartialOrd + Copy> Iterator for Range<T> {
-//     type Item = T;
-//
-//     #[inline(always)]
-//     fn next(&mut self) -> Option<Self::Item> {
-//         let now = self.0;
-//         if now < self.1 {
-//             self.0 += self.2;
-//             now.into()
-//         } else {
-//             None
-//         }
-//     }
-// }
-//
-// #[inline(always)]
-// pub fn range<T: AddAssign + PartialOrd + Copy>(begin: T, end: T, step: T) -> Range<T> {
-//     Range(begin, end, step)
-// }
+
 
 #[asynchronous]
 pub fn co0() -> f32 {
@@ -59,10 +39,11 @@ pub fn co() {
 /// 改写成「有限循环」节点（见 core/src/compile/loops.rs）。
 #[unsafe(no_mangle)]
 pub fn test_loop() {
-    let mut i = 0;
-    while i < 5 {
+    for i in 0..10 {
+        if i == 4 {
+            continue;
+        }
         log(i);
-        i += 1;
     }
 }
 
@@ -81,14 +62,10 @@ pub fn test_co() {
 #[unsafe(no_mangle)]
 pub fn times99() {
     let mut sum = 0;
-    let mut i = 1;
-    while i < 10 {
-        let mut j = 1;
-        while j < 10 {
+    for i in 1..10 {
+        for j in 1..10 {
             sum += i * j;
-            j += 1;
         }
-        i += 1;
     }
     log(sum);
 }
