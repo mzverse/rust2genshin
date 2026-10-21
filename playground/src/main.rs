@@ -358,7 +358,8 @@ async fn run(cfg: Config) -> Result<(), String> {
         let cfg = Arc::clone(&cfg);
         let baker = Arc::clone(&baker);
         async move {
-            pull_loop::run(repo, cfg.clone(), baker, cfg.pull_interval).await;
+            let interval = cfg.pull_interval;
+            pull_loop::run(repo, cfg, baker, interval).await;
         }
     });
 
