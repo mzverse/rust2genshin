@@ -1160,8 +1160,9 @@ impl Render for Viewer {
                     .border_1()
                     .border_color(comment_border())
                     .text_color(text_dim())
-                    .text_size(px(font))
-                    .overflow_hidden();
+                    .text_size(px(font));
+                // 不裁剪 —— 和值默认值的做法一致:宽度是按字宽估的,估窄
+                // 一点点也不该把字截掉半截(宁可让它伸出框外)。
                 for line in text.split('\n') {
                     // 每一行固定高度 —— 空行也要占位,不然多行注释会塌成一行。
                     lines = lines.child(

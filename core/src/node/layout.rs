@@ -65,8 +65,8 @@ pub fn node_width(text: &str) -> f32 {
 pub const COMMENT_FONT_PX: f32 = 10.0;
 /// 注释框的行高(含行距)。
 pub const COMMENT_LINE_H: f32 = 13.0;
-/// 注释框左右内边距之和。
-pub const COMMENT_PAD_X: f32 = 10.0;
+/// 注释框左右内边距与边框之和。渲染时左右各留一半。
+pub const COMMENT_PAD_X: f32 = 16.0;
 /// 注释框上下内边距之和。
 pub const COMMENT_PAD_Y: f32 = 8.0;
 /// 注释框与节点之间的空隙。
@@ -89,8 +89,11 @@ pub fn comment_width(text: &str) -> f32 {
     let widest = text
         .lines()
         .map(|line| {
+            // ASCII 按 7px 估:注释字号是 10px,但 viewer 渲染的非等宽字体
+            // 里 `m` / `w` 这类字比平均宽 —— 估窄了字会被裁掉(实测 "sum"
+            // 在 6px/字的估算下只剩 "su")。中文按字号 1em 记。
             line.chars()
-                .map(|c| if c.is_ascii() { 6.0 } else { COMMENT_FONT_PX })
+                .map(|c| if c.is_ascii() { 7.0 } else { COMMENT_FONT_PX })
                 .sum::<f32>()
         })
         .fold(0.0f32, f32::max);
