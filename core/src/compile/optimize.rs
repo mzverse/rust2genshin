@@ -110,6 +110,7 @@ impl Optimizer {
                         let n =
                             node_on_native_custom_value_change(&mut self.graph, &kind.to_kind());
                         let n = self.graph.insert(node_ir_native(n));
+                        self.graph.move_comment(x, n);
                         let n_getter = self.graph.insert(node_ir_native(node_destructure_struct(
                             &linker.assets,
                             &kind,
@@ -144,6 +145,7 @@ impl Optimizer {
                         let n = self
                             .graph
                             .insert(node_ir_native(node_modify_struct(&linker.assets, &kind)));
+                        self.graph.move_comment(x, n);
                         let n0 = self.graph.get_node(x);
                         for from in n0.links.controls_in[0].clone() {
                             self.graph
@@ -173,6 +175,7 @@ impl Optimizer {
                             let last = node.links.clone();
                             let br_false = *values[0].downcast_ref::<bool>().unwrap() as usize;
                             let n1 = self.graph.insert(node_ir_native(NODE_IF.clone()));
+                            self.graph.move_comment(x, n1);
                             self.graph.set_value_in(Link::node(n1, 0), last.values_in[0].clone());
                             self.graph.relink_controls(&last.controls_in[0], Link::node(x, 0), &[Link::node(n1, 0)]);
                             self.graph.link_controls(Link::node(n1, 0), &last.controls_out[1 - br_false]);
@@ -183,6 +186,7 @@ impl Optimizer {
                             let last = node.links.clone();
                             let values = values.clone();
                             let n1 = self.graph.insert(node_ir_native(node_switch(k, values.len())));
+                            self.graph.move_comment(x, n1);
                             self.graph.set_value_in(Link::node(n1, 0), last.values_in[0].clone());
                             self.graph.relink_controls(&last.controls_in[0], Link::node(x, 0), &[Link::node(n1, 0)]);
                             self.graph.link_controls(Link::node(n1, 0), last.controls_out.last().unwrap());

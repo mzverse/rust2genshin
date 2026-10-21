@@ -64,6 +64,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
     pub fn solve_local(&mut self, ty: Ty<'tcx>, k: LocalKind, name: String, span: Span) -> Result<(CompiledLocal<()>, CompiledLocal<LocalRef>)> {
         fn f(s: &mut CompilingLocals, kind: IrKind, k: LocalKind, name: String) -> (CompiledLocal<()>, CompiledLocal<LocalRef>) {
             let local = s.graph.insert(node_ir_local(kind.clone()));
+            s.graph.set_comment(local, name.clone().into());
             // if kind.encode_storage(Side::Server).is_some() {
             //     self.graph.graph.set_default(Connection(local, 0), kind.clone());
             // }

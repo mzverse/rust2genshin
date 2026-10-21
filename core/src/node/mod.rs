@@ -1,4 +1,4 @@
-use crate::asset::generated::{AssetData, DynamicTypeMetadata, GraphVariable, Identifier, InterfaceMapping, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, TypeDefinition, TypedValue, asset_data, dynamic_type_metadata, identifier, node_graph_container, node_graph_data, pin_signature, type_definition, typed_value};
+use crate::asset::generated::{asset_data, dynamic_type_metadata, identifier, node_graph_container, node_graph_data, pin_signature, type_definition, typed_value, Annotation, AssetData, DynamicTypeMetadata, GraphVariable, Identifier, InterfaceMapping, NodeConnection, NodeGraphContainer, NodeGraphData, NodeInstance, PinData, PinSignature, PolymorphicValue, TypeDefinition, TypedValue};
 use crate::asset::{AssetBundle, Side};
 use crate::value::{NativeKind, NativeValue};
 use slab::Slab;
@@ -207,6 +207,7 @@ pub struct Node<NodeId = NativeNodeId, Kind = NativeKind> {
     /// 自动整理算出的坐标(左上角),默认 (0,0)。`.gia` 的 `x_pos` / `y_pos`
     /// 就是从这里编码的;viewer 与 core 的布局共用 [`layout`](layout::layout)。
     pub position: (f32, f32),
+    pub comment: Option<String>,
 }
 #[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -245,6 +246,7 @@ impl<NodeId, Kind> Node<NodeId, Kind> {
             links: Links::new(&kind),
             kind,
             position: (0., 0.),
+            comment: None,
         }
     }
 }
@@ -451,6 +453,15 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
             LinkTarget::Node(node) => &mut self.get_node_mut(node).links,
             LinkTarget::Export => &mut self.externals,
         }
+    }
+
+    pub fn set_comment(&mut self, node: NodeRef, comment: Option<String>) {
+        self.get_node_mut(node).comment = comment;
+    }
+
+    pub fn move_comment(&mut self, from: NodeRef, to: NodeRef) {
+        let comment = self.get_node_mut(from).comment.take();
+        self.set_comment(to, comment);
     }
 
     pub fn controls_out_mut(&mut self, link: Link) -> &mut Vec<Link> {
@@ -721,7 +732,11 @@ impl NodeGraph {
                             }),
                             x_pos: n.position.0 * POS_SCALA,
                             y_pos: n.position.1 * POS_SCALA,
-                            attached_comment: None, // TODO
+                            attached_comment: n.comment.clone().map(|x| Annotation {
+                                text: x,
+                                x_pos: None,
+                                y_pos: None,
+                            }),
                             context_declaration: None, // TODO
                             signal_version: None, // TODO
                             using_struct: n.kind.id.using_struct.clone().map(|x| *x), // TODO
