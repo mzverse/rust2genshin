@@ -569,23 +569,8 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
     }
 
     // 5. 接线：循环的 out[1] 接退出目标 —— 单出口直接接，多出口经 switch。
-    //    `continue 外层` 的目标是个祖先区域的头，那种分支要接到「链尾」——
-    //    链在那里断掉，外层就进入下一轮。链尾节点只在真需要时建。
-    let need_dead_end = plans.iter().enumerate().any(|(i, plan)| {
-        plan.as_ref().is_some_and(|plan| {
-            plan.exits.keys().any(|v| {
-                regions
-                    .head_region
-                    .get(v)
-                    .is_some_and(|a| *a != i && regions.regions[i].parent == Some(*a))
-            })
-        })
-    });
-    let dead_end = if need_dead_end {
-        Some(graph.insert(crate::compile::ir::node_ir_unreachable()))
-    } else {
-        None
-    };
+    //    `continue 外层` 的目标是个祖先区域的头，那种分支不接任何节点：
+    //    链在那里断掉，外层就进入下一轮。
     for (i, plan) in plans.iter().enumerate() {
         let Some(plan) = plan else {
             continue;
@@ -597,15 +582,17 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
             // 多个退出目标：switch 的第 k 支对第 k 个码，最后一支是 default。
             Some(sw) => {
                 for (k, target) in plan.exits.keys().enumerate() {
-                    let to = case_target(&cfg, &regions, &plans, i, *target, dead_end)?;
-                    graph.link_control(Link::node(sw, k), to);
+                    if let Some(to) = case_target(&cfg, &regions, &plans, i, *target)? {
+                        graph.link_control(Link::node(sw, k), to);
+                    }
                 }
             }
             // 只有一个退出目标：没有 switch，out[1] 直接接目标。
             None => {
                 let target = *plan.exits.keys().next().unwrap();
-                let to = case_target(&cfg, &regions, &plans, i, target, dead_end)?;
-                graph.link_control(Link::node(plan.loop_node, 1), to);
+                if let Some(to) = case_target(&cfg, &regions, &plans, i, target)? {
+                    graph.link_control(Link::node(plan.loop_node, 1), to);
+                }
             }
         }
     }
@@ -1212,7 +1199,7 @@ fn detect_counting_loop(
     //
     // 这两条是防误优化的底线：循环体跑出循环、或者区间耗尽后跳回循环
     // 体内部，语义就全错了。正常结束可以是别的区域的头（`continue 外层`
-    // 的形状），那由 `case_target` 接到链尾，不算错。
+    // 的形状），那由 `case_target` 直接断链（不接），不算错。
     if !region.nodes.contains(&cfg.node_index[&body]) {
         return None;
     }
@@ -1399,18 +1386,19 @@ fn detect_counting_loop(
 /// 区域 `i` 的 switch 里，退出目标 `v` 对应的分支该连到哪。
 ///
 /// 目标还在父区域里 —— 直接连目标。目标已经出了父区域 —— 连父区域的
-/// 「置码 + 跳出」链，由父区域再往上抛一层。
+/// 「置码 + 跳出」链，由父区域再往上抛一层。目标是个祖先区域的头 ——
+/// 返回 `None`，那条分支不接任何节点。
 fn case_target(
     cfg: &Cfg,
     regions: &Regions,
     plans: &[Option<RegionPlan>],
     i: usize,
     v: usize,
-    dead_end: Option<NodeRef>,
-) -> Result<Link, String> {
+) -> Result<Option<Link>, String> {
     // 目标是某个祖先区域的头 —— 这是 `continue 祖先`：跳出中间的循环，
     // 让祖先进入下一轮。不能直接跳回那个头（路径会绕回去，图里就有环了），
-    // 而是把链断在那里：祖先看到自己的循环体走到头，就进入下一轮。
+    // 那条分支就不接任何节点：链断在那里，祖先看到自己的循环体走到头，
+    // 就进入下一轮。
     //
     // 但只有「目标的区域就是本层的父层」时才能直接断链 —— 再往下的层
     // 得先把中间的循环逐层 break 掉（走父层的链），否则中间那层会自己
@@ -1425,10 +1413,7 @@ fn case_target(
                 ));
             }
             if regions.regions[i].parent == Some(a) {
-                let Some(dead) = dead_end else {
-                    return Err("缺链尾节点".into());
-                };
-                return Ok(Link::node(dead, 0));
+                return Ok(None);
             }
             // 更下面的层：走父层的链，一层层往上抛（见下面的分支）。
         }
@@ -1438,12 +1423,12 @@ fn case_target(
         && !regions.regions[p].nodes.contains(&v)
         && let Some(chain) = plans[p].as_ref().and_then(|plan| plan.chain.get(&v))
     {
-        return Ok(Link::node(*chain, 0));
+        return Ok(Some(Link::node(*chain, 0)));
     }
-    Ok(match cfg.points[v] {
+    Ok(Some(match cfg.points[v] {
         Point::Export => Link::export(0),
         Point::Node(n) => Link::node(n, 0),
-    })
+    }))
 }
 
 /// 区域 `a` 是不是区域 `i` 的祖先。
@@ -1746,7 +1731,8 @@ mod tests {
             .expect("外层的有限循环");
         assert_eq!(dispatch_of(&g, outer_lp), after, "外层不该有分派 switch");
         // `continue 外层` 不能直接跳回外层的头（那会让图里出现环），
-        // 而是把链断在链尾 —— 外层看到循环体走到头，就进入下一轮。
+        // 而是直接断链（那条分支不接任何节点）—— 外层看到循环体走到头，
+        // 就进入下一轮。
         let inner_lp = lps
             .iter()
             .copied()
@@ -1764,25 +1750,13 @@ mod tests {
             reachable(&g, inner_sw).contains(&after),
             "switch 到不了循环之后"
         );
-        let dead_end_branch = g
-            .get_node(inner_sw)
-            .links
-            .controls_out
-            .iter()
-            .flatten()
-            .find_map(|t| match t.target {
-                LinkTarget::Node(m) => Some(m),
-                LinkTarget::Export => None,
-            })
-            .filter(|m| {
-                g.get_node(*m)
-                    .links
-                    .controls_out
-                    .iter()
-                    .all(|o| o.is_empty())
-            })
-            .expect("continue 外层应该接到链尾");
-        assert!(!reachable(&g, dead_end_branch).contains(&outer));
+        // `continue 外层` 的那条分支不接任何节点：链断在那里，外层进入下一轮。
+        // 最后一个出脚是 switch 的 default（本来就悬空），只看 case 脚。
+        let outs = &g.get_node(inner_sw).links.controls_out;
+        assert!(
+            outs[..outs.len() - 1].iter().any(|o| o.is_empty()),
+            "continue 外层应该断链（悬空）"
+        );
     }
 
     /// 跨两层的退出：中间层自己没有直接的退出边，退出目标也得记到它名下，
@@ -1928,42 +1902,23 @@ mod tests {
             .expect("中层的有限循环");
         let mid_sw = dispatch_of(&g, mid_lp);
 
-        // 内层的 continue 分支不能直接接链尾 —— 得先跳出中层。
-        // 直接接链尾的话，中层会自己再驱动一轮。
-        let inner_targets: Vec<NodeRef> = g
-            .get_node(inner_sw)
-            .links
-            .controls_out
-            .iter()
-            .flatten()
-            .filter_map(|t| match t.target {
-                LinkTarget::Node(m) => Some(m),
-                LinkTarget::Export => None,
-            })
-            .collect();
-        // 链尾节点（continue 断链用的那个 unreachable 节点）。
-        let is_dead_end = |m: NodeRef| {
-            matches!(g.get_node(m).kind.id, IrNodeId::Unreachable)
-        };
+        // 内层的 continue 分支不能直接断链 —— 得先跳出中层。
+        // 直接断链的话，中层会自己再驱动一轮。
+        // 最后一个出脚是 switch 的 default（本来就悬空），只看 case 脚。
+        let inner_outs = &g.get_node(inner_sw).links.controls_out;
         assert!(
-            !inner_targets.iter().any(|m| is_dead_end(*m)),
-            "内层的 continue 直接接了链尾，中层没被 break"
+            !inner_outs[..inner_outs.len() - 1]
+                .iter()
+                .any(|o| o.is_empty()),
+            "内层的 continue 直接断链了，中层没被 break"
         );
-        // 中层的那一支才接链尾。
-        let mid_targets: Vec<NodeRef> = g
-            .get_node(mid_sw)
-            .links
-            .controls_out
-            .iter()
-            .flatten()
-            .filter_map(|t| match t.target {
-                LinkTarget::Node(m) => Some(m),
-                LinkTarget::Export => None,
-            })
-            .collect();
+        // 中层的那一支才断链（悬空）。
+        let mid_outs = &g.get_node(mid_sw).links.controls_out;
         assert!(
-            mid_targets.iter().any(|m| is_dead_end(*m)),
-            "中层的 continue 分支应该接链尾"
+            mid_outs[..mid_outs.len() - 1]
+                .iter()
+                .any(|o| o.is_empty()),
+            "中层的 continue 分支应该断链（悬空）"
         );
     }
 
