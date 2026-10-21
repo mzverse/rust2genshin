@@ -156,6 +156,12 @@ pub fn container_artifact_path(spec: &RunSpec) -> String {
 /// 会以 `/opt/ra/ws` 不存在为由失败。
 pub const RA_WORKDIR: &str = "/opt/ra/ws";
 
+/// RA 待命容器的名字前缀。服务重启后编号会从 0 重来(见
+/// `lsp::service::SessionMaker`),所以**上一实例留下的容器必须先清掉** ——
+/// 否则新实例造同名的容器时 `docker run` 会因重名失败,RA 就再也起不来。
+/// 启动清理按这个前缀挑容器,见 [`ra_container_ls_args`]。
+pub const RA_CONTAINER_PREFIX: &str = "r2g-ra-";
+
 /// 资源限额与加固旗标。任务容器与待命 RA 容器都吃同一份:docker CLI 对限额
 /// 旗标的相对顺序不敏感(`-d` / `-v` / `--rm` 这些**是**敏感的,所以那些留在
 /// `run_args` / `run_detached_args` 自己拼)。
@@ -259,6 +265,25 @@ pub fn cp_args(name: &str, path: &str) -> Vec<String> {
 /// rust-analyzer 一起走。
 pub fn rm_args(name: &str) -> Vec<String> {
     vec!["rm".into(), "-f".into(), name.into()]
+}
+
+/// 列 RA 待命容器的名字。启动清理用它把上一实例的遗留挑出来。
+///
+/// `--filter name=` 是 docker 的**正则**匹配,匹配整个名字(不是子串,
+/// 也不是 glob)。这里用 `^r2g-ra-` 锚定开头,免得 `my-r2g-ra-x` 这种
+/// 名字被顺手捞进来。
+///
+/// `--format {{.Names}}` 给的是**名字**而不是 ID —— ID 没法直接
+/// `docker rm`,还得再查一次名字。
+pub fn ra_container_ls_args() -> Vec<String> {
+    vec![
+        "ps".into(),
+        "-aq".into(),
+        "--filter".into(),
+        format!("name=^{RA_CONTAINER_PREFIX}"),
+        "--format".into(),
+        "{{.Names}}".into(),
+    ]
 }
 
 /// RA 会话的 exec 参数。
@@ -677,6 +702,23 @@ mod tests {
             user: "1001".into(),
             source_file: "demo/src/lib.rs".into(),
         }
+    }
+
+    /// 启动清理要按前缀列出 RA 容器。名字用正则锚定开头,输出格式要名字
+    /// 而不是 ID —— ID 没法直接 `docker rm`。
+    #[test]
+    fn ra_container_ls_anchors_the_prefix_and_asks_for_names() {
+        let a = ra_container_ls_args();
+        assert_eq!(a[0], "ps");
+        assert!(a.contains(&"-aq".to_string()), "要连停掉的容器一起列:{a:?}");
+        assert!(
+            a.contains(&"name=^r2g-ra-".to_string()),
+            "名字过滤要锚定开头,免得捞到 my-r2g-ra-x:{a:?}"
+        );
+        assert!(
+            a.contains(&"{{.Names}}".to_string()),
+            "要名字而不是 ID:{a:?}"
+        );
     }
 
     #[test]

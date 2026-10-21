@@ -121,6 +121,37 @@ impl LspService {
         }
     }
 
+    /// 清掉**上一实例遗留**的 RA 容器。返回清掉几个。
+    ///
+    /// 为什么必须清:RA 容器的编号是进程内计数器(`SessionMaker.next`),
+    /// 服务一重启就从头数。上一实例留下的 `r2g-ra-0` 之类还在,新实例
+    /// 造同名容器时 `docker run` 会因重名失败 —— RA 就再也起不来,编辑框
+    /// 永远停在「分析中…」。而池的空闲回收(`Pool::sweep_idle`)只认内存里
+    /// 的会话,看不见上一实例的容器,靠它清不掉。
+    ///
+    /// **必须在补池之前调用**:正在用的容器不能删。
+    pub async fn cleanup_stale_containers(&self) -> usize {
+        let listed = match run_docker_capture(crate::docker::ra_container_ls_args()).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("列遗留 RA 容器失败,跳过清理:{e}");
+                return 0;
+            }
+        };
+        let names = stale_ra_names(&listed.lines().map(|s| s.to_string()).collect::<Vec<_>>());
+        let mut n = 0;
+        for name in names {
+            match run_docker(crate::docker::rm_args(&name)).await {
+                Ok(()) => {
+                    n += 1;
+                    tracing::info!("清掉上一实例遗留的 RA 容器 {name}");
+                }
+                Err(e) => tracing::warn!("删遗留 RA 容器 {name} 失败:{e}"),
+            }
+        }
+        n
+    }
+
     /// 起两个后台循环:补池(维持 `lsp_pool_min` 个空闲)与回收
     /// (销毁空闲超过 `lsp_idle_ttl` 的,`ttl == 0` 时整条策略关闭)。
     pub fn spawn_background(self: &Arc<Self>) {
@@ -191,8 +222,19 @@ impl SessionMaker {
             source_file: crate::protocol::SOURCE_FILE.into(),
         };
         if let Err(e) = run_docker(run_detached_args(&spec)).await {
-            tracing::warn!("起 RA 容器失败:{e}");
-            return None;
+            // 撞名 = 上一实例留下的同名容器还占着位置。删掉它再试一次 ——
+            // 启动清理漏了这一手时(比如清理和补池并行、或有人手工起过
+            // 同名容器),这一句就是最后的兜底:RA 照样能起来。
+            if !is_name_conflict(&e) {
+                tracing::warn!("起 RA 容器失败:{e}");
+                return None;
+            }
+            tracing::warn!("RA 容器 {name} 撞名,删掉旧的重试");
+            remove_container(&name).await;
+            if let Err(e) = run_docker(run_detached_args(&spec)).await {
+                tracing::warn!("起 RA 容器失败(清掉同名容器后仍失败):{e}");
+                return None;
+            }
         }
 
         // 3. 容器里起 RA(裸管道,见 docker_exec)。
@@ -282,5 +324,95 @@ async fn run_docker(args: Vec<String>) -> Result<(), String> {
             args.join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
         ))
+    }
+}
+
+/// 跑一条 docker 命令并把 stdout 收回来。
+async fn run_docker_capture(args: Vec<String>) -> Result<String, String> {
+    let out = Command::new("docker")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("docker 起不来:{e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(format!(
+            "docker {} 失败:{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// 从 docker 列出的容器名里挑出**该清的**。
+///
+/// docker 的 `--filter name=` 是正则匹配,理论上会漏(比如名字里带正则
+/// 元字符);这里再按前缀过一道,确保只碰 `r2g-ra-` 开头的,别人的容器
+/// 一个都不动。
+pub fn stale_ra_names(listed: &[String]) -> Vec<String> {
+    listed
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter(|s| s.starts_with(crate::docker::RA_CONTAINER_PREFIX))
+        .map(str::to_string)
+        .collect()
+}
+
+/// docker 的「容器重名」报错。文本是 daemon 说的,不同版本措辞略有出入,
+/// 所以按两个片段一起认。
+pub fn is_name_conflict(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("already in use") || s.contains("name conflict")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 启动清理只碰 `r2g-ra-` 开头的容器 —— 别人的容器一个都不动。
+    #[test]
+    fn stale_ra_names_only_keeps_our_own_containers() {
+        let listed = vec![
+            "r2g-ra-0".to_string(),
+            "r2g-ra-13".to_string(),
+            "r2g-playground".to_string(),
+            "my-r2g-ra-x".to_string(),
+            "dbg-ra".to_string(),
+        ];
+        let got = stale_ra_names(&listed);
+        assert_eq!(got, vec!["r2g-ra-0".to_string(), "r2g-ra-13".to_string()]);
+    }
+
+    /// docker 输出里会有空行和空白 —— 不该被当成容器名。
+    #[test]
+    fn stale_ra_names_skips_blank_lines() {
+        let listed = vec![String::new(), "  ".to_string(), "  r2g-ra-2  ".to_string()];
+        assert_eq!(stale_ra_names(&listed), vec!["r2g-ra-2".to_string()]);
+    }
+
+    /// 空列表不该 panic,也不该给出任何 victims。
+    #[test]
+    fn stale_ra_names_on_an_empty_listing_is_empty() {
+        assert!(stale_ra_names(&[]).is_empty());
+    }
+
+    /// docker 的重名报错要认出来 —— 认错了就起不了 RA 容器。
+    #[test]
+    fn name_conflicts_are_recognized() {
+        assert!(is_name_conflict(
+            "docker: Error response from daemon: Conflict. The container name \"/r2g-ra-0\" is already in use by container \"abc\". You have to remove (or rename) that container to be able to reuse that name."
+        ));
+        assert!(is_name_conflict("Conflict. The name is already in use"));
+        assert!(is_name_conflict("name conflict"));
+    }
+
+    /// 别的失败不能被当成重名 —— 否则会白删一个容器再重试一次。
+    #[test]
+    fn other_failures_are_not_name_conflicts() {
+        assert!(!is_name_conflict("docker: Error response from daemon: no such image: rust2genshin-play:xxx"));
+        assert!(!is_name_conflict("docker 起不来:program not found"));
+        assert!(!is_name_conflict(""));
     }
 }

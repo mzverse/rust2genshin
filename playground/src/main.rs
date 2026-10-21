@@ -304,6 +304,10 @@ async fn run(cfg: Config) -> Result<(), String> {
         None
     } else {
         let svc = crate::lsp::service::LspService::new(Arc::clone(&cfg), Arc::clone(&baker));
+        // 先清上一实例遗留的 RA 容器,再补池。顺序不能反:正在用的容器
+        // 不能删,而编号又是进程内计数器 —— 不先清,新实例会撞上旧名字,
+        // RA 就再也起不来(见 `LspService::cleanup_stale_containers`)。
+        svc.cleanup_stale_containers().await;
         svc.spawn_background();
         Some(svc)
     };
