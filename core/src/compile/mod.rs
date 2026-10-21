@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::compile::func::{CompilingFn, FnDecl, NodeGraphIr, node_ir_native};
 use crate::compile::helper::Helper;
 use crate::compile::ir::{FnInfo, IrNodeId, Optimizer, node_ir_assemble, node_ir_nop};
@@ -8,10 +9,10 @@ use proc_macro2::{Ident, TokenStream};
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_codegen_ssa::{CompiledModule, ModuleKind};
 use rustc_hir::def::DefKind;
-use rustc_index::IndexVec;
+use rustc_index::{Idx, IndexVec};
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir;
-use rustc_middle::mir::{BasicBlock, Body, Local, RETURN_PLACE};
+use rustc_middle::mir::{BasicBlock, Body, Local, VarDebugInfoContents, RETURN_PLACE};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{Instance, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
@@ -21,6 +22,7 @@ use rustc_structures::CrateType;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use panic_context::panic_context;
 use syn::{LitInt, Meta, MetaList};
 
 pub mod func;
@@ -247,6 +249,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<FnInfo> {
+        panic_context!("Compiling: {func:?}");
         let tcx = self.tcx;
         let is_closure = matches!(tcx.def_kind(func.def_id()), DefKind::Closure);
         let mut graph = NodeGraph::new(NodeGraphKind::ServerEntity, self.mangle_func(func));
@@ -264,7 +267,7 @@ impl<'tcx> Compiler<'tcx> {
         let Some(ret_decl) = body.local_decls.get(RETURN_PLACE) else {
             unreachable!();
         };
-        let (ret, r) = compiling_locals.solve_local(if ret_decl.ty.is_never() { compiling_locals.compiler.tcx.types.unit } else { compiling_locals.compiler.helper().monomorphize(func, ret_decl.ty) }, LocalKind::Ret, "".into(), ret_decl.source_info.span)?;
+        let (ret, r) = compiling_locals.solve_local(if ret_decl.ty.is_never() { compiling_locals.compiler.tcx.types.unit } else { compiling_locals.compiler.helper().monomorphize(func, ret_decl.ty) }, LocalKind::Ret, "return".into(), ret_decl.source_info.span)?;
         locals.push(r);
         let mut params = vec![];
         if is_closure {
@@ -309,8 +312,17 @@ impl<'tcx> Compiler<'tcx> {
             proxies_in: (0..compiling_locals.params).collect(),
             proxies_out: vec![None; compiling_locals.rets],
         };
+        let mut vars_name = HashMap::new();
+        for x in &body.var_debug_info {
+            if let VarDebugInfoContents::Place(place) = x.value {
+                if !place.projection.is_empty() {
+                    continue; // TODO
+                }
+                vars_name.insert(place.local, x.name);
+            }
+        }
         for x in body.local_decls.iter().skip(locals.len()) { // other locals
-            locals.push(compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, x.ty), LocalKind::Other, "".to_string(), x.source_info.span)?.1);
+            locals.push(compiling_locals.solve_local(compiling_locals.compiler.helper().monomorphize(func, x.ty), LocalKind::Other, vars_name.get(&Local::new(locals.len())).map(|x| x.to_string()).unwrap_or_default(), x.source_info.span)?.1);
         }
         let CompilingLocals { mut block, .. } = compiling_locals;
         graph.push_export_control_in(ExportDecl::new("".into(), None));
