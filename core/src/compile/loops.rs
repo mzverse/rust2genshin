@@ -432,6 +432,9 @@ struct RegionPlan {
     chain: BTreeMap<usize, NodeRef>,
     /// 进循环前把退出码设成「正常结束」那个码的节点。
     pre_set: Option<NodeRef>,
+    /// 特化时折叠掉的拷贝写入（`tmp = 当前值` 那种），以及它们写的
+    /// 局部变量。值已经改接到有限循环的出参，这些节点稍后统一删。
+    folded: Vec<(NodeRef, NodeRef)>,
 }
 
 impl RegionPlan {
@@ -480,6 +483,19 @@ struct CountingLoop {
     begin: ValueIn,
     /// 区间终点怎么算。
     end: EndSpec,
+    /// 循环变量的局部变量节点。
+    var: NodeRef,
+    /// 循环变量的初值写入（循环外）。
+    init: NodeRef,
+    /// 循环内的加一写入。
+    inc: NodeRef,
+    /// 加一的 `+` 节点。
+    add: NodeRef,
+    /// 循环体实际读的那个局部变量。`for ... in range` 会多一层拷贝：
+    /// 加一作用在原变量上，体里读的是拷出来的那个。
+    read: NodeRef,
+    /// 拷贝的写入节点（有拷贝时才有），连同 `read` 一起要摘掉。
+    copy: Option<NodeRef>,
 }
 
 /// 区间终点的算法。检测阶段只看图，不建节点；建节点时再落成值。
@@ -639,13 +655,37 @@ pub fn lower_loops(graph: &mut NodeGraphIr) -> Result<(), String> {
         }
     }
 
-    // 8. 摘掉计数循环的比较和分支：区间已经说明了循环从哪数到哪，
-    //    那个条件恒真，留着只是白算一遍。
+    // 8. 摘掉计数循环里多余的东西：
+    //    - 比较和分支：区间已经说明了循环从哪数到哪，条件恒真；
+    //    - 循环变量那套：初值写入、每轮的 `i += 1`（含 `+` 节点）、
+    //      `for ... in range` 的拷贝写入 —— 循环体现在直接读有限循环的
+    //      出参，这些都不再有消费者。
     for plan in plans.iter().flatten() {
-        if let LoopMode::Counting(c) = &plan.mode {
-            let (head, cmp) = (c.head, c.cmp);
-            graph.remove(head);
-            graph.remove(cmp);
+        let LoopMode::Counting(c) = &plan.mode else {
+            continue;
+        };
+        // 折叠掉的拷贝：值已经改接到出参，这里把节点摘掉。
+        for (set, local) in &plan.folded {
+            bypass_control(graph, *set);
+            if graph.get_node(*local).links.is_empty() {
+                graph.remove(*local);
+            }
+        }
+        // SetLocal 在控制流上，要用旁路的方式摘（前驱直接接后继）。
+        bypass_control(graph, c.inc);
+        if let Some(set) = c.copy {
+            bypass_control(graph, set);
+        }
+        bypass_control(graph, c.init);
+        // 加一是纯计算节点，没有控制流。
+        graph.remove(c.add);
+        graph.remove(c.head);
+        graph.remove(c.cmp);
+        // 变量本身没有别的消费者就一起删；还有（参数、导出）就留着。
+        for n in [Some(c.var), c.copy.map(|_| c.read)].into_iter().flatten() {
+            if graph.get_node(n).links.is_empty() {
+                graph.remove(n);
+            }
         }
     }
 
@@ -766,6 +806,8 @@ fn build_region(
 
     // 有限循环。认不出循环规律时区间取满，只靠条件跳出。
     let lp = graph.insert(node_ir_native(NODE_FOR_CLOSED.clone()));
+    // 计数循环特化时折叠掉的拷贝（见 `fold_copies`），建完 plan 再挂上去。
+    let mut folded = Vec::new();
     let body = match &mode {
         LoopMode::Conditional => {
             graph.set_default(Link::node(lp, 0), Some(DEAD_LOOP_BEGIN.into()));
@@ -777,8 +819,38 @@ fn build_region(
             let end = materialize_end(graph, &c.end);
             graph.set_value_in(Link::node(lp, 0), begin);
             graph.set_value_in(Link::node(lp, 1), end);
+            // 有限循环节点自己就是循环变量：体里读它的出参，原来那套
+            // 「局部变量 + 每轮加一」整个摘掉。
+            replace_value_source(graph, Link::node(c.read, 1), Link::node(lp, 0));
+
+            folded = fold_copies(graph, cfg, regions, i, lp);
+
+            // 循环体入口可能正好是要摘的节点（体里只有 `i += 1`，或者
+            // `for` 的拷贝就在体首）：体从它的控制后继开始。
+            let mut body = c.body;
+            let mut hops = 0;
+            while hops < 4 && (body == c.inc || c.copy == Some(body)) {
+                let next = graph.get_node(body).links.controls_out[0]
+                    .first()
+                    .and_then(|l| l.target.node())
+                    .filter(|n| *n != c.head && *n != c.cmp);
+                match next {
+                    Some(n) => {
+                        body = n;
+                        hops += 1;
+                    }
+                    None => break,
+                }
+            }
+            if body == c.inc || c.copy == Some(body) {
+                // 体里只有这些节点：摘掉之后循环体是空的。挂个 nop 兜住
+                // out[0] —— 每轮仍要被驱动一下，然后一轮结束。
+                body = graph.insert(crate::compile::ir::node_ir_nop());
+            }
+            // 真正删节点放到改边之后（第 8 步）：改边要遍历原始 CFG 的边，
+            // 那些边还连着这些节点，提前删会让 unlink 撞上不存在的 key。
             // 比较和分支摘掉之后，循环体从比较的 true 那支进。
-            c.body
+            body
         }
     };
     graph.link_control(Link::node(lp, 0), Link::node(body, 0));
@@ -790,6 +862,7 @@ fn build_region(
         dispatch: None,
         chain: BTreeMap::new(),
         pre_set: None,
+        folded,
     };
 
     // 没有退出目标（`loop {}`）：out[1] 悬空，不需要退出码和分派。
@@ -849,6 +922,144 @@ fn build_region(
         }
     }
     Ok(plan)
+}
+
+/// 从 `node` 的值出口顺着值流看，有没有消费者落在区域外。
+///
+/// 控制节点判断它是否属于区域；纯值节点（没有控制流）不在区域集合里，
+/// 递归看它自己的消费者。图外的导出也算逃逸。
+fn value_escapes_region(
+    graph: &NodeGraphIr,
+    cfg: &Cfg,
+    region: &Region,
+    node: NodeRef,
+    seen: &mut HashSet<NodeRef>,
+) -> bool {
+    if !seen.insert(node) {
+        return false;
+    }
+    let n = graph.get_node(node);
+    // `Local` 有两个值出口：0 号是写句柄、1 号才是读值。只看读值 ——
+    // 写句柄会喂给 SetLocal，那不是「谁读了这个值」。
+    let outs: Vec<&Vec<Link>> = if n.kind.id == IrNodeId::Local {
+        vec![&n.links.values_out[1]]
+    } else {
+        n.links.values_out.iter().collect()
+    };
+    for outs in outs {
+        for link in outs {
+            let Some(m) = link.target.node() else {
+                return true; // 导出到图外
+            };
+            let inside = cfg
+                .node_index
+                .get(&m)
+                .is_some_and(|idx| region.nodes.contains(idx));
+            if inside {
+                continue;
+            }
+            let m_node = graph.get_node(m);
+            if m_node.kind.is_calc() {
+                if value_escapes_region(graph, cfg, region, m, seen) {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 把「每轮把有限循环的当前值写进一个临时局部变量」这种拷贝折叠掉。
+///
+/// `for r in a..b` 的迭代变量在 MIR 里常不止一层：循环变量加一，体里再
+/// 拷一份出来给业务代码读。特化之后这些拷贝的值就是有限循环的出参，
+/// 留着只是每轮多一次写入。折叠的条件：
+/// - 写入的值就是 `lp` 的出参；
+/// - 该局部变量全图只被这一处写；
+/// - 它的读取者都在本区域内（区域外读到的是循环结束后的值，语义不同）。
+///
+/// 返回 (拷贝写入, 局部变量)，由调用方在改边之后统一摘。
+fn fold_copies(
+    graph: &mut NodeGraphIr,
+    cfg: &Cfg,
+    regions: &Regions,
+    i: usize,
+    lp: NodeRef,
+) -> Vec<(NodeRef, NodeRef)> {
+    let region = &regions.regions[i];
+    let mut folded = Vec::new();
+    // 折叠可能级联（拷贝再拷贝），跑到不动点。
+    loop {
+        let mut changed = false;
+        for n in graph.get_nodes() {
+            let node = graph.get_node(n);
+            if node.kind.id != IrNodeId::SetLocal {
+                continue;
+            }
+            if node.links.values_in[1].link != Some(Link::node(lp, 0)) {
+                continue;
+            }
+            let Some(LinkTarget::Node(local)) = node.links.values_in[0].link.map(|l| l.target)
+            else {
+                continue;
+            };
+
+            // 只被这一处写，否则别处写的值会被我们替换掉。
+            if local_writers(graph, local) != [n] {
+                continue;
+            }
+            // 已经没有读取者了：说明这一轮已经折过它（读值都改接到出参
+            // 了），再折就是不动点循环 —— 必须在这里停。
+            if graph.get_node(local).links.values_out[1].is_empty() {
+                continue;
+            }
+            // 读取者不能逃出本区域：区域外读到的是循环结束后的值。
+            // 纯值节点（乘法、参数计算）不在控制流区域里，要顺着值流
+            // 继续往下看它最终喂给了谁。
+            if value_escapes_region(graph, cfg, region, local, &mut HashSet::new()) {
+                continue;
+            }
+            replace_value_source(graph, Link::node(local, 1), Link::node(lp, 0));
+            folded.push((n, local));
+            changed = true;
+        }
+        if !changed {
+            return folded;
+        }
+    }
+}
+
+/// 删掉一个控制流上的节点，把它旁路掉：每个前驱直接接到它的后继。
+///
+/// 计数循环里被摘的 `SetLocal`（初值 / 加一 / 拷贝）都是 1 进 1 出的，
+/// 删它们不能只是 `remove` —— 那样控制流在中间就断了（初值写入正好在
+/// 循环入口前，断掉之后有限循环没有入口）。
+fn bypass_control(graph: &mut NodeGraphIr, n: NodeRef) {
+    let node = graph.get_node(n);
+    let ins = node.links.controls_in[0].clone();
+    let outs = node.links.controls_out[0].clone();
+    graph.remove(n);
+    for from in ins {
+        for to in &outs {
+            graph.link_control(from, *to);
+        }
+    }
+}
+
+/// 把 `from` 的所有值消费者改接到 `to`。
+///
+/// 值边在两端各记一次：先解开旧的那条，再接新的。
+fn replace_value_source(graph: &mut NodeGraphIr, from: Link, to: Link) {
+    let LinkTarget::Node(n) = from.target else {
+        return;
+    };
+    let consumers = graph.get_node(n).links.values_out[from.index].clone();
+    for c in consumers {
+        graph.unlink_value(from, c);
+        graph.link_value(to, c);
+    }
 }
 
 /// 把区间终点落成值：常量直接用，`<` 的引用值插一个减法节点算 `- 1`。
@@ -1085,7 +1296,11 @@ fn detect_counting_loop(
     if other_link.index != 1 || graph.get_node(other_local).kind.id != IrNodeId::Local {
         return None;
     }
-    if other_local != var {
+    // 循环体实际读的是谁。`for ... in range` 会多一层拷贝：加一作用在
+    // 原变量上，体里读的是拷出来的那个；`while` 形状则直接读原变量。
+    let (read, copy) = if other_local == var {
+        (var, None)
+    } else {
         // 一层拷贝：这个局部变量在区域里只被写一次，写的是循环变量的读值。
         let copies: Vec<NodeRef> = local_writers(graph, other_local)
             .into_iter()
@@ -1104,7 +1319,8 @@ fn detect_counting_loop(
         if !dominates(regions, cfg, copies[0], inc) {
             return None;
         }
-    }
+        (other_local, Some(copies[0]))
+    };
 
     // 回到头的边：可以有多条（`continue` 和正常路径各一条），但每一条
     // 都得被加一支配 —— 也就是「连回循环开始的边都在 i+=1 之后」。
@@ -1171,6 +1387,12 @@ fn detect_counting_loop(
         natural_exit,
         begin,
         end,
+        var,
+        init,
+        inc,
+        add: add_node,
+        read,
+        copy,
     })
 }
 
@@ -1850,14 +2072,13 @@ mod tests {
             find_node(&g, is_switch).is_none(),
             "比较的分支不该留着"
         );
-        // 循环体挂在 out[0]，退出挂 out[1]。
-        assert!(
-            g.get_node(lp)
-                .links
-                .controls_out[0]
-                .iter()
-                .any(|t| t.target.node() == Some(c.body))
-        );
+        // 体里只有 `i += 1`：摘掉之后循环体是空的，out[0] 挂一个 nop。
+        // 退出挂 out[1]。
+        let body = g.get_node(lp).links.controls_out[0]
+            .first()
+            .and_then(|t| t.target.node())
+            .expect("循环体入口");
+        assert_ne!(body, c.body, "加一节点该被摘掉");
         assert!(
             g.get_node(lp)
                 .links
@@ -1865,12 +2086,51 @@ mod tests {
                 .iter()
                 .any(|t| t.target.node() == Some(c.after))
         );
-        // 进循环前是初值那个节点。
+        // 初值写入被摘掉，入口直接从函数出口进来（区间自己带着起点）。
+        assert!(!g.get_nodes().contains(&c.init), "初值节点该被摘掉");
         assert!(
             g.get_node(lp)
                 .links
                 .controls_in[0]
-                .contains(&Link::node(c.init, 0))
+                .iter()
+                .any(|t| t.target.is_export())
+        );
+    }
+
+    /// 特化之后循环体读的是有限循环节点的出参，原来那个局部变量和
+    /// 「每轮加一」整条链都不在了。
+    #[test]
+    fn counting_loop_reads_from_the_finite_loop_node() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里加一个「读循环变量」的消费者（模拟 sum += i）。
+        let use_var = g.insert(node_ir_native(node_add(NativeKind::Int)));
+        g.set_value_in(Link::node(use_var, 0), ValueIn::link(Link::node(c.var, 1)));
+        g.set_value_in(Link::node(use_var, 1), ValueIn::value(1i32.into()));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 读值改接到有限循环的出参。
+        assert_eq!(
+            g.get_node(use_var).links.values_in[0].link,
+            Some(Link::node(lp, 0)),
+            "循环体该读有限循环的出参"
+        );
+        // 初值写入、加一写入、`+` 节点、局部变量都摘掉了。
+        let alive = g.get_nodes();
+        for n in [c.init, c.body] {
+            assert!(!alive.contains(&n), "{n:?} 该被摘掉");
+        }
+        assert!(!alive.contains(&c.var), "循环变量该被摘掉");
+        assert!(
+            !alive.iter().any(|n| {
+                g.get_node(*n).kind.id.as_native() == Some(&node_add(NativeKind::Int).id)
+                    && g.get_node(*n).links.values_out[0]
+                        .iter()
+                        .any(|l| l.target.node() == Some(c.body))
+            }),
+            "加一的 `+` 节点该被摘掉"
         );
     }
 
@@ -1964,13 +2224,13 @@ mod tests {
         // 两条回到头的边都删掉了（链断 = 一轮结束）。
         assert!(g.get_node(br).links.controls_out[0].is_empty());
         assert!(g.get_node(work).links.controls_out[0].is_empty());
-        // 循环体挂在 out[0]。
+        // 循环体挂在 out[0]（体首是那个分支）。
         assert!(
             g.get_node(lp)
                 .links
                 .controls_out[0]
                 .iter()
-                .any(|t| t.target.node() == Some(c.body))
+                .any(|t| t.target.node() == Some(br))
         );
     }
 
@@ -2117,12 +2377,15 @@ mod tests {
         assert_eq!(int_of(&g, lp, 0), Some(0));
         assert_eq!(int_of(&g, lp, 1), Some(9));
         assert!(find_node(&g, is_switch).is_none(), "比较的分支不该留着");
+        // 体里只有加一：摘掉后循环体是空的，out[0] 挂 nop。
         assert!(
             g.get_node(lp)
                 .links
                 .controls_out[0]
-                .iter()
-                .any(|t| t.target.node() == Some(body))
+                .first()
+                .and_then(|t| t.target.node())
+                .is_some(),
+            "循环体入口不该悬空"
         );
     }
 }
