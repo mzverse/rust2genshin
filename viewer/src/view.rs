@@ -1143,14 +1143,16 @@ impl Render for Viewer {
         for nv in nodes {
             // 注释：贴在节点上方的小文本框,多行。布局已经为它留过位置
             // (`node::layout` 的 `ch`),这里按同一个估算高度往上顶。
-            if let Some((text, cw, ch)) = &nv.comment {
+            if let Some((text, _cw, ch)) = &nv.comment {
                 let font = (COMMENT_FONT_PX * nv.scale).max(5.0);
+                // 不给宽高:让它按内容自然撑开 —— 和 web 里一样由文本决定
+                // 尺寸。`ch` 只用来定位(布局为注释预留的高度,core 估算),
+                // 不用来限制渲染 —— 估窄了会把字折行、裁掉,"sum" 只剩
+                // "su" 就是这么来的。
                 let mut lines = div()
                     .absolute()
                     .left(px(nv.x))
                     .top(px(nv.y - (COMMENT_GAP + *ch) * nv.scale))
-                    .w(px(*cw * nv.scale))
-                    .h(px(*ch * nv.scale))
                     .flex()
                     .flex_col()
                     .px(px(COMMENT_PAD_X / 2.0 * nv.scale))
