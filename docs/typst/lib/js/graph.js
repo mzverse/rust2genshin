@@ -175,7 +175,14 @@ class GraphNode extends HTMLElement {
         // 节点 shadow 里那个具名 slot。
         this.comment = [...this.children].find(
             (el) => el.tagName === 'UI-GRAPH-COMMENT') || null;
-        if (this.comment) this.comment.slot = 'comment';
+        if (this.comment) {
+            this.comment.slot = 'comment';
+            // 注释框建在自己的 shadow 里，而它的 connectedCallback 排在
+            // 本元素**之后**(自定义元素反应按树序排队)—— 直接量会量到还没
+            // 升级的裸文本，高度按页面正文字体算，节点就矮了一截。先替它
+            // 把框建出来，下面 relayout 量到的才是真正的注释框。
+            this.comment.build();
+        }
 
         this.#readPins();
         this.#buildShadow();
@@ -458,6 +465,11 @@ const COMMENT_CSS = `
 
 class GraphComment extends HTMLElement {
     connectedCallback() {
+        this.build();
+    }
+
+    /** 建 shadow。幂等 —— 节点会在量尺寸之前先替它调一次(见 GraphNode.build)。 */
+    build() {
         if (this.built) return;
         this.built = true;
         const shadow = this.attachShadow({ mode: 'open' });
