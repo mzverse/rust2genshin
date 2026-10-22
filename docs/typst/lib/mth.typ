@@ -11,6 +11,18 @@
     }
 }
 
+#let natural-key(s) = {
+  let parts = s.matches(regex("([0-9]+)|([^0-9]+)"))
+  parts.map(p => {
+    let v = p.captures;
+    if v.first() != none {
+        int(v.first())
+    } else {
+        v.at(1)
+    }
+  })
+}
+
 #let to_decimal(value) = {
     if type(value) == float and value.is-infinite() {
         return value;

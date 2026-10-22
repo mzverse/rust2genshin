@@ -60,9 +60,10 @@
             // 键是真路径、值是显示名。`("a/b": …)` 这种带斜杠的键必须加引号。
             let options = (:)
             // bundler(`docs/src/typst.rs` 的 `walk`)已经把资源排好序了,
-            // 这里再排一次是为了不把下拉框的顺序押在它身上。排完才是字典序 ——
-            // 文件名的 `aaa_` / `aab_` 前缀就是靠这个排序生效的。
-            for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted() {
+            // 这里再排一次是为了不把下拉框的顺序押在它身上。纯字典序会把
+            // `10.xxx` 排到 `9.xxx` 前面,所以按 `mth.natural-key` 比 ——
+            // 数字段按数值、其余段按文本。
+            for x in query(asset).map(x => x.path).filter(x => x.starts-with("/play/demo/")).sorted(key: mth.natural-key) {
               options.insert(base_path + x, [#x.split("/").last().trim(".rs", at: end)])
             }
             // 用 `<sl-select>` 而不是原生 `<select>`:和按钮同一套主题、
