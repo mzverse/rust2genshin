@@ -279,9 +279,10 @@ body:has(main > .play) main {
  *   - 字符串 / 注释 / 数字                    → string / comment / literal
  *   - 命名空间 / 宏                          → markup / macro
  *   - 类 / 枚举 / 枚举成员 / 属性             → member(紫)
- *   - 变量 / 参数 / 属性 / 操作符 / value     → plain(与正文同色,不抢)
+ *   - 变量 / 参数 / 属性 / value             → plain(偏灰,不抢)
+ *   - 操作符                                → 正文色(和括号等标点一致)
  *
- * 不在映射里的类型(method / event / regexp / operator ...)就近复用:
+ * 不在映射里的类型(method / event / regexp ...)就近复用:
  * method 与 function 同色,event 偏红,regexp 沿 literal。
  * 复用而不是另开一组 token,深色覆盖就一处管。 */
 .play-editor .cm-tok-namespace      { color: var(--code-syn-markup); }
@@ -312,7 +313,9 @@ body:has(main > .play) main {
 .play-editor .cm-tok-string         { color: var(--code-syn-string); }
 .play-editor .cm-tok-number         { color: var(--code-syn-literal); }
 .play-editor .cm-tok-regexp         { color: var(--code-syn-literal); }
-.play-editor .cm-tok-operator       { color: var(--code-syn-plain); }
+/* 操作符跟正文同色。语义 token 里它和变量一样归到 plain,但操作符夹在
+ * 括号、逗号这些没被 token 化的标点中间 —— 单独灰一档,读起来像被稀释了。 */
+.play-editor .cm-tok-operator       { color: var(--fg); }
 .play-editor .cm-tok-decorator      { color: var(--code-syn-attribute); }
 
 /* ---- 诊断波浪线 ----
