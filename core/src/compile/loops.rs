@@ -958,6 +958,61 @@ fn value_escapes_region(
     false
 }
 
+/// 值被读取的位置。
+///
+/// 局部变量的读值出口上挂着的消费者，就是「谁读了这个值」。纯值节点
+/// （加法、调用参数之类）自己不在控制流上 —— 它的值是被下游的控制节点
+/// 拉动时才求值的，所以位置要看它最终喂给了哪个控制节点。
+fn read_positions(
+    graph: &NodeGraphIr,
+    n: NodeRef,
+    seen: &mut HashSet<NodeRef>,
+    out: &mut Vec<NodeRef>,
+) {
+    if !seen.insert(n) {
+        return;
+    }
+    if !graph.get_node(n).kind.is_calc() {
+        // 控制节点：值在它执行的时候被拉动。
+        out.push(n);
+        return;
+    }
+    for link in graph.get_node(n).links.values_out.iter().flatten() {
+        if let Some(m) = link.target.node() {
+            read_positions(graph, m, seen, out);
+        }
+    }
+}
+
+/// 从 `n` 出发、一轮之内能到达的点。
+///
+/// 「一轮之内」= 不穿过指向区域头的边（回边、`continue` 走的就是它）。
+/// 自增之后才读得到的值，落在这个集合里。
+fn nodes_after(cfg: &Cfg, region: &Region, n: NodeRef) -> HashSet<NodeRef> {
+    let mut out: HashSet<NodeRef> = HashSet::new();
+    let Some(&start) = cfg.node_index.get(&n) else {
+        return out;
+    };
+    let mut stack = vec![start];
+    while let Some(p) = stack.pop() {
+        for e in cfg.edges.iter().filter(|e| e.from == p) {
+            // 回边 / continue：那是下一轮，不算这一轮。
+            if e.to == region.head {
+                continue;
+            }
+            // 出区域了：区域外不是「这一轮」。
+            if !region.nodes.contains(&e.to) {
+                continue;
+            }
+            let m = point_node(cfg, e.to);
+            if out.insert(m) {
+                stack.push(e.to);
+            }
+        }
+    }
+    out
+}
+
 /// 把「每轮把有限循环的当前值写进一个临时局部变量」这种拷贝折叠掉。
 ///
 /// `for r in a..b` 的迭代变量在 MIR 里常不止一层：循环变量加一，体里再
@@ -1006,6 +1061,15 @@ fn fold_copies(
             // 纯值节点（乘法、参数计算）不在控制流区域里，要顺着值流
             // 继续往下看它最终喂给了谁。
             if value_escapes_region(graph, cfg, region, local, &mut HashSet::new()) {
+                continue;
+            }
+            // 读取者得在这次写入之后 —— 否则它读到的是上一轮的那份。
+            let mut positions = Vec::new();
+            for l in &graph.get_node(local).links.values_out[1] {
+                let Some(m) = l.target.node() else { continue };
+                read_positions(graph, m, &mut HashSet::new(), &mut positions);
+            }
+            if positions.iter().any(|p| !dominates(regions, cfg, n, *p)) {
                 continue;
             }
             replace_value_source(graph, Link::node(local, 1), Link::node(lp, 0));
@@ -1119,6 +1183,87 @@ fn is_invariant(
             None => true,
         }),
         _ => false,
+    }
+}
+
+/// 循环变量的每一处读取，拿到的都还是「本轮的当前值」吗？
+///
+/// 有限循环节点的出参是当前值：进入时是起始值，每轮加一。循环体里读
+/// 循环变量，读到的必须就是这个值 —— 否则特化就改了语义。
+///
+/// - `for ... in range`：体里读的是每轮顶部重新拷贝的那一份，值就是
+///   当前值。但这份拷贝要是被别处写过（消掉的就是错的值），或者体外的
+///   读者（循环结束后那份值差一），就不能消。
+/// - `while` 形状：体里读的就是计数器本身。自增之后才读到的，是自增后
+///   的值 —— 那不是当前值，不能消。
+fn loop_var_reads_are_current(
+    graph: &NodeGraphIr,
+    cfg: &Cfg,
+    regions: &Regions,
+    i: usize,
+    c: &CountingLoop,
+) -> bool {
+    let region = &regions.regions[i];
+    let in_region = |n: NodeRef| {
+        cfg.node_index
+            .get(&n)
+            .is_some_and(|idx| region.nodes.contains(idx))
+    };
+
+    // 真读者：计数器那套零件（比较、加一、拷贝）自己也读循环变量，
+    // 但它们会被摘掉，不算数。
+    let machinery = [Some(c.cmp), Some(c.add), c.copy];
+    let mut positions: Vec<NodeRef> = Vec::new();
+    for l in &graph.get_node(c.read).links.values_out[1] {
+        let Some(m) = l.target.node() else { continue };
+        if machinery.contains(&Some(m)) {
+            continue;
+        }
+        read_positions(graph, m, &mut HashSet::new(), &mut positions);
+    }
+
+    match c.copy {
+        Some(copy) => {
+            // 用户的 `i` 全图只被这一处写：别处改了它，我们消掉的就是
+            // 错的值。
+            if local_writers(graph, c.read) != [copy] {
+                return false;
+            }
+            // 计数器除了比较和拷贝没有别的读者 —— 别的读者读到的是「还会
+            // 被再次写入」的活值，而自增那次写入会被摘掉，读的就是空值。
+            let var_readers: Vec<NodeRef> = graph
+                .get_node(c.var)
+                .links
+                .values_out[1]
+                .iter()
+                .filter_map(|l| l.target.node())
+                .collect();
+            if var_readers.len() != 2
+                || !var_readers.contains(&c.cmp)
+                || !var_readers.contains(&copy)
+            {
+                return false;
+            }
+            // 读取者都在本区域内（区域外读到的是循环结束后的值，差一），
+            // 且都在拷贝之后 —— 拿到的才是本轮那一份。
+            positions
+                .iter()
+                .all(|p| in_region(*p) && dominates(regions, cfg, copy, *p))
+        }
+        None => {
+            // 自增之后才读到的，是自增后的值 —— 不是当前值。
+            let after = nodes_after(cfg, region, c.inc);
+            if positions.iter().any(|p| in_region(*p) && after.contains(p)) {
+                return false;
+            }
+            // 循环体外读计数器：退出时它的值得还是当前值。出口点要是
+            // 自增之后才走的（自增之后 break / return），退出时它已经加过了。
+            !cfg.edges.iter().any(|e| {
+                region.nodes.contains(&e.from)
+                    && !region.nodes.contains(&e.to)
+                    && after.contains(&point_node(cfg, e.from))
+            })
+        }
     }
 }
 
@@ -1367,7 +1512,7 @@ fn detect_counting_loop(
         _ => return None,
     };
 
-    Some(CountingLoop {
+    let counting = CountingLoop {
         head: head_node,
         cmp: cmp_node,
         body,
@@ -1380,7 +1525,12 @@ fn detect_counting_loop(
         add: add_node,
         read,
         copy,
-    })
+    };
+    // 消掉循环变量之前，确认它每一处读取拿到的都还是「本轮的当前值」。
+    if !loop_var_reads_are_current(graph, cfg, regions, i, &counting) {
+        return None;
+    }
+    Some(counting)
 }
 
 /// 区域 `i` 的 switch 里，退出目标 `v` 对应的分支该连到哪。
@@ -2342,5 +2492,190 @@ mod tests {
                 .is_some(),
             "循环体入口不该悬空"
         );
+    }
+
+    /// `for ... in range` 的形状：计数器 + 每轮顶部的一份拷贝。
+    ///
+    /// 计数器 `var` 每轮加一；用户的 `i` 是 `other` —— 每轮顶部从计数器
+    /// 拷一份出来，体里读的是那份拷贝（拷的是自增之前的值）。
+    struct ForLoop {
+        /// 计数器。
+        var: NodeRef,
+        /// 用户的 `i`（每轮重新拷贝的那份）。
+        other: NodeRef,
+        /// 拷贝的写入节点。
+        copy: NodeRef,
+        /// 自增的写入节点。
+        inc: NodeRef,
+        /// 循环头。
+        head: NodeRef,
+        /// 正常结束之后。
+        after: NodeRef,
+    }
+
+    fn for_loop(g: &mut NodeGraphIr, bound: i32) -> ForLoop {
+        let var = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        let other = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        // 初值：计数器 = 0
+        let init = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(init, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(init, 1), ValueIn::value(0i32.into()));
+        // 比较：计数器 < bound
+        let cmp = g.insert(node_ir_native(node_less_than(NativeKind::Int)));
+        g.set_value_in(Link::node(cmp, 0), ValueIn::link(Link::node(var, 1)));
+        g.set_value_in(Link::node(cmp, 1), ValueIn::value(bound.into()));
+        // 头：bool 的分支。第 0 支是 false（跳出），第 1 支是 true（体）。
+        let head = g.insert(node_ir_switch(
+            IrKind::Native(NativeKind::Bool),
+            vec![Box::new(false) as Box<dyn NativeValue>],
+        ));
+        g.set_value_in(Link::node(head, 0), ValueIn::link(Link::node(cmp, 0)));
+        // 体：先把计数器拷成用户的 i，再给计数器加一。
+        let copy = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(copy, 0), ValueIn::link(Link::node(other, 0)));
+        g.set_value_in(Link::node(copy, 1), ValueIn::link(Link::node(var, 1)));
+        let add = g.insert(node_ir_native(node_add(NativeKind::Int)));
+        g.set_value_in(Link::node(add, 0), ValueIn::link(Link::node(other, 1)));
+        g.set_value_in(Link::node(add, 1), ValueIn::value(1i32.into()));
+        let inc = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(inc, 0), ValueIn::link(Link::node(var, 0)));
+        g.set_value_in(Link::node(inc, 1), ValueIn::link(Link::node(add, 0)));
+        let after = g.insert(node_ir_nop());
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(head, 0));
+        g.link_control(Link::node(head, 1), Link::node(copy, 0)); // 真 → 体
+        g.link_control(Link::node(head, 0), Link::node(after, 0)); // 假 → 跳出
+        g.link_control(Link::node(copy, 0), Link::node(inc, 0));
+        g.link_control(Link::node(inc, 0), Link::node(head, 0)); // 回边
+        ForLoop {
+            var,
+            other,
+            copy,
+            inc,
+            head,
+            after,
+        }
+    }
+
+    /// 体里读一次局部变量（写进另一个局部变量）。
+    fn read_local(g: &mut NodeGraphIr, src: NodeRef) -> NodeRef {
+        let dst = g.insert(node_ir_local(IrKind::Native(NativeKind::Int)));
+        let set = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(dst, 0)));
+        g.set_value_in(Link::node(set, 1), ValueIn::link(Link::node(src, 1)));
+        set
+    }
+
+    /// `for` 形状能特化：用户的 `i` 改读有限循环的出参。
+    #[test]
+    fn for_shape_reads_the_finite_loop_node() {
+        let mut g = new_graph();
+        let f = for_loop(&mut g, 10);
+        // 体里读一次用户的 i。
+        let use_i = read_local(&mut g, f.other);
+        g.unlink_control(Link::node(f.copy, 0), Link::node(f.inc, 0));
+        g.link_control(Link::node(f.copy, 0), Link::node(use_i, 0));
+        g.link_control(Link::node(use_i, 0), Link::node(f.inc, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间 [0, 9]：特化了。
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        assert_eq!(
+            g.get_node(use_i).links.values_in[1].link,
+            Some(Link::node(lp, 0)),
+            "用户的 i 该读有限循环的出参"
+        );
+    }
+
+    /// 用户的 `i` 在循环外还被写过 —— 消掉它就是把别的值丢了，不能特化。
+    #[test]
+    fn for_shape_with_a_write_outside_the_loop_is_not_counted() {
+        let mut g = new_graph();
+        let f = for_loop(&mut g, 10);
+        // 循环之后又改了用户的 i。
+        let set = g.insert(node_ir_set_local(IrKind::Native(NativeKind::Int)));
+        g.set_value_in(Link::node(set, 0), ValueIn::link(Link::node(f.other, 0)));
+        g.set_value_in(Link::node(set, 1), ValueIn::value(5i32.into()));
+        g.unlink_control(Link::node(f.head, 0), Link::node(f.after, 0));
+        g.link_control(Link::node(f.head, 0), Link::node(set, 0));
+        g.link_control(Link::node(set, 0), Link::node(f.after, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是满的：没特化。
+        assert_eq!(int_of(&g, lp, 0), Some(i32::MIN));
+        assert_eq!(int_of(&g, lp, 1), Some(i32::MAX));
+        assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
+    }
+
+    /// 体里在自增之后读计数器：读到的是自增后的值，不是当前值，不能特化。
+    #[test]
+    fn counting_loop_reading_the_counter_after_the_increment_is_not_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里：先加一，再读一次 i。
+        let use_i = read_local(&mut g, c.var);
+        g.unlink_control(Link::node(c.body, 0), Link::node(c.head, 0));
+        g.link_control(Link::node(c.body, 0), Link::node(use_i, 0));
+        g.link_control(Link::node(use_i, 0), Link::node(c.head, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是满的：没特化。
+        assert_eq!(int_of(&g, lp, 0), Some(i32::MIN));
+        assert_eq!(int_of(&g, lp, 1), Some(i32::MAX));
+        assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
+    }
+
+    /// 体里在自增之前读计数器：读到的是当前值，能特化。
+    #[test]
+    fn counting_loop_reading_the_counter_before_the_increment_is_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里：先读一次 i，再加一。
+        let use_i = read_local(&mut g, c.var);
+        g.unlink_control(Link::node(c.head, 1), Link::node(c.body, 0));
+        g.link_control(Link::node(c.head, 1), Link::node(use_i, 0));
+        g.link_control(Link::node(use_i, 0), Link::node(c.body, 0));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间 [0, 9]：特化了。
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
+        assert_eq!(
+            g.get_node(use_i).links.values_in[1].link,
+            Some(Link::node(lp, 0)),
+            "体里该读有限循环的出参"
+        );
+    }
+
+    /// 自增之后才跳出循环：退出时计数器已经加过了，和当前值对不上，
+    /// 不能特化。
+    #[test]
+    fn counting_loop_that_breaks_after_the_increment_is_not_counted() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        // 体里：加一，然后分支，一支跳出循环。
+        let br = branch(&mut g);
+        g.unlink_control(Link::node(c.body, 0), Link::node(c.head, 0));
+        g.link_control(Link::node(c.body, 0), Link::node(br, 0));
+        g.link_control(Link::node(br, 1), Link::node(c.head, 0)); // 继续
+        g.link_control(Link::node(br, 0), Link::node(c.after, 0)); // 跳出
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        // 区间还是满的：没特化。
+        assert_eq!(int_of(&g, lp, 0), Some(i32::MIN));
+        assert_eq!(int_of(&g, lp, 1), Some(i32::MAX));
+        assert!(find_node(&g, is_switch).is_some(), "比较的分支不该被摘掉");
     }
 }
