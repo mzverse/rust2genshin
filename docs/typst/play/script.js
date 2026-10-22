@@ -30,6 +30,7 @@ import {
     tokensField,
     diagnosticsField,
     decorationField,
+    diagnosticTooltip,
 } from "./lsp-client.js";
 import { loadSchema, decodeBundle, collectGraphs, collectNodeDecls, buildGraphElement } from "./gia.js";
 
@@ -1247,6 +1248,8 @@ function ready() {
                 tokensField,
                 diagnosticsField,
                 decorationField,
+                // 悬停波浪线时把诊断消息显示成 DOM 提示(见 lsp-client.js)。
+                diagnosticTooltip,
                 // 启用补全;override 让 completionProvider 完全控制,不被
                 // 默认的 keyword/word-based 完成污染。
                 autocompletion({

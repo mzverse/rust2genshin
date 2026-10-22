@@ -343,6 +343,28 @@ body:has(main > .play) main {
     text-decoration-skip-ink: none;
 }
 
+/* ---- 诊断的悬停提示 ----
+ *
+ * 由 CM 的 hoverTooltip 生成(`lsp-client.js` 的 `diagnosticTooltip`),
+ * 挂在 `.cm-tooltip` 里。CM 的基础主题会给 tooltip 一套浅色边框和背景,
+ * 两层的权重一样 —— 多带一层 `.cm-editor` 压过去,和编辑器的深色主题对齐。 */
+.play-editor .cm-editor .cm-tooltip.cm-tooltip-hover {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background-color: var(--code-bg);
+    color: var(--fg);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+    max-width: 26em;
+    padding: 7px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.play-editor .cm-diag-tip.is-warning { color: var(--warn); }
+.play-editor .cm-diag-tip.is-info    { color: var(--muted); }
+
 /* ---- 下拉(`<sl-select>`) ----
  *
  * 配色、箭头、焦点环、胶囊圆角全由 Shoelace 自己画(主题在

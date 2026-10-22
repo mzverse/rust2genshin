@@ -13,7 +13,7 @@
  * 高亮与诊断是两个独立的 decoration 层，可同时存在于同一 range。
  */
 
-import { Decoration, EditorView } from "https://esm.sh/@codemirror/view@6";
+import { Decoration, EditorView, hoverTooltip } from "https://esm.sh/@codemirror/view@6";
 import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@6";
 
 /* 我们真的有样式的 token 名。`style.css` 里每个名字都有一条
@@ -177,12 +177,42 @@ function buildDecorations(state) {
             const cls = severityClass(d.severity);
             if (!cls) continue;
             const spec = { class: cls };
-            if (d.message) spec.attributes = { title: d.message };
+            // 消息放在 aria-label 里,不改用 title:title 会招来浏览器原生
+            // 气泡,和下面的 hoverTooltip 叠成两层。原生气泡是浏览器 UI,
+            // 既不进页面渲染树(截屏录不到),样式也不受控。
+            if (d.message) spec.attributes = { "aria-label": d.message };
             out.push(Decoration.mark(spec).range(d.from, d.to));
         }
     }
     return out;
 }
+
+/* 诊断的悬停提示。
+ *
+ * `buildDecorations` 只负责画波浪线;消息本身用 CM 的 hoverTooltip 显示 ——
+ * 提示是页面里的 DOM 节点,和正文一起渲染,截屏/录屏都看得到,样式也跟主题
+ * 一致。悬停 250ms 后出现,移开即消失。 */
+export const diagnosticTooltip = hoverTooltip((view, pos) => {
+    const diags = view.state.field(diagnosticsField, false);
+    if (!diags) return null;
+    for (const d of diagnosticRanges(view.state.doc, diags)) {
+        if (pos < d.from || pos > d.to || !d.message) continue;
+        return {
+            pos: d.from,
+            end: d.to,
+            above: true,
+            create() {
+                const dom = document.createElement("div");
+                dom.className = "cm-diag-tip";
+                if (d.severity === 2) dom.classList.add("is-warning");
+                else if (d.severity !== 1) dom.classList.add("is-info");
+                dom.textContent = d.message;
+                return { dom };
+            },
+        };
+    }
+    return null;
+}, { hoverTime: 250 });
 
 export const decorationField = StateField.define({
     create() { return Decoration.none; },
