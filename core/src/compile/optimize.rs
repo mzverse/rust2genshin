@@ -641,6 +641,12 @@ impl Optimizer {
             return Some(());
         }
         if n.links.values_in[1].link == Some(Link::node(local, 1)) {
+            // 自赋值(`local = local`):删掉它不改变值。但如果它是句柄的最后一个
+            // 使用者,删完 `Local` 就只剩值用户,`eliminate_local` 会把它们改接到
+            // 「初始值」引脚上 —— 普通局部变量那个引脚是空的,等于断连。
+            if self.handle_would_empty(local) {
+                return Some(());
+            }
             self.relink_controls(node, 0, 0);
             self.graph.remove(node);
             return None;
@@ -667,12 +673,16 @@ impl Optimizer {
         // `opaque` 是「说不清它求值时是什么值」的节点（见步骤 1b）。
         // 控制流回溯时碰到它们，就说明那个执行点读到的值来源不明，拒绝优化。
         let mut opaque: HashSet<NodeRef> = HashSet::new();
-        for x in n_local
-            .links
-            .values_out[0]
-            .iter()
-            .filter_map(|x| x.target.node())
-        {
+        for link in n_local.links.values_out[0].iter() {
+            let Some(x) = link.target.node() else {
+                return Some(());
+            };
+            // 只认「写这个变量」的用法:句柄接到 setter 的 `value in[0]`。
+            // 句柄被当成**值**存进别的变量(`let r = &mut list`)时是引脚 1,
+            // 那会让这个变量的句柄逃出去 —— 值来源不明,别优化。
+            if link.index != 0 {
+                return Some(());
+            }
             if self.graph.get_node(x).kind.id == IrNodeId::SetLocal {
                 local_setters.insert(x);
             } else {
@@ -851,6 +861,13 @@ impl Optimizer {
         if usages.len() > max {
             return Some(());
         }
+        // 要删的是这个变量的**最后一个** setter 吗？是的话，删完 `Local` 的句柄就
+        // 没人持有了，`eliminate_local` 会把剩下的值用户改接到 `Local` 的「初始值」
+        // 引脚 —— 普通局部变量那个引脚是空的，改接就等于断连。所以这种情况下
+        // 所有值用户都必须能跟着改接到写入值上，否则别删。
+        if self.handle_would_empty(local) && usages.len() != n_local.links.values_out[1].len() {
+            return Some(());
+        }
         assert!(!usages.contains(&Link::node(node, 1)));
         // 被写入的值不能依赖这个 local 的旧值 —— 否则把 usage 改接到写入的
         // 值上会造环（`i += 1` 就是这种：写入值是 `i + 1`，而 `i` 正是 usage）。
@@ -865,6 +882,26 @@ impl Optimizer {
         self.relink_controls(node, 0, 0);
         self.graph.remove(node);
         None
+    }
+
+    /// 删掉这个 `Local` 的句柄使用者之后，值用户会不会被 `eliminate_local`
+    /// 改接到一个空的「初始值」引脚上（也就是断连）？
+    ///
+    /// 条件：这是句柄的最后一个使用者，且还有值用户，且初始值没接东西。
+    fn handle_would_empty(&self, local: NodeRef) -> bool {
+        let n = self.graph.get_node(local);
+        n.links.values_out[0].len() == 1
+            && !n.links.values_out[1].is_empty()
+            && n.links.values_in[0].link.is_none()
+    }
+
+    /// 这个 `SetLocal` 是不是自赋值（写入的值就是这个变量自己的值）？
+    fn is_self_assignment(&self, setter: NodeRef) -> bool {
+        let n = self.graph.get_node(setter);
+        let Some(local) = n.links.values_in[0].link.and_then(|l| l.target.node()) else {
+            return false;
+        };
+        n.links.values_in[1].link == Some(Link::node(local, 1))
     }
 
     /// `root` 执行之前，最后一个写这个 local 的 setter 是谁。
@@ -946,9 +983,13 @@ impl Optimizer {
         let res = (|| {
             if let Some(x) = now.node() {
                 if local_setters.contains(&x) {
-                    // 它自己就是 setter：它执行之后的值就是它写的，它之前的
-                    // setter 都被盖掉了
-                    return Ok(Some(HashSet::from([x])));
+                    // 自赋值(`local = local`)不改变值，不算「盖掉之前的值」——
+                    // 越过它继续往回走。
+                    if !self.is_self_assignment(x) {
+                        // 它自己就是 setter：它执行之后的值就是它写的，它之前的
+                        // setter 都被盖掉了
+                        return Ok(Some(HashSet::from([x])));
+                    }
                 }
                 if opaque.contains(&x) {
                     // 有可能改掉这个变量的节点：值来源不明
@@ -1166,7 +1207,7 @@ fn maybe_write(id: &IrNodeId, index: usize) -> bool {
 mod tests {
     use super::*;
     use crate::compile::func::NodeGraphIr;
-    use crate::compile::ir::{node_ir_local, node_ir_set_local, node_ir_switch};
+    use crate::compile::ir::{node_ir_list_get_length, node_ir_local, node_ir_set_local, node_ir_switch};
     use crate::node::arithmetic::node_add;
     use crate::node::{ExportDecl, NodeGraphKind, NodeKind};
     use crate::value::NativeKind;
@@ -1225,6 +1266,46 @@ mod tests {
             Some(Link::node(i, 1)),
             "`add` 的输入不该被改接"
         );
+    }
+
+    /// 句柄被当成**值**存进另一个变量时（`let r = &mut list`），它逃出了这个
+    /// 变量的掌控 —— 不能把当前 setter 消掉。否则另一个变量的 setter 再被删，
+    /// 句柄就彻底没主了，`eliminate_local` 会把值用户改接到空的「初始值」上，
+    /// 整条值链断连（`test_list_ops` 踩过）。
+    #[test]
+    fn setter_is_kept_when_handle_escapes_as_a_value() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "list_ops");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let list = IrKind::list(int());
+        let l = g.insert(node_ir_local(list.clone()));
+        // `list = ...`
+        let init = g.insert(node_ir_set_local(list.clone()));
+        g.link_value(Link::node(l, 0), Link::node(init, 0));
+        // 读列表长度
+        let len = g.insert(node_ir_list_get_length(list.clone()));
+        g.link_value(Link::node(l, 1), Link::node(len, 0));
+        // 另一个变量，它的值是 `list` 的句柄（引脚 1，不是句柄引脚 0）
+        let other = g.insert(node_ir_local(list.clone()));
+        let store = g.insert(node_ir_set_local(list.clone()));
+        g.link_value(Link::node(other, 0), Link::node(store, 0));
+        g.link_value(Link::node(l, 0), Link::node(store, 1));
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(store, 0));
+        g.link_control(Link::node(store, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert_eq!(
+            opt.eliminate_unnecessary_local_setter(init),
+            Some(()),
+            "句柄逃到别的变量里时不该优化"
+        );
+        assert!(opt.graph.get_nodes().contains(&init), "setter 应当保留");
     }
 
     /// `i = 0; i = 1; use(i)`：读 `i` 的那个执行点在 `i = 1` 之后，它读到的
