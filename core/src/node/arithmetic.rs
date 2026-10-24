@@ -556,32 +556,8 @@ pub static NODE_TIMESTAMP_TO_WEEKDAY: LazyLock<NodeKind> =
     LazyLock::new(|| NodeKind::expr(754, vec![Int], Int));
 
 // ========================================================================
-// 列表 / 字典 / 类型转换
+// 字典 / 类型转换
 // ========================================================================
-
-/// 组装列表(ID 169,泛型变体):shell 固定 169,kernel 随元素类型(Int→169、
-/// Str→170、Ety→171、Gid→172、Flt→173、Vec→174、Bol→175、Cfg→568、Pfb→569);
-/// 输出 L<R<T>>(按元素类型返回列表占位)。
-pub fn node_assemble_list(ty: NativeKind) -> NodeKind {
-    // 元素输入动态添加,这里按 1 个元素占位;实际编译期按需扩展 values_in_types
-    let mut result = NodeKind::expr(169, vec![ty.clone()], ty.clone());
-    let (selected, kernel) = match ty {
-        Int => (0, 169),
-        String => (1, 170),
-        Entity => (2, 171),
-        Guid => (3, 172),
-        Float => (4, 173),
-        Vec3 => (5, 174),
-        Bool => (6, 175),
-        Config => (7, 568),
-        Prefab => (8, 569),
-        other => panic!("Arithmetic.General.Assemble_List does not support type {other:?}"),
-    };
-    result.id.kernel = kernel;
-    result.id.selectors_in[0] = selected.into();
-    result.id.selectors_out[0] = selected.into();
-    result
-}
 
 /// 类型转换(ID 180,泛型变体):K 类型值转为 V 类型值;
 /// shell 固定 180,kernel 随 (K,V) 组合(11 种,见特判);输出 R<V>。

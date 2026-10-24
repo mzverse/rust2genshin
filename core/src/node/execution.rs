@@ -331,40 +331,6 @@ pub static NODE_SET_SOURCE_STATE: LazyLock<NodeKind> = LazyLock::new(|| {
 });
 
 // ========================================================================
-// 列表操作
-// ========================================================================
-
-/// 拼接列表(ID 100)
-pub static NODE_CONCATENATE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(100, vec![List(Int.into()), List(Int.into())])
-});
-
-/// 清空列表(ID 107)
-pub static NODE_CLEAR_LIST: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(107, vec![List(Int.into())])
-});
-
-/// 插入元素(ID 135)
-pub static NODE_INSERT: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(135, vec![List(Int.into()), Int, Int])
-});
-
-/// 移除元素(ID 153)
-pub static NODE_REMOVE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(153, vec![List(Int.into()), Int])
-});
-
-/// 修改下标(ID 160)
-pub static NODE_MODIFY_INDEX: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(160, vec![List(Int.into()), Int, Int])
-});
-
-/// 排序列表(ID 167)
-pub static NODE_SORT_LIST: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(167, vec![List(Int.into()), Enum(todo!())])
-});
-
-// ========================================================================
 // 状态 / 攻击
 // ========================================================================
 
@@ -975,15 +941,6 @@ pub static NODE_DICT_SORT_BY_KEY: LazyLock<NodeKind> = LazyLock::new(|| {
 /// 按值排序(ID 1938)
 pub static NODE_DICT_SORT_BY_VALUE: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::simple(1938, 1, 1, vec![NativeKind::dict(Int, Int), Enum(todo!())], vec![List(Int.into()), List(Int.into())])
-});
-
-// ========================================================================
-// 遍历
-// ========================================================================
-
-/// 遍历列表(ID 509):list → 每项执行 body,结束后走 done;输出当前项(Int)
-pub static NODE_FOR_EACH: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::simple(509, 2, 2, vec![List(Int.into())], vec![Int])
 });
 
 // ========================================================================

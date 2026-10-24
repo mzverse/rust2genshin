@@ -1,5 +1,5 @@
 use crate::asset::{Identifier, Side};
-use crate::asset::generated::{ClientTypeId, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, pin_interface, structure_definition_data, type_definition, typed_value, vec3f};
+use crate::asset::generated::{pin_interface, structure_definition_data, type_definition, typed_value, vec3f, ClientTypeId, DynamicTypeMetadata, Enum, Flt, Id, Int, ListStorage, MapPairStorage, MapStorage, ServerTypeId, Str, StructStorage, TypeDefinition, TypedValue, Vec3f, dynamic_type_metadata};
 use crate::structure::StructRef;
 use downcast::{Any, downcast};
 use std::cmp::Ordering;
@@ -300,7 +300,7 @@ impl NativeKind {
                 VarSnapshotRef => panic!(),
                 List(_) => panic!(),
                 Dict { .. } => panic!(),
-                Struct { .. } => todo!(),
+                Struct { .. } => SStructList,
             },
             Dict { .. } => SDict,
             Struct { .. } => SStruct,
@@ -470,6 +470,7 @@ impl NativeKind {
             Struct(st) => StructRef(type_definition::StructReference {
                 schema_id: st.id.guid,
             }).into(),
+            List(ele) => ele.encode_schema(),
             _ => None,
         }
     }
@@ -517,6 +518,35 @@ impl NativeKind {
                 value_id: None,
             }.into(),
             _ => None,
+        }
+    }
+
+    pub fn encode_metadata(&self) -> DynamicTypeMetadata {
+        use NativeKind::*;
+        use dynamic_type_metadata::config::inner::SchemaBinding::*;
+        let mut item_style = None;
+        let schema = match self {
+            Struct(kind) => TargetStructId(type_definition::StructReference {
+                schema_id: kind.id.guid,
+            }),
+            List(ele) if let Struct(kind) = ele.as_ref() => {
+                item_style = ele.get_widget_type();
+                ListItemStructId(type_definition::StructReference {
+                    schema_id: kind.id.guid,
+                })
+            },
+            Dict { .. } => todo!(),
+            _ => panic!("{self:?}"),
+        };
+        DynamicTypeMetadata {
+            version: 1,
+            config: dynamic_type_metadata::Config {
+                inner: dynamic_type_metadata::config::Inner {
+                    container_style: self.get_widget_type().unwrap() as i32,
+                    item_style: item_style.map(|x| x as i32),
+                    schema_binding: schema.into(),
+                }.into(),
+            }.into(),
         }
     }
 }
@@ -631,4 +661,35 @@ fn encode_field_dict(key: &NativeKind, value: &NativeKind, data: &dyn NativeValu
             _ => None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn 结构体(id: i64) -> NativeKind {
+        NativeKind::Struct(StructRef {
+            id: crate::structure::id_struct(id),
+            fields: vec![],
+        })
+    }
+
+    #[test]
+    fn 结构体列表的服务端类型是_s_struct_list() {
+        let list = NativeKind::List(结构体(7).into());
+        assert_eq!(list.get_server_id(), ServerTypeId::SStructList);
+        // 元素本身仍是 S_STRUCT
+        assert_eq!(结构体(7).get_server_id(), ServerTypeId::SStruct);
+    }
+
+    #[test]
+    fn 结构体列表的_schema_指回元素结构体() {
+        let list = NativeKind::List(结构体(7).into());
+        match list.encode_schema() {
+            Some(type_definition::server_type::Schema::StructRef(r)) => assert_eq!(r.schema_id, 7),
+            other => panic!("结构体列表应当带 struct_ref,实际是 {other:?}"),
+        }
+        // 其他列表没有 schema
+        assert!(NativeKind::List(NativeKind::Int.into()).encode_schema().is_none());
+    }
 }

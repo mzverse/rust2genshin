@@ -47,6 +47,7 @@
             if document.title != none {
                 html_elem("title", contentToString(document.title));
             }
+            html_elem("link", attrs: (href: base_path + "/favicon.ico", rel: "icon", type: "image/x-icon"));
             import_script("/lib/js/theme.js");
             import_script("/lib/js/style.js");
             import_style("/lib/css/theme.css");

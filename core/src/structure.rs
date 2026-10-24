@@ -7,13 +7,15 @@ use crate::asset::AssetBundle;
 use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
-use crate::node::decl::{DeclPin, NodeDecl, node_declared};
-use crate::node::{NodeKind, PinType};
+use crate::node::decl::{decl_pins_value, node_declared, DeclPin, NodeDecl};
+use crate::node::{NodeGraph, NodeKind, PinType};
 use crate::value::{NativeKind, NativeValue};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::iter;
 use tap::Tap;
+use crate::asset::generated::node_instance::DependencyDeclaration;
+use crate::asset::generated::type_definition::StructReference;
 
 /// 拼装结构体: 字段值 → 结构体
 pub fn node_assemble_struct(assets: &AssetBundle, st: &StructRef) -> NodeKind {
@@ -235,4 +237,47 @@ impl StructureDefinition {
         });
         result
     }
+}
+
+pub fn node_struct<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, mut node: NodeKind, kind: &StructRef, type1: i32, selector: i32, sin: impl IntoIterator<Item = usize>, sout: impl IntoIterator<Item = usize>) -> NodeKind {
+    let decl = DependencyDeclaration {
+        identity: Identifier {
+            source: identifier::Source::SystemDefined as i32,
+            category: identifier::Category::ServerBasic as i32,
+            kind: identifier::AssetKind::SysCallStub as i32,
+            guid: 0,
+            runtime_id: node.id.id,
+        }.into(),
+        type1,
+        unknown1: 1,
+        st: StructReference {
+            schema_id: kind.id.guid,
+        }.into(),
+    };
+    graph.embedded.entry(decl).or_insert_with(|| NodeDecl {
+        name: "".to_string(),
+        description: "".to_string(),
+        pins: HashMap::new().tap_mut(|pins| {
+            pins.insert(PinType::InControl, vec![DeclPin::default(); node.controls_in_num]);
+            pins.insert(PinType::OutControl, vec![DeclPin::default(); node.controls_out_num]);
+            pins.insert(PinType::InValue, decl_pins_value(node.values_in_types.iter().map(Option::as_ref).map(Option::unwrap)));
+            pins.insert(PinType::OutValue, decl_pins_value(&node.values_out_types));
+        }),
+        implementation: Default::default(),
+        template_root: Default::default(),
+        template_sub: Default::default(),
+        references: vec![],
+    });
+    node.id.kernel = 0;
+    node.id.using_struct = Some(decl.into());
+    for i in sin {
+        node.id.selectors_in[i] = selector.into();
+        node.id.imps_in[i] = type_definition::server_type::Implementation::Struct;
+    }
+    for i in sout {
+        node.id.selectors_out[i] = selector.into();
+        node.id.imps_out[i] = type_definition::server_type::Implementation::Struct;
+    }
+    node.id.references = vec![kind.id];
+    node
 }

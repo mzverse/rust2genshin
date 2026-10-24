@@ -6,15 +6,16 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use tap::Tap;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default)]
 pub struct DeclPin {
     pub name: String,
     pub kind: Option<NativeKind>,
     pub meta: Option<pin_signature::Kind>,
 }
 
-pub fn decl_pins_value_out(kinds: &[NativeKind]) -> Vec<DeclPin> {
-    kinds.iter().map(|kind| DeclPin {
+pub fn decl_pins_value<'a>(kinds: impl IntoIterator<Item = &'a NativeKind>) -> Vec<DeclPin> {
+    kinds.into_iter().map(|kind| DeclPin {
         name: "".to_string(),
         kind: kind.clone().into(),
         meta: None,

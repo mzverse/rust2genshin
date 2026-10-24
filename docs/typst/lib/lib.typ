@@ -15,7 +15,7 @@
     let title = dic.at("title", default: none);
     let tag = dic.at("tag", default: none);
     state-this-doc-module.update(p);
-    [#document(name + ".html", title: title, include p) #tag]
+    [#document(name + ".html", title: title, include p); #tag;]
 }
 /// use in bundle main.typ
 #let bundle_asset(name) = {

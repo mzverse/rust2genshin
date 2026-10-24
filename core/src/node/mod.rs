@@ -11,6 +11,7 @@ pub mod client;
 pub mod control;
 pub mod execution;
 pub mod hidden;
+pub mod list;
 pub mod query;
 pub mod trigger;
 pub mod composite;
@@ -72,6 +73,7 @@ pub struct NativeNodeId {
     pub selectors_in: Vec<Option<i32>>,
     pub selectors_out: Vec<Option<i32>>,
 
+    pub imps_in: Vec<type_definition::server_type::Implementation>,
     pub imps_out: Vec<type_definition::server_type::Implementation>,
 
     pub references: Vec<Identifier>,
@@ -145,6 +147,7 @@ impl NodeKind {
             kernel,
             selectors_in: vec![None; values_in_types.len()],
             selectors_out: vec![None; values_out_types.len()],
+            imps_in: vec![type_definition::server_type::Implementation::Primitive; values_in_types.len()],
             imps_out: vec![type_definition::server_type::Implementation::Primitive; values_out_types.len()],
             references: vec![],
             using_struct: None,
@@ -675,21 +678,7 @@ impl NodeGraph {
                                         value: encode_selected(kind, def, s, side).tap_mut(|it|
                                             if let TypedValue { storage: Some(typed_value::Storage::ValPoly(it)) , .. } = it {
                                                 if imp == type_definition::server_type::Implementation::Struct {
-                                                    it.extra_meta = DynamicTypeMetadata {
-                                                        version: 1,
-                                                        config: dynamic_type_metadata::Config {
-                                                            inner: dynamic_type_metadata::config::Inner {
-                                                                container_style: typed_value::WidgetType::StructBlock as i32,
-                                                                item_style: None,
-                                                                schema_binding: dynamic_type_metadata::config::inner::SchemaBinding::TargetStructId(type_definition::StructReference {
-                                                                    schema_id: match kind {
-                                                                        NativeKind::Struct(st) => st.id.guid,
-                                                                        _ => panic!(),
-                                                                    },
-                                                                }).into(),
-                                                            }.into(),
-                                                        }.into(),
-                                                    }.into();
+                                                    it.extra_meta = kind.encode_metadata().into();
                                                 }
                                                 if let PolymorphicValue { actual_value: Some(it), .. } = it.as_mut()
                                                         && let TypedValue { r#type: Some(TypeDefinition { type_detail: Some(TypeDetail::ServerSide(type_definition::ServerType { r#impl, .. })), .. }), .. } = it.as_mut() {
@@ -725,7 +714,7 @@ impl NodeGraph {
                                         continue;
                                     };
                                     if !x.is_unset() {
-                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.id.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), type_definition::server_type::Implementation::Primitive));
+                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.id.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), n.kind.id.imps_in[i]));
                                     }
                                     kernel += 1;
                                 }
@@ -774,7 +763,7 @@ impl NodeGraph {
                         blackboard: vec![],
                         embedded: self.embedded.into_iter().map(|(decl, v)| node_graph_data::Embedded {
                             decl: decl.into(),
-                            unknown1: node_graph_data::embedded::Unknown1 { unknown1: 1 }.into(), // maybe 25?
+                            unknown1: node_graph_data::embedded::Unknown1 { unknown1: 1 }.into(), // FIXME: 25 for node_on_native_custom_value_change? 78 for node_list_clear?
                             inter: v.encode(None).into(),
                             data: None,
                         }).collect(),

@@ -89,6 +89,7 @@ core/                rustc 后端 (cdylib `rust2genshin` + bin `rust2genshin-lin
     node/            节点定义（NodeKind 的构造函数）
       mod.rs         NodeKind / Node / Connection / Link / NodeRef；NODE_ID_BEGIN = 1
       arithmetic.rs  算术域
+      list.rs        列表节点（泛型变体：shell 固定、kernel 与选择器随元素类型变）
       control.rs     控制流（If / 分支）
       execution.rs   执行节点（局部变量 get/set、log）
       query.rs       查询节点

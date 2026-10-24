@@ -354,40 +354,6 @@ pub static NODE_GET_STATUS_SLOTS: LazyLock<NodeKind> = LazyLock::new(|| {
 });
 
 // ========================================================================
-// 列表操作
-// ========================================================================
-
-/// 是否包含(ID 114)
-pub static NODE_CONTAINS: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(114, vec![List(Int.into()), Int], Bool)
-});
-
-/// 查找下标(ID 121)
-pub static NODE_FIND_INDEX: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(121, vec![List(Int.into()), Int], List(Int.into()))
-});
-
-/// 按下标取值(ID 128)
-pub static NODE_GET_AT_INDEX: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(128, vec![List(Int.into()), Int], Int)
-});
-
-/// 列表长度(ID 142)
-pub static NODE_GET_LIST_LENGTH: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(142, vec![List(Int.into())], Int)
-});
-
-/// 列表最大值(ID 149)
-pub static NODE_GET_MAX: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(149, vec![List(Int.into())], Int)
-});
-
-/// 列表最小值(ID 151)
-pub static NODE_GET_MIN: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(151, vec![List(Int.into())], Int)
-});
-
-// ========================================================================
 // 环境 / 计时器
 // ========================================================================
 
