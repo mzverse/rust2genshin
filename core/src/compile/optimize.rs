@@ -794,7 +794,6 @@ impl Optimizer {
                 }
             }
             let mut depends_on_us = false;
-            let mut unrelated = false;
             if executors.is_empty() {
                 if writes.is_empty() {
                     // 找不到执行点：值来源不明
@@ -824,31 +823,32 @@ impl Optimizer {
             //   之前的 setter 都被盖掉了，路径到此为止；
             // - 走到别的节点：合并各条控制输入路径的结果。
             //
-            // 合并出多个不同的 setter，说明有分支、两边写的值不一样 —— 不明确。
+            // 所有分支合起来，答案必须**只有当前这个 setter**：
+            // - 出现别的 setter：它写的值也可能流到这里 —— 拒绝；
+            // - 一个 setter 都没有：读到的是 `Local` 的初始值引脚，那个默认值
+            //   不可信 —— 拒绝；
+            // - 分支上答案不一致（集合里多于一个）—— 拒绝。
             for &e in &executors {
                 match self.last_setter_before(e, &local_setters, &opaque) {
                     // 成环，或者路径上有可能改掉这个变量的节点：值来源不明
                     Err(()) => return Some(()),
-                    // 之前没有 setter 写过这个变量：与当前 setter 无关
-                    Ok(None) => unrelated = true,
+                    // 前面没有 setter 写过这个变量：读到的是 `Local` 的「初始值」
+                    // 引脚。那个默认值不可信，不能靠它把变量留着，拒绝优化。
+                    Ok(None) => return Some(()),
                     Ok(Some(s)) => {
-                        if s.contains(&node) {
-                            if s.len() > 1 {
-                                // 既可能是当前 setter 写的，也可能是别的 setter
-                                // 写的（分支导致）—— 不明确
-                                return Some(());
-                            }
-                            depends_on_us = true;
-                        } else {
-                            // 它前面执行的都是别的 setter：与当前 setter 无关
-                            unrelated = true;
+                        // 所有分支上向前找到的 setter 都必须是当前这个。别的
+                        // setter 写的值也可能流到这里 —— 值来源不明，拒绝。
+                        if !s.contains(&node) {
+                            return Some(());
                         }
+                        if s.len() > 1 {
+                            // 既可能是当前 setter 写的，也可能是别的 setter
+                            // 写的（分支导致）—— 不明确
+                            return Some(());
+                        }
+                        depends_on_us = true;
                     }
                 }
-            }
-            if depends_on_us && unrelated {
-                // 不明确
-                return Some(());
             }
             if depends_on_us {
                 usages.push(x);
