@@ -9,6 +9,7 @@ use crate::node::arithmetic::{NODE_NOT, node_cast, node_equal};
 use crate::node::control::{node_switch, NODE_IF};
 use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
+use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_modify_index};
 use crate::node::query::node_local;
 use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeRef, ValueIn};
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
@@ -94,6 +95,35 @@ impl Optimizer {
             panic!("控制流改写失败：{e}");
         }
         self.graph.verify();
+        // 列表类 IR 节点要先按元素类型展开成真正的列表节点。它们要往图里插
+        // 结构体依赖声明(见 `node_struct`),不能像下面那段一样在持有节点可变
+        // 借用时顺手改图,所以单独走一遍:先克隆出节点,再改图。
+        for x in self.graph.get_nodes() {
+            let kind = self.graph.get_node(x).kind.clone();
+            let lowered = match &kind.id {
+                IrNodeId::ListAssemble => {
+                    let count = kind.values_in_types.len();
+                    let elem = kind.values_out_types[0].list_elem().expect("拼装列表的输出应当是列表");
+                    // 原节点前面还有一个隐藏的「元素个数」引脚,IR 里没有:
+                    // 这里补出来,默认值就是元素个数,已有连线整体后移一位。
+                    self.graph.insert_value_in_front(x);
+                    self.graph.set_default(Link::node(x, 0), Some((count as i32).into()));
+                    Some(node_list_assemble(&mut self.graph, elem.into_native().unwrap(), count))
+                }
+                IrNodeId::ListGet => {
+                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标取值的输入应当是列表");
+                    Some(node_list_get_at_index(&mut self.graph, elem.into_native().unwrap()))
+                }
+                IrNodeId::ListSet => {
+                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标改值的输入应当是列表");
+                    Some(node_list_modify_index(&mut self.graph, elem.into_native().unwrap()))
+                }
+                _ => None,
+            };
+            if let Some(node) = lowered {
+                self.graph.get_node_mut(x).kind = node_ir_native(node);
+            }
+        }
         for x in self.graph.get_nodes() {
             let node = self.graph.get_node_mut(x);
             let kind = &mut node.kind;
@@ -203,6 +233,11 @@ impl Optimizer {
                     let k = kind.values_out_types[0].lower(linker);
                     node_assemble_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
+                // 这三种在前面的单独一遍里就展开成 Native 节点了
+                | IrNodeId::ListAssemble
+                | IrNodeId::ListGet
+                | IrNodeId::ListSet
+                => unreachable!("列表节点已经在 lowering 前展开"),
                 IrNodeId::Destructure => {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_destructure_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))

@@ -212,3 +212,113 @@ pub fn times99() {
 //     pair.0.0 = n;
 //     pair
 // }
+
+/// 数组 → 列表:字面量、重复初始化、按下标读、按下标写。
+#[unsafe(no_mangle)]
+pub fn test_array() {
+    let mut a = [1, 2, 3];
+    a[0] = 7;
+    let mut b = [0; 3];
+    b[1] = 10;
+    let i = 2;
+    b[i] = 20;
+    log(a[0] + b[1] + b[i]);
+}
+
+/// 元素不是常量时的数组字面量:拼装节点前面会多出「元素个数」引脚,
+/// 已有连线得整体后移(见 `NodeGraph::insert_value_in_front`)。
+/// `#[inline(never)]` 是为了让聚合点真的保留下来,别被 MIR 优化拆掉。
+#[inline(never)]
+fn array_sum(v: [i32; 2]) -> i32 { v[0] + v[1] }
+
+#[unsafe(no_mangle)]
+pub fn test_array2() {
+    let mut a = [1, 2];
+    a[0] = 3;
+    log(array_sum([a[0], a[1]]));
+}
+
+/// 常量求值:数组、元组、`&str` 都走 valtree(见 `compile/func.rs` 里的 `const_to_value`)。
+const ARR: [i32; 3] = [4, 5, 6];
+const PAIR: (i32, f32) = (7, 8.5);
+
+#[inline(never)]
+fn arr_sum3(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] }
+
+#[inline(never)]
+fn pair_sum(p: (i32, f32)) -> f32 { p.0 as f32 + p.1 }
+
+#[unsafe(no_mangle)]
+pub fn test_const() {
+    log(arr_sum3(ARR));
+    log(pair_sum(PAIR));
+    log("hello");
+}
+
+/// `Option<句柄>` 的常量:枚举用 niche 编码,内存里只有一个标量,
+/// variant 靠 `const_variant` 从 tag 反推。
+#[inline(never)]
+fn opt_is_none(g: Option<Guid>) -> i32 { if g.is_none() { 1 } else { 0 } }
+
+#[unsafe(no_mangle)]
+pub fn test_option() {
+    log(opt_is_none(None));
+    log(opt_is_none(Some(guid!(514))));
+}
+
+/// 原生句柄常量:`Guid` 是 `#[repr(transparent)]` 包着 `NonZero<i64>`,
+/// 值要一路剥到 `i64` 叶子再交给 `native_const`。
+#[unsafe(no_mangle)]
+pub fn test_guid_const() {
+    log(guid!(114));
+}
+
+/// `#[native_enum]` 常量(`#[repr(i32)]` 枚举)在节点图里就是整数:valtree 里只有
+/// variant 下标,判别式是 `compile_const` 回 ADT 定义查出来的。
+#[inline(never)]
+fn element() -> rust2genshin_lib::event::character::ElementType {
+    rust2genshin_lib::event::character::ElementType::Pyro
+}
+
+/// 单字段结构体的常量:内存布局就是一个标量,`ConstValue` 也是标量而不是整块内存,
+/// 拆字段时要把值原样往下传(见 `const_value_to_valtree` 的 `field_value`)。
+struct Wrapper(i32);
+
+#[inline(never)]
+fn wrapper_sum(w: Wrapper) -> i32 { w.0 }
+
+#[unsafe(no_mangle)]
+pub fn test_wrapper() {
+    let w = Wrapper(42);
+    log(wrapper_sum(w));
+}
+
+/// 全 ZST 的聚合:`ConstValue::ZeroSized`,每个字段也还是 `ZeroSized`。
+struct Empty;
+struct Nested(Empty);
+
+#[inline(never)]
+fn nested_id(_: Nested) -> i32 { 7 }
+
+#[unsafe(no_mangle)]
+pub fn test_zst() {
+    log(nested_id(Nested(Empty)));
+}
+
+/// `usize` 常量:8 字节的叶子,`NativeKind::Int` 要按 32 位截断取。
+const N: usize = 3;
+
+#[inline(never)]
+fn add_n(a: i32, b: usize) -> i32 { a + b as i32 }
+
+#[unsafe(no_mangle)]
+pub fn test_usize_const() {
+    log(add_n(1, N));
+}
+
+#[unsafe(no_mangle)]
+pub fn test_native_enum() {
+    if element() == rust2genshin_lib::event::character::ElementType::Pyro {
+        log(1);
+    }
+}

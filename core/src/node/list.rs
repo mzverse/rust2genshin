@@ -84,6 +84,10 @@ const VARIANTS: &[Variants] = &[
     Variants { shell: 509, order: ITERATE, kernels: &[509, 510, 511, 512, 513, 514, 515, 570, 571, 3280] },
 ];
 
+/// 拼装列表(ID 169)最多接 100 个元素。参考项目 `data.json` 里该节点的描述:
+/// "Assembles up to 100 parameters into a list"。
+pub const MAX_ASSEMBLE_ELEMENTS: usize = 100;
+
 /// 查某个 shell 在给定元素类型下的 (kernel, 选择器下标)。
 fn variant(shell: i64, ty: &NativeKind) -> Option<(i64, i32)> {
     let variants = VARIANTS.iter().find(|v| v.shell == shell)?;
@@ -399,19 +403,22 @@ pub fn node_list_get_min<NodeId, Kind>(
 
 /// 拼装列表(ID 169):把若干元素拼成一个列表。
 ///
-/// 游戏里的引脚是 `Input0: Int`(元素个数,参考项目没写它的含义)+ 最多 100 个
-/// `R<T>` 元素引脚,输出 `L<R<T>>`。元素引脚是动态的,这里只按 1 个元素占位,
-/// 实际编译期按需扩展 `values_in_types`。
+/// 游戏里的引脚是 `Input0: Int`(元素个数,隐藏)+ 最多 100 个 `R<T>` 元素引脚,
+/// 输出 `L<R<T>>`。元素引脚按 `count` 展开;`[T; N]` 字面量由
+/// [`crate::compile::ir::node_ir_list_assemble`] 生成、链接期落到这里。
 pub fn node_list_assemble<NodeId, Kind>(
     graph: &mut NodeGraph<NodeId, Kind>,
     ty: NativeKind,
+    count: usize,
 ) -> NodeKind {
+    let mut inputs = vec![ValuePin::plain(Int)];
+    inputs.extend((0..count).map(|_| ValuePin::poly(ty.clone())));
     generic(
         graph,
         169,
         &ty,
         Flow(0, 0),
-        vec![ValuePin::poly(ty.clone())],
+        inputs,
         vec![ValuePin::poly(List(ty.clone().into()))],
     )
 }
@@ -480,8 +487,9 @@ mod tests {
         assert_eq!(get.values_in_types, vec![Some(List(String.into())), Some(Int)]);
         assert_eq!(get.values_out_types, vec![String]);
         assert_eq!(get.id.selectors_out, vec![Some(1)]);
-        // 拼装列表:元素进,列表出
-        let assemble = node_list_assemble(&mut g, Float);
+        // 拼装列表:元素个数 + 3 个元素进,列表出
+        let assemble = node_list_assemble(&mut g, Float, 3);
+        assert_eq!(assemble.values_in_types, vec![Some(Int), Some(Float), Some(Float), Some(Float)]);
         assert_eq!(assemble.values_out_types, vec![List(Float.into())]);
     }
 

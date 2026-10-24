@@ -91,6 +91,21 @@ impl IrKind {
         }
     }
 
+    /// 列表类型 `List<elem>`。元素暂时只支持原生类型。
+    pub fn list(elem: IrKind) -> IrKind {
+        IrKind::Native(NativeKind::List(
+            elem.into_native().expect("列表元素必须是原生类型").into(),
+        ))
+    }
+
+    /// 列表的元素类型;不是列表时为 `None`。
+    pub fn list_elem(&self) -> Option<IrKind> {
+        match self {
+            IrKind::Native(NativeKind::List(elem)) => Some(IrKind::Native((**elem).clone())),
+            _ => None,
+        }
+    }
+
     fn touch_adt(linker: &mut Linker, kind: String) -> NativeKind {
         if let Some(r) = linker.adts.get(&kind) {
             return r.to_kind();
@@ -160,6 +175,13 @@ pub enum IrNodeId {
     Modify,
     FieldMut(usize),
     BlackBox,
+    /// 把若干元素拼成一个列表,对应 `[T; N]` 字面量 / 数组聚合。
+    /// 引脚只有元素本身;原节点前面那个「元素个数」引脚在 lower 时补。
+    ListAssemble,
+    /// 按下标取值,对应 `[T; N]` / 列表的下标读。
+    ListGet,
+    /// 按下标改值,对应 `[T; N]` / 列表的下标写。
+    ListSet,
 }
 impl IrNodeId {
     pub fn as_native(&self) -> Option<&NativeNodeId> {
@@ -296,6 +318,49 @@ pub fn node_ir_assemble(target: &Target, kind: &IrKind) -> NodeKindIr {
             .map(|FieldInfo { kind, .. }| Some(kind))
             .collect(),
         vec![kind.clone()],
+    )
+}
+
+/// 拼装列表(`[T; N]` 字面量):`count` 个元素进,`List<T>` 出。
+///
+/// 这里**不带**原节点的「元素个数」引脚 —— IR 只管元素,link 期按
+/// `values_in_types.len()` 补上那个引脚和它的默认值。
+pub fn node_ir_list_assemble(elem: IrKind, count: usize) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::ListAssemble,
+        0,
+        0,
+        vec![Some(elem.clone()); count],
+        vec![IrKind::list(elem)],
+    )
+}
+
+/// 按下标取列表元素。
+pub fn node_ir_list_get(elem: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::ListGet,
+        0,
+        0,
+        vec![
+            Some(IrKind::list(elem.clone())),
+            Some(IrKind::Native(NativeKind::Int)),
+        ],
+        vec![elem],
+    )
+}
+
+/// 按下标改列表元素(就地修改,没有值输出)。
+pub fn node_ir_list_set(elem: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::ListSet,
+        1,
+        1,
+        vec![
+            Some(IrKind::list(elem.clone())),
+            Some(IrKind::Native(NativeKind::Int)),
+            Some(elem),
+        ],
+        vec![],
     )
 }
 

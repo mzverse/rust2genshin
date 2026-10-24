@@ -8,6 +8,7 @@
 #![feature(reborrow)]
 #![feature(decl_macro)]
 #![feature(coroutine_trait)]
+#![feature(coroutines)]
 #![allow(internal_features)]
 
 pub mod entity;

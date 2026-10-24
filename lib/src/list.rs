@@ -1,6 +1,7 @@
 use core::cell::UnsafeCell;
+use core::mem;
 use core::ops::{Deref, DerefMut};
-use rust2genshin_lib_internal::native;
+use rust2genshin_lib_internal::{asynchronous, native};
 use crate::boxed::Box;
 
 #[native("List")]
@@ -57,5 +58,16 @@ impl<T> List<T> {
     #[inline(always)]
     pub fn push(&mut self, value: T) {
         self.insert(self.len(), value);
+    }
+
+    #[asynchronous]
+    #[must_use]
+    pub fn drop_async(mut self) {
+        for x in &mut *self {
+            unsafe {
+                (x as *mut T).drop_in_place();
+            }
+        }
+        mem::forget(self);
     }
 }

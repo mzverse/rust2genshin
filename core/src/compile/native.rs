@@ -5,20 +5,19 @@ use crate::compile::ir::IrKind;
 use crate::node::NodeKind;
 use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
 use crate::value::{NativeKind, NativeValue};
-use rustc_middle::mir::interpret::Scalar;
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{FnSig, Instance, Ty, TyKind};
+use rustc_middle::ty::{FnSig, Instance, ScalarInt, Ty, TyKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
 
-pub fn native_const(kind: &NativeKind, get_scalar: impl FnOnce() -> Scalar) -> Option<Box<dyn NativeValue>> {
+pub fn native_const(kind: &NativeKind, v: ScalarInt) -> Option<Box<dyn NativeValue>> {
     Some(match kind {
-        NativeKind::Int => get_scalar().to_i32().unwrap().into(),
+        NativeKind::Int => v.to_i32().into(),
         NativeKind::Guid |
         NativeKind::Faction |
         NativeKind::Config |
-        NativeKind::Prefab => get_scalar().to_i64().unwrap().into(),
-        NativeKind::Enum(_) => get_scalar().to_i32().unwrap().into(),
+        NativeKind::Prefab => v.to_i64().into(),
+        NativeKind::Enum(_) => v.to_i32().into(),
         _ => return None,
     })
 }

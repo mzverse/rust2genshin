@@ -1,10 +1,11 @@
 use panic_context::panic_context;
 use super::{Result, get_expn_macro_attr};
 use crate::compile::func::{CompilingFn, NodeGraphIr};
-use crate::compile::ir::{node_ir_assemble, node_ir_destructure, node_ir_local, node_ir_modify_struct, node_ir_set_local, struct_fields, AdtKey, FieldInfo, IrKind};
+use crate::compile::ir::{node_ir_assemble, node_ir_destructure, node_ir_list_get, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, struct_fields, AdtKey, FieldInfo, IrKind};
 use crate::compile::link::Target;
 use crate::compile::{Block, Compiler};
 use crate::node::{ExportDecl, Link, NodeRef, ValueIn};
+use crate::value::NativeKind;
 use rustc_abi::FieldIdx;
 use rustc_ast::Mutability;
 use rustc_attr_ir::LangItem;
@@ -45,6 +46,23 @@ impl<'tcx> LocalRef {
 pub enum CompiledPlace {
     Local(CompiledLocal<LocalRef>),
     Field(Box<CompiledPlace>, AdtKey, usize),
+    /// 列表下标:`owner[index]`,元素类型记在最后。
+    Index(Box<CompiledPlace>, Box<CompiledIndex>, IrKind),
+}
+
+/// 列表下标:可以是某个局部变量,也可以是编译期常量(`a[1]` 这种)。
+#[derive(Clone)]
+pub enum CompiledIndex {
+    Place(Box<CompiledPlace>),
+    Const(i32),
+}
+impl CompiledIndex {
+    fn getter(&self, target: &Target, graph: &mut NodeGraphIr) -> ValueIn {
+        match self {
+            CompiledIndex::Place(place) => place.getter(target, graph, &IrKind::Native(NativeKind::Int)),
+            CompiledIndex::Const(i) => ValueIn::value((*i).into()),
+        }
+    }
 }
 #[derive(Clone, Copy)]
 pub enum LocalKind {
@@ -249,6 +267,14 @@ impl CompiledPlace {
                 graph.set_value_in(Link::node(node, 0), v);
                 ValueIn::link(Link::node(node, *ele))
             },
+            CompiledPlace::Index(owner, index, elem) => {
+                let node = graph.insert(node_ir_list_get(elem.clone()));
+                let v = owner.getter(target, graph, &IrKind::list(elem.clone()));
+                graph.set_value_in(Link::node(node, 0), v);
+                let i = index.getter(target, graph);
+                graph.set_value_in(Link::node(node, 1), i);
+                ValueIn::link(Link::node(node, 0))
+            },
         }
     }
 
@@ -276,6 +302,16 @@ impl CompiledPlace {
                 graph.set_value_in(Link::node(node, index), value);
                 let index = 3 + *ele * 2;
                 graph.set_value_in(Link::node(node, index), ValueIn::value(true.into()));
+                Block::singleton(node, 0)
+            },
+            CompiledPlace::Index(owner, index, elem) => {
+                // 列表是句柄,按下标改值就地生效,不需要写回 owner。
+                let node = graph.insert(node_ir_list_set(elem.clone()));
+                let v = owner.getter(target, graph, &IrKind::list(elem.clone()));
+                graph.set_value_in(Link::node(node, 0), v);
+                let i = index.getter(target, graph);
+                graph.set_value_in(Link::node(node, 1), i);
+                graph.set_value_in(Link::node(node, 2), value);
                 Block::singleton(node, 0)
             },
         }
@@ -320,6 +356,26 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                 }, // else nop
                 Downcast(_, _id) => {
                     // do nothing
+                }
+                Index(i) => {
+                    let elem = match ty.ty.kind() {
+                        TyKind::Array(e, _) => self.compiler.compile_ty(span, *e)?,
+                        other => return self.helper().span_err(span, format!("Unsupported index base type: {other:?}")),
+                    };
+                    let index = CompiledIndex::Place(Box::new(CompiledPlace::Local(self.locals.get(i).unwrap().clone())));
+                    result = CompiledPlace::Index(result.into(), index.into(), elem);
+                }
+                // `a[1]` 这种常量下标:rustc 直接用 `ConstantIndex`,不经过局部变量。
+                ConstantIndex { offset, from_end, .. } => {
+                    if from_end {
+                        // 数组不会从末尾数,这一档只出现在切片模式里
+                        return self.helper().span_err(span, "Unsupported index from end");
+                    }
+                    let elem = match ty.ty.kind() {
+                        TyKind::Array(e, _) => self.compiler.compile_ty(span, *e)?,
+                        other => return self.helper().span_err(span, format!("Unsupported index base type: {other:?}")),
+                    };
+                    result = CompiledPlace::Index(result.into(), CompiledIndex::Const(offset as i32).into(), elem);
                 }
                 other => todo!("{other:?}")
             }

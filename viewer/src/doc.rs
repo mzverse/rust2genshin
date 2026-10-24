@@ -179,6 +179,7 @@ mod sys_call_label_tests {
             kernel,
             selectors_in: vec![],
             selectors_out: vec![],
+            imps_in: vec![],
             imps_out: vec![],
             references: vec![],
             using_struct: None,

@@ -1,19 +1,21 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_destructure, node_ir_field_mut, node_ir_modify_struct, node_ir_switch, node_ir_unreachable};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
+use crate::node::list::MAX_ASSEMBLE_ELEMENTS;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
 use crate::unwrap;
 use crate::value::{NativeKind, NativeValue};
 use either::Either;
 use panic_context::panic_context;
-use rustc_abi::{FieldIdx, Integer, IntegerType, Size};
+use rustc_abi::{FieldIdx, Integer, IntegerType, Size, TagEncoding, VariantIdx, Variants};
 use rustc_attr_ir::LangItem;
 use rustc_index::{Idx, IndexVec};
-use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, Scalar};
+use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, GlobalId, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, MutBorrowKind, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
-use rustc_middle::ty::{FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv};
+use rustc_middle::ty::layout::{LayoutCx, PrimitiveExt, TyAndLayout};
+use rustc_middle::ty::{AdtDef, FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv, ValTree, Value};
 use rustc_span::{DUMMY_SP, Span};
 use tap::Pipe;
 
@@ -254,7 +256,22 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
             }
             Rvalue::Aggregate(kind, fields) => match **kind {
-                AggregateKind::Array(_) => todo!(),
+                AggregateKind::Array(_) => {
+                    // `[a, b, c]`:元素个数 + 每个元素 → 拼装列表节点。
+                    let TyKind::Array(elem_ty, _) = ty.kind() else {
+                        return self.helper().span_err(span, format!("Array aggregate without array type: {ty:?}"));
+                    };
+                    let elem = self.compile_array_elem(*elem_ty, span)?;
+                    if fields.len() > MAX_ASSEMBLE_ELEMENTS {
+                        return self.helper().span_err(span, format!("Array of {} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node", fields.len()));
+                    }
+                    let node = self.graph.insert(node_ir_list_assemble(elem, fields.len()));
+                    for (i, x) in fields.iter().enumerate() {
+                        let v = self.compile_operand(x, span)?;
+                        self.graph.set_value_in(Link::node(node, i), v);
+                    }
+                    ValueIn::link(Link::node(node, 0))
+                },
                 AggregateKind::Adt(..) if unwrap!(ty.kind(), TyKind::Adt(d, _) => d).repr().transparent() =>
                     self.compile_operand(&fields[FieldIdx::new(0)], span)?,
                 AggregateKind::Adt(_, id, _, _, _) if let (d, a) = unwrap!(ty.kind(), TyKind::Adt(d, a) => (d, a)) && d.is_enum() => {
@@ -309,8 +326,27 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let state = self.compiler.target.adts[unwrap!(&kind, IrKind::Adt)].discriminant.unwrap();
                 ValueIn::link(Link::node(node, state))
             },
-            Rvalue::Repeat(_, _)
-            | Rvalue::ThreadLocalRef(_)
+            Rvalue::Repeat(value, len) => {
+                // `[x; N]`:同一个值接到拼装列表的 N 个元素引脚上。
+                let TyKind::Array(elem_ty, _) = ty.kind() else {
+                    return self.helper().span_err(span, format!("Repeat rvalue without array type: {ty:?}"));
+                };
+                let Some(n) = len.try_to_target_usize(self.tcx) else {
+                    self.tcx.dcx().span_fatal(span, format!("Repeat with unknown length: {ty:?}"));
+                };
+                let n = n as usize;
+                if n > MAX_ASSEMBLE_ELEMENTS {
+                    return self.helper().span_err(span, format!("Array of {n} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node"));
+                }
+                let elem = self.compile_array_elem(*elem_ty, span)?;
+                let v = self.compile_operand(value, span)?;
+                let node = self.graph.insert(node_ir_list_assemble(elem, n));
+                for i in 0..n {
+                    self.graph.set_value_in(Link::node(node, i), v.clone());
+                }
+                ValueIn::link(Link::node(node, 0))
+            },
+            Rvalue::ThreadLocalRef(_)
             | Rvalue::CopyForDeref(_)
             | Rvalue::WrapUnsafeBinder(_, _)
             => todo!("{:?}", value),
@@ -322,93 +358,300 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         self.compile_assign(place, span, value_in)
     }
 
-    fn compile_const(&mut self, ty: Ty<'tcx>, kind: &IrKind, v: ConstValue, span: Span) -> Result<ValueIn> {
-        let layout = self.tcx.layout_of(PseudoCanonicalInput {
-            typing_env: TypingEnv::fully_monomorphized(),
+    /// 数组元素类型。列表的元素目前只能是能落到节点图原生类型的那些;
+    /// 结构体、嵌套数组这类没有列表变体的类型先不挡,到 lower 才 panic。
+    fn compile_array_elem(&mut self, ty: Ty<'tcx>, span: Span) -> Result<IrKind> {
+        let elem = self.compiler.compile_ty(span, ty)?;
+        if elem.as_native().is_none() {
+            return self.helper().span_err(span, format!("Unsupported array element type: {elem:?}"));
+        }
+        Ok(elem)
+    }
+
+    /// 把 MIR 里的常量求值成 valtree。
+    ///
+    /// valtree 是 rustc 自带的「结构化常量值」(`rustc_middle::ty::consts::valtree`):
+    /// 标量是叶子,tuple / struct / 数组 / enum 是分支,分支里是各字段的 `ty::Const`。
+    /// 结构和类型一一对应,不用再按布局偏移自己去拆 `ConstValue`。
+    /// 它由 `rustc_const_eval` 的常量求值器产生,和 miri 没有关系。
+    fn const_to_value(&mut self, c: Const<'tcx>, span: Span) -> Result<Value<'tcx>> {
+        let typing_env = TypingEnv::fully_monomorphized();
+        match c {
+            Const::Ty(ty, ct) => match ct.try_to_value() {
+                Some(v) => Ok(Value { ty, valtree: v.valtree }),
+                None => self.helper().span_err(span, format!("Unevaluated const in MIR: {ct:?}")),
+            },
+            Const::Unevaluated(u, ty) => {
+                let cid = match Instance::try_resolve(self.tcx, typing_env, u.def, u.args) {
+                    Ok(Some(instance)) => GlobalId { instance, promoted: u.promoted },
+                    _ => return self.helper().span_err(span, format!("Unresolved const: {u:?}")),
+                };
+                match self.tcx.const_eval_global_id_for_typeck(typing_env, cid, span) {
+                    Ok(Ok(valtree)) => Ok(Value { ty, valtree }),
+                    Ok(Err(no_valtree)) => self.helper().span_err(span, format!("Const of type {no_valtree:?} has no valtree representation")),
+                    Err(e) => self.helper().span_err(span, format!("Unsupported const eval {u:?}: {e:?}")),
+                }
+            },
+            // MIR 优化(const-prop、常量提升)会把已经算好的值直接塞成内存布局,
+            // 没有现成的 valtree,只能按类型结构把内存重新解释回来。
+            Const::Val(v, ty) => Ok(Value { ty, valtree: self.const_value_to_valtree(ty, v, span)? }),
+        }
+    }
+
+    /// 从内存布局还原 valtree,只用于 `Const::Val`(见 [`Self::const_to_value`])。
+    /// 这里只做「内存 → 树」的翻译,节点构造仍然由 [`Self::compile_const`] 按结构统一处理。
+    fn const_value_to_valtree(&mut self, ty: Ty<'tcx>, v: ConstValue, span: Span) -> Result<ValTree<'tcx>> {
+        /// 聚合值在 `ConstValue` 里是「一整块内存 + 起点偏移」,字段就是往后挪一点。
+        /// 但只有一个非 ZST 字段的结构体/元组会被 rustc 压成单个标量(见
+        /// `rustc_const_eval` 的 `valtree_to_const_value` 快速路径),全 ZST 的聚合则是
+        /// `ZeroSized` —— 这两种情况整个值就是字段自己的值,原样传下去。
+        fn field_value(v: ConstValue, offset: Size) -> ConstValue {
+            match v {
+                ConstValue::Indirect { alloc_id, offset: base } => ConstValue::Indirect { alloc_id, offset: base + offset },
+                ConstValue::Scalar(_) |
+                ConstValue::ZeroSized => v,
+                _ => panic!("unexpected aggregate const: {v:?}"),
+            }
+        }
+        let typing_env = TypingEnv::fully_monomorphized();
+        let tcx = self.tcx;
+        let ty_layout = tcx.layout_of(PseudoCanonicalInput {
+            typing_env,
             value: ty,
-        }).unwrap().layout;
-        let get_scalar = || match v {
-            ConstValue::Scalar(r) => r,
+        }).unwrap();
+        let layout = ty_layout.layout;
+        let read_scalar = |v: ConstValue| match v {
+            ConstValue::Scalar(s) => s.try_to_scalar_int().ok(),
             ConstValue::Indirect { alloc_id, offset } => {
-                let alloc = self.tcx.global_alloc(alloc_id).unwrap_memory().inner();
-                alloc.read_scalar(&self.tcx, AllocRange {
+                let alloc = tcx.global_alloc(alloc_id).unwrap_memory().inner();
+                alloc.read_scalar(&tcx, AllocRange {
                     start: offset,
                     size: layout.size,
-                }, false).unwrap()
+                }, false).ok()?.try_to_scalar_int().ok()
             },
-            ConstValue::ZeroSized |
-            ConstValue::Slice { .. } => panic!(),
+            _ => None,
         };
-        if let IrKind::Native(kind) = kind && let Some(r) = native_const(kind, get_scalar) {
+        Ok(match ty.kind() {
+            | TyKind::Bool
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_)
+            | TyKind::Char
+            => ValTree::from_scalar_int(tcx, read_scalar(v).expect("scalar const")),
+            // `&str` 和 `&[u8]` 的 valtree 就是一串 u8 分支(和 rustc 的 `try_to_raw_bytes` 对应)
+            TyKind::Ref(_, e, _) if e.is_str() || matches!(e.kind(), TyKind::Slice(_)) =>
+                ValTree::from_raw_bytes(tcx, v.try_get_slice_bytes_for_diagnostics(tcx).expect("slice const")),
+            // `NonZero<T>` 在这版 rustc 里是 pattern type,valtree 和底层类型一样
+            TyKind::Pat(e, _) => return self.const_value_to_valtree(*e, v, span),
+            // 透明包装(`Guid(NonZero<i64>)` 之类):valtree 仍是单字段分支,内存就是字段自己的内存
+            TyKind::Adt(d, a) if d.repr().transparent() => {
+                let inner = tcx.normalize_erasing_regions(typing_env, d.non_enum_variant().single_field().ty(tcx, a));
+                self.const_value_branch(span, vec![inner], |_| v)?
+            },
+            // 枚举的 valtree 是 `[variant 下标(u32)] + 该 variant 的字段`,
+            // 下标得从内存里的 tag 反推(见 [`Self::const_variant`])。
+            TyKind::Adt(d, a) if d.is_enum() => {
+                let variant = self.const_variant(ty, &ty_layout, v, *d, span)?;
+                let variant_layout = ty_layout.for_variant(&LayoutCx::new(tcx, typing_env), variant);
+                let tys = d.variant(variant).fields.iter().map(|x| tcx.normalize_erasing_regions(typing_env, x.ty(tcx, a))).collect::<Vec<_>>();
+                let mut fields = vec![rustc_middle::ty::Const::new_value(tcx, ValTree::from_scalar_int(tcx, variant.as_u32().into()), tcx.types.u32)];
+                for (i, x) in tys.into_iter().enumerate() {
+                    let v = self.const_value_to_valtree(x, field_value(v, variant_layout.fields.offset(i)), span)?;
+                    fields.push(rustc_middle::ty::Const::new_value(tcx, v, x));
+                }
+                ValTree::from_branches(tcx, fields)
+            },
+            TyKind::Adt(d, a) => {
+                let fields = d.non_enum_variant().fields.iter().map(|x| tcx.normalize_erasing_regions(typing_env, x.ty(tcx, a))).collect::<Vec<_>>();
+                self.const_value_branch(span, fields, |i| field_value(v, layout.fields.offset(i)))?
+            },
+            TyKind::Tuple(tys) => {
+                let tys = tys.into_iter().collect::<Vec<_>>();
+                self.const_value_branch(span, tys, |i| field_value(v, layout.fields.offset(i)))?
+            },
+            // `[元素; N]`:元素都紧挨着放,步长就是元素大小
+            TyKind::Array(ele, len) => {
+                let Some(n) = len.try_to_target_usize(tcx) else {
+                    self.tcx.dcx().span_fatal(span, format!("Array const with unknown length: {ty:?}"));
+                };
+                let stride = tcx.layout_of(PseudoCanonicalInput {
+                    typing_env,
+                    value: *ele,
+                }).unwrap().layout.size;
+                self.const_value_branch(span, vec![*ele; n as usize], |i| field_value(v, stride * i as u64))?
+            },
+            _ => return self.helper().span_err(span, format!("Unsupported const value: {ty:?} = {v:?}")),
+        })
+    }
+
+    fn const_value_branch(&mut self, span: Span, tys: Vec<Ty<'tcx>>, value: impl Fn(usize) -> ConstValue) -> Result<ValTree<'tcx>> {
+        let fields = tys.into_iter().enumerate().map(|(i, x)| {
+            let v = self.const_value_to_valtree(x, value(i), span)?;
+            Ok(rustc_middle::ty::Const::new_value(self.tcx, v, x))
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(ValTree::from_branches(self.tcx, fields))
+    }
+
+    /// 从值的布局里读出 enum 的 variant 下标,和 rustc 的 `read_discriminant` 同一套逻辑:
+    ///
+    /// - `TagEncoding::Direct`:tag 就是判别式的位模式,直接对判别式表;
+    /// - `TagEncoding::Niche`:判别式藏在别的字段的 niche 里,按
+    ///   `tag = (variant_index - niche_variants.start).wrapping_add(niche_start)` 反推,
+    ///   落在 niche 范围外就是没有被 niche 编码的那个 variant。
+    fn const_variant(&self, ty: Ty<'tcx>, layout: &TyAndLayout<'tcx>, v: ConstValue, d: AdtDef<'tcx>, span: Span) -> Result<VariantIdx> {
+        /// 按 `size` 的位宽截断(回绕减法要在 tag 自己的位宽里做)。
+        fn truncate(x: u128, size: Size) -> u128 {
+            match size.bits() {
+                128 => x,
+                bits => x & ((1u128 << bits) - 1),
+            }
+        }
+        let tcx = self.tcx;
+        let (tag, tag_encoding, tag_field) = match layout.variants {
+            Variants::Single { index } => return Ok(index),
+            Variants::Multiple { tag, ref tag_encoding, tag_field, .. } => (tag, tag_encoding, tag_field),
+            Variants::Empty => return self.helper().span_err(span, format!("Uninhabited enum const: {ty:?}")),
+        };
+        let tag_layout = tcx.layout_of(PseudoCanonicalInput {
+            typing_env: TypingEnv::fully_monomorphized(),
+            value: tag.primitive().to_int_ty(tcx),
+        }).unwrap().layout;
+        let tag_bits = match v {
+            // 整个枚举就是一个标量时,这个标量本身就是 tag
+            ConstValue::Scalar(s) => s.try_to_scalar_int().ok(),
+            ConstValue::Indirect { alloc_id, offset } => {
+                let alloc = tcx.global_alloc(alloc_id).unwrap_memory().inner();
+                alloc.read_scalar(&tcx, AllocRange {
+                    start: offset + layout.fields.offset(tag_field.index()),
+                    size: tag_layout.size,
+                }, false).ok().and_then(|x| x.try_to_scalar_int().ok())
+            },
+            _ => None,
+        };
+        let Some(bits) = tag_bits.map(|x| x.to_bits(tag_layout.size)) else {
+            return self.helper().span_err(span, format!("Cannot read enum tag: {ty:?} = {v:?}"));
+        };
+        let variant = match *tag_encoding {
+            // 判别式按位模式存,`-1i8` 就是 `0xFF`(见 `Discr::val`)
+            TagEncoding::Direct => d.discriminants(tcx).find(|(_, x)| x.val == bits).map(|(i, _)| i),
+            TagEncoding::Niche { untagged_variant, niche_variants, niche_start } => {
+                let relative = truncate(bits.wrapping_sub(niche_start), tag_layout.size);
+                let last = niche_variants.last.as_u32() - niche_variants.start.as_u32();
+                Some(if relative <= last as u128 {
+                    VariantIdx::from_u32(niche_variants.start.as_u32() + relative as u32)
+                } else {
+                    untagged_variant
+                })
+            },
+        };
+        match variant {
+            Some(x) => Ok(x),
+            None => self.helper().span_err(span, format!("Invalid enum tag {bits:#x}: {ty:?} = {v:?}")),
+        }
+    }
+
+    fn compile_const(&mut self, ty: Ty<'tcx>, kind: &IrKind, v: Value<'tcx>, span: Span) -> Result<ValueIn> {
+        let typing_env = TypingEnv::fully_monomorphized();
+        // 透明包装(`Guid(NonZero<i64>)` 之类)在 valtree 里是单字段分支,先剥到真正的
+        // 标量再取叶子;IR 的 kind 一路保持不变。
+        if let TyKind::Adt(d, a) = ty.kind() && d.repr().transparent() {
+            let inner = self.tcx.normalize_erasing_regions(typing_env, d.non_enum_variant().single_field().ty(self.tcx, a));
+            let field = v.to_branch()[0].try_to_value().unwrap();
+            return self.compile_const(inner, kind, Value { ty: inner, valtree: field.valtree }, span);
+        }
+        let leaf = v.try_to_leaf();
+        if let IrKind::Native(kind) = kind && let Some(r) = leaf.and_then(|x| native_const(kind, x)) {
             return Ok(ValueIn::value(r));
         }
         Ok(ValueIn::value(match ty.kind() {
-            TyKind::Bool => get_scalar().to_bool().unwrap().into(),
+            TyKind::Bool => v.try_to_bool().unwrap().into(),
             TyKind::Int(t) => match t {
-                IntTy::I32 => get_scalar().to_i32().unwrap().into(),
-                IntTy::Isize => (get_scalar().to_int(self.tcx.data_layout.pointer_size()).unwrap() as i32).into(),
+                IntTy::I32 => leaf.unwrap().to_i32().into(),
+                IntTy::Isize => (leaf.unwrap().to_int(self.tcx.data_layout.pointer_size()) as i32).into(),
                 IntTy::I8 |
                 IntTy::I16 |
                 IntTy::I64 |
-                IntTy::I128 => return self.helper().span_err(span, format!("Unsupported const int: {:?}", v)),
+                IntTy::I128 => return self.helper().span_err(span, format!("Unsupported const int: {:?}", ty)),
             },
             TyKind::Float(t) => match t {
-                FloatTy::F32 => f32::from_bits(get_scalar().to_bits(Size::from_bits(32)).unwrap() as u32).into(),
+                FloatTy::F32 => f32::from_bits(leaf.unwrap().to_bits(Size::from_bits(32)) as u32).into(),
                 FloatTy::F16 |
                 FloatTy::F64 |
-                FloatTy::F128 => return self.helper().span_err(span, format!("Unsupported const float: {:?}", v)),
+                FloatTy::F128 => return self.helper().span_err(span, format!("Unsupported const float: {:?}", ty)),
             },
             TyKind::Str => panic!(),
             TyKind::Ref(_, e, _) => {
                 if e.is_str() {
-                    str::from_utf8(v.try_get_slice_bytes_for_diagnostics(self.tcx).unwrap()).unwrap().to_string().into()
+                    str::from_utf8(v.try_to_raw_bytes(self.tcx).unwrap()).unwrap().to_string().into()
                 } else {
                     return self.helper().span_err(span, format!("Unsupported const ref: {:?}", ty));
                 }
             },
             TyKind::Adt(d, a) if self.compiler.get_default_some(*d, a)?.is_some() => {
-                assert_eq!(get_scalar().to_uint(self.tcx.data_layout.pointer_size()).unwrap(), d.discriminant_for_variant(self.tcx, d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap())).val);
-                return Ok(ValueIn::default());
+                let destructured = v.destructure_adt_const();
+                let none = d.variant_index_with_id(self.tcx.lang_items().get(LangItem::OptionNone).unwrap());
+                if destructured.variant == none {
+                    return Ok(ValueIn::default());
+                }
+                let field = destructured.fields[0].try_to_value().unwrap();
+                return self.compile_const(field.ty, kind, field, span);
             },
-            TyKind::Adt(d, a) if d.repr().transparent() =>
-                return self.compile_const(self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().single_field().ty(self.tcx, a)), kind, v, span),
-            TyKind::Adt(d, _a) if d.is_enum() && d.variants().len() > 1 =>
-                self.tcx.dcx().span_fatal(span, "Enum const is still unsupported, see `black_box`"), // TODO
+            // `#[repr(i32)]` / `#[native_enum]` 枚举在节点图里就是整数,常量取判别式。
+            // valtree 里只有 variant 下标,判别式得回 ADT 定义查。
+            TyKind::Adt(d, _a) if d.is_enum() => {
+                let variant = v.destructure_adt_const().variant;
+                let discr = d.discriminant_for_variant(self.tcx, variant);
+                if let IrKind::Native(kind) = kind
+                    && let Some(r) = native_const(kind, ScalarInt::try_from_uint(discr.val, discr.ty.primitive_size(self.tcx)).unwrap())
+                {
+                    return Ok(ValueIn::value(r));
+                }
+                return self.helper().span_err(span, "Enum const is still unsupported, see `black_box`"); // TODO
+            },
             TyKind::Adt(..) | TyKind::Tuple(..) => {
                 let ele: Vec<_> = match ty.kind() {
-                    TyKind::Adt(d, a) => d.non_enum_variant().fields.iter().map(|x| self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), x.ty(self.tcx, a))).collect(),
+                    TyKind::Adt(d, a) => d.non_enum_variant().fields.iter().map(|x| self.tcx.normalize_erasing_regions(typing_env, x.ty(self.tcx, a))).collect(),
                     TyKind::Tuple(ele) => ele.into_iter().collect(),
                     _ => unreachable!(),
                 };
                 return Ok(match ele.len() {
                     0 => ValueIn::default(),
-                    1 => {
-                        let node = self.graph.insert(node_ir_assemble(&self.compiler.target, kind));
-                        let k = self.compiler.compile_ty(span, ele[0])?;
-                        let v = self.compile_const(ele[0], &k, v, span)?;
-                        self.graph.set_value_in(Link::node(node, 0), v);
-                        ValueIn::link(Link::node(node, 0))
-                    },
                     _ => {
-                        let ConstValue::Indirect { alloc_id, offset } = v else { panic!("{v:?}") };
+                        let fields = v.to_branch();
                         let node = self.graph.insert(node_ir_assemble(&self.compiler.target, kind));
                         for (i, x) in ele.into_iter().enumerate() {
                             let k = self.compiler.compile_ty(span, x)?;
-                            let v = self.compile_const(x, &k, ConstValue::Indirect {
-                                alloc_id,
-                                offset: offset + layout.fields.offset(i),
-                            }, span)?;
+                            let f = fields[i].try_to_value().unwrap();
+                            let v = self.compile_const(x, &k, f, span)?;
                             self.graph.set_value_in(Link::node(node, i), v);
                         }
                         ValueIn::link(Link::node(node, 0))
                     },
                 });
             },
+            // `[元素; N]` 这种常量数组(`let a = [0; 3]`)。
+            TyKind::Array(ele, len) => {
+                let Some(n) = len.try_to_target_usize(self.tcx) else {
+                    self.tcx.dcx().span_fatal(span, format!("Array const with unknown length: {ty:?}"));
+                };
+                let n = n as usize;
+                if n > MAX_ASSEMBLE_ELEMENTS {
+                    return self.helper().span_err(span, format!("Array of {n} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node"));
+                }
+                let elem = self.compile_array_elem(*ele, span)?;
+                let fields = v.to_branch();
+                let node = self.graph.insert(node_ir_list_assemble(elem.clone(), n));
+                for i in 0..n {
+                    let f = fields[i].try_to_value().unwrap();
+                    let v = self.compile_const(*ele, &elem, f, span)?;
+                    self.graph.set_value_in(Link::node(node, i), v);
+                }
+                return Ok(ValueIn::link(Link::node(node, 0)));
+            },
             TyKind::Slice(_) |
             TyKind::Foreign(_) |
             TyKind::Char |
             TyKind::Uint(_) |
-            TyKind::Array(_, _) |
             TyKind::Pat(_, _) |
             TyKind::RawPtr(_, _) |
             TyKind::FnDef(_, _) |
@@ -438,7 +681,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 self.compile_place(*p, span)?.getter(&self.compiler.target, self.graph, &kind)
             }
             Operand::Constant(co) => {
-                let v = co.const_.eval(self.tcx, TypingEnv::fully_monomorphized(), co.span).map_err(|_| self.tcx.dcx().span_err(co.span, format!("Unsupported const eval: {:?}", co.const_)))?;
+                let v = self.const_to_value(co.const_, co.span)?;
                 self.compile_const(ty, &kind, v, span)?
             }
             Operand::RuntimeChecks(_) => ValueIn::value(false.into()),
@@ -485,7 +728,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let ty = self.mono(discr.ty(&self.body.local_decls, self.tcx));
                 let span = terminator.source_info.span;
                 let kind = self.compiler.compile_ty(span, ty)?;
-                let values = targets.all_values().iter().map(|x| Ok(self.compile_const(ty, &kind, ConstValue::Scalar(Scalar::Int(ScalarInt::try_from_uint(x.get(), ty.primitive_size(self.tcx)).unwrap())), span)?.default.unwrap())).collect::<Result<_>>()?;
+                let values = targets.all_values().iter().map(|x| {
+                    let leaf = ScalarInt::try_from_uint(x.get(), ty.primitive_size(self.tcx)).unwrap();
+                    let v = Value { ty, valtree: ValTree::from_scalar_int(self.tcx, leaf) };
+                    Ok(self.compile_const(ty, &kind, v, span)?.default.unwrap())
+                }).collect::<Result<_>>()?;
                 let node = self.graph.insert(node_ir_switch(kind, values));
                 let v = self.compile_operand(discr, terminator.source_info.span)?;
                 self.graph.set_value_in(Link::node(node, 0), v);

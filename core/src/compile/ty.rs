@@ -237,7 +237,13 @@ impl<'tcx> Compiler<'tcx> {
             => self.touch_adt(ty)?,
             TyKind::Never => IrKind::Never,
             TyKind::Foreign(id) => todo!("{id:?}"),
-            TyKind::Array(_, _) => todo!(),
+            // `[T; N]` 在节点图里就是列表,长度不进入类型(和 `List<T>` 同型)。
+            // 结构体、嵌套数组这类列表节点还没有变体的元素类型暂时不挡,
+            // 到 lower 才 panic;以后统一包一层。
+            TyKind::Array(ele, _) => IrKind::Native(NativeKind::List(match self.compile_ty(span, *ele)? {
+                IrKind::Native(x) => x,
+                other => return self.helper().span_err(span, format!("Unsupported array element type: {other:?}")),
+            }.into())),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
             TyKind::Slice(_) => {
                 self.tcx.dcx().span_err(span, "TODO");

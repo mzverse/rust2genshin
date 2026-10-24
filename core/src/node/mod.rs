@@ -532,6 +532,30 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
         self.value_in_mut(to).link = Some(from);
     }
 
+    /// 在节点的值入口最前面插一个空引脚,原来的入线整体后移一位。
+    ///
+    /// 连接是双向记账的(`values_in.link` 与上游的 `values_out`),所以不能只对
+    /// `values_in` 做 `insert`:上游记的旧下标得一起改,否则 [`Self::verify`]
+    /// 和所有顺着 `values_out` 走的优化器都会看错引脚。
+    pub fn insert_value_in_front(&mut self, node: NodeRef) {
+        let incoming: Vec<Option<Link>> = self
+            .get_node(node)
+            .links
+            .values_in
+            .iter()
+            .map(|x| x.link)
+            .collect();
+        for (i, from) in incoming.into_iter().enumerate() {
+            let Some(from) = from else { continue };
+            for to in self.values_out_mut(from) {
+                if *to == Link::node(node, i) {
+                    *to = Link::node(node, i + 1);
+                }
+            }
+        }
+        self.get_node_mut(node).links.values_in.insert(0, ValueIn::default());
+    }
+
     pub fn set_value_in(&mut self, place: Link, value: ValueIn) {
         self.set_default(place, value.default);
         if let Some(from) = value.link {
