@@ -1,3 +1,4 @@
+use core::marker::Freeze;
 use crate::list::List;
 use crate::{Config, Faction, Guid, String, ToString};
 use rust2genshin_lib_internal::{native, native_calc, native_exec};
@@ -13,6 +14,9 @@ pub struct Entity(pub(crate) &'static EntityInternal);
 unsafe extern "Rust" {
     #[native("Entity")]
     pub(crate) type EntityInternal;
+}
+
+unsafe impl Freeze for EntityInternal {
 }
 
 impl ToString for Entity {

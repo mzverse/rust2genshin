@@ -134,6 +134,7 @@ tools/               (被 .gitignore) Python 调试工具，需要 protobuf 运�
 ## 关键概念
 
 - **`NativeValue` / `NativeKind`**（`core/src/value.rs`）：节点图的类型体系。`NativeKind` 是枚举，`NativeValue` 是各类型实现的 trait。（旧文档里的 `AnyValue` / `INativeValue` / downcast 已经不存在。）
+- **`IrKind`**（`compile/ir.rs`）：IR 层的类型。`Native(NativeKind)` 是原生类型，`List(Box<IrKind>)` 是列表（元素也是 IR 类型，降级时才落成 `NativeKind::List`），`Adt(key)` 是结构体。`lower()` 把它降成 `NativeKind`。
 - **`NodeKind`**（`core/src/node/mod.rs`）：节点的 id + 进/出口数 + 入参类型 + 出参类型。**运行时构造**出来的，没有登记表。构造器 `new` / `simple` / `expr` / `func` / `procedure` / `trigger`。
 - **`NodeRef`** 序列化为 `id + NODE_ID_BEGIN`，`NODE_ID_BEGIN = 1`。
 - **`CompiledLocal` / `CompilingLocals`**（`compile/place.rs`）：把 MIR 的 `Place` 投影（元组字段、struct 字段、引用解引）递归展平成节点图局部变量。闭包参数因此变成 `#closure + args` 的双层。

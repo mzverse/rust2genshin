@@ -9,7 +9,7 @@ use crate::node::arithmetic::{NODE_NOT, node_cast, node_equal};
 use crate::node::control::{node_switch, NODE_IF};
 use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
-use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_modify_index};
+use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_get_length, node_list_insert, node_list_modify_index};
 use crate::node::query::node_local;
 use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeRef, ValueIn};
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
@@ -108,15 +108,23 @@ impl Optimizer {
                     // 这里补出来,默认值就是元素个数,已有连线整体后移一位。
                     self.graph.insert_value_in_front(x);
                     self.graph.set_default(Link::node(x, 0), Some((count as i32).into()));
-                    Some(node_list_assemble(&mut self.graph, elem.into_native().unwrap(), count))
+                    Some(node_list_assemble(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型"), count))
                 }
                 IrNodeId::ListGet => {
                     let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标取值的输入应当是列表");
-                    Some(node_list_get_at_index(&mut self.graph, elem.into_native().unwrap()))
+                    Some(node_list_get_at_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListSet => {
                     let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标改值的输入应当是列表");
-                    Some(node_list_modify_index(&mut self.graph, elem.into_native().unwrap()))
+                    Some(node_list_modify_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                }
+                IrNodeId::ListInsert => {
+                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("插入元素的输入应当是列表");
+                    Some(node_list_insert(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                }
+                IrNodeId::ListGetLength => {
+                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("取长度的输入应当是列表");
+                    Some(node_list_get_length(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 _ => None,
             };
@@ -130,6 +138,12 @@ impl Optimizer {
             *kind = node_ir_native(match &kind.id {
                 IrNodeId::Native(_) => continue,
                 IrNodeId::Nop => panic!(),
+                // 列表类节点在上面那一轮已经展开成真正的列表节点了。
+                IrNodeId::ListAssemble |
+                IrNodeId::ListGet |
+                IrNodeId::ListSet |
+                IrNodeId::ListInsert |
+                IrNodeId::ListGetLength => panic!(),
                 IrNodeId::Unreachable => {
                     self.graph.remove(x);
                     continue;
@@ -160,11 +174,12 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        node_local(&match &kind.values_out_types[1] {
-                            IrKind::PartialMut(_) => panic!(),
-                            other => other.lower(linker),
-                        })
-                        .unwrap()
+                        // 变量类型看句柄引脚里的 `LocalRef`,不看值出口(那里是
+                        // `PartialMut` 包装)。
+                        let variable = kind.values_out_types[0]
+                            .local_ref()
+                            .expect("local 节点的输出 0 应当是 LocalRef");
+                        node_local(&variable.lower(linker)).unwrap()
                     }
                 }
                 IrNodeId::SetLocal => {
@@ -195,7 +210,11 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        node_set_local(&kind.values_in_types[1].as_ref().unwrap().lower(linker))
+                        let variable = kind.values_in_types[0]
+                            .as_ref()
+                            .and_then(IrKind::local_ref)
+                            .expect("set_local 的输入 0 应当是 LocalRef");
+                        node_set_local(&variable.lower(linker))
                     }
                 }
                 IrNodeId::Switch(values) => {
@@ -628,7 +647,12 @@ impl Optimizer {
         }
 
         const DEFAULT_MAX: usize = 1;
-        let max = if n.kind.values_in_types[1].as_ref().unwrap().is_storable() {
+        // 变量类型同样看句柄引脚里的 `LocalRef`。
+        let variable = n.kind.values_in_types[0]
+            .as_ref()
+            .and_then(IrKind::local_ref)
+            .expect("set_local 的输入 0 应当是 LocalRef");
+        let max = if variable.is_storable() {
             DEFAULT_MAX
         } else {
             usize::MAX
@@ -746,16 +770,16 @@ impl Optimizer {
                         }
                     }
                 } else {
-                    // 有控制输入：这是一个执行点
-                    //
-                    // `&mut`（`PartialMut`）的值被交给 `Modify`（改字段）或函数
-                    // 调用时，那是在**通过引用写**它，不是读 —— 不算执行点。
-                    if matches!(ty, Some(IrKind::PartialMut(..)))
-                        && maybe_write(&n_now.kind.id, now.index)
-                    {
-                        writes.push(now.target);
-                        continue;
-                    }
+                    // // 有控制输入：这是一个执行点
+                    // //
+                    // // `&mut`（`PartialMut`）的值被交给 `Modify`（改字段）或函数
+                    // // 调用时，那是在**通过引用写**它，不是读 —— 不算执行点。
+                    // if matches!(ty, Some(IrKind::PartialMut(..)))
+                    //     && maybe_write(&n_now.kind.id, now.index)
+                    // {
+                    //     writes.push(now.target);
+                    //     continue;
+                    // }
                     executors.insert(now.target);
                 }
             }
@@ -1253,7 +1277,7 @@ mod tests {
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
 
-        let pm = IrKind::PartialMut("Test".into());
+        let pm = IrKind::PartialMut(IrKind::Adt("Test".into()).into());
         let s = g.insert(node_ir_local(pm.clone()));
         // `s = &mut 0`
         let init = g.insert(node_ir_set_local(pm.clone()));

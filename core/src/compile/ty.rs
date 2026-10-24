@@ -1,5 +1,6 @@
 use crate::compile::ir::{AdtInfo, FieldInfo, IrKind};
 use crate::compile::{Compiler, Result};
+use crate::node::query::list_elem_supported;
 use crate::value::NativeKind;
 use rustc_abi::{FIRST_VARIANT, FieldIdx, Integer, IntegerType};
 use rustc_ast::{FloatTy, IntTy, UintTy};
@@ -182,10 +183,23 @@ impl<'tcx> Compiler<'tcx> {
         Ok(IrKind::Adt(key))
     }
 
+    /// 列表的元素类型。节点图里的列表只支持原生元素(没有列表变体的
+    /// 类型 —— 结构体、嵌套列表、枚举 —— 一律报错)。
+    pub fn compile_list_elem(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
+        let elem = self.compile_ty(span, ty)?;
+        let Some(native) = elem.as_native() else {
+            return self.helper().span_err(span, format!("Unsupported list element type: {elem}"));
+        };
+        if !list_elem_supported(native) {
+            return self.helper().span_err(span, format!("Unsupported list element type: {native}"));
+        }
+        Ok(elem)
+    }
+
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
         assert!(!ty.has_param());
-        if let Some(n) = self.compile_native_ty(ty) {
-            return Ok(IrKind::Native(n?));
+        if let Some(n) = self.compile_native_ty(span, ty) {
+            return n;
         }
         Ok(match ty.kind() {
             TyKind::Bool => IrKind::Native(NativeKind::Bool),
@@ -214,10 +228,7 @@ impl<'tcx> Compiler<'tcx> {
                 match e.kind() {
                     | TyKind::Slice(e)
                     | TyKind::Array(e, _)
-                    => IrKind::Native(NativeKind::List(match self.compile_ty(span, *e)? {
-                        IrKind::Native(x) => x,
-                        other => todo!("{other:?}"),
-                    }.into())),
+                    => IrKind::list(self.compile_list_elem(span, *e)?),
                     _ => IrKind::Unsupported(format!("*{e:?}")),
                 }
             },
@@ -226,7 +237,12 @@ impl<'tcx> Compiler<'tcx> {
                 if m.is_mut() {
                     IrKind::Mut(self.compile_ty(span, *e)?.into())
                 } else {
-                    self.compile_ty(span, *e)?
+                    let result = self.compile_ty(span, *e)?;
+                    if e.is_freeze(self.tcx, TypingEnv::fully_monomorphized()) {
+                        result
+                    } else {
+                        IrKind::PartialMut(result.into())
+                    }
                 },
             TyKind::Adt(d, a) if d.repr().transparent() =>
                 self.compile_ty(span, self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.tcx, a)))?,
@@ -238,16 +254,10 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Never => IrKind::Never,
             TyKind::Foreign(id) => todo!("{id:?}"),
             // `[T; N]` 在节点图里就是列表,长度不进入类型(和 `List<T>` 同型)。
-            // 结构体、嵌套数组这类列表节点还没有变体的元素类型暂时不挡,
-            // 到 lower 才 panic;以后统一包一层。
-            TyKind::Array(ele, _) => IrKind::Native(NativeKind::List(match self.compile_ty(span, *ele)? {
-                IrKind::Native(x) => x,
-                other => return self.helper().span_err(span, format!("Unsupported array element type: {other:?}")),
-            }.into())),
+            TyKind::Array(ele, _) => IrKind::list(self.compile_list_elem(span, *ele)?),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
             TyKind::Slice(_) => {
-                self.tcx.dcx().span_err(span, "TODO");
-                todo!()
+                self.tcx.dcx().span_fatal(span, "Slice is still unsupported")
             },
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),

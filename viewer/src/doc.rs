@@ -631,9 +631,11 @@ fn type_label(kind: Option<&IrKind>) -> String {
         // `compile_ty` 对每个非原生类型都返回 `Adt(key)`,是最常见的非 native
         // 路径。key 本身就是类型名,加外壳既没信息量又会在 140px 宽的节点上溢出。
         Some(IrKind::Adt(key)) => key.clone(),
+        // 列表本身不是 native,但标签用 `List<Int>` 这种短形式就够了。
+        Some(IrKind::List(elem)) => format!("List<{}>", type_label(Some(elem.as_ref()))),
         // `Local` 的值出口对 ADT 记的是 `PartialMut`（优化器按它认「通过引用写」），
         // 标签上仍然只显示类型名。
-        Some(IrKind::PartialMut(key)) => key.clone(),
+        Some(IrKind::PartialMut(kind)) => format!("PartialMut<{}>", type_label(kind.as_ref().into())),
         Some(kind) => format!("{kind:?}"),
         None => String::new(),
     }
@@ -642,8 +644,8 @@ fn type_label(kind: Option<&IrKind>) -> String {
 /// 一个 IR 节点的类型标注(哪些节点有类型见 `flatten_one`)。
 ///
 /// 哪些节点需要带 `<类型>`:
-/// - `Local`    — 值的**出口**类型(`values_out_types[1]`,0 号是 `LocalRef`)
-/// - `SetLocal` — 值的**入口**类型(`values_in_types[1]`,0 号是 `LocalRef`)
+/// - `Local`    — 变量的类型(0 号出口 `LocalRef` 里装的那个)
+/// - `SetLocal` — 变量的类型(0 号入口 `LocalRef` 里装的那个)
 /// - `Assemble`     — 组装出的结构体类型(`values_out_types[0]`,入参是字段)
 /// - `Destructure`  — 被解构的结构体类型(`values_in_types[0]`,出参是字段)
 /// - `Modify`       — 被修改的结构体类型(`values_in_types[0]`,后面跟字段 setter)
@@ -652,8 +654,20 @@ fn type_label(kind: Option<&IrKind>) -> String {
 /// 不会显示成 `<Adt("MyStruct")>` 这种带壳的串 —— 节点宽 140,装不下。
 fn node_type_label(kind: &NodeKind<IrNodeId, IrKind>) -> String {
     match &kind.id {
-        IrNodeId::Local => type_label(kind.values_out_types.get(1)),
-        IrNodeId::SetLocal => type_label(kind.values_in_types.get(1).and_then(|k| k.as_ref())),
+        // 变量类型看句柄引脚里的 `LocalRef`,不看另一个值引脚 —— 后者带
+        // `PartialMut` 包装(表达式可变性),不是变量本身的类型。
+        IrNodeId::Local => {
+            let variable = kind.values_out_types.first().and_then(IrKind::local_ref);
+            type_label(variable.as_ref())
+        },
+        IrNodeId::SetLocal => {
+            let variable = kind
+                .values_in_types
+                .first()
+                .and_then(|k| k.as_ref())
+                .and_then(IrKind::local_ref);
+            type_label(variable.as_ref())
+        },
         IrNodeId::Assemble => type_label(kind.values_out_types.get(0)),
         IrNodeId::Destructure => type_label(kind.values_in_types.get(0).and_then(|k| k.as_ref())),
         IrNodeId::Modify => type_label(kind.values_in_types.get(0).and_then(|k| k.as_ref())),
@@ -1132,9 +1146,29 @@ mod tests {
         assert_eq!(ge.nodes.len(), 1, "被删的节点不该出现在展平结果里");
         assert_eq!(ge.index_of.get(&a), Some(&0));
         assert_eq!(ge.index_of.get(&b), None);
-        assert_eq!(ge.nodes[0].type_label, "Int", "SetLocal 的类型标注取 values_in_types[1]");
+        assert_eq!(ge.nodes[0].type_label, "Int", "SetLocal 的类型标注取 values_in_types[0] 里 LocalRef 的内层");
         // 悬空边必须被跳过,不能 panic
         assert!(ge.edges.is_empty(), "指向已删除节点的边应当被跳过");
+    }
+
+    /// 变量类型取 `LocalRef` 里装的那个,不看另一个值引脚 —— 后者对
+    /// `List` / ADT 带 `PartialMut` 包装,不是变量本身的类型。
+    #[test]
+    fn local_type_label_ignores_partial_mut_wrapper() {
+        use rust2genshin::compile::ir::{IrKind, node_ir_local, node_ir_set_local};
+        use rust2genshin::node::NodeGraphKind;
+        use rust2genshin::value::NativeKind;
+
+        let mut g: NodeGraphIr = NodeGraphIr::new(NodeGraphKind::ServerEntity, "t");
+        let list = IrKind::list(IrKind::Native(NativeKind::Int));
+        g.insert(node_ir_local(list.clone()));
+        g.insert(node_ir_set_local(list));
+        let mut t = Target::default();
+        t.functions.insert("f".into(), fn_info(g));
+        let doc = flatten(t);
+        let ge = &doc.graphs[0];
+        assert_eq!(ge.nodes[0].type_label, "List<Int>", "Local 显示 LocalRef 里的列表类型");
+        assert_eq!(ge.nodes[1].type_label, "List<Int>", "SetLocal 同理");
     }
 
     /// 边从**来源节点的 out 侧**发出,所以一条真实连接的边只应出现一次。
@@ -1157,7 +1191,7 @@ mod tests {
         let doc = flatten(t);
         let ge = &doc.graphs[0];
         assert_eq!(ge.nodes.len(), 2);
-        assert_eq!(ge.nodes[0].type_label, "Int", "Local 的类型标注取 values_out_types[1]");
+        assert_eq!(ge.nodes[0].type_label, "Int", "Local 的类型标注取 values_out_types[0] 里 LocalRef 的内层");
         assert_eq!(ge.edges.len(), 1, "一条连接只应产出一条边,不能正反各来一次");
         assert_eq!(ge.edges[0].from, (0, 0));
         assert_eq!(ge.edges[0].to, (1, 1), "目标 pin 序号应取自 Link.index");

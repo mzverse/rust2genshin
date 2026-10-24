@@ -2,17 +2,10 @@
 //!
 //! 人工设计:相机/震屏/名牌/GM 等隐藏功能节点。
 
-use crate::asset::Identifier;
-use crate::asset::generated::node_instance::DependencyDeclaration;
-use crate::asset::generated::type_definition::StructReference;
-use crate::asset::generated::{identifier, type_definition};
-use crate::node::decl::{DeclPin, NodeDecl, decl_pins_value};
-use crate::node::{NodeGraph, NodeKind, PinType};
+use crate::node::{NodeGraph, NodeKind};
+use crate::structure::node_struct;
 use crate::value::NativeKind::{self, *};
-use std::collections::HashMap;
 use std::sync::LazyLock;
-use tap::Tap;
-use crate::structure::{node_struct, StructRef};
 
 /// 激活实体相机(ID 262)
 pub static NODE_ACTIVATE_ENTITY_CAMERA: LazyLock<NodeKind> = LazyLock::new(|| {

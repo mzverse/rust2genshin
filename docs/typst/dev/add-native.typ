@@ -32,7 +32,7 @@ impl Entity {
 
 字符串形式用于签名不足以描述节点的情况（类型相关、或参数/返回值不是直通）。它需要在 `core/src/compile/native.rs` 里加分支：
 
-- *调用* —— `compile_native_call` 里的名字匹配，现有的有 `power` / `to_string` / `enum_eq`
+- *调用* —— `compile_native_call` 里的名字匹配，现有的有 `power` / `to_string` / `enum_eq` / `free` / `list_get` / `list_set` / `list_insert` / `list_len`
 - *类型* —— `compile_native_ty` 里的名字匹配，现有的有 `Guid` / `Entity` / `Faction` / `Config` / `Prefab` / `Vec3` / `List` / `Dict`
 
 类型声明的写法是把一个不透明的外部类型挂上属性：
@@ -43,6 +43,21 @@ unsafe extern "Rust" {
     pub(crate) type EntityInternal;
 }
 ```
+
+= 泛型原生类型
+
+`List` 是*泛型*原生类型：属性标在 `struct List<T>` 的定义上，元素类型 `T` 从调用点的泛型实参里取：
+
+```rust
+#[native("List")]
+pub struct List<T> { /* 字段在节点图里不存在 */ }
+```
+
+编译器把它编成 IR 层的 `IrKind::List(T)`（元素也是 IR 类型），降级时才落成 `NativeKind::List`。因此 `[i32; N]` 和 `List<i32>` 是*同一个*类型，两者之间的 `transmute` 是空转换 —— 数组字面量可以直接当列表用。
+
+元素类型必须是节点图里有列表变体的原生类型（整数、字符串、实体、GUID、浮点、三维向量、布尔、配置、预制件、阵营）；结构体、枚举、嵌套列表都不行，会报 `Unsupported list element type`。
+
+原生类型（句柄）的*析构*是空操作：它的字段在节点图里并不存在，析构胶水去读字段只会读到不存在的东西。
 
 = 限制
 

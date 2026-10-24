@@ -117,7 +117,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                 (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))
             },
             TyKind::Closure(_d, a) => self.solve_local(Ty::new_tup(self.compiler.tcx, a.as_closure().upvar_tys()), k, name, span)?,
-            TyKind::Adt(d, a) if d.repr().transparent() && self.compiler.compile_native_ty(ty).is_none() =>
+            TyKind::Adt(d, a) if d.repr().transparent() && !self.compiler.is_native_ty(ty) =>
                 self.solve_local(self.compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.compiler.tcx, a)), k, name, span)?,
             TyKind::Adt(d, a) if let Some(r) = {
                 let def = d.did().default_span(self.compiler.tcx);
@@ -152,7 +152,8 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                 let (k1, r) = f(self, IrKind::LocalRef(kind.clone().into()), k, format!("{name}.write"));
                 fsk.push(k1);
                 fs.push(r);
-                let (k1, r) = f(self, IrKind::partial_mut(kind.clone()), k, format!("{name}.read"));
+                let kind1 = kind.clone();
+                let (k1, r) = f(self, if e.is_freeze(self.compiler.tcx, TypingEnv::fully_monomorphized()) { kind1 } else { IrKind::PartialMut(kind1.into()) }, k, format!("{name}.read"));
                 fsk.push(k1);
                 fs.push(r);
                 (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))

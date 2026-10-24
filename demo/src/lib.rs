@@ -11,7 +11,7 @@ use rust2genshin_lib::*;
 use rust2genshin_lib::math::*;
 
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
-
+use rust2genshin_lib::list::{list, List};
 
 #[asynchronous]
 pub fn co0() -> f32 {
@@ -212,6 +212,29 @@ pub fn times99() {
 //     pair.0.0 = n;
 //     pair
 // }
+
+#[unsafe(no_mangle)]
+pub fn test_list() -> List<i32> {
+    log(list![114, 10].len());
+    list![114, 10]
+}
+
+/// 列表插入:元素进列表,列表本身不动。
+#[unsafe(no_mangle)]
+pub fn test_list_insert() {
+    let mut list = list![114, 10];
+    list.insert(1, 5);
+}
+
+/// 列表读 / 写 / 长度 / push。
+#[unsafe(no_mangle)]
+pub fn test_list_ops() {
+    let mut list = list![114, 10];
+    let a = list[0];
+    list.set(0, a + 1);
+    list.push(5);
+    log(list.len());
+}
 
 /// 数组 → 列表:字面量、重复初始化、按下标读、按下标写。
 #[unsafe(no_mangle)]

@@ -15,7 +15,7 @@ use rustc_index::{Idx, IndexVec};
 use rustc_middle::mir::interpret::{AllocRange, GlobalAlloc, GlobalId, Scalar};
 use rustc_middle::mir::{AggregateKind, BasicBlock, BinOp, BorrowKind, Const, ConstOperand, ConstValue, MutBorrowKind, NonDivergingIntrinsic, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp, WithRetag};
 use rustc_middle::ty::layout::{LayoutCx, PrimitiveExt, TyAndLayout};
-use rustc_middle::ty::{AdtDef, FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, TyKind, TypingEnv, ValTree, Value};
+use rustc_middle::ty::{AdtDef, FloatTy, InstanceKind, IntTy, PseudoCanonicalInput, ScalarInt, ShimKind, TyKind, TypingEnv, ValTree, Value};
 use rustc_span::{DUMMY_SP, Span};
 use tap::Pipe;
 
@@ -239,15 +239,17 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             },
             Rvalue::Cast(kind, op, target_ty) => {
                 // FIXME: f32 to i32
-                let from_ty = op.ty(&self.body.local_decls, self.tcx);
-                let from_kind = self.compiler.compile_ty(span, from_ty)?.into_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{from_ty:?}")));
-                let to_kind = self.compiler.compile_ty(span, *target_ty)?.into_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{target_ty:?}")));
+                let from_ty = self.mono(op.ty(&self.body.local_decls, self.tcx));
+                let from_kind = self.compiler.compile_ty(span, from_ty)?;
+                let to_kind = self.compiler.compile_ty(span, *target_ty)?;
                 if from_kind == to_kind {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
                 } else {
-                    let Some(node) = node_cast(from_kind, to_kind) else {
-                        return self.helper().span_err(span, format!("Unsupported cast ({kind:?}) {from_ty:?} → {target_ty:?}"));
+                    let from_kind = from_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{from_ty:?}")));
+                    let to_kind = to_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{target_ty:?}")));
+                    let Some(node) = node_cast(from_kind.clone(), to_kind.clone()) else {
+                        return self.helper().span_err(span, format!("Unsupported cast ({kind:?}) {from_kind:?} → {to_kind:?}"));
                     };
                     let node = self.graph.insert(node_ir_native(node));
                     let v = self.compile_operand(op, span)?;
@@ -358,14 +360,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         self.compile_assign(place, span, value_in)
     }
 
-    /// 数组元素类型。列表的元素目前只能是能落到节点图原生类型的那些;
-    /// 结构体、嵌套数组这类没有列表变体的类型先不挡,到 lower 才 panic。
+    /// 数组元素类型。列表的元素只能是节点图里有列表变体的原生类型。
     fn compile_array_elem(&mut self, ty: Ty<'tcx>, span: Span) -> Result<IrKind> {
-        let elem = self.compiler.compile_ty(span, ty)?;
-        if elem.as_native().is_none() {
-            return self.helper().span_err(span, format!("Unsupported array element type: {elem:?}"));
-        }
-        Ok(elem)
+        self.compiler.compile_list_elem(span, ty)
     }
 
     /// 把 MIR 里的常量求值成 valtree。
@@ -822,6 +819,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             self.tcx.dcx().span_note(span, "Ignored panic");
             return Ok(Block::nop(self.graph));
         }
+        // 原生类型(句柄)的析构是空操作:它的字段在节点图里并不存在,
+        // 析构胶水去读字段只会读到不存在的东西。
+        if let InstanceKind::Shim(ShimKind::DropGlue(..)) = func.def
+            && let Some(ty) = func.args.first().and_then(|x| x.as_type())
+            && self.compiler.is_native_ty(ty) {
+            return Ok(Block::nop(self.graph));
+        }
         let sig = self.helper().fn_sig(func);
         let params: Vec<IrKind> = self.helper().fn_params(func, sig).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
         let node_kind = loop {
@@ -833,9 +837,9 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     _ => func = Instance::new_raw(func.def_id(), func.args),
                 }
             }
-            break if params.iter().all(|x| x.as_native().is_some())
+            break if params.iter().all(|x| x.to_native().is_some())
                 && let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
-                node_ir_native(native)
+                native
             } else {
                 let ret = self.compiler.compile_ty(span, sig.output())?;
                 NodeKind::new(

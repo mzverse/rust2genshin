@@ -197,6 +197,11 @@ impl ToString for i32 {
     fn to_string(&self) -> String;
 }
 
+impl ToString for usize {
+    #[native("to_string")]
+    fn to_string(&self) -> String;
+}
+
 unsafe impl F32 for f32 {
     #[native_calc(221)]
     fn sqrt(self) -> Self;

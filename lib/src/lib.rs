@@ -9,6 +9,10 @@
 #![feature(decl_macro)]
 #![feature(coroutine_trait)]
 #![feature(coroutines)]
+#![feature(stmt_expr_attributes, proc_macro_hygiene)]
+#![feature(core_intrinsics)]
+#![feature(freeze)]
+#![feature(freeze_impls)]
 #![allow(internal_features)]
 
 pub mod entity;

@@ -73,7 +73,7 @@ macro_rules! guid {
 
 新增一个句柄类型时三项缺一不可。不要退回 `pub i64` / 无 comptime 的 `new` / 加 `Default` —— 任何一项都会让约束失效。句柄*不带* `Default`，因为「默认值」是「未初始化的句柄」，语义上不该存在。
 
-编译器侧还要在 `core/src/compile/native.rs::compile_native_ty` 里给新类型加一个分支（现有的 `"Guid" => NativeKind::Guid` 等），否则 `#[native("Xxx")]` 会报 unknown。
+编译器侧还要在 `core/src/compile/native.rs::compile_native_ty` 里给新类型加一个分支（现有的 `"Guid" => IrKind::Native(NativeKind::Guid)` 等），否则 `#[native("Xxx")]` 会报 unknown。
 
 = 可空性
 
