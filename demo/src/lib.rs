@@ -4,7 +4,6 @@
 
 #![no_std]
 
-use core::ops::CoroutineState;
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
 #[allow(unused_imports)]
@@ -13,6 +12,8 @@ use rust2genshin_lib::math::*;
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
 use rust2genshin_lib::list::{list, List};
 use rust2genshin_lib::PartialMut;
+
+use core::ops::CoroutineState;
 
 #[asynchronous]
 pub fn co0() -> f32 {
@@ -357,10 +358,10 @@ pub fn test_struct_list() -> List<Point> {
     list![Point { x: 114, y: 514 }, Point { x: 10, y: 5 }]
 }
 
-// #[unsafe(no_mangle)]
-// pub fn test_list_list() -> List<List<i32>> {
-//     list![list![114, 514], list![1919810]]
-// }
+#[unsafe(no_mangle)]
+pub fn test_list_list() -> List<List<i32>> {
+    list![list![114, 514], list![1919810]]
+}
 
 /// `&mut` 参数 + 字段赋值:字段写是 `Modify`,节点图里没有字段句柄。
 #[inline(never)]
@@ -391,8 +392,8 @@ pub fn test_swap(a: &mut i32, b: &mut i32) {
 }
 
 #[unsafe(no_mangle)]
-pub fn test_sort() {
-    let mut arr = [5, 3, 8, 1, 9, 2, 7, 4, 6, 0];
+pub fn bubble_sort() {
+    let mut arr = [5, 3, 8, 1, 9, 2, 7, 6, 0];
     let n = arr.len();
     // 外层循环：控制趟数
     for i in 0..n {

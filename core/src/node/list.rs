@@ -533,6 +533,21 @@ mod tests {
     }
 
     #[test]
+    fn 拼装列表的定义里补满元素槽() {
+        let mut g: NodeGraph = NodeGraph::new(NodeGraphKind::ServerEntity, "test");
+        let st = crate::structure::StructRef {
+            id: crate::structure::id_struct(7),
+            fields: vec![],
+        };
+        let kind = node_list_assemble(&mut g, NativeKind::Struct(st), 2);
+        // 实例只有实际用到的槽
+        assert_eq!(kind.values_in_types.len(), 3);
+        // 节点定义(embedded)固定 MAX 个元素槽 + 元素个数
+        let decl = g.embedded.values().next().expect("结构体依赖声明");
+        assert_eq!(decl.pins[&crate::node::PinType::InValue].len(), MAX_ASSEMBLE_ELEMENTS + 1);
+    }
+
+    #[test]
     fn 结构体变体的适用范围() {
         // 游戏里列表操作 / 查询 / 拼装 / 遍历都有结构体变体,取最大 / 最小 / 排序没有
         assert!(struct_supported(100));

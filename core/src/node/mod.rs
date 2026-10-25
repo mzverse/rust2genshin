@@ -25,7 +25,6 @@ use crate::asset::generated::pin_signature::Kind;
 use crate::asset::generated::type_definition::TypeDetail;
 use crate::asset::generated::type_definition::server_type::Schema;
 use crate::node::decl::NodeDecl;
-use crate::node::list::{ASSEMBLE_SHELL, MAX_ASSEMBLE_ELEMENTS};
 
 #[derive(Copy, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -731,35 +730,18 @@ impl NodeGraph {
                                         persistent_pin_uid: None,
                                     }
                                 };
-                                // 拼装列表在 `.gia` 里固定占满节点定义的 MAX 个元素槽
-                                // (没连的隐藏),IR 里只保留实际用到的元素引脚 ——
-                                // 多出来的槽在这里补,类型与选择器照抄最后一个真实元素引脚。
-                                let slots = if n.kind.id.id == ASSEMBLE_SHELL {
-                                    (MAX_ASSEMBLE_ELEMENTS + 1).max(n.links.values_in.len())
-                                } else {
-                                    n.links.values_in.len()
-                                };
-                                let pad_kind = n.kind.values_in_types.last().cloned().flatten();
-                                let pad_selector = n.kind.id.selectors_in.last().copied().flatten();
-                                let pad_imp = n.kind.id.imps_in.last().copied()
-                                    .unwrap_or(type_definition::server_type::Implementation::Primitive);
-                                let unset = ValueIn::default();
+                                // 实例只输出实际用到的引脚;节点定义里的固定槽位
+                                // (如拼装列表的 MAX 个元素槽)写在 `embedded` 的
+                                // `NodeDecl` 里,见 `node_struct`。
                                 let mut kernel = 0;
-                                for i in 0..slots {
-                                    let x = n.links.values_in.get(i).unwrap_or(&unset);
-                                    let (kind, selector, imp) = match n.kind.values_in_types.get(i) {
-                                        Some(Some(kind)) =>
-                                            (kind, n.kind.id.selectors_in[i], n.kind.id.imps_in[i]),
-                                        Some(None) => continue,
-                                        None => match &pad_kind {
-                                            Some(kind) => (kind, pad_selector, pad_imp),
-                                            None => continue,
-                                        },
+                                for (i, x) in n.links.values_in.iter().enumerate() {
+                                    let Some(ref kind) = n.kind.values_in_types[i] else {
+                                        continue;
                                     };
                                     // 泛型引脚即使没连线也输出:官方导出里节点定义的
                                     // 每个元素槽都带着类型选择器模板(隐藏)。
-                                    if !x.is_unset() || selector.is_some() {
-                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, selector, x.default.as_deref(), &x.link.iter().copied().collect(), imp));
+                                    if !x.is_unset() || n.kind.id.selectors_in[i].is_some() {
+                                        pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.id.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), n.kind.id.imps_in[i]));
                                     }
                                     kernel += 1;
                                 }
@@ -920,9 +902,9 @@ pub fn encode_selected(kind: &NativeKind, value: Option<&dyn NativeValue>, selec
 mod tests {
     use super::*;
 
-    /// 拼装列表的 IR 只带实际元素引脚,编码 `.gia` 时补满节点定义的槽。
+    /// 拼装列表的实例只输出实际用到的引脚,固定槽位留在 `embedded` 的定义里。
     #[test]
-    fn 拼装列表编码时补满元素槽() {
+    fn 拼装列表实例只带实际引脚() {
         let mut g = NodeGraph::new(NodeGraphKind::ServerEntity, "test");
         let kind = crate::node::list::node_list_assemble(&mut g, NativeKind::Int, 2);
         // 元素个数引脚 + 2 个元素
@@ -937,8 +919,7 @@ mod tests {
         });
         let Payload::GraphData(container) = data.payload.unwrap() else { panic!() };
         let graph = container.inner.unwrap().graph.unwrap();
-        // 元素个数引脚没设默认值、也没有选择器,不输出;其余 100 个元素槽补满,
-        // 再加 1 个列表出参。
-        assert_eq!(graph.node[0].pins.len(), MAX_ASSEMBLE_ELEMENTS + 1);
+        // 2 个元素槽(元素个数引脚没设默认值、也没有选择器,不输出)+ 1 个列表出参
+        assert_eq!(graph.node[0].pins.len(), 3);
     }
 }

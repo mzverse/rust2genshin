@@ -244,7 +244,7 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Array(ele, _) => IrKind::list(self.compile_ty(span, *ele)?),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
             TyKind::Slice(_) => {
-                self.tcx.dcx().span_fatal(span, "Slice is still unsupported")
+                self.tcx.dcx().span_fatal(span, "Slice is still unsupported, see array and List")
             },
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),

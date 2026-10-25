@@ -8,6 +8,7 @@ use crate::asset::generated::asset_data::Payload;
 use crate::asset::generated::structure_definition_data::{self, var_def as sd_var_def};
 use crate::asset::generated::*;
 use crate::node::decl::{decl_pins_value, node_declared, DeclPin, NodeDecl};
+use crate::node::list::{ASSEMBLE_SHELL, MAX_ASSEMBLE_ELEMENTS};
 use crate::node::{NodeGraph, NodeKind, PinType};
 use crate::value::{NativeKind, NativeValue};
 use std::collections::HashMap;
@@ -254,13 +255,25 @@ pub fn node_struct<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, mut node: 
             schema_id: kind.id.guid,
         }.into(),
     };
+    // `embedded` 里是节点**定义**:拼装列表固定带 MAX 个元素槽,实例只带
+    // 实际用到的,定义里补齐。
+    let values_in_types = if node.id.id == ASSEMBLE_SHELL
+        && let Some(elem) = node.values_in_types.last().cloned().flatten()
+    {
+        let pad = (MAX_ASSEMBLE_ELEMENTS + 1).saturating_sub(node.values_in_types.len());
+        node.values_in_types.iter().cloned()
+            .chain(iter::repeat(Some(elem)).take(pad))
+            .collect()
+    } else {
+        node.values_in_types.clone()
+    };
     graph.embedded.entry(decl).or_insert_with(|| NodeDecl {
         name: "".to_string(),
         description: "".to_string(),
         pins: HashMap::new().tap_mut(|pins| {
             pins.insert(PinType::InControl, vec![DeclPin::default(); node.controls_in_num]);
             pins.insert(PinType::OutControl, vec![DeclPin::default(); node.controls_out_num]);
-            pins.insert(PinType::InValue, decl_pins_value(node.values_in_types.iter().map(Option::as_ref).map(Option::unwrap)));
+            pins.insert(PinType::InValue, decl_pins_value(values_in_types.iter().map(Option::as_ref).map(Option::unwrap)));
             pins.insert(PinType::OutValue, decl_pins_value(&node.values_out_types));
         }),
         implementation: Default::default(),
