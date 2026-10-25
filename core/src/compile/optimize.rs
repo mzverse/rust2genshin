@@ -955,11 +955,7 @@ impl Optimizer {
                             queue.push_back((*e, copied));
                         }
                     }
-                } else if copied
-                    || matches!(variable, IrKind::PartialMut(_) | IrKind::LocalRef(_))
-                {
-                    // 变量本身存的就是视图 / 句柄时,传出去的引用被拿去写,
-                    // 写的是它指向的东西,不是这个变量本身 —— 对它来说都是读。
+                } else if copied {
                     usage.users.push(link.target);
                 } else {
                     usage.modifiers.push(link.target);
@@ -1523,6 +1519,9 @@ mod tests {
         g.link_value(Link::node(s, 0), Link::node(init, 0));
         let set = g.insert(node_ir_set_local(pm.clone()));
         g.link_value(Link::node(s, 0), Link::node(set, 0));
+        // 值出口是 `PartialMut<PartialMut<Test>>`，读一层拿到变量里存的视图
+        let copy = g.insert(node_ir_copy(pm.clone()));
+        g.link_value(Link::node(s, 1), Link::node(copy, 0));
         // 拿视图去改字段
         let modify = g.insert(NodeKind::new(
             IrNodeId::Modify,
@@ -1531,7 +1530,7 @@ mod tests {
             vec![adt.clone().into(), None],
             vec![],
         ));
-        g.link_value(Link::node(s, 1), Link::node(modify, 0));
+        g.link_value(Link::node(copy, 0), Link::node(modify, 0));
 
         g.link_control(Link::export(0), Link::node(init, 0));
         g.link_control(Link::node(init, 0), Link::node(set, 0));
@@ -1548,9 +1547,12 @@ mod tests {
             opt.graph.get_nodes().iter().all(|x| *x != set),
             "视图变量的 setter 应该被消掉"
         );
-        // 写入值没接东西，改接后 `Modify` 的输入也是空的（变量本身就是视图，
-        // 不用再标一层）。
-        assert_eq!(opt.graph.get_node(modify).links.values_in[0].link, None);
+        // 读视图那一层改接到写入值（标回视图）
+        let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
+        assert_eq!(
+            opt.graph.get_node(src.target.node().unwrap()).kind.id,
+            IrNodeId::ToPartialMut
+        );
     }
 
     /// 变量存的就是句柄（`LocalRef<T>`）时，拿它的值去写，写的是句柄指向的
@@ -1575,9 +1577,12 @@ mod tests {
         let init = g.insert(node_ir_set_local(IrKind::LocalRef(int().into())));
         g.link_value(Link::node(holder, 0), Link::node(init, 0));
         g.link_value(Link::export(0), Link::node(init, 1));
+        // 值出口是 `PartialMut<LocalRef<Int>>`，读一层拿到句柄
+        let copy = g.insert(node_ir_copy(IrKind::LocalRef(int().into())));
+        g.link_value(Link::node(holder, 1), Link::node(copy, 0));
         // 拿这个句柄去写
         let write = g.insert(node_ir_set_local(int()));
-        g.link_value(Link::node(holder, 1), Link::node(write, 0));
+        g.link_value(Link::node(copy, 0), Link::node(write, 0));
         g.set_value_in(Link::node(write, 1), ValueIn::value(5i32.into()));
 
         g.link_control(Link::export(0), Link::node(init, 0));
@@ -1594,9 +1599,12 @@ mod tests {
             opt.graph.get_nodes().iter().all(|x| *x != init),
             "句柄的中转 setter 应该被消掉"
         );
-        // 写入直接落到图外传进来的句柄上
+        // 读句柄那一层改接到图外传进来的句柄（标回视图）
+        let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
+        let src = src.target.node().unwrap();
+        assert_eq!(opt.graph.get_node(src).kind.id, IrNodeId::ToPartialMut);
         assert_eq!(
-            opt.graph.get_node(write).links.values_in[0].link,
+            opt.graph.get_node(src).links.values_in[0].link,
             Some(Link::export(0))
         );
     }

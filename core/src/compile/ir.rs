@@ -291,13 +291,8 @@ pub fn node_ir_local(kind: IrKind) -> NodeKindIr {
         0,
         0,
         vec![kind.clone().into()],
-        // 值的出口永远是可变视图 —— 读值要经过 `Copy`。
-        // 句柄类型(`&mut` 的 setter 槽)本身就是句柄,没有再套视图的说法。
-        vec![IrKind::LocalRef(kind.clone().into()), match &kind {
-            // 已经是视图 / 句柄的,不再套一层。
-            IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
-            _ => IrKind::partial_mut(kind),
-        }],
+        // 值出口永远是变量值的视图 —— 读值要经过 `Copy`,没有例外。
+        vec![IrKind::LocalRef(kind.clone().into()), IrKind::partial_mut(kind)],
     )
 }
 
@@ -343,10 +338,7 @@ pub fn node_ir_unsupported(out_kind: IrKind) -> NodeKindIr {
 /// `kind` 已经是视图 / 句柄时它就是恒等的 —— 调用方应当直接连线,
 /// 不必插一个什么都不做的节点。
 pub fn node_ir_to_partial_mut(kind: IrKind) -> NodeKindIr {
-    let out = match &kind {
-        IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
-        _ => IrKind::partial_mut(kind.clone()),
-    };
+    let out = IrKind::partial_mut(kind.clone());
     NodeKind::new(IrNodeId::ToPartialMut, 0, 0, vec![kind.into()], vec![out])
 }
 

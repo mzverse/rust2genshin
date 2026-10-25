@@ -220,7 +220,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 },
                 CompiledPlace::Field(owner, adt, idx) => {
                     let node = self.graph.insert(node_ir_field_mut(&self.compiler.target, &adt, idx));
-                    let v = owner.getter(&self.compiler.target, self.graph, &IrKind::Adt(adt));
+                    let adt_kind = IrKind::Adt(adt);
+                    let v = owner.getter(
+                        &self.compiler.target,
+                        self.graph,
+                        &adt_kind,
+                        &IrKind::partial_mut(adt_kind.clone()),
+                    );
                     self.graph.set_value_in(Link::node(node, 0), v);
                     ValueIn::link(Link::node(node, 0))
                 },
@@ -702,21 +708,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     /// `shape` 是 place 自己的类型(决定装配出来的元组长什么样),`value` 是
     /// 这���值被当成什么类型用(决定要不要 Copy)。
     fn value_of(&mut self, place: &CompiledPlace, shape: &IrKind, value: &IrKind) -> Result<ValueIn> {
-        let got = place.getter_kind(&self.compiler.target, shape);
-        let raw = place.getter(&self.compiler.target, self.graph, shape);
-        // 取出来的已经是想要的类型(比如列表按下标取值本来就读出值),直接给。
-        if got == *value {
-            return Ok(raw);
-        }
-        // 否则 place 交出来的是视图,而这里要普通值:读一次。
-        assert_eq!(
-            got,
-            IrKind::partial_mut(value.clone()),
-            "place 交出的类型既不是 {value},也不是它的视图",
-        );
-        let node = self.graph.insert(node_ir_copy(value.clone()));
-        self.graph.set_value_in(Link::node(node, 0), raw);
-        Ok(ValueIn::link(Link::node(node, 0)))
+        // place 交出来的是视图；要 `value` 就一直读到底。
+        Ok(place.getter(&self.compiler.target, self.graph, shape, value))
     }
 
     pub fn compile_terminator(
