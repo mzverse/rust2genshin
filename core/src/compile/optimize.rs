@@ -176,6 +176,10 @@ impl Optimizer {
         if let Err(e) = crate::compile::loops::lower_loops(&mut self.graph) {
             panic!("控制流改写失败：{e}");
         }
+        // 循环节点已经成形,再消一遍:循环内部现在是一段独立的执行流,
+        // 里面有优化器自己留下的中间节点。
+        self.optimize();
+        self.verify_types();
         self.graph.verify();
         // 列表类 IR 节点要先按元素类型展开成真正的列表节点。它们要往图里插
         // 结构体依赖声明(见 `node_struct`),不能像下面那段一样在持有节点可变
@@ -508,7 +512,7 @@ impl Optimizer {
     ///
     /// `pub` 给 viewer 的「一键优化」用 —— 它可以在同一张图上**反复点**。
     /// 下面那条分支会把 `controls_in` 清空,所以判空要用 `first()` 兜底:
-    /// `[0]` 在第二次进来时越界(core 自己只在 `lower()` 里跑一次,碰不到)。
+    /// `[0]` 在第二次进来时越界(core 在 `lower()` 里跑两遍,但都在清空之前)。
     pub fn optimize(&mut self) {
         while self.eliminate_solos() {}
     }
@@ -1113,6 +1117,12 @@ impl Optimizer {
             if !vis.insert(now) {
                 // 成环:回到已经走过的点,不再展开。
                 continue;
+            }
+            if let Some(x) = now.node()
+                && self.graph.get_node(x).kind.is_loop()
+            {
+                // 循环是一条边界:循环体里的值每轮都不一样,不能跨过去改接。
+                return Err(());
             }
             if let Some(x) = now.node()
                 && setters.contains(&x)
@@ -1905,6 +1915,42 @@ mod tests {
             assert_eq!(new_d.kind.id, IrNodeId::Destructure);
             assert_eq!(new_d.links.values_in[0].link, Some(Link::export(0)));
         }
+    }
+
+    /// 回溯路径上的循环是边界：循环里的值每轮都不一样，不能跨过去改接。
+    #[test]
+    fn loop_on_the_control_path_rejects_the_optimization() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "i_across_loop");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let i = g.insert(node_ir_local(int()));
+        // `i = 0`，`i = 1`
+        let init = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(i, 0), Link::node(init, 0));
+        let set = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(i, 0), Link::node(set, 0));
+        // 循环体里读 `i`
+        let copy = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(i, 1), Link::node(copy, 0));
+        let sw = g.insert(node_ir_switch(int(), vec![1i32.into()]));
+        g.link_value(Link::node(copy, 0), Link::node(sw, 0));
+        // 控制流：`export -> init -> set -> loop -> sw`
+        let lp = g.insert(node_ir_native(
+            crate::node::control::NODE_FOR_CLOSED.clone(),
+        ));
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(set, 0));
+        g.link_control(Link::node(set, 0), Link::node(lp, 0));
+        g.link_control(Link::node(lp, 0), Link::node(sw, 0));
+        g.link_control(Link::node(sw, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(opt.eliminate_unnecessary_local_setter(set).is_some());
+        assert!(opt.graph.get_nodes().contains(&set));
     }
 
     /// 没有控制流进入的执行节点属于不可达代码。

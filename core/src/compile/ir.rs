@@ -23,6 +23,11 @@ impl NodeKindIr {
         self.controls_in_num == 0 && self.controls_out_num == 0
     }
 
+    /// 循环节点:两个控制输入(进入循环 + 绕回循环头)。
+    pub fn is_loop(&self) -> bool {
+        self.controls_in_num == 2
+    }
+
     pub fn is_pure(&self) -> bool {
         assert!(self.is_calc());
         match &self.id {
