@@ -181,7 +181,7 @@ impl<'tcx> Compiler<'tcx> {
             // `PartialMut` 的内建在 `compile_call` 里特判(要拆 `&mut` 的元组),
             // 这里只要能认出「是原生调用」并跳过就行。
             if let Some(id) = self.native_call_id(func)
-                && matches!(id.as_str(), "partial_mut_from" | "partial_mut_deref" | "partial_mut_deref_mut")
+                && matches!(id.as_str(), "partial_mut_from" | "partial_mut_deref" | "partial_mut_deref_mut" | "identity")
             {
                 continue;
             }

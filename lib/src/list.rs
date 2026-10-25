@@ -1,5 +1,4 @@
 use crate::boxed::Box;
-use core::intrinsics::transmute_unchecked;
 use core::ops::Index;
 use rust2genshin_lib_internal::native;
 use crate::PartialMut;
@@ -11,12 +10,8 @@ pub struct List<T> {
 }
 
 impl<T, const N: usize> From<[T; N]> for List<T> {
-    #[inline(always)]
-    fn from(value: [T; N]) -> Self {
-        unsafe {
-            transmute_unchecked(value)
-        }
-    }
+    #[native("identity")]
+    fn from(value: [T; N]) -> Self;
 }
 impl<T> Default for List<T> {
     #[inline(always)]
@@ -74,12 +69,8 @@ fn from_elem<T: Clone>(elem: &T, n: usize) -> List<T> {
 // TODO
 impl<T> List<T> {
     /// # Safety
-    #[inline(always)]
-    pub unsafe fn into_array<const N: usize>(self) -> [T; N] {
-        unsafe {
-            transmute_unchecked(self)
-        }
-    }
+    #[native("identity")]
+    pub unsafe fn into_array<const N: usize>(self) -> [T; N];
 
     #[native("list_get")]
     pub fn get(&self, index: usize) -> &T;
