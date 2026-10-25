@@ -20,7 +20,7 @@
     link("/dev/add-node.html", [加一个节点]) + [ —— 构造 `NodeKind`，并在 MIR 翻译处用它],
     link("/dev/add-native.html", [加一个原生调用]) + [ —— 让 `lib/` 里一个函数对应到一个节点],
     link("/dev/conventions.html", [约定]) + [ —— 文档注释、命名、句柄类型的实现约束、已踩的坑],
-    link("/dev/type.html", [类型]) + [ —— Rust 类型怎么编译成 `IrKind`，借用、视图、读值],
+    link("/dev/ir/index.html", [IR]) + [ —— Rust 类型怎么编译成 `IrKind`，借用、读值、优化期的读写约定],
 )
 
 = 工具
