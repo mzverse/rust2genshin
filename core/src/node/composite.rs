@@ -11,6 +11,16 @@ pub struct CompositeNodeGraph {
 impl CompositeNodeGraph {
     pub fn apply(self, bundle: &mut AssetBundle) -> (Identifier, NodeKind) {
         let id = bundle.alloc(identifier::Category::ServerNodeGraph, identifier::AssetKind::Basic);
+        // 引脚类型里用到的结构体也要出现在引用列表里(游戏按它解析列表元素类型)。
+        let mut references = vec![id];
+        for pin in self.graph.exports.values().flatten() {
+            if let Some(kind) = pin.kind.as_ref()
+                && let Some(r) = kind.get_reference()
+                && !references.contains(&r)
+            {
+                references.push(r);
+            }
+        }
         let decl = NodeDecl {
             name: self.graph.name.clone(),
             description: self.description.clone(),
@@ -25,7 +35,7 @@ impl CompositeNodeGraph {
             },
             template_root: node_interface::TemplateRoot::UserComposite,
             template_sub: node_interface::TemplateSub::None,
-            references: vec![id],
+            references,
         };
         let mut data = self.graph.apply(id);
         match data.payload.as_mut().unwrap() {

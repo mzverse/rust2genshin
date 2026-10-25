@@ -480,7 +480,18 @@ impl NativeKind {
                 unknown1: 1,
             }).into(),
             Struct(st) => StructId(type_info::StructId { val: st.id.guid }).into(),
-            _ => None, // TODO: enum, List
+            // 列表要带上元素类型:结构体列表没有这一项时游戏拿到的是结构体 0。
+            List(ele) => ListItemType(Box::new(type_info::ListType {
+                item_type: Some(Box::new(pin_interface::TypeInfo {
+                    ui_class: ele.get_widget_type().map(|x| x as i32),
+                    var_type_shell: Some(ele.get_server_shell_type()),
+                    var_type_kernel: Some(ele.get_server_id() as i32),
+                    placeholder: None,
+                    display_state: None,
+                    detail: ele.encode_type_detail(),
+                })),
+            })).into(),
+            _ => None, // TODO: enum
         }
     }
 
