@@ -106,8 +106,8 @@ impl<T> List<T> {
     #[inline(always)]
     pub fn insert(&mut self, index: usize, value: T) {
         #[native("list_insert")]
-        fn insert_<T>(list: &List<T>, index: usize, value: T);
-        insert_(self, index, value);
+        fn insert_<T>(list: PartialMut<List<T>>, index: usize, value: T);
+        insert_(self.into(), index, value);
     }
 
     #[inline(always)]
