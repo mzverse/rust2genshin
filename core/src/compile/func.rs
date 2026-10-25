@@ -136,7 +136,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Rvalue::Use(op, _) => self.compile_operand(op, span)?,
             Rvalue::BinaryOp(op, v) => {
                 let ty0 = v.0.ty(&self.body.local_decls, self.tcx);
-                if matches!(ty0.kind(), TyKind::Uint(..)) {
+                if matches!(ty0.kind(), TyKind::Uint(..)) && !ty0.is_usize() {
                     panic!("{ty0:?}");
                 }
                 let kind0 = self.compiler.compile_ty(v.0.span(&self.body.local_decls), ty0)?.into_native().unwrap();
