@@ -324,11 +324,6 @@ impl Optimizer {
                     let k = kind.values_out_types[0].lower(linker);
                     node_assemble_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
-                // 这三种在前面的单独一遍里就展开成 Native 节点了
-                | IrNodeId::ListAssemble
-                | IrNodeId::ListGet
-                | IrNodeId::ListSet
-                => unreachable!("列表节点已经在 lowering 前展开"),
                 IrNodeId::Destructure => {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_destructure_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
@@ -960,9 +955,11 @@ impl Optimizer {
                             queue.push_back((*e, copied));
                         }
                     }
-                } else if copied || matches!(variable, IrKind::PartialMut(_)) {
-                    // 变量本身就是视图时,传出去的视图被拿去写,写的是它指向
-                    // 的东西,不是这个变量本身 —— 对这个变量来说都是读。
+                } else if copied
+                    || matches!(variable, IrKind::PartialMut(_) | IrKind::LocalRef(_))
+                {
+                    // 变量本身存的就是视图 / 句柄时,传出去的引用被拿去写,
+                    // 写的是它指向的东西,不是这个变量本身 —— 对它来说都是读。
                     usage.users.push(link.target);
                 } else {
                     usage.modifiers.push(link.target);
@@ -1554,6 +1551,54 @@ mod tests {
         // 写入值没接东西，改接后 `Modify` 的输入也是空的（变量本身就是视图，
         // 不用再标一层）。
         assert_eq!(opt.graph.get_node(modify).links.values_in[0].link, None);
+    }
+
+    /// 变量存的就是句柄（`LocalRef<T>`）时，拿它的值去写，写的是句柄指向的
+    /// 变量，不是这个槽 —— 对这处 usage 来说仍然是「读」。
+    ///
+    /// `test_set(p: &mut i32)` 踩过：写槽 local 一直留着，最后变成一个
+    /// 莫名其妙的 `LocalVarRef` 参数。
+    #[test]
+    fn local_ref_variable_is_read_by_a_write_usage() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "ref_write");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+        // 图参数就是一个 `&mut i32` 的句柄
+        g.push_export_value_in(ExportDecl::new(
+            "p".into(),
+            Some(IrKind::LocalRef(int().into())),
+        ));
+
+        // 写槽：变量存的是一个 `&mut i32` 的句柄
+        let holder = g.insert(node_ir_local(IrKind::LocalRef(int().into())));
+        // 从图外收到句柄
+        let init = g.insert(node_ir_set_local(IrKind::LocalRef(int().into())));
+        g.link_value(Link::node(holder, 0), Link::node(init, 0));
+        g.link_value(Link::export(0), Link::node(init, 1));
+        // 拿这个句柄去写
+        let write = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(holder, 1), Link::node(write, 0));
+        g.set_value_in(Link::node(write, 1), ValueIn::value(5i32.into()));
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(write, 0));
+        g.link_control(Link::node(write, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.eliminate_unnecessary_local_setter(init);
+
+        assert!(
+            opt.graph.get_nodes().iter().all(|x| *x != init),
+            "句柄的中转 setter 应该被消掉"
+        );
+        // 写入直接落到图外传进来的句柄上
+        assert_eq!(
+            opt.graph.get_node(write).links.values_in[0].link,
+            Some(Link::export(0))
+        );
     }
 
     /// 值流经自定义复合节点：它会不会写、怎么读完全说不清 —— 整个优化放弃。

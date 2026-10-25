@@ -373,6 +373,11 @@ pub fn test_partial_mut() {
     log(pm.len());
 }
 
+#[unsafe(no_mangle)]
+pub fn test_set(p: &mut i32) {
+    *p = 114514;
+}
+
 #[inline(never)]
 fn borrow_read(x: i32) -> i32 {
     let r = &x;
