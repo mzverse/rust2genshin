@@ -221,16 +221,11 @@ impl Optimizer {
                     continue;
                 }
                 IrNodeId::Local => {
-                    // 变量类型看句柄引脚里的 `LocalRef`。
+                    // 变量类型看句柄引脚里的 `LocalRef`。视图等中间形态在这里
+                    // 由 `LocalRef::lower` 的 `!is_storable` 检查报出来。
                     let variable = kind.values_out_types[0]
                         .local_ref()
                         .expect("local 节点的输出 0 应当是 LocalRef");
-                    // `PartialMut` 是中间形态：局部变量存的是值，不是视图。
-                    // 活到降级说明优化器漏了 —— 这里直接报出来。
-                    assert!(
-                        !matches!(variable, IrKind::PartialMut(_)),
-                        "局部变量的类型不该是 {variable}:它应该在优化期被消掉"
-                    );
                     if let NativeKind::Struct(kind) = kind.values_out_types[0].lower(linker) {
                         let kind = kind.clone();
                         let n =
@@ -898,8 +893,9 @@ impl Optimizer {
             .as_ref()
             .and_then(IrKind::local_ref)
             .expect("set_local 的输入 0 应当是 LocalRef");
-        // 可变视图是「通过引用写」—— 多处使用都是写,不受改接次数限制。
-        let max = if variable.is_storable() && !matches!(variable, IrKind::PartialMut(_)) {
+        // 能存成局部变量的值(普通值、列表、结构体)才有改接次数上限;
+        // 视图是「通过引用写」的,多处使用都是写,不受限制。
+        let max = if variable.is_storable() {
             DEFAULT_MAX
         } else {
             usize::MAX

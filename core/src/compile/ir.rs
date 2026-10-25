@@ -73,8 +73,8 @@ impl IrKind {
                 .to_native()
                 .is_some_and(|n| node_local(&NativeKind::List(n.into())).is_some()),
             IrKind::Adt(..) => true,
-            // 可变视图的值就是被视图对象的值,能不能存跟它一样。
-            IrKind::PartialMut(kind) => kind.is_storable(),
+            // 视图(`PartialMut`)和其它中间形态都不能作为局部变量的存储类型:
+            // 它们必须在优化期被消掉,活到降级就是 bug。
             _ => false,
         }
     }
