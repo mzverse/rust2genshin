@@ -1197,6 +1197,14 @@ impl Optimizer {
                 // 循环是一条边界:循环体里的值每轮都不一样,不能跨过去改接。
                 return Err(());
             }
+            // setter 优先:它就是当前这个变量的一份完整赋值,路径到此为止
+            // (它自己也可能因为依赖了自身而被记进 `opaque`)。
+            if let Some(x) = now.node()
+                && setters.contains(&x)
+            {
+                sources.insert(x);
+                continue;
+            }
             if let Some(x) = now.node() {
                 let nx = self.graph.get_node(x);
                 if source.opaque.contains(&x) {
@@ -1211,12 +1219,6 @@ impl Optimizer {
                 {
                     return Err(());
                 }
-            }
-            if let Some(x) = now.node()
-                && setters.contains(&x)
-            {
-                sources.insert(x);
-                continue;
             }
             if modifiers.contains(&now) {
                 saw_other = true;
