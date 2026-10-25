@@ -274,7 +274,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let TyKind::Array(elem_ty, _) = ty.kind() else {
                         return self.helper().span_err(span, format!("Array aggregate without array type: {ty:?}"));
                     };
-                    let elem = self.compile_array_elem(*elem_ty, span)?;
+                    let elem = self.compiler.compile_ty(span, *elem_ty)?;
                     if fields.len() > MAX_ASSEMBLE_ELEMENTS {
                         return self.helper().span_err(span, format!("Array of {} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node", fields.len()));
                     }
@@ -351,7 +351,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 if n > MAX_ASSEMBLE_ELEMENTS {
                     return self.helper().span_err(span, format!("Array of {n} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node"));
                 }
-                let elem = self.compile_array_elem(*elem_ty, span)?;
+                let elem = self.compiler.compile_ty(span, *elem_ty)?;
                 let v = self.compile_operand(value, span)?;
                 let node = self.graph.insert(node_ir_list_assemble(elem, n));
                 for i in 0..n {
@@ -369,11 +369,6 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     fn compile_assign_rvalue(&mut self, place: Place<'tcx>, value: &Rvalue<'tcx>, span: Span) -> Result<Block> {
         let value_in = self.compile_rvalue(value, span)?;
         self.compile_assign(place, span, value_in)
-    }
-
-    /// 数组元素类型。列表的元素只能是节点图里有列表变体的原生类型。
-    fn compile_array_elem(&mut self, ty: Ty<'tcx>, span: Span) -> Result<IrKind> {
-        self.compiler.compile_list_elem(span, ty)
     }
 
     /// 把 MIR 里的常量求值成 valtree。
@@ -646,7 +641,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 if n > MAX_ASSEMBLE_ELEMENTS {
                     return self.helper().span_err(span, format!("Array of {n} elements exceeds the {MAX_ASSEMBLE_ELEMENTS}-element limit of the assemble-list node"));
                 }
-                let elem = self.compile_array_elem(*ele, span)?;
+                let elem = self.compiler.compile_ty(span, *ele)?;
                 let fields = v.to_branch();
                 let node = self.graph.insert(node_ir_list_assemble(elem.clone(), n));
                 for i in 0..n {

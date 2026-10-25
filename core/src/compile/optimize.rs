@@ -202,23 +202,23 @@ impl Optimizer {
                     // 这里补出来,默认值就是元素个数,已有连线整体后移一位。
                     self.graph.insert_value_in_front(x);
                     self.graph.set_default(Link::node(x, 0), Some((count as i32).into()));
-                    Some(node_list_assemble(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型"), count))
+                    Some(node_list_assemble(&mut self.graph, elem.lower(linker), count))
                 }
                 IrNodeId::ListGet => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_get_at_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                    Some(node_list_get_at_index(&mut self.graph, elem.lower(linker)))
                 }
                 IrNodeId::ListSet => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_modify_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                    Some(node_list_modify_index(&mut self.graph, elem.lower(linker)))
                 }
                 IrNodeId::ListInsert => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_insert(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                    Some(node_list_insert(&mut self.graph, elem.lower(linker)))
                 }
                 IrNodeId::ListGetLength => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_get_length(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
+                    Some(node_list_get_length(&mut self.graph, elem.lower(linker)))
                 }
                 _ => None,
             };

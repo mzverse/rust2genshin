@@ -352,6 +352,11 @@ struct Point {
     y: i32,
 }
 
+#[unsafe(no_mangle)]
+pub fn test_struct_list() -> List<Point> {
+    list![Point { x: 0, y: 0 }, Point { x: 1, y: 0 }]
+}
+
 /// `&mut` 参数 + 字段赋值:字段写是 `Modify`,节点图里没有字段句柄。
 #[inline(never)]
 fn set_x(p: &mut Point, v: i32) {

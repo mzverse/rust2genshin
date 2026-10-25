@@ -541,14 +541,12 @@ mod tests {
     }
 
     #[test]
-    fn 列表元素的支持范围和局部变量节点一致() {
-        use crate::node::query::{list_elem_supported, node_local};
+    fn 局部变量节点的列表变体覆盖原生元素() {
+        use crate::node::query::node_local;
         for kind in [Int, String, Entity, Guid, Float, Vec3, Bool, Config, Prefab, Faction] {
-            assert!(list_elem_supported(&kind), "{kind:?} 应当是受支持的列表元素");
             assert!(node_local(&List(kind.clone().into())).is_some(), "{kind:?} 的列表应当有局部变量节点");
         }
-        // 枚举没有列表变体,当不了元素。
-        assert!(!list_elem_supported(&Enum(1)));
+        // 枚举没有列表变体。
         assert!(node_local(&List(Enum(1).into())).is_none());
     }
 

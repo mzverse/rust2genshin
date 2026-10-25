@@ -1,6 +1,5 @@
 use crate::compile::ir::{AdtInfo, FieldInfo, IrKind};
 use crate::compile::{Compiler, Result};
-use crate::node::query::list_elem_supported;
 use crate::value::NativeKind;
 use rustc_abi::{FIRST_VARIANT, FieldIdx, Integer, IntegerType};
 use rustc_ast::{FloatTy, IntTy, UintTy};
@@ -183,19 +182,6 @@ impl<'tcx> Compiler<'tcx> {
         Ok(IrKind::Adt(key))
     }
 
-    /// 列表的元素类型。节点图里的列表只支持原生元素(没有列表变体的
-    /// 类型 —— 结构体、嵌套列表、枚举 —— 一律报错)。
-    pub fn compile_list_elem(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
-        let elem = self.compile_ty(span, ty)?;
-        let Some(native) = elem.as_native() else {
-            return self.helper().span_err(span, format!("Unsupported list element type: {elem}"));
-        };
-        if !list_elem_supported(native) {
-            return self.helper().span_err(span, format!("Unsupported list element type: {native}"));
-        }
-        Ok(elem)
-    }
-
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
         assert!(!ty.has_param());
         if let Some(n) = self.compile_native_ty(span, ty) {
@@ -228,7 +214,7 @@ impl<'tcx> Compiler<'tcx> {
                 match e.kind() {
                     | TyKind::Slice(e)
                     | TyKind::Array(e, _)
-                    => IrKind::list(self.compile_list_elem(span, *e)?),
+                    => IrKind::list(self.compile_ty(span, *e)?),
                     _ => IrKind::Unsupported(format!("*{e:?}")),
                 }
             },
@@ -255,7 +241,7 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Never => IrKind::Never,
             TyKind::Foreign(id) => todo!("{id:?}"),
             // `[T; N]` 在节点图里就是列表,长度不进入类型(和 `List<T>` 同型)。
-            TyKind::Array(ele, _) => IrKind::list(self.compile_list_elem(span, *ele)?),
+            TyKind::Array(ele, _) => IrKind::list(self.compile_ty(span, *ele)?),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
             TyKind::Slice(_) => {
                 self.tcx.dcx().span_fatal(span, "Slice is still unsupported")

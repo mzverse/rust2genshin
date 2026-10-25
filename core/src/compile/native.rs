@@ -5,7 +5,6 @@ use crate::compile::get_expn_macro_attr;
 use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_list_get, node_ir_list_get_length, node_ir_list_insert, node_ir_list_set};
 use crate::node::NodeKind;
 use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
-use crate::node::query::list_elem_supported;
 use crate::value::{NativeKind, NativeValue};
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::{FnSig, GenericArgsRef, Instance, ScalarInt, Ty, TyKind};
@@ -120,12 +119,6 @@ impl<'tcx> Compiler<'tcx> {
                         Ok(elem) => elem,
                         Err(e) => return Some(Err(e)),
                     };
-                    let Some(native) = elem.as_native() else {
-                        return Some(self.helper().span_err(span, format!("Unsupported list element type: {elem}")));
-                    };
-                    if !list_elem_supported(native) {
-                        return Some(self.helper().span_err(span, format!("Unsupported list element type: {native}")));
-                    }
                     Ok(IrKind::list(elem))
                 },
                 "Dict" => {

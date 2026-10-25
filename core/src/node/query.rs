@@ -271,11 +271,6 @@ pub static NODE_GET_INPUT_TYPE: LazyLock<NodeKind> = LazyLock::new(|| {
 // 变量 / 状态
 // ========================================================================
 
-/// 列表元素类型是否受支持:和 `node_local` 的列表变体一致。
-pub fn list_elem_supported(kind: &NativeKind) -> bool {
-    matches!(kind, Bool | Int | Float | String | Vec3 | Guid | Faction | Config | Prefab | Entity)
-}
-
 /// 获取局部变量(ID 18,泛型 Variant):
 /// initial_value(idx0,R<T>) 输入;local_variable(idx0,Loc) 与 value(idx1,R<T>) 输出。
 /// 变体顺序(TSI 与 kernel 均按参考 data.json):Bol/Int/Str/Ety/Gid/Flt/Vec/
