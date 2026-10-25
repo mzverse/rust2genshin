@@ -1,7 +1,7 @@
 use panic_context::panic_context;
 use super::{Result, get_expn_macro_attr};
 use crate::compile::func::{CompilingFn, NodeGraphIr};
-use crate::compile::ir::{node_ir_assemble, node_ir_copy, node_ir_destructure, node_ir_list_get, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, partial_mut_list, struct_fields, AdtKey, FieldInfo, IrKind};
+use crate::compile::ir::{node_ir_assemble, node_ir_copy, node_ir_destructure, node_ir_list_get, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, node_ir_to_partial_mut, partial_mut_list, struct_fields, AdtKey, FieldInfo, IrKind};
 use crate::compile::link::Target;
 use crate::compile::{Block, Compiler};
 use crate::node::{ExportDecl, Link, NodeRef, ValueIn};
@@ -63,7 +63,9 @@ impl CompiledIndex {
     fn getter(&self, target: &Target, graph: &mut NodeGraphIr) -> ValueIn {
         match self {
             CompiledIndex::Place(place) => {
-                place.getter(target, graph, &IrKind::Native(NativeKind::Int)).0
+                let int = IrKind::Native(NativeKind::Int);
+                let raw = place.getter(target, graph, &int);
+                copy_until(graph, raw, IrKind::partial_mut(int.clone()), &int)
             }
             CompiledIndex::Const(i) => ValueIn::value((*i).into()),
         }
@@ -297,23 +299,16 @@ fn field_view(owner_kind: &AdtKey) -> IrKind {
 }
 
 impl CompiledPlace {
-    /// 取这个 place 的原始形态，连同它的类型一起返回。
+    /// 取这个 place 的值。交出的一定是 `partial_mut(place 的类型)` —— 视图。
     ///
-    /// `shape` 是 place 自己的类型。要别的类型由调用方 `copy_until`：
-    /// 视图是多层的时候，读几次由调用点决定。
-    pub fn getter(
-        &self,
-        target: &Target,
-        graph: &mut NodeGraphIr,
-        shape: &IrKind,
-    ) -> (ValueIn, IrKind) {
+    /// 要普通值由调用方 `copy_until` 读一次。
+    pub fn getter(&self, target: &Target, graph: &mut NodeGraphIr, shape: &IrKind) -> ValueIn {
         match self {
             // 单槽：出口就是变量值的视图。
-            CompiledPlace::Local(CompiledLocal::Singleton(content)) => (
-                ValueIn::link(content.getter),
-                IrKind::partial_mut(content.kind.clone()),
-            ),
-            // 多槽：先把各槽拼成整体，拼出来的就是 `shape`。
+            CompiledPlace::Local(CompiledLocal::Singleton(content)) => {
+                ValueIn::link(content.getter)
+            },
+            // 多槽：先把各槽拼成整体，再标成视图。
             CompiledPlace::Local(local @ CompiledLocal::Flat(_)) => {
                 struct Ctx;
                 impl LocalAssembleCtx<LocalRef> for Ctx {
@@ -330,18 +325,18 @@ impl CompiledPlace {
                         local.assemble(target, graph, kind, self)
                     }
                 }
-                (Ctx.dfs(target, local, graph, shape), shape.clone())
+                let raw = Ctx.dfs(target, local, graph, shape);
+                let view = graph.insert(node_ir_to_partial_mut(shape.clone()));
+                graph.set_value_in(Link::node(view, 0), raw);
+                ValueIn::link(Link::node(view, 0))
             },
             CompiledPlace::Field(owner, owner_kind, ele) => {
                 // 解构的是结构体的视图:取出来的字段也是视图。
                 let view = field_view(owner_kind);
                 let node = graph.insert(node_ir_destructure(target, &view));
-                let (v, _) = owner.getter(target, graph, &IrKind::Adt(owner_kind.clone()));
+                let v = owner.getter(target, graph, &IrKind::Adt(owner_kind.clone()));
                 graph.set_value_in(Link::node(node, 0), v);
-                (
-                    ValueIn::link(Link::node(node, *ele)),
-                    struct_fields(target, &view)[*ele].kind.clone(),
-                )
+                ValueIn::link(Link::node(node, *ele))
             },
             CompiledPlace::Index(owner, index, elem) => {
                 // 视图穿透:owner 交出来的是列表的视图,元素也按视图给。
@@ -349,14 +344,11 @@ impl CompiledPlace {
                     partial_mut_list(elem),
                     IrKind::partial_mut(elem.clone()),
                 ));
-                let (v, _) = owner.getter(target, graph, &IrKind::list(elem.clone()));
+                let v = owner.getter(target, graph, &IrKind::list(elem.clone()));
                 graph.set_value_in(Link::node(node, 0), v);
                 let i = index.getter(target, graph);
                 graph.set_value_in(Link::node(node, 1), i);
-                (
-                    ValueIn::link(Link::node(node, 0)),
-                    IrKind::partial_mut(elem.clone()),
-                )
+                ValueIn::link(Link::node(node, 0))
             },
         }
     }
@@ -380,7 +372,7 @@ impl CompiledPlace {
             CompiledPlace::Field(owner, owner_kind, ele) => {
                 let kind = field_view(owner_kind);
                 let node = graph.insert(node_ir_modify_struct(target, &kind));
-                let (v, _) = owner.getter(target, graph, &IrKind::Adt(owner_kind.clone()));
+                let v = owner.getter(target, graph, &IrKind::Adt(owner_kind.clone()));
                 graph.set_value_in(Link::node(node, 0), v);
                 let index = 2 + *ele * 2;
                 graph.set_value_in(Link::node(node, index), value);
@@ -391,7 +383,7 @@ impl CompiledPlace {
             CompiledPlace::Index(owner, index, elem) => {
                 // 列表是句柄,按下标改值就地生效,不需要写回 owner。
                 let node = graph.insert(node_ir_list_set(partial_mut_list(elem), elem.clone()));
-                let (v, _) = owner.getter(target, graph, &IrKind::list(elem.clone()));
+                let v = owner.getter(target, graph, &IrKind::list(elem.clone()));
                 graph.set_value_in(Link::node(node, 0), v);
                 let i = index.getter(target, graph);
                 graph.set_value_in(Link::node(node, 1), i);
@@ -437,8 +429,8 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                         return self.helper().span_err(span, format!("Deref of non-mut reference: {kind}"));
                     };
                     let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &kind));
-                    let (raw, got) = result.getter(&self.compiler.target, self.graph, &kind);
-                    let getter = copy_until(self.graph, raw, got, &kind);
+                    let raw = result.getter(&self.compiler.target, self.graph, &kind);
+                    let getter = copy_until(self.graph, raw, IrKind::partial_mut(kind.clone()), &kind);
                     self.graph.set_value_in(Link::node(de, 0), getter);
                     result = CompiledPlace::Local(CompiledLocal::Singleton(LocalRef::new(de, *inner)));
                 }, // else nop
