@@ -370,6 +370,10 @@ impl<Kind> ExportDecl<Kind> {
             kind,
         }
     }
+
+    pub fn kind(&self) -> Option<&Kind> {
+        self.kind.as_ref()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

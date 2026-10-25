@@ -128,6 +128,14 @@ impl IrKind {
         IrKind::PartialMut(kind.into())
     }
 
+    /// 视图里的类型;不是视图时为 `None`。
+    pub fn view_inner(&self) -> Option<IrKind> {
+        match self {
+            IrKind::PartialMut(kind) => Some((**kind).clone()),
+            _ => None,
+        }
+    }
+
     /// 列表的元素类型;不是列表时为 `None`。
     pub fn list_elem(&self) -> Option<IrKind> {
         match self {
@@ -177,8 +185,8 @@ impl IrKind {
                 linker.target.adts.entry(key.clone()).or_insert_with(|| {
                     let kind = (**inner).clone();
                     AdtInfo::new(vec![
-                        FieldInfo::new("0".into(), IrKind::Native(NativeKind::LocalVarRef)),
-                        FieldInfo::new("1".into(), IrKind::PartialMut(kind.into())),
+                        FieldInfo::new("0".into(), IrKind::LocalRef(kind.clone().into())),
+                        FieldInfo::new("1".into(), IrKind::mutable_view(kind)),
                     ])
                 });
                 Self::touch_adt(linker, key)
@@ -219,10 +227,16 @@ pub enum IrNodeId {
     Assemble,
     Destructure,
     Modify,
-    FieldMut(usize),
+    /// 对结构体字段取 `&mut`:输出一个「能读能写」的二元组。setter 那头是虚的
+    /// (节点图里没有字段句柄),优化期必须把它消费掉的每一处写入改写成 `Modify`
+    /// —— 见 `Optimizer::eliminate_field_mut`。
+    ///
+    /// `fields` 是 owner 结构体的字段类型,带着它是为了让改写不必再回头查 `Target`。
+    FieldMut {
+        idx: usize,
+        fields: Vec<IrKind>,
+    },
     BlackBox,
-    /// 直通:值不变,只是类型上多一层标记(`PartialMut` 之类)。
-    PassThrough,
     /// 未实现:只有一个出引脚,类型随便填。降级时直接 panic ——
     /// 让「还没支持的东西」在编译期被明确标出来,而不是静默走错路。
     Unsupported,
@@ -271,10 +285,13 @@ pub fn node_ir_local(kind: IrKind) -> NodeKindIr {
         0,
         0,
         vec![kind.clone().into()],
-        // 值的出口类型：ADT 给 `PartialMut`。优化器沿值流分析时，ADT 的值交给
-        // `Modify` / 函数调用是**通过引用写**它，得靠这个类型认出来（非 ADT
-        // 的类型 `partial_mut` 原样返回）。
-        vec![IrKind::LocalRef(kind.clone().into()), IrKind::PartialMut(kind.into())],
+        // 值的出口永远是可变视图 —— 读值要经过 `Copy`。
+        // 句柄类型(`&mut` 的 setter 槽)本身就是句柄,没有再套视图的说法。
+        vec![IrKind::LocalRef(kind.clone().into()), match &kind {
+            // 已经是视图 / 句柄的,不再套一层。
+            IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
+            _ => IrKind::mutable_view(kind),
+        }],
     )
 }
 
@@ -306,17 +323,6 @@ pub fn node_ir_black_box(kind: IrKind) -> NodeKindIr {
         1,
         vec![kind.clone().into()],
         vec![kind],
-    )
-}
-
-/// 直通节点:值原样传过去,只是输出类型上多一层标记。
-pub fn node_ir_pass_through(in_kind: IrKind, out_kind: IrKind) -> NodeKindIr {
-    NodeKind::new(
-        IrNodeId::PassThrough,
-        1,
-        1,
-        vec![in_kind.into()],
-        vec![out_kind],
     )
 }
 
@@ -384,15 +390,15 @@ pub fn struct_fields(target: &Target, kind: &IrKind) -> Vec<FieldInfo> {
         IrKind::Mut(e) => {
             let kind1 = e.as_ref().clone();
             vec![
-                FieldInfo::new(0.to_string(), IrKind::Native(NativeKind::LocalVarRef)),
-                FieldInfo::new(1.to_string(), IrKind::PartialMut(kind1.into())),
+                // setter 槽的类型和 `Local` 的句柄出口一致,必须是 `LocalRef`。
+                FieldInfo::new(0.to_string(), IrKind::LocalRef(kind1.clone().into())),
+                FieldInfo::new(1.to_string(), IrKind::mutable_view(kind1)),
             ]
         }
         IrKind::PartialMut(e) => struct_fields(target, e)
             .into_iter()
             .map(|mut x| {
-                let kind1 = x.kind;
-                x.kind = IrKind::PartialMut(kind1.into());
+                x.kind = IrKind::PartialMut(x.kind.into());
                 x
             })
             .collect(),
@@ -427,6 +433,21 @@ pub fn node_ir_list_assemble(elem: IrKind, count: usize) -> NodeKindIr {
     )
 }
 
+/// 按下标取列表元素，结果当**视图**用（place 的 getter）：取值要过 `Copy`。
+/// 和 [`node_ir_list_get`] 是同一个节点，只有 IR 层的出口类型不同。
+pub fn node_ir_list_get_view(elem: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::ListGet,
+        0,
+        0,
+        vec![
+            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
+            Some(IrKind::Native(NativeKind::Int)),
+        ],
+        vec![IrKind::mutable_view(elem)],
+    )
+}
+
 /// 按下标取列表元素。
 pub fn node_ir_list_get(elem: IrKind) -> NodeKindIr {
     NodeKind::new(
@@ -434,7 +455,7 @@ pub fn node_ir_list_get(elem: IrKind) -> NodeKindIr {
         0,
         0,
         vec![
-            Some(IrKind::list(elem.clone())),
+            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
         ],
         vec![elem],
@@ -448,7 +469,7 @@ pub fn node_ir_list_set(elem: IrKind) -> NodeKindIr {
         1,
         1,
         vec![
-            Some(IrKind::list(elem.clone())),
+            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -463,7 +484,7 @@ pub fn node_ir_list_insert(elem: IrKind) -> NodeKindIr {
         1,
         1,
         vec![
-            Some(IrKind::list(elem.clone())),
+            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -477,7 +498,7 @@ pub fn node_ir_list_get_length(elem: IrKind) -> NodeKindIr {
         IrNodeId::ListGetLength,
         0,
         0,
-        vec![Some(IrKind::list(elem))],
+        vec![Some(IrKind::mutable_view(IrKind::list(elem)))],
         vec![IrKind::Native(NativeKind::Int)],
     )
 }
@@ -498,7 +519,14 @@ pub fn node_ir_destructure(target: &Target, kind: &IrKind) -> NodeKindIr {
 pub fn node_ir_modify_struct(target: &Target, kind: &IrKind) -> NodeKindIr {
     let mut params = vec![kind.clone().into()];
     params.push(None);
-    for x in struct_fields(target, kind) {
+    // 第 0 个引脚是结构体本身(可以是视图,原地改),但写进字段的是**值** ——
+    // 所以字段类型从 `Adt` 取,不是从视图取(视图的字段也是视图)。
+    let adt = match kind {
+        IrKind::Adt(key) => IrKind::Adt(key.clone()),
+        IrKind::PartialMut(inner) => (**inner).clone(),
+        other => panic!("Modify 的目标应当是结构体,实际是 {other}"),
+    };
+    for x in struct_fields(target, &adt) {
         params.push(x.kind.clone().into());
         params.push(IrKind::Native(NativeKind::Bool).into());
     }
@@ -506,16 +534,35 @@ pub fn node_ir_modify_struct(target: &Target, kind: &IrKind) -> NodeKindIr {
 }
 
 pub fn node_ir_field_mut(target: &Target, adt: &AdtKey, idx: usize) -> NodeKindIr {
+    let fields = struct_fields(target, &IrKind::Adt(adt.to_string()))
+        .into_iter()
+        .map(|x| x.kind)
+        .collect::<Vec<_>>();
     NodeKind::new(
-        IrNodeId::FieldMut(idx),
+        IrNodeId::FieldMut {
+            idx,
+            fields: fields.clone(),
+        },
         0,
         0,
         vec![IrKind::PartialMut(IrKind::Adt(adt.to_string()).into()).into()],
-        vec![IrKind::Mut(
-            target.adts.get(adt).unwrap().fields[idx]
-                .kind
-                .clone()
-                .into(),
-        )],
+        vec![IrKind::Mut(fields[idx].clone().into())],
+    )
+}
+
+/// 解构一个视图(`PartialMut<Adt>`),取出各字段的视图。
+///
+/// 和 [`node_ir_destructure`] 的区别:这里不查 `Target`,字段类型直接由
+/// `fields`(结构体本身的字段类型)包装出来 —— 优化期消 `FieldMut` 时要用。
+pub fn node_ir_destructure_view(view: IrKind, fields: &[IrKind]) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::Destructure,
+        0,
+        0,
+        vec![Some(view)],
+        fields
+            .iter()
+            .map(|x| IrKind::mutable_view(x.clone()))
+            .collect(),
     )
 }

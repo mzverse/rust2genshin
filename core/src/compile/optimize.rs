@@ -24,8 +24,56 @@ use crate::unwrap;
 impl Optimizer {
     pub fn verify(&self, _helper: Helper) -> super::Result<()> {
         self.graph.verify();
-        // TODO
+        self.verify_types();
         Ok(())
+    }
+
+    /// 全图类型校验：每条数据流连接两端的引脚类型必须完全相等。
+    ///
+    /// 这是 IR 层的「类型检查」：`Copy` / `PartialMut` / `LocalRef` 这些
+    /// 不能靠 wire 上同形来蒙混，必须在标称类型上就对得上。
+    fn verify_types(&self) {
+        let graph = &self.graph;
+        for (i, node) in &graph.nodes {
+            for (j, value) in node.links.values_in.iter().enumerate() {
+                let Some(link) = value.link else { continue };
+                let Some(expected) = node.kind.values_in_types[j].as_ref() else {
+                    panic!("节点 {:?} 的值入 {j} 没有类型,却接了连线", NodeRef::from(i));
+                };
+                let actual = match link.target {
+                    LinkTarget::Node(src) => graph.get_node(src).kind.values_out_types[link.index].clone(),
+                    LinkTarget::Export => self.export_kind(PinType::InValue, link.index),
+                };
+                assert_eq!(actual, *expected, "节点 {:?} ({:?}) 的值入 {j} 类型不符;来源 {:?} ({:?});节点类型 {:?}", NodeRef::from(i), node.kind.id, link.target, link.target.node().map(|x| self.graph.get_node(x).kind.id.clone()), node.kind.values_in_types);
+            }
+        }
+        // 图出口：出参的类型也必须和来源引脚一致。
+        for (i, decl) in self.graph.exports.get(&PinType::OutValue).into_iter().flatten().enumerate() {
+            let Some(expected) = decl.kind() else { continue };
+            let Some(link) = self.graph.externals.values_in[i].link else { continue };
+            let LinkTarget::Node(src) = link.target else { continue };
+            let actual = &self.graph.get_node(src).kind.values_out_types[link.index];
+            assert_eq!(actual, expected, "出口 {i} 类型不符");
+        }
+        // 图入口：入参接到节点引脚,类型同样要对上。
+        for (i, decl) in self.graph.exports.get(&PinType::InValue).into_iter().flatten().enumerate() {
+            let Some(expected) = decl.kind() else { continue };
+            for target in &self.graph.externals.values_out[i] {
+                let LinkTarget::Node(dst) = target.target else { continue };
+                let actual = self.graph.get_node(dst).kind.values_in_types[target.index].as_ref().unwrap();
+                assert_eq!(actual, expected, "入口 {i} 类型不符");
+            }
+        }
+    }
+
+    fn export_kind(&self, kind: PinType, index: usize) -> IrKind {
+        self.graph
+            .exports
+            .get(&kind)
+            .and_then(|x| x.get(index))
+            .and_then(|x| x.kind())
+            .cloned()
+            .unwrap_or_else(|| panic!("出口 {kind:?}[{index}] 没有类型"))
     }
 
     pub fn link_node(&mut self, linker: &mut Linker, x: NodeRef) {
@@ -111,19 +159,19 @@ impl Optimizer {
                     Some(node_list_assemble(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型"), count))
                 }
                 IrNodeId::ListGet => {
-                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标取值的输入应当是列表");
+                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_get_at_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListSet => {
-                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("按下标改值的输入应当是列表");
+                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_modify_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListInsert => {
-                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("插入元素的输入应当是列表");
+                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_insert(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListGetLength => {
-                    let elem = kind.values_in_types[0].as_ref().unwrap().list_elem().expect("取长度的输入应当是列表");
+                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_get_length(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 _ => None,
@@ -266,7 +314,7 @@ impl Optimizer {
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
                 IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
-                IrNodeId::FieldMut(idx) => panic!("{idx}"),
+                IrNodeId::FieldMut { idx, .. } => panic!("{idx}"),
                 IrNodeId::Fn(_) => unreachable!(),
                 // 读值就是取值,节点图里没有额外的动作,也没有控制流要接。
                 IrNodeId::Copy => {
@@ -275,7 +323,7 @@ impl Optimizer {
                     self.graph.remove(x);
                     continue;
                 }
-                IrNodeId::BlackBox | IrNodeId::PassThrough => {
+                IrNodeId::BlackBox => {
                     let n = self.graph.get_node(x);
                     self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
                     self.relink_controls(x, 0, 0);
@@ -1206,6 +1254,13 @@ impl Optimizer {
 ///
 /// `&mut`（`PartialMut`）的值落到这些地方时，写的是被引用的东西，不是读这个值
 /// 本身 —— 所以这种连接不算「读」。
+/// 列表 IR 节点的第一个引脚是 `PartialMut<List<T>>`(视图),取元素类型要拆两层。
+fn list_view_elem(kind: &IrKind) -> IrKind {
+    kind.view_inner()
+        .and_then(|x| x.list_elem())
+        .unwrap_or_else(|| panic!("列表节点的输入应当是 PartialMut<List<T>>,实际是 {kind}"))
+}
+
 fn maybe_write(id: &IrNodeId, index: usize) -> bool {
     match id {
         IrNodeId::Modify => index == 0,

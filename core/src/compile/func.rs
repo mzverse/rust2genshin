@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_pass_through, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -702,15 +702,21 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
     /// `shape` 是 place 自己的类型(决定装配出来的元组长什么样),`value` 是
     /// 这���值被当成什么类型用(决定要不要 Copy)。
     fn value_of(&mut self, place: &CompiledPlace, shape: &IrKind, value: &IrKind) -> Result<ValueIn> {
+        let got = place.getter_kind(&self.compiler.target, shape);
         let raw = place.getter(&self.compiler.target, self.graph, shape);
-        Ok(match value {
-            IrKind::PartialMut(_) | IrKind::Mut(_) => raw,
-            _ => {
-                let node = self.graph.insert(node_ir_copy(value.clone()));
-                self.graph.set_value_in(Link::node(node, 0), raw);
-                ValueIn::link(Link::node(node, 0))
-            },
-        })
+        // 取出来的已经是想要的类型(比如列表按下标取值本来就读出值),直接给。
+        if got == *value {
+            return Ok(raw);
+        }
+        // 否则 place 交出来的是视图,而这里要普通值:读一次。
+        assert_eq!(
+            got,
+            IrKind::mutable_view(value.clone()),
+            "place 交出的类型既不是 {value},也不是它的视图",
+        );
+        let node = self.graph.insert(node_ir_copy(value.clone()));
+        self.graph.set_value_in(Link::node(node, 0), raw);
+        Ok(ValueIn::link(Link::node(node, 0)))
     }
 
     pub fn compile_terminator(
@@ -867,14 +873,19 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     };
                     let node = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(inner)));
                     self.graph.set_value_in(Link::node(node, 0), args[0].clone());
-                    Some((node, 1))
+                    Some(ValueIn::link(Link::node(node, 1)))
                 },
-                // `Deref`：可变视图的值就是 `T` 的值，直通。
+                // `Deref`：可变视图的值就是 `T` 的值。
+                // 要的还是视图(`T` 非 `Freeze`)就原样给;要值就 `Copy` 一份。
                 "partial_mut_deref" => {
                     let out = self.compiler.compile_ty(span, sig.output())?;
-                    let node = self.graph.insert(node_ir_pass_through(params[0].clone(), out));
-                    self.graph.set_value_in(Link::node(node, 0), args[0].clone());
-                    Some((node, 0))
+                    if out == params[0] {
+                        Some(args[0].clone())
+                    } else {
+                        let node = self.graph.insert(node_ir_copy(out));
+                        self.graph.set_value_in(Link::node(node, 0), args[0].clone());
+                        Some(ValueIn::link(Link::node(node, 0)))
+                    }
                 },
                 // `DerefMut`：`&mut PartialMut<T>` -> `&mut T`。
                 //
@@ -896,14 +907,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let asm = self.graph.insert(node_ir_assemble(&self.compiler.target, &out));
                     self.graph.set_value_in(Link::node(asm, 0), ValueIn::link(Link::node(unsupported, 0)));
                     self.graph.set_value_in(Link::node(asm, 1), ValueIn::link(Link::node(de, 1)));
-                    Some((asm, 0))
+                    Some(ValueIn::link(Link::node(asm, 0)))
                 },
                 _ => None,
             };
-            if let Some((node, pin)) = result {
+            if let Some(value) = result {
                 let mut block = Block::nop(self.graph);
                 if let Some(destination) = destination {
-                    let b = self.compile_assign(destination, span, ValueIn::link(Link::node(node, pin)))?;
+                    let b = self.compile_assign(destination, span, value)?;
                     block.extend(self.graph, b);
                 }
                 return Ok(block);
