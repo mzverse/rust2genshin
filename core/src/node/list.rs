@@ -84,8 +84,14 @@ const VARIANTS: &[Variants] = &[
     Variants { shell: 509, order: ITERATE, kernels: &[509, 510, 511, 512, 513, 514, 515, 570, 571, 3280] },
 ];
 
+/// 拼装列表的 shell ID。
+pub const ASSEMBLE_SHELL: i64 = 169;
+
 /// 拼装列表(ID 169)最多接 100 个元素。参考项目 `data.json` 里该节点的描述:
 /// "Assembles up to 100 parameters into a list"。
+///
+/// 节点定义里固定有这么多槽,但 IR 只保留实际用到的 —— 补位在编码 `.gia`
+/// 时做(见 `NodeGraph::apply`)。
 pub const MAX_ASSEMBLE_ELEMENTS: usize = 100;
 
 /// 查某个 shell 在给定元素类型下的 (kernel, 选择器下标)。
@@ -404,16 +410,18 @@ pub fn node_list_get_min<NodeId, Kind>(
 /// 拼装列表(ID 169):把若干元素拼成一个列表。
 ///
 /// 游戏里的引脚是 `Input0: Int`(元素个数,隐藏)+ 最多 100 个 `R<T>` 元素引脚,
-/// 输出 `L<R<T>>`。元素引脚按 `count` 展开;`[T; N]` 字面量由
-/// [`crate::compile::ir::node_ir_list_assemble`] 生成、链接期落到这里。
+/// 输出 `L<R<T>>`。这里按实际的 `count` 展开元素引脚,编码 `.gia` 时再补满
+/// 100 个(见 `NodeGraph::apply`)—— IR 里不必背着用不到的空槽。
+/// `[T; N]` 字面量由 [`crate::compile::ir::node_ir_list_assemble`] 生成、
+/// 链接期落到这里。
 pub fn node_list_assemble<NodeId, Kind>(
     graph: &mut NodeGraph<NodeId, Kind>,
     ty: NativeKind,
+    count: usize,
 ) -> NodeKind {
-    // 游戏里的拼装列表节点固定有 100 个元素引脚,没连的那部分隐藏着。
-    // 只按实际元素数生成的话,编辑器/运行时看到的引脚数和节点定义对不上。
+    // 至少留一个元素槽:补位时要靠它拿元素类型与类型选择器(空数组也一样)。
     let mut inputs = vec![ValuePin::plain(Int)];
-    inputs.extend((0..MAX_ASSEMBLE_ELEMENTS).map(|_| ValuePin::poly(ty.clone())));
+    inputs.extend((0..count.max(1)).map(|_| ValuePin::poly(ty.clone())));
     generic(
         graph,
         169,
@@ -488,12 +496,15 @@ mod tests {
         assert_eq!(get.values_in_types, vec![Some(List(String.into())), Some(Int)]);
         assert_eq!(get.values_out_types, vec![String]);
         assert_eq!(get.id.selectors_out, vec![Some(1)]);
-        // 拼装列表:元素个数 + 固定 100 个元素槽进,列表出(没连的槽隐藏)
-        let assemble = node_list_assemble(&mut g, Float);
-        assert_eq!(assemble.values_in_types.len(), 101);
+        // 拼装列表:元素个数 + 实际用到的元素槽;100 个空槽留到编码 `.gia` 时补
+        let assemble = node_list_assemble(&mut g, Float, 3);
+        assert_eq!(assemble.values_in_types.len(), 4);
         assert_eq!(assemble.values_in_types[0], Some(Int));
         assert_eq!(assemble.values_in_types[1], Some(Float));
         assert_eq!(assemble.values_out_types, vec![List(Float.into())]);
+        // 空数组也要留一个槽,补位时靠它拿元素类型
+        let empty = node_list_assemble(&mut g, Float, 0);
+        assert_eq!(empty.values_in_types.len(), 2);
     }
 
     #[test]

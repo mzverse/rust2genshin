@@ -233,9 +233,9 @@ impl Optimizer {
                             self.graph.set_value_in(Link::node(x, i + 1), ValueIn::link(Link::node(a, 0)));
                         }
                     }
-                    // 节点固定 100 个元素引脚:未连的那些也要占位,否则编码时
-                    // 遍历不到,引脚数就和节点定义对不上了。
-                    let assembled = node_list_assemble(&mut self.graph, elem);
+                    // 元素引脚只按实际元素数展开;`.gia` 编码时再补满节点定义的
+                    // MAX 个槽(见 `NodeGraph::apply`)。
+                    let assembled = node_list_assemble(&mut self.graph, elem, count);
                     let total = assembled.values_in_types.len();
                     self.graph.get_node_mut(x).links.values_in.resize(total, ValueIn::default());
                     Some(assembled)
