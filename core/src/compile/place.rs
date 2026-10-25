@@ -143,8 +143,8 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                     None
                 }
             } => r,
-            TyKind::Ref(_, e, Mutability::Not) if !e.is_never() =>
-                self.solve_local(*e, k, name, span)?,
+            // `&T` 不单独处理:`compile_ty` 已经给出正确形态(`Freeze` 时是 `T`,
+            // 否则是 `PartialMut<T>`),兜底分支照着它建局部变量就行。
             TyKind::Ref(_, e, Mutability::Mut) => {
                 let mut fsk = Vec::new();
                 let mut fs = Vec::new();
@@ -152,8 +152,8 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
                 let (k1, r) = f(self, IrKind::LocalRef(kind.clone().into()), k, format!("{name}.write"));
                 fsk.push(k1);
                 fs.push(r);
-                let kind1 = kind.clone();
-                let (k1, r) = f(self, if e.is_freeze(self.compiler.tcx, TypingEnv::fully_monomorphized()) { kind1 } else { IrKind::PartialMut(kind1.into()) }, k, format!("{name}.read"));
+                // 读槽永远是可变视图:取值要经过 `Copy`。
+                let (k1, r) = f(self, IrKind::PartialMut(kind.into()), k, format!("{name}.read"));
                 fsk.push(k1);
                 fs.push(r);
                 (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs))
@@ -167,7 +167,7 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
 }
 
 pub trait LocalAssembleCtx<T> {
-    fn leaf(&mut self, content: &T) -> ValueIn;
+    fn leaf(&mut self, graph: &mut NodeGraphIr, kind: &IrKind, content: &T) -> ValueIn;
     fn dfs(&mut self, target: &Target, local: &CompiledLocal<T>, graph: &mut NodeGraphIr, kind: &IrKind) -> ValueIn;
 }
 
@@ -183,7 +183,7 @@ impl<T> CompiledLocal<T> {
 
     pub fn assemble(&self, target: &Target, graph: &mut NodeGraphIr, kind: &IrKind, ctx: &mut impl LocalAssembleCtx<T>) -> ValueIn {
         match self {
-            CompiledLocal::Singleton(v) => ctx.leaf(v),
+            CompiledLocal::Singleton(v) => ctx.leaf(graph, kind, v),
             CompiledLocal::Flat(elements) => {
                 let node_ref = graph.insert(node_ir_assemble(target, kind));
                 let fields = Self::get_fields(target, kind);
@@ -198,7 +198,7 @@ impl<T> CompiledLocal<T> {
     pub fn assemble_all<I: Iterator<Item = ValueIn>>(&self, target: &Target, graph: &mut NodeGraphIr, kind: &IrKind, values: &mut I) -> ValueIn {
         struct Ctx<'a, I: Iterator<Item = ValueIn>>(&'a mut I);
         impl<T, I: Iterator<Item = ValueIn>> LocalAssembleCtx<T> for Ctx<'_, I> {
-            fn leaf(&mut self, _content: &T) -> ValueIn {
+            fn leaf(&mut self, _graph: &mut NodeGraphIr, _kind: &IrKind, _content: &T) -> ValueIn {
                 self.0.next().unwrap()
             }
             fn dfs(&mut self, target: &Target, local: &CompiledLocal<T>, graph: &mut NodeGraphIr, kind: &IrKind) -> ValueIn {
@@ -253,7 +253,8 @@ impl CompiledPlace {
             CompiledPlace::Local(local) => {
                 struct Ctx;
                 impl<'tcx> LocalAssembleCtx<LocalRef> for Ctx {
-                    fn leaf(&mut self, content: &LocalRef) -> ValueIn {
+                    fn leaf(&mut self, _graph: &mut NodeGraphIr, _kind: &IrKind, content: &LocalRef) -> ValueIn {
+                        // 局部变量交出来的是可变视图;要值由读的那一步(`Copy`)负责。
                         ValueIn::link(content.getter)
                     }
                     fn dfs(&mut self, target: &Target, local: &CompiledLocal<LocalRef>, graph: &mut NodeGraphIr, kind: &IrKind) -> ValueIn {

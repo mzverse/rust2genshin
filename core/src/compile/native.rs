@@ -8,7 +8,7 @@ use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
 use crate::node::query::list_elem_supported;
 use crate::value::{NativeKind, NativeValue};
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{FnSig, Instance, ScalarInt, Ty, TyKind};
+use rustc_middle::ty::{FnSig, GenericArgsRef, Instance, ScalarInt, Ty, TyKind};
 use rustc_span::Span;
 use syn::{LitInt, LitStr, Meta, MetaList};
 
@@ -20,8 +20,15 @@ enum NativeMark {
     Enum(i32),
 }
 
-pub fn native_const(kind: &NativeKind, v: ScalarInt) -> Option<Box<dyn NativeValue>> {
-    Some(match kind {
+/// 泛型实参里的类型参数（跳过生命周期和 const 参数）。
+///
+/// `GenericArgsRef::type_at` 是按原始下标取的 —— `PartialMut<'a, T>` 的 0 号
+/// 是生命周期，取不到类型。
+fn type_args<'tcx>(args: GenericArgsRef<'tcx>) -> Vec<Ty<'tcx>> {
+    args.iter().filter_map(|x| x.as_type()).collect()
+}
+
+pub fn native_const(kind: &NativeKind, v: ScalarInt) -> Option<Box<dyn NativeValue>> {    Some(match kind {
         NativeKind::Int => v.to_i32().into(),
         NativeKind::Guid |
         NativeKind::Faction |
@@ -94,11 +101,22 @@ impl<'tcx> Compiler<'tcx> {
                 "Config" => Ok(IrKind::Native(NativeKind::Config)),
                 "Prefab" => Ok(IrKind::Native(NativeKind::Prefab)),
                 "Vec3" => Ok(IrKind::Native(NativeKind::Vec3)),
+                "PartialMut" => {
+                    // `PartialMut<'a, T>`:可变视图。元素类型就是 `T`。
+                    let Some(inner) = args.as_ref().and_then(|args| type_args(*args).into_iter().next()) else {
+                        return Some(self.helper().span_err(span, "PartialMut 原生类型缺少泛型实参"));
+                    };
+                    let inner = match self.compile_ty(span, inner) {
+                        Ok(inner) => inner,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Ok(IrKind::mutable_view(inner))
+                },
                 "List" => {
-                    let Some(args) = args else {
+                    let Some(elem) = args.as_ref().and_then(|args| type_args(*args).into_iter().next()) else {
                         return Some(self.helper().span_err(span, "List 原生类型缺少泛型实参"));
                     };
-                    let elem = match self.compile_ty(span, args.type_at(0)) {
+                    let elem = match self.compile_ty(span, elem) {
                         Ok(elem) => elem,
                         Err(e) => return Some(Err(e)),
                     };
@@ -111,14 +129,17 @@ impl<'tcx> Compiler<'tcx> {
                     Ok(IrKind::list(elem))
                 },
                 "Dict" => {
-                    let Some(args) = args else {
+                    let Some(args) = args.as_ref().map(|args| type_args(*args)) else {
                         return Some(self.helper().span_err(span, "Dict 原生类型缺少泛型实参"));
                     };
-                    let key = match self.compile_ty(span, args.type_at(0)) {
+                    let (Some(key_ty), Some(value_ty)) = (args.first(), args.get(1)) else {
+                        return Some(self.helper().span_err(span, "Dict 原生类型缺少泛型实参"));
+                    };
+                    let key = match self.compile_ty(span, *key_ty) {
                         Ok(key) => key,
                         Err(e) => return Some(Err(e)),
                     };
-                    let value = match self.compile_ty(span, args.type_at(1)) {
+                    let value = match self.compile_ty(span, *value_ty) {
                         Ok(value) => value,
                         Err(e) => return Some(Err(e)),
                     };
@@ -130,6 +151,30 @@ impl<'tcx> Compiler<'tcx> {
                 _ => return Some(self.helper().span_err(span, format!("Unknown native kind: {id}"))),
             },
         })
+    }
+
+    /// 列表内建的第一个参数必须是 `PartialMut<List<T>>` —— 局部变量 / 借用
+    /// 交出来的视图。这里直接断言，不做隐式转换：传进来的是普通值就报错。
+    fn expect_list_view(&self, expn: Span, name: &str, kind: &IrKind) -> Result<IrKind> {
+        if let IrKind::PartialMut(inner) = kind
+            && let Some(elem) = inner.list_elem()
+        {
+            return Ok(elem);
+        }
+        self.helper().span_err(expn, format!("{name} 的第一个参数应当是 PartialMut<List<T>>,实际是 {kind}"))
+    }
+
+    /// 原生调用的名字(`#[native("名字")]` 里的那个名字)。
+    pub fn native_call_id(&self, func: Instance<'tcx>) -> Option<String> {
+        let def = func.default_span(self.tcx);
+        let attr = get_expn_macro_attr(self.tcx, def)?;
+        let Meta::List(MetaList { path, tokens, .. }) = &attr.meta else {
+            return None;
+        };
+        if path.get_ident()?.to_string() != "native" {
+            return None;
+        }
+        Some(syn::parse2::<LitStr>(tokens.clone()).ok()?.value())
     }
 
     pub fn compile_native_call(&mut self, span: Span, func: Instance<'tcx>, sig: FnSig<'tcx>, params: &[IrKind]) -> Result<Option<NodeKindIr>> {
@@ -169,31 +214,19 @@ impl<'tcx> Compiler<'tcx> {
                                 )
                             },
                             "list_get" => {
-                                let elem = match params[0].list_elem() {
-                                    Some(elem) => elem,
-                                    None => return self.helper().span_err(expn, "list_get 的第一个参数应当是列表"),
-                                };
+                                let elem = self.expect_list_view(expn, "list_get", &params[0])?;
                                 node_ir_list_get(elem)
                             },
                             "list_set" => {
-                                let elem = match params[0].list_elem() {
-                                    Some(elem) => elem,
-                                    None => return self.helper().span_err(expn, "list_set 的第一个参数应当是列表"),
-                                };
+                                let elem = self.expect_list_view(expn, "list_set", &params[0])?;
                                 node_ir_list_set(elem)
                             },
                             "list_insert" => {
-                                let elem = match params[0].list_elem() {
-                                    Some(elem) => elem,
-                                    None => return self.helper().span_err(expn, "list_insert 的第一个参数应当是列表"),
-                                };
+                                let elem = self.expect_list_view(expn, "list_insert", &params[0])?;
                                 node_ir_list_insert(elem)
                             },
                             "list_len" => {
-                                let elem = match params[0].list_elem() {
-                                    Some(elem) => elem,
-                                    None => return self.helper().span_err(expn, "list_len 的第一个参数应当是列表"),
-                                };
+                                let elem = self.expect_list_view(expn, "list_len", &params[0])?;
                                 node_ir_list_get_length(elem)
                             },
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),

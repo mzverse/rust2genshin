@@ -12,6 +12,7 @@ use rust2genshin_lib::math::*;
 
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
 use rust2genshin_lib::list::{list, List};
+use rust2genshin_lib::PartialMut;
 
 #[asynchronous]
 pub fn co0() -> f32 {
@@ -299,8 +300,8 @@ pub fn test_guid_const() {
 /// `#[native_enum]` 常量(`#[repr(i32)]` 枚举)在节点图里就是整数:valtree 里只有
 /// variant 下标,判别式是 `compile_const` 回 ADT 定义查出来的。
 #[inline(never)]
-fn element() -> rust2genshin_lib::event::character::ElementType {
-    rust2genshin_lib::event::character::ElementType::Pyro
+fn element() -> event::character::ElementType {
+    event::character::ElementType::Pyro
 }
 
 /// 单字段结构体的常量:内存布局就是一个标量,`ConstValue` 也是标量而不是整块内存,
@@ -341,7 +342,39 @@ pub fn test_usize_const() {
 
 #[unsafe(no_mangle)]
 pub fn test_native_enum() {
-    if element() == rust2genshin_lib::event::character::ElementType::Pyro {
+    if element() == event::character::ElementType::Pyro {
         log(1);
     }
+}
+
+/// 可变视图:把 `&mut` 变成一个能读能写的句柄。
+#[unsafe(no_mangle)]
+pub fn test_partial_mut() {
+    let mut list = list![114, 10];
+    let pm = PartialMut::from(&mut list);
+    log(pm.len());
+}
+
+#[inline(never)]
+fn borrow_read(x: i32) -> i32 {
+    let r = &x;
+    *r + 1
+}
+
+#[inline(never)]
+fn borrow_tuple_read(p: (i32, i32)) -> i32 {
+    let q = &p;
+    q.0 + q.1
+}
+
+/// 借用:`Freeze` 的 `&T` 等同 T,取借用等于读值。
+#[unsafe(no_mangle)]
+pub fn test_borrow() {
+    log(borrow_read(3));
+}
+
+/// `Freeze` 的 `&(i32, i32)` 不扁平化,整体是一个 ADT 局部变量。
+#[unsafe(no_mangle)]
+pub fn test_borrow_tuple() {
+    log(borrow_tuple_read((1, 2)));
 }

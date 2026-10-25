@@ -9,6 +9,6 @@
 
 表示对一个局部变量节点的引用
 
-逻辑上分为setter和getter
+逻辑上分为setter和getter，编译后是`(LocalSetter, PartialMut<T>)`元组
 
-若`T`为ADT，getter应该得到#link(<tag-partial-mut>)[`IrKind::PartialMut`]
+getter给的是#link(<tag-partial-mut>)[`IrKind::PartialMut`]

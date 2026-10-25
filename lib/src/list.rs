@@ -3,6 +3,7 @@ use core::cell::UnsafeCell;
 use core::intrinsics::transmute_unchecked;
 use core::ops::Index;
 use rust2genshin_lib_internal::native;
+use crate::PartialMut;
 
 #[native("List")]
 pub struct List<T> {
@@ -84,15 +85,14 @@ impl<T> List<T> {
     #[native("list_get")]
     pub fn get(&self, index: usize) -> &T;
 
-    /// TODO: optimize
-    // #[inline(always)]
+    #[inline(always)]
     pub fn set(&mut self, index: usize, value: T) {
         #[native("list_get")]
         fn get0<T>(s: &List<T>, index: usize) -> T;
         #[native("list_set")]
-        fn set0<T>(s: &List<T>, index: usize, value: T);
+        fn set0<T>(s: PartialMut<List<T>>, index: usize, value: T);
         drop(get0(self, index));
-        set0(self, index, value);
+        set0(self.into(), index, value);
     }
 
     #[native("list_len")]

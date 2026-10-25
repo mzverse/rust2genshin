@@ -265,9 +265,17 @@ impl Optimizer {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
+                IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
                 IrNodeId::FieldMut(idx) => panic!("{idx}"),
                 IrNodeId::Fn(_) => unreachable!(),
-                IrNodeId::BlackBox => {
+                // 读值就是取值,节点图里没有额外的动作,也没有控制流要接。
+                IrNodeId::Copy => {
+                    let n = self.graph.get_node(x);
+                    self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
+                    self.graph.remove(x);
+                    continue;
+                }
+                IrNodeId::BlackBox | IrNodeId::PassThrough => {
                     let n = self.graph.get_node(x);
                     self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
                     self.relink_controls(x, 0, 0);
@@ -605,6 +613,11 @@ impl Optimizer {
     pub fn eliminate_local(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
         if n.kind.id == IrNodeId::Local && n.links.values_out[0].is_empty() {
+            // 初始值没接东西时不能消：`let` 局部变量的值来自 set_local，不是初始值。
+            // 消掉它会把值用户改接到空的初始值引脚上 —— 断连。
+            if n.links.values_in[0].link.is_none() {
+                return Some(());
+            }
             self.reset_values(n.links.values_out[1].clone(), n.links.values_in[0].clone());
             self.graph.remove(node);
             None
@@ -658,7 +671,8 @@ impl Optimizer {
             .as_ref()
             .and_then(IrKind::local_ref)
             .expect("set_local 的输入 0 应当是 LocalRef");
-        let max = if variable.is_storable() {
+        // 可变视图是「通过引用写」—— 多处使用都是写,不受改接次数限制。
+        let max = if variable.is_storable() && !matches!(variable, IrKind::PartialMut(_)) {
             DEFAULT_MAX
         } else {
             usize::MAX

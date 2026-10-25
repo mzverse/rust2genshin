@@ -178,6 +178,13 @@ impl<'tcx> Compiler<'tcx> {
         for func in instance {
             let sig = self.helper().fn_sig(func);
             let params = self.helper().fn_params(func, sig).iter().map(|x| self.compile_ty(DUMMY_SP, *x)).collect::<Result<Vec<_>>>()?;
+            // `PartialMut` 的内建在 `compile_call` 里特判(要拆 `&mut` 的元组),
+            // 这里只要能认出「是原生调用」并跳过就行。
+            if let Some(id) = self.native_call_id(func)
+                && matches!(id.as_str(), "partial_mut_from" | "partial_mut_deref" | "partial_mut_deref_mut")
+            {
+                continue;
+            }
             if self.compile_native_call(func.default_span(self.tcx), func, sig, &params)?.is_some() {
                 continue;
             }

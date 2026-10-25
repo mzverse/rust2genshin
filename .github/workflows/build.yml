@@ -16,6 +16,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - run: sudo apt update
     - name: Setup Protoc
       run: sudo apt install protobuf-compiler
     - name: Build

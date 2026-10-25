@@ -73,18 +73,9 @@ impl IrKind {
                 .to_native()
                 .is_some_and(|n| node_local(&NativeKind::List(n.into())).is_some()),
             IrKind::Adt(..) => true,
-            IrKind::PartialMut(..) => false,
+            // 可变视图的值就是被视图对象的值,能不能存跟它一样。
+            IrKind::PartialMut(kind) => kind.is_storable(),
             _ => false,
-        }
-    }
-
-    pub fn partial_mut(kind: Self) -> Self {
-        // TODO: dict
-        match kind {
-            | IrKind::List(_)
-            | IrKind::Adt(_)
-            => IrKind::PartialMut(kind.into()),
-            _ => kind,
         }
     }
 
@@ -130,10 +121,18 @@ impl IrKind {
         }
     }
 
+    /// 「可变视图」:`kind` 的值,但标记着「这是通过引用拿到的」。
+    ///
+    /// 节点图里没有引用 —— 写它就是写原处。`lower` 之后和 `kind` 等同。
+    pub fn mutable_view(kind: Self) -> Self {
+        IrKind::PartialMut(kind.into())
+    }
+
     /// 列表的元素类型;不是列表时为 `None`。
     pub fn list_elem(&self) -> Option<IrKind> {
         match self {
-            IrKind::PartialMut(kind) => kind.list_elem(),
+            // 只认列表本身。`PartialMut<List<T>>` 是视图,不是列表 ——
+            // 要元素类型先显式取出里面的 `List`。
             IrKind::List(elem) => Some((**elem).clone()),
             _ => None,
         }
@@ -171,7 +170,19 @@ impl IrKind {
             IrKind::List(elem) => NativeKind::List(elem.lower(linker).into()),
             IrKind::Adt(kind) => Self::touch_adt(linker, kind.clone()),
             IrKind::PartialMut(kind) => kind.lower(linker),
-            IrKind::Mut(_) => panic!(),
+            // `&mut T` 在节点图里是「引用结构体」:setter 槽(写) + getter 槽(读)。
+            // 注册成结构体,assemble / destructure 节点才有形态可用。
+            IrKind::Mut(inner) => {
+                let key = format!("&mut {inner}");
+                linker.target.adts.entry(key.clone()).or_insert_with(|| {
+                    let kind = (**inner).clone();
+                    AdtInfo::new(vec![
+                        FieldInfo::new("0".into(), IrKind::Native(NativeKind::LocalVarRef)),
+                        FieldInfo::new("1".into(), IrKind::PartialMut(kind.into())),
+                    ])
+                });
+                Self::touch_adt(linker, key)
+            }
             IrKind::Never => panic!(),
             IrKind::LocalRef(kind) => {
                 if !kind.is_storable() {
@@ -210,6 +221,15 @@ pub enum IrNodeId {
     Modify,
     FieldMut(usize),
     BlackBox,
+    /// 直通:值不变,只是类型上多一层标记(`PartialMut` 之类)。
+    PassThrough,
+    /// 未实现:只有一个出引脚,类型随便填。降级时直接 panic ——
+    /// 让「还没支持的东西」在编译期被明确标出来,而不是静默走错路。
+    Unsupported,
+    /// 读值:`PartialMut<T>` 进,`T` 出,没有控制流。
+    /// 局部变量给的是可变视图,MIR 的 Copy / Move 读值时要经过它;
+    /// 降级时等价于值直通(节点图里读局部变量本来就是取值)。
+    Copy,
     /// 把若干元素拼成一个列表,对应 `[T; N]` 字面量 / 数组聚合。
     /// 引脚只有元素本身;原节点前面那个「元素个数」引脚在 lower 时补。
     ListAssemble,
@@ -254,7 +274,7 @@ pub fn node_ir_local(kind: IrKind) -> NodeKindIr {
         // 值的出口类型：ADT 给 `PartialMut`。优化器沿值流分析时，ADT 的值交给
         // `Modify` / 函数调用是**通过引用写**它，得靠这个类型认出来（非 ADT
         // 的类型 `partial_mut` 原样返回）。
-        vec![IrKind::LocalRef(kind.clone().into()), IrKind::partial_mut(kind)],
+        vec![IrKind::LocalRef(kind.clone().into()), IrKind::PartialMut(kind.into())],
     )
 }
 
@@ -285,6 +305,35 @@ pub fn node_ir_black_box(kind: IrKind) -> NodeKindIr {
         1,
         1,
         vec![kind.clone().into()],
+        vec![kind],
+    )
+}
+
+/// 直通节点:值原样传过去,只是输出类型上多一层标记。
+pub fn node_ir_pass_through(in_kind: IrKind, out_kind: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::PassThrough,
+        1,
+        1,
+        vec![in_kind.into()],
+        vec![out_kind],
+    )
+}
+
+/// 未实现的节点:只有一个出引脚(类型随便填),没有入参。
+/// 降级时 panic —— 它只用来占住一个「还没实现」的值。
+pub fn node_ir_unsupported(out_kind: IrKind) -> NodeKindIr {
+    NodeKind::new(IrNodeId::Unsupported, 0, 0, vec![], vec![out_kind])
+}
+
+/// 读值:`PartialMut<T>` 进,`T` 出。
+pub fn node_ir_copy(kind: IrKind) -> NodeKindIr {
+    let kind1 = kind.clone();
+    NodeKind::new(
+        IrNodeId::Copy,
+        0,
+        0,
+        vec![IrKind::PartialMut(kind1.into()).into()],
         vec![kind],
     )
 }
@@ -336,13 +385,14 @@ pub fn struct_fields(target: &Target, kind: &IrKind) -> Vec<FieldInfo> {
             let kind1 = e.as_ref().clone();
             vec![
                 FieldInfo::new(0.to_string(), IrKind::Native(NativeKind::LocalVarRef)),
-                FieldInfo::new(1.to_string(), IrKind::partial_mut(kind1)),
+                FieldInfo::new(1.to_string(), IrKind::PartialMut(kind1.into())),
             ]
         }
         IrKind::PartialMut(e) => struct_fields(target, e)
             .into_iter()
             .map(|mut x| {
-                x.kind = IrKind::partial_mut(x.kind);
+                let kind1 = x.kind;
+                x.kind = IrKind::PartialMut(kind1.into());
                 x
             })
             .collect(),

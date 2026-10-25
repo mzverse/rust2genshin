@@ -238,7 +238,10 @@ impl<'tcx> Compiler<'tcx> {
                     IrKind::Mut(self.compile_ty(span, *e)?.into())
                 } else {
                     let result = self.compile_ty(span, *e)?;
-                    if e.is_freeze(self.tcx, TypingEnv::fully_monomorphized()) {
+                    // 已经是可变视图的就别再包一层(`&PartialMut<T>` 还是可变视图)。
+                    if e.is_freeze(self.tcx, TypingEnv::fully_monomorphized())
+                        || matches!(result, IrKind::PartialMut(_))
+                    {
                         result
                     } else {
                         IrKind::PartialMut(result.into())

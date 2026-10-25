@@ -27,6 +27,7 @@ pub mod task;
 pub mod sc;
 
 use core::num::NonZero;
+use core::ops::{Deref, DerefMut};
 pub use rust2genshin_lib_internal::event_listener;
 
 use rust2genshin_lib_internal::*;
@@ -35,6 +36,23 @@ use rust2genshin_lib_internal::*;
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unreachable!()
+}
+
+#[native("PartialMut")]
+pub struct PartialMut<'a, T: ?Sized>(&'a mut T);
+impl<T> Deref for PartialMut<'_, T> {
+    type Target = T;
+
+    #[native("partial_mut_deref")]
+    fn deref(&self) -> &Self::Target;
+}
+impl<T> DerefMut for PartialMut<'_, T> {
+    #[native("partial_mut_deref_mut")]
+    fn deref_mut(&mut self) -> &mut Self::Target;
+}
+impl<'a, T> From<&'a mut T> for PartialMut<'a, T> {
+    #[native("partial_mut_from")]
+    fn from(value: &'a mut T) -> Self;
 }
 
 pub type String = &'static str;

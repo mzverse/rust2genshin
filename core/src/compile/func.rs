@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_pass_through, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
@@ -229,8 +229,15 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     todo!()
                 },
             },
-            Rvalue::Ref(_region, _, place) =>
-                 self.compile_operand(&Operand::Copy(*place), span)?,
+            Rvalue::Ref(_region, _, place) => {
+                // 共享借用:类型是普通值就 Copy 一份,是可变视图就原样给
+                // (`&T` 在 `T` 非 `Freeze` 时就是 `PartialMut`)。
+                let ty = self.mono(value.ty(&self.body.local_decls, self.tcx));
+                let kind = self.compiler.compile_ty(span, ty)?;
+                let shape = self.compiler.compile_ty(span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
+                let place = self.compile_place(*place, span)?;
+                self.value_of(&place, &shape, &kind)?
+            },
             Rvalue::RawPtr(_, p) => {
                 let Some(ProjectionElem::Deref) = p.projection.last() else {
                     return self.helper().span_err(span, format!("RawPtr rvalue is still unsupported: {p:?}"))?;
@@ -675,13 +682,34 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         Ok(match op {
             Operand::Copy(p) |
             Operand::Move(p) => {
-                self.compile_place(*p, span)?.getter(&self.compiler.target, self.graph, &kind)
+                let place = self.compile_place(*p, span)?;
+                // Move / Copy 是「读值」:局部变量给的是可变视图,取值要过 `Copy`。
+                self.value_of(&place, &kind, &kind)?
             }
             Operand::Constant(co) => {
                 let v = self.const_to_value(co.const_, co.span)?;
                 self.compile_const(ty, &kind, v, span)?
             }
             Operand::RuntimeChecks(_) => ValueIn::value(false.into()),
+        })
+    }
+
+    /// 取这个 place 的值。
+    ///
+    /// 局部变量交出来的是可变视图(`PartialMut<T>`):要普通值就 Copy 一份,
+    /// 要视图就原样给(通过引用写)。
+    ///
+    /// `shape` 是 place 自己的类型(决定装配出来的元组长什么样),`value` 是
+    /// 这���值被当成什么类型用(决定要不要 Copy)。
+    fn value_of(&mut self, place: &CompiledPlace, shape: &IrKind, value: &IrKind) -> Result<ValueIn> {
+        let raw = place.getter(&self.compiler.target, self.graph, shape);
+        Ok(match value {
+            IrKind::PartialMut(_) | IrKind::Mut(_) => raw,
+            _ => {
+                let node = self.graph.insert(node_ir_copy(value.clone()));
+                self.graph.set_value_in(Link::node(node, 0), raw);
+                ValueIn::link(Link::node(node, 0))
+            },
         })
     }
 
@@ -828,6 +856,59 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
         let sig = self.helper().fn_sig(func);
         let params: Vec<IrKind> = self.helper().fn_params(func, sig).iter().map(|x| self.compiler.compile_ty(span, *x)).collect::<Result<_>>()?;
+        // `PartialMut` 的内建不走 `compile_native_call`：它们碰的是 `&mut T` 的
+        // 元组形态（LocalSetter + 读槽），值并不「直通」。
+        if let Some(id) = self.compiler.native_call_id(func) {
+            let result = match id.as_str() {
+                // `PartialMut::from(&mut T)`：把元组拆开，取第 1 个字段（读槽）。
+                "partial_mut_from" => {
+                    let Some(IrKind::Mut(inner)) = params.first().cloned() else {
+                        return self.helper().span_err(span, "partial_mut_from 的参数应当是 &mut T");
+                    };
+                    let node = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(inner)));
+                    self.graph.set_value_in(Link::node(node, 0), args[0].clone());
+                    Some((node, 1))
+                },
+                // `Deref`：可变视图的值就是 `T` 的值，直通。
+                "partial_mut_deref" => {
+                    let out = self.compiler.compile_ty(span, sig.output())?;
+                    let node = self.graph.insert(node_ir_pass_through(params[0].clone(), out));
+                    self.graph.set_value_in(Link::node(node, 0), args[0].clone());
+                    Some((node, 0))
+                },
+                // `DerefMut`：`&mut PartialMut<T>` -> `&mut T`。
+                //
+                // 输入名义上是 `(LocalSetter, PartialMut<PartialMut<T>>)`，输出是
+                // `(LocalSetter, PartialMut<T>)`：第 0 个字段原样拿过来，第 1 个
+                // 字段要把视图再拆一层 —— 这一步表示不了，给 `Unsupported`。
+                "partial_mut_deref_mut" => {
+                    let Some(IrKind::Mut(view)) = params.first().cloned() else {
+                        return self.helper().span_err(span, "partial_mut_deref_mut 的参数应当是 &mut PartialMut<T>");
+                    };
+                    let out = self.compiler.compile_ty(span, sig.output())?;
+                    // 输入的元组：拆开，第 1 个字段就是那个视图。
+                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(view)));
+                    self.graph.set_value_in(Link::node(de, 0), args[0].clone());
+                    // 输出的第 0 个字段是 `LocalSetter` —— 视图里没有 setter 槽，
+                    // 造不出来，占 `Unsupported`。
+                    let fields = struct_fields(&self.compiler.target, &out);
+                    let unsupported = self.graph.insert(node_ir_unsupported(fields[0].kind.clone()));
+                    let asm = self.graph.insert(node_ir_assemble(&self.compiler.target, &out));
+                    self.graph.set_value_in(Link::node(asm, 0), ValueIn::link(Link::node(unsupported, 0)));
+                    self.graph.set_value_in(Link::node(asm, 1), ValueIn::link(Link::node(de, 1)));
+                    Some((asm, 0))
+                },
+                _ => None,
+            };
+            if let Some((node, pin)) = result {
+                let mut block = Block::nop(self.graph);
+                if let Some(destination) = destination {
+                    let b = self.compile_assign(destination, span, ValueIn::link(Link::node(node, pin)))?;
+                    block.extend(self.graph, b);
+                }
+                return Ok(block);
+            }
+        }
         let node_kind = loop {
             if let InstanceKind::Intrinsic(def_id) = func.def {
                 let int = self.tcx.intrinsic(def_id).unwrap();

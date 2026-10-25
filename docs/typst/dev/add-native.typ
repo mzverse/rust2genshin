@@ -33,6 +33,8 @@ impl Entity {
 字符串形式用于签名不足以描述节点的情况（类型相关、或参数/返回值不是直通）。它需要在 `core/src/compile/native.rs` 里加分支：
 
 - *调用* —— `compile_native_call` 里的名字匹配，现有的有 `power` / `to_string` / `enum_eq` / `free` / `list_get` / `list_set` / `list_insert` / `list_len`
+
+例外是 `PartialMut` 的三个内建（`partial_mut_from` / `partial_mut_deref` / `partial_mut_deref_mut`）：它们在 `compile_call` 里特判，不走 `compile_native_call`。原因是 `&mut T` 在 IR 里是个元组 `(LocalSetter, PartialMut<T>)`，`partial_mut_from` 要把它*拆开*取读槽，而不是值直通。
 - *类型* —— `compile_native_ty` 里的名字匹配，现有的有 `Guid` / `Entity` / `Faction` / `Config` / `Prefab` / `Vec3` / `List` / `Dict`
 
 类型声明的写法是把一个不透明的外部类型挂上属性：
