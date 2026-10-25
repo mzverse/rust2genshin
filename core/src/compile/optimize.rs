@@ -521,6 +521,10 @@ impl Optimizer {
             if !set.remove(&node) {
                 unreachable!()
             }
+            if !self.graph.contains(node) {
+                // 上一条规则连带删掉的节点,它已经进过邻居队列了。
+                continue;
+            }
             let neighbors = self.graph.get_node(node).links.get_neighbors();
             if self.eliminate_solo(node).is_some() {
                 continue;
@@ -547,6 +551,7 @@ impl Optimizer {
         self.eliminate_unnecessary_local_setter(node)?;
         self.eliminate_assemble(node)?;
         self.eliminate_destructure(node)?;
+        self.eliminate_destructure_after_partial_mut(node)?;
         self.eliminate_field_mut(node)?;
         self.eliminate_bool_eq_int(node)?;
         self.eliminate_not_not(node)?;
@@ -1220,6 +1225,63 @@ impl Optimizer {
         None
     }
 
+    /// `Destructure(ToPartialMut(x))` → 先解构 `x`,每个字段再各标一次视图。
+    ///
+    /// 解构视图和「解构之后再标视图」等价,但后者会让 `x` 的真实形态暴露出来,
+    /// 后面的规则不必先剥掉一层视图才能看见值。
+    pub fn eliminate_destructure_after_partial_mut(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.get_node(node);
+        if n.kind.id != IrNodeId::Destructure {
+            return Some(());
+        }
+        let Some(Link {
+            target: LinkTarget::Node(pm),
+            index: 0,
+        }) = n.links.values_in[0].link
+        else {
+            return Some(());
+        };
+        let n_pm = self.graph.get_node(pm);
+        if n_pm.kind.id != IrNodeId::ToPartialMut {
+            return Some(());
+        }
+        let Some(source) = n_pm.links.values_in[0].link else {
+            return Some(());
+        };
+        let Some(source_kind) = n_pm.kind.values_in_types[0].clone() else {
+            return Some(());
+        };
+        let outs = n.links.values_out.clone();
+        // 解构视图得到的字段也是视图,剥掉那层就是字段的真实类型。
+        let fields: Vec<IrKind> = n
+            .kind
+            .values_out_types
+            .iter()
+            .map(|x| x.partial_mut_inner().expect("解构视图的字段应当是视图"))
+            .collect();
+
+        let d = self.graph.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(source_kind)],
+            fields,
+        ));
+        self.graph.set_value_in(Link::node(d, 0), ValueIn::link(source));
+        for (i, out) in outs.into_iter().enumerate() {
+            let field = self.graph.get_node(d).kind.values_out_types[i].clone();
+            let view = self.graph.insert(ir::node_ir_to_partial_mut(field));
+            self.graph.set_value_in(Link::node(view, 0), ValueIn::link(Link::node(d, i)));
+            self.reset_values(out, ValueIn::link(Link::node(view, 0)));
+        }
+        self.graph.remove(node);
+        // 原 `ToPartialMut` 只喂这一个解构的话,也就没用了。
+        if self.graph.get_node(pm).links.values_out[0].is_empty() {
+            self.graph.remove(pm);
+        }
+        None
+    }
+
     // `eliminate_bool_eq_int` / `eliminate_not_not` 原本是私有的,和调用链里
     // 别的规则不一样。viewer 的「优化」面板要对**每条规则**单独点一次,
     // 统一成 pub(见 viewer/src/optimize.rs 的 RULES)。
@@ -1774,5 +1836,68 @@ mod tests {
         assert!(opt.graph.get_nodes().iter().all(|x| *x != copy));
         // 读的地方直接接回 `ToPartialMut` 的输入（这里没有连线，就是默认值）
         assert_eq!(opt.graph.get_node(sw).links.values_in[0].link, None);
+    }
+
+    /// 解构视图应当换成「先解构值,再给每个字段标视图」,使用者的位置不变。
+    #[test]
+    fn destructure_of_a_view_destructures_the_value_first() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "destructure_view");
+        let adt = IrKind::Adt("Point".into());
+        g.push_export_value_in(ExportDecl::new("p".into(), Some(adt.clone())));
+
+        // p -> ToPartialMut -> 解构视图
+        let pm = g.insert(crate::compile::ir::node_ir_to_partial_mut(adt.clone()));
+        g.link_value(Link::export(0), Link::node(pm, 0));
+        let d = g.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(IrKind::partial_mut(adt.clone()))],
+            vec![IrKind::partial_mut(int()), IrKind::partial_mut(int())],
+        ));
+        g.link_value(Link::node(pm, 0), Link::node(d, 0));
+
+        let users: Vec<NodeRef> = (0..2)
+            .map(|i| {
+                let n = g.insert(node_ir_switch(int(), vec![]));
+                g.link_value(Link::node(d, i), Link::node(n, 0));
+                n
+            })
+            .collect();
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(
+            opt.eliminate_destructure_after_partial_mut(d).is_none()
+        );
+
+        // 原来的视图和解构都没了
+        assert!(opt.graph.get_nodes().iter().all(|x| *x != d && *x != pm));
+        for (i, &user) in users.iter().enumerate() {
+            // 使用者改吃「新解构 -> ToPartialMut」的输出
+            let Some(Link {
+                target: LinkTarget::Node(new_pm),
+                index: 0,
+            }) = opt.graph.get_node(user).links.values_in[0].link
+            else {
+                panic!("使用者应当接在新的 ToPartialMut 上")
+            };
+            let new_pm = opt.graph.get_node(new_pm);
+            assert_eq!(new_pm.kind.id, IrNodeId::ToPartialMut);
+            // 新解构直接吃 p,第 i 个字段对应第 i 个使用者
+            let Some(Link {
+                target: LinkTarget::Node(new_d),
+                index: field,
+            }) = new_pm.links.values_in[0].link
+            else {
+                panic!("字段应当接在新解构的输出上")
+            };
+            assert_eq!(field, i);
+            let new_d = opt.graph.get_node(new_d);
+            assert_eq!(new_d.kind.id, IrNodeId::Destructure);
+            assert_eq!(new_d.links.values_in[0].link, Some(Link::export(0)));
+        }
     }
 }

@@ -80,6 +80,10 @@ pub const RULES: &[Rule] = &[
         run: Optimizer::eliminate_destructure,
     },
     Rule {
+        name: "eliminate_destructure_after_partial_mut",
+        run: Optimizer::eliminate_destructure_after_partial_mut,
+    },
+    Rule {
         name: "eliminate_field_mut",
         run: Optimizer::eliminate_field_mut,
     },
@@ -655,6 +659,7 @@ mod tests {
                 "eliminate_unnecessary_local_setter",
                 "eliminate_assemble",
                 "eliminate_destructure",
+                "eliminate_destructure_after_partial_mut",
                 "eliminate_field_mut",
                 "eliminate_bool_eq_int",
                 "eliminate_not_not",
