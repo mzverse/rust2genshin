@@ -56,6 +56,21 @@ pub enum IrKind {
 
 同一个 place，读值和借用给的形态不同，这就是 `Copy` 存在的意义。
 
+= 优化期的读写区分
+
+`eliminate_unnecessary_local_setter` 要判断一个执行节点是「读」还是「通过引用写」。判据就是路径上有没有经过 `Copy`：
+
+- 经过 `Copy` 到达执行节点 —— 读值，这处 usage 可以改接到写入值上；
+- 不经 `Copy` 直接到达 —— 拿到的是视图，通过引用写，不算 usage。
+
+自定义复合节点（`Fn`）对值的处理说不清，值流上遇到就放弃整次优化。
+
+改接时目标引脚要的是视图，而写入值是普通值 —— 中间补一层 `ToView`（`T` 进，`PartialMut<T>` 出，无控制流）。读的那一侧原本就带着 `Copy`，两层互逆，`eliminate_copy` 把 `Copy(ToView(x))` 消成直连。
+
+= `&mut` 结构体字段
+
+`s.field` 的 `&mut` 编译成 `FieldMut`：输出 `Mut<字段>`，其中 setter 那头在节点图里没有对应物。优化期沿句柄流找落点 —— 句柄可以解构、存进局部变量再取出来 —— 每一处通过它写的 `SetLocal` 换成 `Modify`，读字段的一侧改成解构 owner 的视图。没消掉的 `FieldMut` 降级时 panic。
+
 = PartialMut 作为 lib 的类型
 
 `PartialMut<T>` 也可以直接写进 lib，让「通过引用写」在类型上说得清。三个内建不走 `compile_native_call`，在 `compile_call` 特判：

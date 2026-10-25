@@ -20,17 +20,6 @@ use std::mem::swap;
 use tap::Tap;
 use crate::unwrap;
 
-/// `SetLocal` 写进的那个局部变量 —— 前提是它只有一个写者（来源明确）。
-fn stored_local(graph: &NodeGraph<IrNodeId, IrKind>, setter: NodeRef) -> Option<NodeRef> {
-    let n = graph.get_node(setter);
-    let local = n.links.values_in[0].link?.target.node()?;
-    let nl = graph.get_node(local);
-    if nl.kind.id != IrNodeId::Local || nl.links.values_out[0].len() != 1 {
-        return None;
-    }
-    Some(local)
-}
-
 /// 一条起点边（局部变量值出口的某一条连线）在数据流上的去向。
 struct Usage {
     /// 起点边本身 —— 优化时改接的就是它。
@@ -55,13 +44,25 @@ impl Optimizer {
     fn verify_types(&self) {
         let graph = &self.graph;
         for (i, node) in &graph.nodes {
+            // 原生节点的引脚类型是 wire 层的 `NativeKind`，和 IR 类型不是一套
+            // —— `link_node` 展开复合节点时本来就会混接，这里不校验。
+            if node.kind.id.as_native().is_some() {
+                continue;
+            }
             for (j, value) in node.links.values_in.iter().enumerate() {
                 let Some(link) = value.link else { continue };
                 let Some(expected) = node.kind.values_in_types[j].as_ref() else {
                     panic!("节点 {:?} 的值入 {j} 没有类型,却接了连线", NodeRef::from(i));
                 };
                 let actual = match link.target {
-                    LinkTarget::Node(src) => graph.get_node(src).kind.values_out_types[link.index].clone(),
+                    LinkTarget::Node(src) => {
+                        let src = graph.get_node(src);
+                        // 和上面同理:一端是原生节点时比不了。
+                        if src.kind.id.as_native().is_some() {
+                            continue;
+                        }
+                        src.kind.values_out_types[link.index].clone()
+                    }
                     LinkTarget::Export => self.export_kind(PinType::InValue, link.index),
                 };
                 assert_eq!(actual, *expected, "节点 {:?} ({:?}) 的值入 {j} 类型不符;来源 {:?} ({:?});节点类型 {:?}", NodeRef::from(i), node.kind.id, link.target, link.target.node().map(|x| self.graph.get_node(x).kind.id.clone()), node.kind.values_in_types);
@@ -157,6 +158,9 @@ impl Optimizer {
             self.link_node(linker, x);
         }
         self.optimize();
+        // 优化也会改接数据流（`ToView` / `Copy` / 解构替换）—— 改接后的
+        // 类型契约同样要成立。放在这里，优化器插错线会当场炸出来。
+        self.verify_types();
         // 控制流里的环改写成「有限循环」节点。放在 optimize 之后：优化器
         // 先消掉 Nop / IF 并重连，改写面对的是干净的控制流。
         if let Err(e) = crate::compile::loops::lower_loops(&mut self.graph) {
@@ -797,42 +801,19 @@ impl Optimizer {
                         queue.push_back((*e, Role::View));
                     }
                 }
-                Role::Handle => match nx.kind.id {
-                    IrNodeId::SetLocal if link.index == 0 => writes.push(x),
-                    // 句柄被存进局部变量:从那个变量的值出口接着走。
-                    IrNodeId::SetLocal if link.index == 1 => {
-                        let Some(local) = stored_local(&self.graph, x) else {
-                            return Some(());
-                        };
-                        for e in &self.graph.get_node(local).links.values_out[1] {
-                            queue.push_back((*e, Role::Handle));
-                        }
+                // 句柄只认「直接写」:存进变量、重新组装都留给以后的内联优化。
+                Role::Handle => {
+                    if nx.kind.id != IrNodeId::SetLocal || link.index != 0 {
+                        return Some(());
                     }
-                    // 句柄重新组装回 `Mut` 结构。
-                    IrNodeId::Assemble if link.index == 0 => {
-                        for e in &nx.links.values_out[0] {
-                            queue.push_back((*e, Role::Mut));
-                        }
-                    }
-                    _ => return Some(()),
-                },
+                    writes.push(x);
+                }
+                // 字段视图只认「直接读」(`Copy`);其它用法说不清。
                 Role::View => {
-                    if nx.kind.id == IrNodeId::SetLocal && link.index == 1 {
-                        // 字段视图存进局部变量:从那个变量的值出口接着走。
-                        let Some(local) = stored_local(&self.graph, x) else {
-                            return Some(());
-                        };
-                        for e in &self.graph.get_node(local).links.values_out[1] {
-                            queue.push_back((*e, Role::View));
-                        }
-                    } else if nx.kind.id == IrNodeId::Assemble && link.index == 1 {
-                        for e in &nx.links.values_out[0] {
-                            queue.push_back((*e, Role::Mut));
-                        }
-                    } else {
-                        // 读字段的一处使用。
-                        views.push(link);
+                    if nx.kind.id != IrNodeId::Copy {
+                        return Some(());
                     }
+                    views.push(link);
                 }
             }
         }
@@ -1627,71 +1608,6 @@ mod tests {
         assert_eq!(
             opt.graph.get_node(src.target.node().unwrap()).kind.id,
             IrNodeId::Destructure
-        );
-    }
-
-    /// 句柄先存进局部变量、再取出来用：一样能把写入换成 `Modify`。
-    #[test]
-    fn field_mut_handle_through_a_local() {
-        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "field_mut_local");
-        g.push_export_control_in(ExportDecl::new("in".into(), None));
-        g.push_export_control_out(ExportDecl::new("out".into(), None));
-
-        let adt = IrKind::Adt("Point".into());
-        let view = IrKind::PartialMut(adt.into());
-        let owner = g.insert(node_ir_local(view.clone()));
-        let fm = g.insert(NodeKind::new(
-            IrNodeId::FieldMut {
-                idx: 0,
-                fields: vec![int(), int()],
-            },
-            0,
-            0,
-            vec![Some(view)],
-            vec![IrKind::Mut(int().into())],
-        ));
-        g.link_value(Link::node(owner, 1), Link::node(fm, 0));
-        let d = g.insert(NodeKind::new(
-            IrNodeId::Destructure,
-            0,
-            0,
-            vec![Some(IrKind::Mut(int().into()))],
-            vec![IrKind::LocalRef(int().into()), IrKind::mutable_view(int())],
-        ));
-        g.link_value(Link::node(fm, 0), Link::node(d, 0));
-
-        // 句柄先存进 `holder`
-        let holder = g.insert(node_ir_local(IrKind::LocalRef(int().into())));
-        let store = g.insert(node_ir_set_local(IrKind::LocalRef(int().into())));
-        g.link_value(Link::node(holder, 0), Link::node(store, 0));
-        g.link_value(Link::node(d, 0), Link::node(store, 1));
-        // 再从 `holder` 取出来写
-        let write = g.insert(node_ir_set_local(int()));
-        g.link_value(Link::node(holder, 1), Link::node(write, 0));
-
-        g.link_control(Link::export(0), Link::node(store, 0));
-        g.link_control(Link::node(store, 0), Link::node(write, 0));
-        g.link_control(Link::node(write, 0), Link::export(0));
-
-        let mut opt = Optimizer {
-            graph: g,
-            decl: FnDecl::default(),
-        };
-        assert_eq!(opt.eliminate_field_mut(fm), None);
-
-        assert!(
-            opt.graph.get_nodes().iter().all(|x| ![fm, d, write].contains(x)),
-            "FieldMut 和写入都该被消掉"
-        );
-        let modify = opt
-            .graph
-            .get_nodes()
-            .into_iter()
-            .find(|x| opt.graph.get_node(*x).kind.id == IrNodeId::Modify)
-            .expect("应当生成 Modify");
-        assert_eq!(
-            opt.graph.get_node(modify).links.values_in[0].link,
-            Some(Link::node(owner, 1))
         );
     }
 
