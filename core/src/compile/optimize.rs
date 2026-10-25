@@ -54,8 +54,8 @@ impl Optimizer {
     fn verify_types(&self) {
         let graph = &self.graph;
         for (i, node) in &graph.nodes {
-            // 原生节点的引脚类型是 wire 层的 `NativeKind`，和 IR 类型不是一套
-            // —— `link_node` 展开复合节点时本来就会混接，这里不校验。
+            // 原生节点的引脚类型在 `link_node` 里已经降到 wire 层:结构体是
+            // `Native(Struct)`,IR 侧却是 `Adt` —— 两边比不了,整节跳过。
             if node.kind.id.as_native().is_some() {
                 continue;
             }
@@ -67,8 +67,16 @@ impl Optimizer {
                 let actual = match link.target {
                     LinkTarget::Node(src) => {
                         let src = graph.get_node(src);
-                        // 和上面同理:一端是原生节点时比不了。
                         if src.kind.id.as_native().is_some() {
+                            // 具体类型比不了(见上),但原生节点给出的永远是**值**,
+                            // 接不到要视图 / 句柄的引脚上。
+                            assert!(
+                                !matches!(expected, IrKind::PartialMut(_) | IrKind::LocalRef(_)),
+                                "节点 {:?} ({:?}) 的值入 {j} 要视图,来源却是原生节点 {:?}",
+                                NodeRef::from(i),
+                                node.kind.id,
+                                src.kind.id
+                            );
                             continue;
                         }
                         src.kind.values_out_types[link.index].clone()
@@ -1920,6 +1928,23 @@ mod tests {
             assert_eq!(new_d.kind.id, IrNodeId::Destructure);
             assert_eq!(new_d.links.values_in[0].link, Some(Link::export(0)));
         }
+    }
+
+    /// 原生节点给出的永远是值：接不到要视图的引脚上（`for` 的出参被直接
+    /// 接给读局部变量的 `Copy` 就是这种错）。
+    #[test]
+    #[should_panic(expected = "要视图")]
+    fn native_output_cannot_feed_a_view_pin() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "native_to_view");
+        let add = g.insert(node_ir_native(node_add(NativeKind::Int)));
+        let copy = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(add, 0), Link::node(copy, 0));
+
+        let opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.verify_types();
     }
 
     /// 右值来自执行节点时，改接次数不设上限。

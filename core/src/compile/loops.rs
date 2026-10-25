@@ -1109,6 +1109,17 @@ fn replace_value_source(graph: &mut NodeGraphIr, from: Link, to: Link) {
     let consumers = graph.get_node(n).links.values_out[from.index].clone();
     for c in consumers {
         graph.unlink_value(from, c);
+        // 消费者是在读值:它前面挂着一个 `Copy`,把视图剥成值。新来源本身
+        // 就是值,这一层不用再剥 —— 把 `Copy` 的下游直接接过去。
+        if let LinkTarget::Node(x) = c.target
+            && graph.get_node(x).kind.id == IrNodeId::Copy
+        {
+            for out in graph.get_node(x).links.values_out[0].clone() {
+                graph.unlink_value(Link::node(x, 0), out);
+                graph.link_value(to, out);
+            }
+            continue;
+        }
         graph.link_value(to, c);
     }
 }
