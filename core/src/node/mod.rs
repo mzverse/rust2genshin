@@ -730,21 +730,24 @@ impl NodeGraph {
                                         persistent_pin_uid: None,
                                     }
                                 };
-                                for (i, x) in n.links.values_out.iter().enumerate() {
-                                    let Some(s) = n.kind.id.selectors_out[i] else {
-                                        continue;
-                                    };
-                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), None, x, n.kind.id.imps_out[i]));
-                                }
                                 let mut kernel = 0;
                                 for (i, x) in n.links.values_in.iter().enumerate() {
                                     let Some(ref kind) = n.kind.values_in_types[i] else {
                                         continue;
                                     };
-                                    if !x.is_unset() {
+                                    // 泛型引脚即使没连线也输出:官方导出里节点定义的
+                                    // 每个元素槽都带着类型选择器模板(隐藏)。
+                                    if !x.is_unset() || n.kind.id.selectors_in[i].is_some() {
                                         pins.push(handle_value(PinType::InValue, PinType::OutValue, i as i32, kernel, kind, n.kind.id.selectors_in[i], x.default.as_deref(), &x.link.iter().copied().collect(), n.kind.id.imps_in[i]));
                                     }
                                     kernel += 1;
+                                }
+                                // 输出引脚排在输入之后(与官方导出一致)。
+                                for (i, x) in n.links.values_out.iter().enumerate() {
+                                    let Some(s) = n.kind.id.selectors_out[i] else {
+                                        continue;
+                                    };
+                                    pins.push(handle_value(PinType::OutValue, PinType::InValue, i as i32, i as i32, &n.kind.values_out_types[i], Some(s), None, x, n.kind.id.imps_out[i]));
                                 }
                             }),
                             x_pos: n.position.0 * POS_SCALA,

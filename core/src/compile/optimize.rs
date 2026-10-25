@@ -233,7 +233,12 @@ impl Optimizer {
                             self.graph.set_value_in(Link::node(x, i + 1), ValueIn::link(Link::node(a, 0)));
                         }
                     }
-                    Some(node_list_assemble(&mut self.graph, elem, count))
+                    // 节点固定 100 个元素引脚:未连的那些也要占位,否则编码时
+                    // 遍历不到,引脚数就和节点定义对不上了。
+                    let assembled = node_list_assemble(&mut self.graph, elem);
+                    let total = assembled.values_in_types.len();
+                    self.graph.get_node_mut(x).links.values_in.resize(total, ValueIn::default());
+                    Some(assembled)
                 }
                 IrNodeId::ListGet => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());

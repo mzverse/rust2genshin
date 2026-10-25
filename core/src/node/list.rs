@@ -409,10 +409,11 @@ pub fn node_list_get_min<NodeId, Kind>(
 pub fn node_list_assemble<NodeId, Kind>(
     graph: &mut NodeGraph<NodeId, Kind>,
     ty: NativeKind,
-    count: usize,
 ) -> NodeKind {
+    // 游戏里的拼装列表节点固定有 100 个元素引脚,没连的那部分隐藏着。
+    // 只按实际元素数生成的话,编辑器/运行时看到的引脚数和节点定义对不上。
     let mut inputs = vec![ValuePin::plain(Int)];
-    inputs.extend((0..count).map(|_| ValuePin::poly(ty.clone())));
+    inputs.extend((0..MAX_ASSEMBLE_ELEMENTS).map(|_| ValuePin::poly(ty.clone())));
     generic(
         graph,
         169,
@@ -487,9 +488,11 @@ mod tests {
         assert_eq!(get.values_in_types, vec![Some(List(String.into())), Some(Int)]);
         assert_eq!(get.values_out_types, vec![String]);
         assert_eq!(get.id.selectors_out, vec![Some(1)]);
-        // 拼装列表:元素个数 + 3 个元素进,列表出
-        let assemble = node_list_assemble(&mut g, Float, 3);
-        assert_eq!(assemble.values_in_types, vec![Some(Int), Some(Float), Some(Float), Some(Float)]);
+        // 拼装列表:元素个数 + 固定 100 个元素槽进,列表出(没连的槽隐藏)
+        let assemble = node_list_assemble(&mut g, Float);
+        assert_eq!(assemble.values_in_types.len(), 101);
+        assert_eq!(assemble.values_in_types[0], Some(Int));
+        assert_eq!(assemble.values_in_types[1], Some(Float));
         assert_eq!(assemble.values_out_types, vec![List(Float.into())]);
     }
 
