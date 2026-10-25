@@ -10,7 +10,7 @@ use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
 use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_get_length, node_list_insert, node_list_modify_index};
 use crate::node::query::node_local;
-use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeRef, ValueIn};
+use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeKind, NodeRef, ValueIn};
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
 use crate::value::NativeKind;
 use either::Either;
@@ -19,6 +19,17 @@ use std::mem;
 use std::mem::swap;
 use tap::Tap;
 use crate::unwrap;
+
+/// `SetLocal` 写进的那个局部变量 —— 前提是它只有一个写者（来源明确）。
+fn stored_local(graph: &NodeGraph<IrNodeId, IrKind>, setter: NodeRef) -> Option<NodeRef> {
+    let n = graph.get_node(setter);
+    let local = n.links.values_in[0].link?.target.node()?;
+    let nl = graph.get_node(local);
+    if nl.kind.id != IrNodeId::Local || nl.links.values_out[0].len() != 1 {
+        return None;
+    }
+    Some(local)
+}
 
 /// 一条起点边（局部变量值出口的某一条连线）在数据流上的去向。
 struct Usage {
@@ -527,6 +538,7 @@ impl Optimizer {
         self.eliminate_unnecessary_local_setter(node)?;
         self.eliminate_assemble(node)?;
         self.eliminate_destructure(node)?;
+        self.eliminate_field_mut(node)?;
         self.eliminate_bool_eq_int(node)?;
         self.eliminate_not_not(node)?;
         Some(())
@@ -717,6 +729,151 @@ impl Optimizer {
         }
         let from = n_view.links.values_in[0].clone();
         self.reset_values(n.links.values_out[0].clone(), from);
+        self.graph.remove(node);
+        None
+    }
+
+    /// 把「通过 `&mut` 写结构体字段」改写成 `Modify`。
+    ///
+    /// `FieldMut` 给出的 setter 在节点图里没有对应物,只是 IR 层的占位。
+    /// 这里沿句柄流走一遍:句柄经过 `Destructure` 出来、可以存进局部变量再
+    /// 取出来,最终落到某个 `SetLocal` 的句柄输入上 —— 那一处就是写,换成
+    /// `Modify`;读字段的那一侧改成对 owner 视图的解构。剩下的 `FieldMut`
+    /// 降级时还会报错,不会静默走错。
+    pub fn eliminate_field_mut(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.get_node(node);
+        let IrNodeId::FieldMut { idx, fields } = n.kind.id.clone() else {
+            return Some(());
+        };
+        let owner = n.links.values_in[0].clone();
+        let owner_kind = n.kind.values_in_types[0].clone().unwrap();
+        if owner.link.is_none() {
+            return Some(());
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        enum Role {
+            /// `Mut<字段>` 结构本身。
+            Mut,
+            /// 结构里的 setter 槽(`LocalRef<字段>`)。
+            Handle,
+            /// 结构里的读槽(字段的视图)。
+            View,
+        }
+
+        let mut queue: VecDeque<(Link, Role)> = n
+            .links
+            .values_out[0]
+            .iter()
+            .map(|x| (*x, Role::Mut))
+            .collect();
+        let mut visited: HashSet<(Link, Role)> = HashSet::new();
+        // 通过这个句柄写的 `SetLocal`,要换成 `Modify`。
+        let mut writes: Vec<NodeRef> = vec![];
+        // 读字段的边,要改接到 owner 视图的解构上。
+        let mut views: Vec<Link> = vec![];
+        // 句柄 / 视图经过的解构节点,最后删掉。
+        let mut destructures: Vec<NodeRef> = vec![];
+        while let Some((link, role)) = queue.pop_front() {
+            if !visited.insert((link, role)) {
+                continue;
+            }
+            let Some(x) = link.target.node() else {
+                // 句柄或字段视图流出图外:这里没有相应机制,放弃。
+                return Some(());
+            };
+            let nx = self.graph.get_node(x);
+            match role {
+                Role::Mut => {
+                    // `Mut` 结构只能被解构:0 号出是句柄,1 号出是视图。
+                    if nx.kind.id != IrNodeId::Destructure {
+                        return Some(());
+                    }
+                    destructures.push(x);
+                    for e in &nx.links.values_out[0] {
+                        queue.push_back((*e, Role::Handle));
+                    }
+                    for e in &nx.links.values_out[1] {
+                        queue.push_back((*e, Role::View));
+                    }
+                }
+                Role::Handle => match nx.kind.id {
+                    IrNodeId::SetLocal if link.index == 0 => writes.push(x),
+                    // 句柄被存进局部变量:从那个变量的值出口接着走。
+                    IrNodeId::SetLocal if link.index == 1 => {
+                        let Some(local) = stored_local(&self.graph, x) else {
+                            return Some(());
+                        };
+                        for e in &self.graph.get_node(local).links.values_out[1] {
+                            queue.push_back((*e, Role::Handle));
+                        }
+                    }
+                    // 句柄重新组装回 `Mut` 结构。
+                    IrNodeId::Assemble if link.index == 0 => {
+                        for e in &nx.links.values_out[0] {
+                            queue.push_back((*e, Role::Mut));
+                        }
+                    }
+                    _ => return Some(()),
+                },
+                Role::View => {
+                    if nx.kind.id == IrNodeId::SetLocal && link.index == 1 {
+                        // 字段视图存进局部变量:从那个变量的值出口接着走。
+                        let Some(local) = stored_local(&self.graph, x) else {
+                            return Some(());
+                        };
+                        for e in &self.graph.get_node(local).links.values_out[1] {
+                            queue.push_back((*e, Role::View));
+                        }
+                    } else if nx.kind.id == IrNodeId::Assemble && link.index == 1 {
+                        for e in &nx.links.values_out[0] {
+                            queue.push_back((*e, Role::Mut));
+                        }
+                    } else {
+                        // 读字段的一处使用。
+                        views.push(link);
+                    }
+                }
+            }
+        }
+
+        // 读字段:换成 owner 视图的解构。
+        if !views.is_empty() {
+            let d = self.graph.insert(ir::node_ir_destructure_view(owner_kind.clone(), &fields));
+            self.graph.set_value_in(Link::node(d, 0), owner.clone());
+            for link in views {
+                self.graph.set_value_in(link, ValueIn::link(Link::node(d, idx)));
+            }
+        }
+        // 写:换成 `Modify`(原地改 owner 的这个字段)。
+        for setter in writes {
+            let sn = self.graph.get_node(setter).clone();
+            let value = sn.links.values_in[1].clone();
+            let mut params = vec![owner_kind.clone().into(), None];
+            for field in &fields {
+                params.push(field.clone().into());
+                params.push(IrKind::Native(NativeKind::Bool).into());
+            }
+            let modify = self.graph.insert(NodeKind::new(IrNodeId::Modify, 1, 1, params, vec![]));
+            self.graph.set_value_in(Link::node(modify, 0), owner.clone());
+            self.graph.set_value_in(Link::node(modify, 2 + idx * 2), value);
+            self.graph.set_value_in(
+                Link::node(modify, 3 + idx * 2),
+                ValueIn::value(true.into()),
+            );
+            // 控制流接替原来的 setter。
+            for c in &sn.links.controls_in[0] {
+                self.graph
+                    .relink_control(*c, Link::node(setter, 0), &[Link::node(modify, 0)]);
+            }
+            for c in &sn.links.controls_out[0] {
+                self.graph.link_control(Link::node(modify, 0), *c);
+            }
+            self.graph.remove(setter);
+        }
+        for d in destructures {
+            self.graph.remove(d);
+        }
         self.graph.remove(node);
         None
     }
@@ -1396,6 +1553,146 @@ mod tests {
             "值流经自定义复合节点时不该优化"
         );
         assert!(opt.graph.get_nodes().contains(&set), "setter 应当保留");
+    }
+
+    fn field_mut_graph() -> (NodeGraphIr, NodeRef, NodeRef, NodeRef, NodeRef, NodeRef) {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "field_mut");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let adt = IrKind::Adt("Point".into());
+        let view = IrKind::PartialMut(adt.clone().into());
+        let owner = g.insert(node_ir_local(view.clone()));
+        let fm = g.insert(NodeKind::new(
+            IrNodeId::FieldMut {
+                idx: 0,
+                fields: vec![int(), int()],
+            },
+            0,
+            0,
+            vec![Some(view)],
+            vec![IrKind::Mut(int().into())],
+        ));
+        g.link_value(Link::node(owner, 1), Link::node(fm, 0));
+        // 解构 `Mut<i32>`：0 号出是句柄，1 号出是字段视图
+        let d = g.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(IrKind::Mut(int().into()))],
+            vec![IrKind::LocalRef(int().into()), IrKind::mutable_view(int())],
+        ));
+        g.link_value(Link::node(fm, 0), Link::node(d, 0));
+        // 通过句柄写
+        let write = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(d, 0), Link::node(write, 0));
+        // 读字段
+        let copy = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(d, 1), Link::node(copy, 0));
+        let sw = g.insert(node_ir_switch(int(), vec![]));
+        g.link_value(Link::node(copy, 0), Link::node(sw, 0));
+
+        g.link_control(Link::export(0), Link::node(write, 0));
+        g.link_control(Link::node(write, 0), Link::node(sw, 0));
+        g.link_control(Link::node(sw, 0), Link::export(0));
+        (g, owner, fm, d, write, copy)
+    }
+
+    /// `&mut s.field` 的写入换成 `Modify`，读那一侧改成解构 owner 视图。
+    #[test]
+    fn field_mut_write_becomes_modify() {
+        let (g, owner, fm, d, write, copy) = field_mut_graph();
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert_eq!(opt.eliminate_field_mut(fm), None);
+
+        assert!(opt.graph.get_nodes().iter().all(|x| ![fm, d, write].contains(x)));
+        let modify = opt
+            .graph
+            .get_nodes()
+            .into_iter()
+            .find(|x| opt.graph.get_node(*x).kind.id == IrNodeId::Modify)
+            .expect("应当生成 Modify");
+        let m = opt.graph.get_node(modify);
+        assert_eq!(m.links.values_in[0].link, Some(Link::node(owner, 1)));
+        assert_eq!(m.links.values_in[3].default, Some(true.into()));
+        // 控制流接替原来的 setter
+        assert!(opt.graph.get_node(modify).links.controls_out[0].len() > 0);
+        // 读的地方接的是新解构节点的 0 号出
+        let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
+        assert_eq!(src.index, 0);
+        assert_ne!(src.target.node(), Some(d));
+        assert_eq!(
+            opt.graph.get_node(src.target.node().unwrap()).kind.id,
+            IrNodeId::Destructure
+        );
+    }
+
+    /// 句柄先存进局部变量、再取出来用：一样能把写入换成 `Modify`。
+    #[test]
+    fn field_mut_handle_through_a_local() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "field_mut_local");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let adt = IrKind::Adt("Point".into());
+        let view = IrKind::PartialMut(adt.into());
+        let owner = g.insert(node_ir_local(view.clone()));
+        let fm = g.insert(NodeKind::new(
+            IrNodeId::FieldMut {
+                idx: 0,
+                fields: vec![int(), int()],
+            },
+            0,
+            0,
+            vec![Some(view)],
+            vec![IrKind::Mut(int().into())],
+        ));
+        g.link_value(Link::node(owner, 1), Link::node(fm, 0));
+        let d = g.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(IrKind::Mut(int().into()))],
+            vec![IrKind::LocalRef(int().into()), IrKind::mutable_view(int())],
+        ));
+        g.link_value(Link::node(fm, 0), Link::node(d, 0));
+
+        // 句柄先存进 `holder`
+        let holder = g.insert(node_ir_local(IrKind::LocalRef(int().into())));
+        let store = g.insert(node_ir_set_local(IrKind::LocalRef(int().into())));
+        g.link_value(Link::node(holder, 0), Link::node(store, 0));
+        g.link_value(Link::node(d, 0), Link::node(store, 1));
+        // 再从 `holder` 取出来写
+        let write = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(holder, 1), Link::node(write, 0));
+
+        g.link_control(Link::export(0), Link::node(store, 0));
+        g.link_control(Link::node(store, 0), Link::node(write, 0));
+        g.link_control(Link::node(write, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert_eq!(opt.eliminate_field_mut(fm), None);
+
+        assert!(
+            opt.graph.get_nodes().iter().all(|x| ![fm, d, write].contains(x)),
+            "FieldMut 和写入都该被消掉"
+        );
+        let modify = opt
+            .graph
+            .get_nodes()
+            .into_iter()
+            .find(|x| opt.graph.get_node(*x).kind.id == IrNodeId::Modify)
+            .expect("应当生成 Modify");
+        assert_eq!(
+            opt.graph.get_node(modify).links.values_in[0].link,
+            Some(Link::node(owner, 1))
+        );
     }
 
     /// `Copy(ToView(x))`：两层互逆，消成直连。

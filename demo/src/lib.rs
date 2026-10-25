@@ -347,6 +347,24 @@ pub fn test_native_enum() {
     }
 }
 
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+/// `&mut` 参数 + 字段赋值:字段写是 `Modify`,节点图里没有字段句柄。
+#[inline(never)]
+fn set_x(p: &mut Point, v: i32) {
+    p.x = v;
+}
+
+#[unsafe(no_mangle)]
+pub fn test_mut_field() {
+    let mut p = Point { x: 1, y: 2 };
+    set_x(&mut p, 3);
+    log(p.x + p.y);
+}
+
 /// 可变视图:把 `&mut` 变成一个能读能写的句柄。
 #[unsafe(no_mangle)]
 pub fn test_partial_mut() {
