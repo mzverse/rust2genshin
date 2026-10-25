@@ -521,10 +521,6 @@ impl Optimizer {
             if !set.remove(&node) {
                 unreachable!()
             }
-            if !self.graph.contains(node) {
-                // 上一条规则连带删掉的节点,它已经进过邻居队列了。
-                continue;
-            }
             let neighbors = self.graph.get_node(node).links.get_neighbors();
             if self.eliminate_solo(node).is_some() {
                 continue;
@@ -1275,10 +1271,6 @@ impl Optimizer {
             self.reset_values(out, ValueIn::link(Link::node(view, 0)));
         }
         self.graph.remove(node);
-        // 原 `ToPartialMut` 只喂这一个解构的话,也就没用了。
-        if self.graph.get_node(pm).links.values_out[0].is_empty() {
-            self.graph.remove(pm);
-        }
         None
     }
 
@@ -1873,8 +1865,9 @@ mod tests {
             opt.eliminate_destructure_after_partial_mut(d).is_none()
         );
 
-        // 原来的视图和解构都没了
-        assert!(opt.graph.get_nodes().iter().all(|x| *x != d && *x != pm));
+        // 原来的解构没了,它吃的那层视图留着(规则只消解构)
+        assert!(opt.graph.get_nodes().iter().all(|x| *x != d));
+        assert!(opt.graph.get_nodes().contains(&pm));
         for (i, &user) in users.iter().enumerate() {
             // 使用者改吃「新解构 -> ToPartialMut」的输出
             let Some(Link {

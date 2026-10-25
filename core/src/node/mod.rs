@@ -410,11 +410,6 @@ impl<NodeId, Kind> NodeGraph<NodeId, Kind> {
         &self.nodes[key.into()]
     }
 
-    /// 节点还在不在。一条规则可能连带删掉不止一个节点,遍历时要能跳过它们。
-    pub fn contains(&self, key: NodeRef) -> bool {
-        self.nodes.contains(key.into())
-    }
-
     pub fn get_node_mut(&mut self, key: NodeRef) -> &mut Node<NodeId, Kind> {
         &mut self.nodes[key.into()]
     }
