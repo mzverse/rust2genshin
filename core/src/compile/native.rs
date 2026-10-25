@@ -110,7 +110,7 @@ impl<'tcx> Compiler<'tcx> {
                         Ok(inner) => inner,
                         Err(e) => return Some(Err(e)),
                     };
-                    Ok(IrKind::mutable_view(inner))
+                    Ok(IrKind::partial_mut(inner))
                 },
                 "List" => {
                     let Some(elem) = args.as_ref().and_then(|args| type_args(*args).into_iter().next()) else {
@@ -155,7 +155,7 @@ impl<'tcx> Compiler<'tcx> {
 
     /// 列表内建的第一个参数必须是 `PartialMut<List<T>>` —— 局部变量 / 借用
     /// 交出来的视图。这里直接断言，不做隐式转换：传进来的是普通值就报错。
-    fn expect_list_view(&self, expn: Span, name: &str, kind: &IrKind) -> Result<IrKind> {
+    fn expect_list_partial_mut(&self, expn: Span, name: &str, kind: &IrKind) -> Result<IrKind> {
         if let IrKind::PartialMut(inner) = kind
             && let Some(elem) = inner.list_elem()
         {
@@ -214,19 +214,19 @@ impl<'tcx> Compiler<'tcx> {
                                 )
                             },
                             "list_get" => {
-                                let elem = self.expect_list_view(expn, "list_get", &params[0])?;
+                                let elem = self.expect_list_partial_mut(expn, "list_get", &params[0])?;
                                 node_ir_list_get(elem)
                             },
                             "list_set" => {
-                                let elem = self.expect_list_view(expn, "list_set", &params[0])?;
+                                let elem = self.expect_list_partial_mut(expn, "list_set", &params[0])?;
                                 node_ir_list_set(elem)
                             },
                             "list_insert" => {
-                                let elem = self.expect_list_view(expn, "list_insert", &params[0])?;
+                                let elem = self.expect_list_partial_mut(expn, "list_insert", &params[0])?;
                                 node_ir_list_insert(elem)
                             },
                             "list_len" => {
-                                let elem = self.expect_list_view(expn, "list_len", &params[0])?;
+                                let elem = self.expect_list_partial_mut(expn, "list_len", &params[0])?;
                                 node_ir_list_get_length(elem)
                             },
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),

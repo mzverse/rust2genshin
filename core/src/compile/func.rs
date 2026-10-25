@@ -711,7 +711,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         // 否则 place 交出来的是视图,而这里要普通值:读一次。
         assert_eq!(
             got,
-            IrKind::mutable_view(value.clone()),
+            IrKind::partial_mut(value.clone()),
             "place 交出的类型既不是 {value},也不是它的视图",
         );
         let node = self.graph.insert(node_ir_copy(value.clone()));
@@ -893,12 +893,12 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 // `(LocalSetter, PartialMut<T>)`：第 0 个字段原样拿过来，第 1 个
                 // 字段要把视图再拆一层 —— 这一步表示不了，给 `Unsupported`。
                 "partial_mut_deref_mut" => {
-                    let Some(IrKind::Mut(view)) = params.first().cloned() else {
+                    let Some(IrKind::Mut(pm)) = params.first().cloned() else {
                         return self.helper().span_err(span, "partial_mut_deref_mut 的参数应当是 &mut PartialMut<T>");
                     };
                     let out = self.compiler.compile_ty(span, sig.output())?;
                     // 输入的元组：拆开，第 1 个字段就是那个视图。
-                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(view)));
+                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(pm)));
                     self.graph.set_value_in(Link::node(de, 0), args[0].clone());
                     // 输出的第 0 个字段是 `LocalSetter` —— 视图里没有 setter 槽，
                     // 造不出来，占 `Unsupported`。

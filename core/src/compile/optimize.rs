@@ -158,7 +158,7 @@ impl Optimizer {
             self.link_node(linker, x);
         }
         self.optimize();
-        // 优化也会改接数据流（`ToView` / `Copy` / 解构替换）—— 改接后的
+        // 优化也会改接数据流（`ToPartialMut` / `Copy` / 解构替换）—— 改接后的
         // 类型契约同样要成立。放在这里，优化器插错线会当场炸出来。
         self.verify_types();
         // 控制流里的环改写成「有限循环」节点。放在 optimize 之后：优化器
@@ -183,19 +183,19 @@ impl Optimizer {
                     Some(node_list_assemble(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型"), count))
                 }
                 IrNodeId::ListGet => {
-                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
+                    let elem = partial_mut_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_get_at_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListSet => {
-                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
+                    let elem = partial_mut_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_modify_index(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListInsert => {
-                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
+                    let elem = partial_mut_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_insert(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 IrNodeId::ListGetLength => {
-                    let elem = list_view_elem(kind.values_in_types[0].as_ref().unwrap());
+                    let elem = partial_mut_elem(kind.values_in_types[0].as_ref().unwrap());
                     Some(node_list_get_length(&mut self.graph, elem.to_native().expect("列表元素必须是原生类型")))
                 }
                 _ => None,
@@ -342,7 +342,7 @@ impl Optimizer {
                 IrNodeId::Fn(_) => unreachable!(),
                 // 读值 / 标视图都只是 IR 层的写法,节点图里没有额外动作,
                 // 也没有控制流要接。
-                IrNodeId::Copy | IrNodeId::ToView => {
+                IrNodeId::Copy | IrNodeId::ToPartialMut => {
                     let n = self.graph.get_node(x);
                     self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
                     self.graph.remove(x);
@@ -711,9 +711,9 @@ impl Optimizer {
         }
     }
 
-    /// `Copy(ToView(x))`:先标成视图又立刻读回来 —— 直接接 `x`。
+    /// `Copy(ToPartialMut(x))`:先标成视图又立刻读回来 —— 直接接 `x`。
     ///
-    /// `eliminate_unnecessary_local_setter` 改接时会在值前面补一层 `ToView`,
+    /// `eliminate_unnecessary_local_setter` 改接时会在值前面补一层 `ToPartialMut`,
     /// 读那一侧原本就带着 `Copy`,两层正好互逆。
     pub fn eliminate_copy(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
@@ -721,17 +721,17 @@ impl Optimizer {
             return Some(());
         }
         let Some(Link {
-            target: LinkTarget::Node(view),
+            target: LinkTarget::Node(pm),
             ..
         }) = n.links.values_in[0].link
         else {
             return Some(());
         };
-        let n_view = self.graph.get_node(view);
-        if n_view.kind.id != IrNodeId::ToView {
+        let n_pm = self.graph.get_node(pm);
+        if n_pm.kind.id != IrNodeId::ToPartialMut {
             return Some(());
         }
-        let from = n_view.links.values_in[0].clone();
+        let from = n_pm.links.values_in[0].clone();
         self.reset_values(n.links.values_out[0].clone(), from);
         self.graph.remove(node);
         None
@@ -761,8 +761,8 @@ impl Optimizer {
             Mut,
             /// 结构里的 setter 槽(`LocalRef<字段>`)。
             Handle,
-            /// 结构里的读槽(字段的视图)。
-            View,
+            /// 结构里的读槽(字段的 `PartialMut`)。
+            PartialMut,
         }
 
         let mut queue: VecDeque<(Link, Role)> = n
@@ -775,7 +775,7 @@ impl Optimizer {
         // 通过这个句柄写的 `SetLocal`,要换成 `Modify`。
         let mut writes: Vec<NodeRef> = vec![];
         // 读字段的边,要改接到 owner 视图的解构上。
-        let mut views: Vec<Link> = vec![];
+        let mut partial_muts: Vec<Link> = vec![];
         // 句柄 / 视图经过的解构节点,最后删掉。
         let mut destructures: Vec<NodeRef> = vec![];
         while let Some((link, role)) = queue.pop_front() {
@@ -798,7 +798,7 @@ impl Optimizer {
                         queue.push_back((*e, Role::Handle));
                     }
                     for e in &nx.links.values_out[1] {
-                        queue.push_back((*e, Role::View));
+                        queue.push_back((*e, Role::PartialMut));
                     }
                 }
                 // 句柄只认「直接写」:存进变量、重新组装都留给以后的内联优化。
@@ -809,20 +809,20 @@ impl Optimizer {
                     writes.push(x);
                 }
                 // 字段视图只认「直接读」(`Copy`);其它用法说不清。
-                Role::View => {
+                Role::PartialMut => {
                     if nx.kind.id != IrNodeId::Copy {
                         return Some(());
                     }
-                    views.push(link);
+                    partial_muts.push(link);
                 }
             }
         }
 
         // 读字段:换成 owner 视图的解构。
-        if !views.is_empty() {
-            let d = self.graph.insert(ir::node_ir_destructure_view(owner_kind.clone(), &fields));
+        if !partial_muts.is_empty() {
+            let d = self.graph.insert(ir::node_ir_destructure_partial_mut(owner_kind.clone(), &fields));
             self.graph.set_value_in(Link::node(d, 0), owner.clone());
-            for link in views {
+            for link in partial_muts {
                 self.graph.set_value_in(link, ValueIn::link(Link::node(d, idx)));
             }
         }
@@ -1029,16 +1029,16 @@ impl Optimizer {
         {
             return Some(());
         }
-        // 改接:目标引脚要的是视图,写入值是普通值 —— 中间补一层 `ToView`。
+        // 改接:目标引脚要的是视图,写入值是普通值 —— 中间补一层 `ToPartialMut`。
         // 读那一侧如果紧跟着 `Copy`,`eliminate_copy` 会把两层一起消掉。
         let write_kind = n.kind.values_in_types[1].as_ref().unwrap().clone();
-        let view_kind = n_local.kind.values_out_types[1].clone();
-        let value = if write_kind == view_kind {
+        let pm_kind = n_local.kind.values_out_types[1].clone();
+        let value = if write_kind == pm_kind {
             value
         } else {
-            let view = self.graph.insert(ir::node_ir_to_view(write_kind));
-            self.graph.set_value_in(Link::node(view, 0), value);
-            ValueIn::link(Link::node(view, 0))
+            let pm = self.graph.insert(ir::node_ir_to_partial_mut(write_kind));
+            self.graph.set_value_in(Link::node(pm, 0), value);
+            ValueIn::link(Link::node(pm, 0))
         };
         self.reset_values(rewrite, value);
         self.relink_controls(node, 0, 0);
@@ -1279,8 +1279,8 @@ impl Optimizer {
 }
 
 /// 列表 IR 节点的第一个引脚是 `PartialMut<List<T>>`(视图),取元素类型要拆两层。
-fn list_view_elem(kind: &IrKind) -> IrKind {
-    kind.view_inner()
+fn partial_mut_elem(kind: &IrKind) -> IrKind {
+    kind.partial_mut_inner()
         .and_then(|x| x.list_elem())
         .unwrap_or_else(|| panic!("列表节点的输入应当是 PartialMut<List<T>>,实际是 {kind}"))
 }
@@ -1430,10 +1430,10 @@ mod tests {
             opt.graph.get_nodes().iter().all(|x| *x != set),
             "当前 setter 应该被消掉"
         );
-        // 读的地方改接到写入的值上：`Copy` 的输入换成 `ToView`（写入值先标成视图）
+        // 读的地方改接到写入的值上：`Copy` 的输入换成 `ToPartialMut`（写入值先标成视图）
         let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
         let src = src.target.node().unwrap();
-        assert_eq!(opt.graph.get_node(src).kind.id, IrNodeId::ToView);
+        assert_eq!(opt.graph.get_node(src).kind.id, IrNodeId::ToPartialMut);
         assert_eq!(opt.graph.get_node(src).links.values_in[0].link, None);
     }
 
@@ -1542,8 +1542,8 @@ mod tests {
         g.push_export_control_out(ExportDecl::new("out".into(), None));
 
         let adt = IrKind::Adt("Point".into());
-        let view = IrKind::PartialMut(adt.clone().into());
-        let owner = g.insert(node_ir_local(view.clone()));
+        let pm = IrKind::PartialMut(adt.clone().into());
+        let owner = g.insert(node_ir_local(pm.clone()));
         let fm = g.insert(NodeKind::new(
             IrNodeId::FieldMut {
                 idx: 0,
@@ -1551,7 +1551,7 @@ mod tests {
             },
             0,
             0,
-            vec![Some(view)],
+            vec![Some(pm)],
             vec![IrKind::Mut(int().into())],
         ));
         g.link_value(Link::node(owner, 1), Link::node(fm, 0));
@@ -1561,7 +1561,7 @@ mod tests {
             0,
             0,
             vec![Some(IrKind::Mut(int().into()))],
-            vec![IrKind::LocalRef(int().into()), IrKind::mutable_view(int())],
+            vec![IrKind::LocalRef(int().into()), IrKind::partial_mut(int())],
         ));
         g.link_value(Link::node(fm, 0), Link::node(d, 0));
         // 通过句柄写
@@ -1611,13 +1611,13 @@ mod tests {
         );
     }
 
-    /// `Copy(ToView(x))`：两层互逆，消成直连。
+    /// `Copy(ToPartialMut(x))`：两层互逆，消成直连。
     #[test]
-    fn copy_after_to_view_is_elided() {
+    fn copy_after_to_partial_mut_is_elided() {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "round_trip");
-        let view = g.insert(crate::compile::ir::node_ir_to_view(int()));
+        let pm = g.insert(crate::compile::ir::node_ir_to_partial_mut(int()));
         let copy = g.insert(node_ir_copy(int()));
-        g.link_value(Link::node(view, 0), Link::node(copy, 0));
+        g.link_value(Link::node(pm, 0), Link::node(copy, 0));
         let sw = g.insert(node_ir_switch(int(), vec![]));
         g.link_value(Link::node(copy, 0), Link::node(sw, 0));
 
@@ -1628,7 +1628,7 @@ mod tests {
         opt.eliminate_copy(copy);
 
         assert!(opt.graph.get_nodes().iter().all(|x| *x != copy));
-        // 读的地方直接接回 `ToView` 的输入（这里没有连线，就是默认值）
+        // 读的地方直接接回 `ToPartialMut` 的输入（这里没有连线，就是默认值）
         assert_eq!(opt.graph.get_node(sw).links.values_in[0].link, None);
     }
 }

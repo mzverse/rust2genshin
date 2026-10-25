@@ -124,12 +124,12 @@ impl IrKind {
     /// 「可变视图」:`kind` 的值,但标记着「这是通过引用拿到的」。
     ///
     /// 节点图里没有引用 —— 写它就是写原处。`lower` 之后和 `kind` 等同。
-    pub fn mutable_view(kind: Self) -> Self {
+    pub fn partial_mut(kind: Self) -> Self {
         IrKind::PartialMut(kind.into())
     }
 
     /// 视图里的类型;不是视图时为 `None`。
-    pub fn view_inner(&self) -> Option<IrKind> {
+    pub fn partial_mut_inner(&self) -> Option<IrKind> {
         match self {
             IrKind::PartialMut(kind) => Some((**kind).clone()),
             _ => None,
@@ -186,7 +186,7 @@ impl IrKind {
                     let kind = (**inner).clone();
                     AdtInfo::new(vec![
                         FieldInfo::new("0".into(), IrKind::LocalRef(kind.clone().into())),
-                        FieldInfo::new("1".into(), IrKind::mutable_view(kind)),
+                        FieldInfo::new("1".into(), IrKind::partial_mut(kind)),
                     ])
                 });
                 Self::touch_adt(linker, key)
@@ -247,9 +247,9 @@ pub enum IrNodeId {
     /// 写回时把值标成视图:`T` 进,`PartialMut<T>` 出,没有控制流。
     ///
     /// 优化器把「读局部变量」改接到写入值时,目标引脚要的是视图,
-    /// 中间就得有这么一层。它和 `Copy` 正好互逆,`Copy(ToView(x))`
+    /// 中间就得有这么一层。它和 `Copy` 正好互逆,`Copy(ToPartialMut(x))`
     /// 会被 `eliminate_copy` 消成直连。
-    ToView,
+    ToPartialMut,
     /// 把若干元素拼成一个列表,对应 `[T; N]` 字面量 / 数组聚合。
     /// 引脚只有元素本身;原节点前面那个「元素个数」引脚在 lower 时补。
     ListAssemble,
@@ -296,7 +296,7 @@ pub fn node_ir_local(kind: IrKind) -> NodeKindIr {
         vec![IrKind::LocalRef(kind.clone().into()), match &kind {
             // 已经是视图 / 句柄的,不再套一层。
             IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
-            _ => IrKind::mutable_view(kind),
+            _ => IrKind::partial_mut(kind),
         }],
     )
 }
@@ -342,12 +342,12 @@ pub fn node_ir_unsupported(out_kind: IrKind) -> NodeKindIr {
 ///
 /// `kind` 已经是视图 / 句柄时它就是恒等的 —— 调用方应当直接连线,
 /// 不必插一个什么都不做的节点。
-pub fn node_ir_to_view(kind: IrKind) -> NodeKindIr {
+pub fn node_ir_to_partial_mut(kind: IrKind) -> NodeKindIr {
     let out = match &kind {
         IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
-        _ => IrKind::mutable_view(kind.clone()),
+        _ => IrKind::partial_mut(kind.clone()),
     };
-    NodeKind::new(IrNodeId::ToView, 0, 0, vec![kind.into()], vec![out])
+    NodeKind::new(IrNodeId::ToPartialMut, 0, 0, vec![kind.into()], vec![out])
 }
 
 /// 读值:`PartialMut<T>` 进,`T` 出。
@@ -410,7 +410,7 @@ pub fn struct_fields(target: &Target, kind: &IrKind) -> Vec<FieldInfo> {
             vec![
                 // setter 槽的类型和 `Local` 的句柄出口一致,必须是 `LocalRef`。
                 FieldInfo::new(0.to_string(), IrKind::LocalRef(kind1.clone().into())),
-                FieldInfo::new(1.to_string(), IrKind::mutable_view(kind1)),
+                FieldInfo::new(1.to_string(), IrKind::partial_mut(kind1)),
             ]
         }
         IrKind::PartialMut(e) => struct_fields(target, e)
@@ -453,16 +453,16 @@ pub fn node_ir_list_assemble(elem: IrKind, count: usize) -> NodeKindIr {
 
 /// 按下标取列表元素，结果当**视图**用（place 的 getter）：取值要过 `Copy`。
 /// 和 [`node_ir_list_get`] 是同一个节点，只有 IR 层的出口类型不同。
-pub fn node_ir_list_get_view(elem: IrKind) -> NodeKindIr {
+pub fn node_ir_list_get_partial_mut(elem: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListGet,
         0,
         0,
         vec![
-            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
+            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
         ],
-        vec![IrKind::mutable_view(elem)],
+        vec![IrKind::partial_mut(elem)],
     )
 }
 
@@ -473,7 +473,7 @@ pub fn node_ir_list_get(elem: IrKind) -> NodeKindIr {
         0,
         0,
         vec![
-            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
+            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
         ],
         vec![elem],
@@ -487,7 +487,7 @@ pub fn node_ir_list_set(elem: IrKind) -> NodeKindIr {
         1,
         1,
         vec![
-            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
+            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -502,7 +502,7 @@ pub fn node_ir_list_insert(elem: IrKind) -> NodeKindIr {
         1,
         1,
         vec![
-            Some(IrKind::mutable_view(IrKind::list(elem.clone()))),
+            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -516,7 +516,7 @@ pub fn node_ir_list_get_length(elem: IrKind) -> NodeKindIr {
         IrNodeId::ListGetLength,
         0,
         0,
-        vec![Some(IrKind::mutable_view(IrKind::list(elem)))],
+        vec![Some(IrKind::partial_mut(IrKind::list(elem)))],
         vec![IrKind::Native(NativeKind::Int)],
     )
 }
@@ -572,15 +572,15 @@ pub fn node_ir_field_mut(target: &Target, adt: &AdtKey, idx: usize) -> NodeKindI
 ///
 /// 和 [`node_ir_destructure`] 的区别:这里不查 `Target`,字段类型直接由
 /// `fields`(结构体本身的字段类型)包装出来 —— 优化期消 `FieldMut` 时要用。
-pub fn node_ir_destructure_view(view: IrKind, fields: &[IrKind]) -> NodeKindIr {
+pub fn node_ir_destructure_partial_mut(pm: IrKind, fields: &[IrKind]) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::Destructure,
         0,
         0,
-        vec![Some(view)],
+        vec![Some(pm)],
         fields
             .iter()
-            .map(|x| IrKind::mutable_view(x.clone()))
+            .map(|x| IrKind::partial_mut(x.clone()))
             .collect(),
     )
 }

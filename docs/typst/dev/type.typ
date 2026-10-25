@@ -65,7 +65,7 @@ pub enum IrKind {
 
 自定义复合节点（`Fn`）对值的处理说不清，值流上遇到就放弃整次优化。
 
-改接时目标引脚要的是视图，而写入值是普通值 —— 中间补一层 `ToView`（`T` 进，`PartialMut<T>` 出，无控制流）。读的那一侧原本就带着 `Copy`，两层互逆，`eliminate_copy` 把 `Copy(ToView(x))` 消成直连。
+改接时目标引脚要的是视图，而写入值是普通值 —— 中间补一层 `ToPartialMut`（`T` 进，`PartialMut<T>` 出，无控制流）。读的那一侧原本就带着 `Copy`，两层互逆，`eliminate_copy` 把 `Copy(ToPartialMut(x))` 消成直连。
 
 = `&mut` 结构体字段
 
