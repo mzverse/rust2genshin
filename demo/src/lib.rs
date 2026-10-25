@@ -353,9 +353,14 @@ struct Point {
 }
 
 #[unsafe(no_mangle)]
-pub fn test_list_list() -> List<List<i32>> {
-    list![list![114, 514], list![1919810]]
+pub fn test_struct_list() -> List<Point> {
+    list![Point { x: 114, y: 514 }, Point { x: 10, y: 5 }]
 }
+
+// #[unsafe(no_mangle)]
+// pub fn test_list_list() -> List<List<i32>> {
+//     list![list![114, 514], list![1919810]]
+// }
 
 /// `&mut` 参数 + 字段赋值:字段写是 `Modify`,节点图里没有字段句柄。
 #[inline(never)]

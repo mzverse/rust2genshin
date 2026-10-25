@@ -229,7 +229,14 @@ impl NativeKind {
                 type_detail: self.encode_type(side).into(),
             }.into(),
             tracker: None,
-            storage: value.and_then(|x| self.encode_storage(side, x)),
+            // 官方导出里多态引脚的「未设置」值也带一个空 storage
+            //(`val_struct {}` / `val_list {}` / `val_map {}`)。
+            storage: value.and_then(|x| self.encode_storage(side, x)).or_else(|| match self {
+                NativeKind::Struct(_) => Some(typed_value::Storage::ValStruct(StructStorage { field: vec![] })),
+                NativeKind::List(_) => Some(typed_value::Storage::ValList(ListStorage { element: vec![] })),
+                NativeKind::Dict { .. } => Some(typed_value::Storage::ValMap(MapStorage { pairs: vec![] })),
+                _ => None,
+            }),
         }
     }
 

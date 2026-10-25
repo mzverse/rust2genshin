@@ -877,13 +877,9 @@ pub fn encode_selected(kind: &NativeKind, value: Option<&dyn NativeValue>, selec
         TypedValue {
             widget: typed_value::WidgetType::TypeSelector as i32,
             is_set: true,
-            r#type: TypeDefinition {
-                backend: match side {
-                    Side::Server => type_definition::Backend::Server as i32,
-                    Side::Client => type_definition::Backend::Client as i32,
-                },
-                type_detail: kind.encode_type(side).into(),
-            }.into(),
+            // 多态引脚不带顶层 `type`:类型全在 `val_poly.actual_value.type` 里
+            //(官方导出的写法;带上会让游戏按错误的类型找结构体)。
+            r#type: None,
             tracker: None,
             storage: typed_value::Storage::ValPoly(PolymorphicValue {
                 chosen_type_index: selected,
