@@ -1231,12 +1231,26 @@ fn loop_var_reads_are_current(
             }
             // 计数器除了比较和拷贝没有别的读者 —— 别的读者读到的是「还会
             // 被再次写入」的活值，而自增那次写入会被摘掉，读的就是空值。
+            // 读值都经过 `Copy`：把这一层当透明，看真正的消费者。
             let var_readers: Vec<NodeRef> = graph
                 .get_node(c.var)
                 .links
                 .values_out[1]
                 .iter()
                 .filter_map(|l| l.target.node())
+                .flat_map(|m| {
+                    let n = graph.get_node(m);
+                    if n.kind.id == IrNodeId::Copy {
+                        n.links
+                            .values_out
+                            .iter()
+                            .flatten()
+                            .filter_map(|l| l.target.node())
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![m]
+                    }
+                })
                 .collect();
             if var_readers.len() != 2
                 || !var_readers.contains(&c.cmp)
@@ -1294,6 +1308,21 @@ fn loop_var_reads_are_current(
 ///
 /// 任何一条不满足都退回通用改写（区间取满、靠条件跳出）—— 那条路是
 /// 改动之前就有的，行为一定没变。特化只在这里「能证明等价」时才发生。
+/// 读值都会经过 `Copy`：识别循环规律时要看回局部变量的值出口。
+///
+/// 返回最终的 `Link`（约定是 `Local` 的 1 号引脚）。
+fn through_copy(graph: &NodeGraphIr, link: Link) -> Option<Link> {
+    let mut link = link;
+    loop {
+        let node = link.target.node()?;
+        let n = graph.get_node(node);
+        if n.kind.id != IrNodeId::Copy {
+            return Some(link);
+        }
+        link = n.links.values_in[0].link?;
+    }
+}
+
 fn detect_counting_loop(
     graph: &mut NodeGraphIr,
     cfg: &Cfg,
@@ -1373,7 +1402,7 @@ fn detect_counting_loop(
     };
 
     // 比较的第一个操作数是循环变量，第二个是上界。
-    let var_link = cmp.links.values_in[0].link?;
+    let var_link = through_copy(graph, cmp.links.values_in[0].link?)?;
     let var = var_link.target.node()?;
     if var_link.index != 1 || graph.get_node(var).kind.id != IrNodeId::Local {
         return None;
@@ -1423,7 +1452,7 @@ fn detect_counting_loop(
     } else {
         return None;
     };
-    let other_link = other.link?;
+    let other_link = through_copy(graph, other.link?)?;
     let other_local = other_link.target.node()?;
     if other_link.index != 1 || graph.get_node(other_local).kind.id != IrNodeId::Local {
         return None;
@@ -1444,7 +1473,10 @@ fn detect_counting_loop(
         if regions.owner_of(cfg.node_index[&copies[0]]) != i {
             return None;
         }
-        if graph.get_node(copies[0]).links.values_in[1].link != Some(Link::node(var, 1)) {
+        let copy_src = graph.get_node(copies[0]).links.values_in[1]
+            .link
+            .and_then(|l| through_copy(graph, l));
+        if copy_src != Some(Link::node(var, 1)) {
             return None;
         }
         // 拷贝得在加一之前。
@@ -1665,7 +1697,7 @@ fn is_loop_node_kind(kind: &NodeKindIr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::ir::node_ir_nop;
+    use crate::compile::ir::{node_ir_copy, node_ir_nop};
     use crate::node::ExportDecl;
     use crate::node::NodeGraphKind;
 
@@ -2159,6 +2191,32 @@ mod tests {
             .as_ref()
             .and_then(|d| d.downcast_ref::<i32>().ok())
             .copied()
+    }
+
+    /// 读值经过 `Copy` 时也要认得出计数循环 —— 真实编译产物就是这样，
+    /// 比较和加一读到的都是 `Copy` 的输出。
+    #[test]
+    fn counting_loop_reads_through_copy() {
+        let mut g = new_graph();
+        let c = counting_loop(&mut g, 10);
+        let int = || IrKind::Native(NativeKind::Int);
+        // 比较和加一的输入都改成经过 `Copy`
+        let cmp_copy = g.insert(node_ir_copy(int()));
+        g.set_value_in(Link::node(cmp_copy, 0), ValueIn::link(Link::node(c.var, 1)));
+        g.set_value_in(Link::node(c.cmp, 0), ValueIn::link(Link::node(cmp_copy, 0)));
+        let add = g.get_node(c.body).links.values_in[1]
+            .link
+            .and_then(|l| l.target.node())
+            .expect("加一节点");
+        let add_copy = g.insert(node_ir_copy(int()));
+        g.set_value_in(Link::node(add_copy, 0), ValueIn::link(Link::node(c.var, 1)));
+        g.set_value_in(Link::node(add, 0), ValueIn::link(Link::node(add_copy, 0)));
+
+        lower_loops(&mut g).unwrap();
+
+        let lp = find_node(&g, is_loop_node).expect("没有有限循环节点");
+        assert_eq!(int_of(&g, lp, 0), Some(0));
+        assert_eq!(int_of(&g, lp, 1), Some(9));
     }
 
     /// 计数循环：有限循环节点带上真的区间，那个恒真的比较摘掉。
