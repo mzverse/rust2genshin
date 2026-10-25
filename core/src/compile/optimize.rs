@@ -1,4 +1,3 @@
-use crate::asset::generated::identifier;
 use crate::asset::generated::pin_signature::Kind as PinType;
 use crate::compile::func::{FnDecl, node_ir_native};
 use crate::compile::helper::Helper;
@@ -20,6 +19,16 @@ use std::mem;
 use std::mem::swap;
 use tap::Tap;
 use crate::unwrap;
+
+/// 一条起点边（局部变量值出口的某一条连线）在数据流上的去向。
+struct Usage {
+    /// 起点边本身 —— 优化时改接的就是它。
+    start: Link,
+    /// 读到这个值的执行节点（路径上经过 `Copy`）。
+    users: Vec<LinkTarget>,
+    /// 只拿到视图、通过引用写的执行节点。
+    modifiers: Vec<LinkTarget>,
+}
 
 impl Optimizer {
     pub fn verify(&self, _helper: Helper) -> super::Result<()> {
@@ -316,8 +325,9 @@ impl Optimizer {
                 IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
                 IrNodeId::FieldMut { idx, .. } => panic!("{idx}"),
                 IrNodeId::Fn(_) => unreachable!(),
-                // 读值就是取值,节点图里没有额外的动作,也没有控制流要接。
-                IrNodeId::Copy => {
+                // 读值 / 标视图都只是 IR 层的写法,节点图里没有额外动作,
+                // 也没有控制流要接。
+                IrNodeId::Copy | IrNodeId::ToView => {
                     let n = self.graph.get_node(x);
                     self.reset_values(n.links.values_out[0].clone(), n.links.values_in[0].clone());
                     self.graph.remove(x);
@@ -513,6 +523,7 @@ impl Optimizer {
         self.eliminate_set_local(node)?;
         self.eliminate_local(node)?;
         self.eliminate_calc(node)?;
+        self.eliminate_copy(node)?;
         self.eliminate_unnecessary_local_setter(node)?;
         self.eliminate_assemble(node)?;
         self.eliminate_destructure(node)?;
@@ -684,6 +695,32 @@ impl Optimizer {
         }
     }
 
+    /// `Copy(ToView(x))`:先标成视图又立刻读回来 —— 直接接 `x`。
+    ///
+    /// `eliminate_unnecessary_local_setter` 改接时会在值前面补一层 `ToView`,
+    /// 读那一侧原本就带着 `Copy`,两层正好互逆。
+    pub fn eliminate_copy(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.get_node(node);
+        if n.kind.id != IrNodeId::Copy {
+            return Some(());
+        }
+        let Some(Link {
+            target: LinkTarget::Node(view),
+            ..
+        }) = n.links.values_in[0].link
+        else {
+            return Some(());
+        };
+        let n_view = self.graph.get_node(view);
+        if n_view.kind.id != IrNodeId::ToView {
+            return Some(());
+        }
+        let from = n_view.links.values_in[0].clone();
+        self.reset_values(n.links.values_out[0].clone(), from);
+        self.graph.remove(node);
+        None
+    }
+
     pub fn eliminate_unnecessary_local_setter(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
         if n.kind.id != IrNodeId::SetLocal {
@@ -698,7 +735,6 @@ impl Optimizer {
         };
         let n_local = self.graph.get_node(local);
         if n_local.kind.id != IrNodeId::Local {
-            // TODO
             return Some(());
         }
         if n.links.values_in[1].link == Some(Link::node(local, 1)) {
@@ -726,224 +762,202 @@ impl Optimizer {
             usize::MAX
         };
 
-        // ---- 步骤 1：找到所有 setters ----
+        // ---- 句柄出口:只能交给这个变量自己的 setter ----
         //
-        // `local_setters` 是写这个 local 的节点（`Local` 的句柄输出被它们消费）。
-        // 句柄被别的东西消费了（复合节点的调用、ADT 的修改……）—— 它可能改这个
-        // 变量，值从哪来说不清 —— 直接拒绝优化。
+        // 句柄被当成**值**存进别的变量(`let r = &mut list`)、或者交给自定义
+        // 复合节点时,它可能从别处被写 —— 值来源说不清,拒绝优化。
         let mut local_setters: HashSet<NodeRef> = HashSet::new();
-        // `opaque` 是「说不清它求值时是什么值」的节点（见步骤 1b）。
-        // 控制流回溯时碰到它们，就说明那个执行点读到的值来源不明，拒绝优化。
-        let mut opaque: HashSet<NodeRef> = HashSet::new();
         for link in n_local.links.values_out[0].iter() {
-            let Some(x) = link.target.node() else {
-                return Some(());
-            };
-            // 只认「写这个变量」的用法:句柄接到 setter 的 `value in[0]`。
-            // 句柄被当成**值**存进别的变量(`let r = &mut list`)时是引脚 1,
-            // 那会让这个变量的句柄逃出去 —— 值来源不明,别优化。
             if link.index != 0 {
                 return Some(());
             }
-            if self.graph.get_node(x).kind.id == IrNodeId::SetLocal {
-                local_setters.insert(x);
-            } else {
-                // 句柄被拿去改这个变量了：值来源不明
+            let Some(x) = link.target.node() else {
+                return Some(());
+            };
+            if self.graph.get_node(x).kind.id != IrNodeId::SetLocal {
                 return Some(());
             }
+            local_setters.insert(x);
         }
         assert!(local_setters.contains(&node));
 
-        // ---- 步骤 1b：写入的值从哪来 ----
+        // ---- 数据流:每条起点边通向的 exec 是「读」还是「写」 ----
         //
-        // 消除这个 setter 相当于把写入的值挪到 usage 那里求值，所以得先看这个
-        // 值是从哪来的。从 setter 的 `value in[1]` 的来源开始 BFS（值流不会有环，
-        // 用 visited 防重入）：
+        // 从值出口向后 BFS,穿过所有纯计算节点(`Copy` 会翻转 `copied`):
+        // - 带 `copied` 到达执行节点:读值 —— user;
+        // - 没带 `copied` 到达执行节点:拿到的是视图,通过引用写 —— modifier。
         //
-        // - 来自 extern：跳过；
-        // - 不是 calc 节点：执行节点，它什么时候执行会影响到这个值 —— opaque；
-        // - 是 `Local` 节点：读的是另一个变量，它所有的 setter 都是 opaque；
-        //   它的值（`values_out[1]`）的每一处使用也要一起看 —— 入队，继续 BFS；
-        // - 是其它不纯的节点：每次求值可能不同，挪了就变了 —— 拒绝优化；
-        // - 是 pure 节点：把它的所有 `value in` 入队，继续。
-        let mut queue = VecDeque::new();
-        let mut visited: HashSet<NodeRef> = HashSet::new();
-        if let Some(v) = n.links.values_in[1].link {
-            queue.push_back(v);
-        }
-        while let Some(now) = queue.pop_front() {
-            let Some(x) = now.target.node() else {
-                // 来自图外
-                continue;
+        // 自定义复合节点(`Fn`)怎么处理这个值完全说不清:整个优化放弃。
+        let mut modifiers: HashSet<LinkTarget> = HashSet::new();
+        let mut usages: Vec<Usage> = Vec::new();
+        for &start in &n_local.links.values_out[1] {
+            let mut usage = Usage {
+                start,
+                users: vec![],
+                modifiers: vec![],
             };
-            if !visited.insert(x) {
-                continue;
-            }
-            let nx = self.graph.get_node(x);
-            if nx.kind.id == IrNodeId::Local {
-                // 读的是另一个变量：它所有的 setter 都是 opaque
-                for s in nx.links.values_out[0].iter().filter_map(|l| l.target.node()) {
-                    opaque.insert(s);
+            let mut queue: VecDeque<(Link, bool)> = VecDeque::new();
+            let mut visited: HashSet<(Link, bool)> = HashSet::new();
+            queue.push_back((start, false));
+            while let Some((link, copied)) = queue.pop_front() {
+                if !visited.insert((link, copied)) {
+                    continue;
                 }
-                // 它的值的每一处使用也要一起看
-                for u in &nx.links.values_out[1] {
-                    queue.push_back(*u);
-                }
-            } else if !nx.kind.is_calc() {
-                // 执行节点：语义不明
-                opaque.insert(x);
-            } else if !nx.kind.is_pure() {
-                // 不纯的值挪了就变了
-                return Some(());
-            } else {
-                // pure：看它的输入
-                for v in &nx.links.values_in {
-                    if let Some(link) = v.link {
-                        queue.push_back(link);
-                    }
-                }
-            }
-        }
-
-        // ---- 步骤 2：遍历每一处 usage ----
-        //
-        // usage 是「读这个 local 的值」的那条边。每处 usage 先沿数据流找出所有
-        // executors（触发它求值的执行节点），再沿控制流回溯，判断它读到的值
-        // 到底由谁决定：
-        //
-        // - 完全取决于当前 setter：可以把它改接到写入的值上；
-        // - 完全与当前 setter 无关（它前面执行的都是别的 setter）：不动它；
-        // - 不明确（比如有分支，两边写的值不一样）：拒绝优化。
-        let mut usages = vec![];
-        for &x in &n_local.links.values_out[1] {
-            // --- 2a. 沿数据流找 executors ---
-            //
-            // 队列里带上了「这条边的值是什么类型」—— 值的类型由它的来源
-            // （输出引脚）决定。
-            let mut queue = VecDeque::new();
-            queue.push_back((n_local.kind.values_out_types.get(1).cloned(), x));
-            let mut executors: HashSet<LinkTarget> = HashSet::new();
-            // 通过引用写这个值的执行点（见下）。
-            let mut writes: Vec<LinkTarget> = vec![];
-            // 值流不可能有环，不用 visited 防重入。
-            while let Some((ty, now)) = queue.pop_front() {
-                let Some(now_node) = now.target.node() else {
-                    // 值走出图外
-                    executors.insert(LinkTarget::Export);
+                let Some(x) = link.target.node() else {
+                    // 值流出图:也当成一个使用点,回溯时会落到图入口。
+                    usage.users.push(LinkTarget::Export);
                     continue;
                 };
-                let n_now = self.graph.get_node(now_node);
-                if n_now.kind.controls_in_num == 0 {
-                    // 没有控制输入：不是执行点，沿数据流继续往下找
-                    for (p, edges) in n_now.links.values_out.iter().enumerate() {
-                        let ty = n_now.kind.values_out_types.get(p).cloned();
-                        for e in edges {
-                            queue.push_back((ty.clone(), *e));
-                        }
-                    }
-                } else {
-                    // // 有控制输入：这是一个执行点
-                    // //
-                    // // `&mut`（`PartialMut`）的值被交给 `Modify`（改字段）或函数
-                    // // 调用时，那是在**通过引用写**它，不是读 —— 不算执行点。
-                    // if matches!(ty, Some(IrKind::PartialMut(..)))
-                    //     && maybe_write(&n_now.kind.id, now.index)
-                    // {
-                    //     writes.push(now.target);
-                    //     continue;
-                    // }
-                    executors.insert(now.target);
-                }
-            }
-            let mut depends_on_us = false;
-            if executors.is_empty() {
-                if writes.is_empty() {
-                    // 找不到执行点：值来源不明
+                let nx = self.graph.get_node(x);
+                if matches!(nx.kind.id, IrNodeId::Fn(_)) {
+                    // 自定义复合节点:值进去之后会怎么样说不清。
                     return Some(());
                 }
-                // 这处 usage 只是「写」，不是「读」—— 没有执行点，但输入同样得
-                // 改接到写入的值上，否则这个 local 永远消不掉。写之前读过谁的
-                // 值仍然按控制流判断；判断不出来的那处就不动它。
-                for &w in &writes {
-                    if let Ok(Some(s)) = self.last_setter_before(w, &local_setters, &opaque) {
-                        if s.len() == 1 && s.contains(&node) {
-                            depends_on_us = true;
+                if nx.kind.controls_in_num == 0 {
+                    // 纯计算:继续向后找执行节点。
+                    let copied = copied || nx.kind.id == IrNodeId::Copy;
+                    for edges in &nx.links.values_out {
+                        for e in edges {
+                            queue.push_back((*e, copied));
                         }
                     }
+                } else if copied {
+                    usage.users.push(link.target);
+                } else {
+                    usage.modifiers.push(link.target);
                 }
-                if depends_on_us {
-                    usages.push(x);
-                }
+            }
+            modifiers.extend(usage.modifiers.iter().copied());
+            usages.push(usage);
+        }
+
+        // ---- 控制流回溯:每处 usage 的值到底由谁决定 ----
+        //
+        // 对 usage 的每个执行点,沿控制输入向前走:
+        // - 撞上完整赋值的 setter:值由它决定,路径到此为止;
+        // - 撞上别的 modifier:记一笔,继续向前;
+        // - 走到图入口(export)还没遇到完整赋值的 setter:来源不明,放弃;
+        // - 成环:`vis` 防重入,不再展开。
+        let mut rewrite: Vec<Link> = vec![];
+        for usage in &usages {
+            // 同一条边既被读又被写:改接会破坏写的那一侧,这一处不动。
+            if !usage.users.is_empty() && !usage.modifiers.is_empty() {
                 continue;
             }
-            // --- 2b. 沿控制流回溯，判断这个 usage 的值由谁决定 ---
-            //
-            // 对每个执行点 e 问一句话：e 执行之前，最后一个写这个 local 的
-            // setter 是谁？沿 e 的控制输入往回走：
-            //
-            // - 走到写这个 local 的 setter S：S 执行之后的值就是 S 写的，它
-            //   之前的 setter 都被盖掉了，路径到此为止；
-            // - 走到别的节点：合并各条控制输入路径的结果。
-            //
-            // 所有分支合起来，答案必须**只有当前这个 setter**：
-            // - 出现别的 setter：它写的值也可能流到这里 —— 拒绝；
-            // - 一个 setter 都没有：读到的是 `Local` 的初始值引脚，那个默认值
-            //   不可信 —— 拒绝；
-            // - 分支上答案不一致（集合里多于一个）—— 拒绝。
-            for &e in &executors {
-                match self.last_setter_before(e, &local_setters, &opaque) {
-                    // 成环，或者路径上有可能改掉这个变量的节点：值来源不明
-                    Err(()) => return Some(()),
-                    // 前面没有 setter 写过这个变量：读到的是 `Local` 的「初始值」
-                    // 引脚。那个默认值不可信，不能靠它把变量留着，拒绝优化。
-                    Ok(None) => return Some(()),
-                    Ok(Some(s)) => {
-                        // 所有分支上向前找到的 setter 都必须是当前这个。别的
-                        // setter 写的值也可能流到这里 —— 值来源不明，拒绝。
-                        if !s.contains(&node) {
-                            return Some(());
-                        }
-                        if s.len() > 1 {
-                            // 既可能是当前 setter 写的，也可能是别的 setter
-                            // 写的（分支导致）—— 不明确
-                            return Some(());
-                        }
-                        depends_on_us = true;
-                    }
-                }
+            if usage.users.is_empty() {
+                continue;
             }
-            if depends_on_us {
-                usages.push(x);
+            if usage.users.contains(&LinkTarget::Node(node)) {
+                // 读者就是当前 setter:改接会造环。
+                return Some(());
             }
-        }
-        if usages.is_empty() {
-            // 没有 usage 依赖当前 setter：留着它，别把变量的唯一写者删掉。
-            return Some(());
-        }
-        if usages.len() > max {
-            return Some(());
-        }
-        // 要删的是这个变量的**最后一个** setter 吗？是的话，删完 `Local` 的句柄就
-        // 没人持有了，`eliminate_local` 会把剩下的值用户改接到 `Local` 的「初始值」
-        // 引脚 —— 普通局部变量那个引脚是空的，改接就等于断连。所以这种情况下
-        // 所有值用户都必须能跟着改接到写入值上，否则别删。
-        if self.handle_would_empty(local) && usages.len() != n_local.links.values_out[1].len() {
-            return Some(());
-        }
-        assert!(!usages.contains(&Link::node(node, 1)));
-        // 被写入的值不能依赖这个 local 的旧值 —— 否则把 usage 改接到写入的
-        // 值上会造环（`i += 1` 就是这种：写入值是 `i + 1`，而 `i` 正是 usage）。
-        if let Some(v) = n.links.values_in[1].link {
-            if self.value_depends_on(v, Link::node(local, 1)) {
+            let mut sources: HashSet<NodeRef> = HashSet::new();
+            let mut saw_other = false;
+            for &user in &usage.users {
+                let Ok((s, o)) = self.sources_before(user, &local_setters, &modifiers) else {
+                    return Some(());
+                };
+                sources.extend(s);
+                saw_other |= o;
+            }
+            if sources == HashSet::from([node]) && !saw_other {
+                rewrite.push(usage.start);
+            } else if !saw_other && !sources.is_empty() && !sources.contains(&node) {
+                // 这处 usage 读的值完全来自别的 setter,与当前 setter 无关。
+                continue;
+            } else {
                 return Some(());
             }
         }
-        // 把要改接的 usage 直接接到写入的值上，然后删掉这个 setter。
+        if rewrite.is_empty() {
+            // 没有 usage 依赖当前 setter:留着它,别把变量的唯一写者删掉。
+            return Some(());
+        }
+        if rewrite.len() > max {
+            return Some(());
+        }
+        // 要删的是这个变量的**最后一个** setter 吗?是的话,删完 `Local` 的句柄就
+        // 没人持有了,`eliminate_local` 会把剩下的值用户改接到 `Local` 的「初始值」
+        // 引脚 —— 普通局部变量那个引脚是空的,改接就等于断连。所以这种情况下
+        // 所有值用户都必须能跟着改接,否则别删。
+        if self.handle_would_empty(local) && rewrite.len() != n_local.links.values_out[1].len() {
+            return Some(());
+        }
+        // 被写入的值不能依赖这个 local 的旧值 —— 否则把 usage 改接到写入的
+        // 值上会造环(`i += 1` 就是这种:写入值是 `i + 1`,而 `i` 正是 usage)。
         let value = n.links.values_in[1].clone();
-        self.reset_values(usages, value);
+        if let Some(v) = value.link
+            && self.value_depends_on(v, Link::node(local, 1))
+        {
+            return Some(());
+        }
+        // 改接:目标引脚要的是视图,写入值是普通值 —— 中间补一层 `ToView`。
+        // 读那一侧如果紧跟着 `Copy`,`eliminate_copy` 会把两层一起消掉。
+        let write_kind = n.kind.values_in_types[1].as_ref().unwrap().clone();
+        let view_kind = n_local.kind.values_out_types[1].clone();
+        let value = if write_kind == view_kind {
+            value
+        } else {
+            let view = self.graph.insert(ir::node_ir_to_view(write_kind));
+            self.graph.set_value_in(Link::node(view, 0), value);
+            ValueIn::link(Link::node(view, 0))
+        };
+        self.reset_values(rewrite, value);
         self.relink_controls(node, 0, 0);
         self.graph.remove(node);
         None
+    }
+
+    /// `root` 执行之前,最后一个**完整赋值**本变量的 setter 是谁。
+    ///
+    /// 返回值里的 `bool` 表示路径上是否经过别的 modifier(部分修改)。
+    /// 走到图入口还没遇到完整赋值 setter 时返回 `Err` —— 值来源不明。
+    fn sources_before(
+        &self,
+        root: LinkTarget,
+        setters: &HashSet<NodeRef>,
+        modifiers: &HashSet<LinkTarget>,
+    ) -> Result<(HashSet<NodeRef>, bool), ()> {
+        let mut sources = HashSet::new();
+        let mut saw_other = false;
+        let mut vis: HashSet<LinkTarget> = HashSet::new();
+        let mut queue: VecDeque<LinkTarget> = self
+            .graph
+            .get_links(root)
+            .controls_in
+            .iter()
+            .flatten()
+            .map(|x| x.target)
+            .collect();
+        while let Some(now) = queue.pop_front() {
+            if !vis.insert(now) {
+                // 成环:回到已经走过的点,不再展开。
+                continue;
+            }
+            if let Some(x) = now.node()
+                && setters.contains(&x)
+            {
+                sources.insert(x);
+                continue;
+            }
+            if modifiers.contains(&now) {
+                saw_other = true;
+            }
+            let preds: Vec<LinkTarget> = self
+                .graph
+                .get_links(now)
+                .controls_in
+                .iter()
+                .flatten()
+                .map(|x| x.target)
+                .collect();
+            if preds.is_empty() {
+                // 走到图入口还没遇到完整赋值的 setter:这个值从哪来说不清。
+                return Err(());
+            }
+            queue.extend(preds);
+        }
+        Ok((sources, saw_other))
     }
 
     /// 删掉这个 `Local` 的句柄使用者之后，值用户会不会被 `eliminate_local`
@@ -956,127 +970,6 @@ impl Optimizer {
             && !n.links.values_out[1].is_empty()
             && n.links.values_in[0].link.is_none()
     }
-
-    /// 这个 `SetLocal` 是不是自赋值（写入的值就是这个变量自己的值）？
-    fn is_self_assignment(&self, setter: NodeRef) -> bool {
-        let n = self.graph.get_node(setter);
-        let Some(local) = n.links.values_in[0].link.and_then(|l| l.target.node()) else {
-            return false;
-        };
-        n.links.values_in[1].link == Some(Link::node(local, 1))
-    }
-
-    /// `root` 执行之前，最后一个写这个 local 的 setter 是谁。
-    ///
-    /// `root` 是「值的读取点」：它自己如果是 setter，它写下的值在读取之后，
-    /// 所以不能算作「之前的 setter」—— 只看它的控制输入。
-    ///
-    /// - `Ok(None)`：之前没有 setter 写过这个变量。
-    /// - `Ok(Some(s))`：候选的最后一个 setter 在 `s` 里；多于一个说明有分支。
-    /// - `Err(())`：控制流成环，或路径上有可能改掉这个变量的节点 —— 值来源不明。
-    fn last_setter_before(
-        &self,
-        root: LinkTarget,
-        local_setters: &HashSet<NodeRef>,
-        opaque: &HashSet<NodeRef>,
-    ) -> Result<Option<HashSet<NodeRef>>, ()> {
-        let mut memo: HashMap<LinkTarget, Result<Option<HashSet<NodeRef>>, ()>> = HashMap::new();
-        let mut stack: HashSet<LinkTarget> = HashSet::new();
-        self.merge_setters(
-            self.graph
-                .get_links(root)
-                .controls_in
-                .iter()
-                .flatten()
-                .map(|x| x.target),
-            local_setters,
-            opaque,
-            &mut memo,
-            &mut stack,
-        )
-    }
-
-    /// 合并若干条路径的结果：路径上没有 setter 写过（`None`）和有 setter 写过
-    /// 撞在一起，说明两条路径的值不一样 —— 不明确。
-    fn merge_setters(
-        &self,
-        preds: impl Iterator<Item = LinkTarget>,
-        local_setters: &HashSet<NodeRef>,
-        opaque: &HashSet<NodeRef>,
-        memo: &mut HashMap<LinkTarget, Result<Option<HashSet<NodeRef>>, ()>>,
-        stack: &mut HashSet<LinkTarget>,
-    ) -> Result<Option<HashSet<NodeRef>>, ()> {
-        let mut acc: Option<HashSet<NodeRef>> = None;
-        for pred in preds {
-            match self.walk(pred, local_setters, opaque, memo, stack)? {
-                None => {
-                    if acc.is_some() {
-                        return Err(());
-                    }
-                }
-                Some(s) => {
-                    match acc.as_mut() {
-                        None => acc = Some(s),
-                        Some(a) => a.extend(s),
-                    }
-                }
-            }
-        }
-        Ok(acc)
-    }
-
-    /// `now` 执行之后的值由谁决定。见 `last_setter_before`。
-    fn walk(
-        &self,
-        now: LinkTarget,
-        local_setters: &HashSet<NodeRef>,
-        opaque: &HashSet<NodeRef>,
-        memo: &mut HashMap<LinkTarget, Result<Option<HashSet<NodeRef>>, ()>>,
-        stack: &mut HashSet<LinkTarget>,
-    ) -> Result<Option<HashSet<NodeRef>>, ()> {
-        if !stack.insert(now) {
-            // 控制流成环：「之前」没法定义
-            return Err(());
-        }
-        if let Some(r) = memo.get(&now) {
-            stack.remove(&now);
-            return r.clone();
-        }
-        let res = (|| {
-            if let Some(x) = now.node() {
-                if local_setters.contains(&x) {
-                    // 自赋值(`local = local`)不改变值，不算「盖掉之前的值」——
-                    // 越过它继续往回走。
-                    if !self.is_self_assignment(x) {
-                        // 它自己就是 setter：它执行之后的值就是它写的，它之前的
-                        // setter 都被盖掉了
-                        return Ok(Some(HashSet::from([x])));
-                    }
-                }
-                if opaque.contains(&x) {
-                    // 有可能改掉这个变量的节点：值来源不明
-                    return Err(());
-                }
-            }
-            self.merge_setters(
-                self.graph
-                    .get_links(now)
-                    .controls_in
-                    .iter()
-                    .flatten()
-                    .map(|x| x.target),
-                local_setters,
-                opaque,
-                memo,
-                stack,
-            )
-        })();
-        stack.remove(&now);
-        memo.insert(now, res.clone());
-        res
-    }
-
-    /// `link` 的值依赖闭包里有没有 `target`。
     fn value_depends_on(&self, link: Link, target: Link) -> bool {
         let mut queue = VecDeque::new();
         queue.push_back(link);
@@ -1247,13 +1140,6 @@ impl Optimizer {
     }
 }
 
-/// 可能是通过引用**写**这个值的节点：
-///
-/// - `Modify` 的 `value in[0]`：改它的字段；
-/// - 函数调用（复合节点 `Fn`、原生调用的桩 `GeneratedStub`）：把它当 `&mut` 传进去。
-///
-/// `&mut`（`PartialMut`）的值落到这些地方时，写的是被引用的东西，不是读这个值
-/// 本身 —— 所以这种连接不算「读」。
 /// 列表 IR 节点的第一个引脚是 `PartialMut<List<T>>`(视图),取元素类型要拆两层。
 fn list_view_elem(kind: &IrKind) -> IrKind {
     kind.view_inner()
@@ -1261,22 +1147,11 @@ fn list_view_elem(kind: &IrKind) -> IrKind {
         .unwrap_or_else(|| panic!("列表节点的输入应当是 PartialMut<List<T>>,实际是 {kind}"))
 }
 
-fn maybe_write(id: &IrNodeId, index: usize) -> bool {
-    match id {
-        IrNodeId::Modify => index == 0,
-        IrNodeId::Fn(_) => true,
-        IrNodeId::Native(NativeNodeId {
-            kind: identifier::AssetKind::GeneratedStub,
-            ..
-        }) => true,
-        _ => false,
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compile::func::NodeGraphIr;
-    use crate::compile::ir::{node_ir_list_get_length, node_ir_local, node_ir_set_local, node_ir_switch};
+    use crate::compile::ir::{node_ir_copy, node_ir_list_get_length, node_ir_local, node_ir_set_local, node_ir_switch};
     use crate::node::arithmetic::node_add;
     use crate::node::{ExportDecl, NodeGraphKind, NodeKind};
     use crate::value::NativeKind;
@@ -1395,9 +1270,11 @@ mod tests {
         // `i = 1`
         let set = g.insert(node_ir_set_local(int()));
         g.link_value(Link::node(i, 0), Link::node(set, 0));
-        // 用 `i`：`switch` 是个执行点
+        // 用 `i`：读值要过 `Copy`，`switch` 是个执行点
+        let copy = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(i, 1), Link::node(copy, 0));
         let sw = g.insert(node_ir_switch(int(), vec![1i32.into()]));
-        g.link_value(Link::node(i, 1), Link::node(sw, 0));
+        g.link_value(Link::node(copy, 0), Link::node(sw, 0));
 
         g.link_control(Link::export(0), Link::node(init, 0));
         g.link_control(Link::node(init, 0), Link::node(set, 0));
@@ -1415,19 +1292,23 @@ mod tests {
             opt.graph.get_nodes().iter().all(|x| *x != set),
             "当前 setter 应该被消掉"
         );
-        // 读的地方改接到写入的值上（写入值没有 link，就是默认值）
-        assert_eq!(opt.graph.get_node(sw).links.values_in[0].link, None);
+        // 读的地方改接到写入的值上：`Copy` 的输入换成 `ToView`（写入值先标成视图）
+        let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
+        let src = src.target.node().unwrap();
+        assert_eq!(opt.graph.get_node(src).kind.id, IrNodeId::ToView);
+        assert_eq!(opt.graph.get_node(src).links.values_in[0].link, None);
     }
 
-    /// `&mut` 的值被交给 `Modify`（改字段）或函数调用时，那是在**通过引用写**它，
-    /// 不是读它 —— 那处 usage 不算执行点，不能因此拒绝整个优化。
+    /// 只拿到视图、通过引用写的执行节点（`Modify`）不是「读」，那处 usage
+    /// 不算执行点；真正读值的地方会先经过 `Copy`。
     #[test]
     fn writing_through_a_reference_is_not_an_executor() {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "by_ref");
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
 
-        let pm = IrKind::PartialMut(IrKind::Adt("Test".into()).into());
+        let adt = IrKind::Adt("Test".into());
+        let pm = IrKind::PartialMut(adt.clone().into());
         let s = g.insert(node_ir_local(pm.clone()));
         // `s = &mut 0`
         let init = g.insert(node_ir_set_local(pm.clone()));
@@ -1440,11 +1321,57 @@ mod tests {
             IrNodeId::Modify,
             1,
             1,
-            vec![IrKind::Adt("Test".into()).into(), None],
+            vec![adt.clone().into(), None],
             vec![],
         ));
         g.link_value(Link::node(s, 1), Link::node(modify, 0));
-        // 把 `s` 传给函数：函数可能通过它写
+        // 读 `s`：读值要过 `Copy`
+        let copy = g.insert(node_ir_copy(adt.clone()));
+        g.link_value(Link::node(s, 1), Link::node(copy, 0));
+        let sw = g.insert(node_ir_switch(adt.clone(), vec![]));
+        g.link_value(Link::node(copy, 0), Link::node(sw, 0));
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(set, 0));
+        g.link_control(Link::node(set, 0), Link::node(sw, 0));
+        g.link_control(Link::node(set, 0), Link::node(modify, 0));
+        g.link_control(Link::node(sw, 0), Link::node(modify, 0));
+        g.link_control(Link::node(modify, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.eliminate_unnecessary_local_setter(set);
+
+        // 写那处拿的是视图，不是 usage —— 当前 setter 照样能消掉
+        assert!(
+            opt.graph.get_nodes().iter().all(|x| *x != set),
+            "当前 setter 应该被消掉"
+        );
+        // 写那处不改接
+        assert_eq!(
+            opt.graph.get_node(modify).links.values_in[0].link,
+            Some(Link::node(s, 1))
+        );
+        // 读的地方改接到写入的值上。变量本身就是视图，值不用再标一层：
+        // 写入值没接东西，改接后 `Copy` 的输入也是空的。
+        assert_eq!(opt.graph.get_node(copy).links.values_in[0].link, None);
+    }
+
+    /// 值流经自定义复合节点：它会不会写、怎么读完全说不清 —— 整个优化放弃。
+    #[test]
+    fn function_call_rejects_optimization() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "by_fn");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let pm = IrKind::PartialMut(IrKind::Adt("Test".into()).into());
+        let s = g.insert(node_ir_local(pm.clone()));
+        let init = g.insert(node_ir_set_local(pm.clone()));
+        g.link_value(Link::node(s, 0), Link::node(init, 0));
+        let set = g.insert(node_ir_set_local(pm.clone()));
+        g.link_value(Link::node(s, 0), Link::node(set, 0));
         let func = g.insert(NodeKind::new(
             IrNodeId::Fn("f".into()),
             1,
@@ -1453,35 +1380,42 @@ mod tests {
             vec![],
         ));
         g.link_value(Link::node(s, 1), Link::node(func, 0));
-        // 读 `s`：`switch` 是个执行点
-        let sw = g.insert(node_ir_switch(pm.clone(), vec![]));
-        g.link_value(Link::node(s, 1), Link::node(sw, 0));
 
         g.link_control(Link::export(0), Link::node(init, 0));
         g.link_control(Link::node(init, 0), Link::node(set, 0));
-        g.link_control(Link::node(set, 0), Link::node(sw, 0));
-        g.link_control(Link::node(set, 0), Link::node(modify, 0));
         g.link_control(Link::node(set, 0), Link::node(func, 0));
-        g.link_control(Link::node(sw, 0), Link::node(modify, 0));
-        g.link_control(Link::node(modify, 0), Link::node(func, 0));
         g.link_control(Link::node(func, 0), Link::export(0));
 
         let mut opt = Optimizer {
             graph: g,
             decl: FnDecl::default(),
         };
-        opt.eliminate_unnecessary_local_setter(set);
-
-        // 「写」那两处 usage 不算执行点，所以当前 setter 还是被消掉了
-        assert!(
-            opt.graph.get_nodes().iter().all(|x| *x != set),
-            "当前 setter 应该被消掉"
+        assert_eq!(
+            opt.eliminate_unnecessary_local_setter(set),
+            Some(()),
+            "值流经自定义复合节点时不该优化"
         );
-        // 读的地方改接到写入的值上（写入值没有 link，就是默认值）
+        assert!(opt.graph.get_nodes().contains(&set), "setter 应当保留");
+    }
+
+    /// `Copy(ToView(x))`：两层互逆，消成直连。
+    #[test]
+    fn copy_after_to_view_is_elided() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "round_trip");
+        let view = g.insert(crate::compile::ir::node_ir_to_view(int()));
+        let copy = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(view, 0), Link::node(copy, 0));
+        let sw = g.insert(node_ir_switch(int(), vec![]));
+        g.link_value(Link::node(copy, 0), Link::node(sw, 0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.eliminate_copy(copy);
+
+        assert!(opt.graph.get_nodes().iter().all(|x| *x != copy));
+        // 读的地方直接接回 `ToView` 的输入（这里没有连线，就是默认值）
         assert_eq!(opt.graph.get_node(sw).links.values_in[0].link, None);
-        // 「写」那两处 usage 不算执行点，但也得改接到写入的值上 —— 否则这个
-        // local 永远消不掉（`&mut` 的 read 半边是非 storable 的 `PartialMut`）
-        assert_eq!(opt.graph.get_node(modify).links.values_in[0].link, None);
-        assert_eq!(opt.graph.get_node(func).links.values_in[0].link, None);
     }
 }

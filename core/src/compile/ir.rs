@@ -244,6 +244,12 @@ pub enum IrNodeId {
     /// 局部变量给的是可变视图,MIR 的 Copy / Move 读值时要经过它;
     /// 降级时等价于值直通(节点图里读局部变量本来就是取值)。
     Copy,
+    /// 写回时把值标成视图:`T` 进,`PartialMut<T>` 出,没有控制流。
+    ///
+    /// 优化器把「读局部变量」改接到写入值时,目标引脚要的是视图,
+    /// 中间就得有这么一层。它和 `Copy` 正好互逆,`Copy(ToView(x))`
+    /// 会被 `eliminate_copy` 消成直连。
+    ToView,
     /// 把若干元素拼成一个列表,对应 `[T; N]` 字面量 / 数组聚合。
     /// 引脚只有元素本身;原节点前面那个「元素个数」引脚在 lower 时补。
     ListAssemble,
@@ -330,6 +336,18 @@ pub fn node_ir_black_box(kind: IrKind) -> NodeKindIr {
 /// 降级时 panic —— 它只用来占住一个「还没实现」的值。
 pub fn node_ir_unsupported(out_kind: IrKind) -> NodeKindIr {
     NodeKind::new(IrNodeId::Unsupported, 0, 0, vec![], vec![out_kind])
+}
+
+/// 把值标成视图:`T` 进,`PartialMut<T>` 出。
+///
+/// `kind` 已经是视图 / 句柄时它就是恒等的 —— 调用方应当直接连线,
+/// 不必插一个什么都不做的节点。
+pub fn node_ir_to_view(kind: IrKind) -> NodeKindIr {
+    let out = match &kind {
+        IrKind::PartialMut(_) | IrKind::LocalRef(_) => kind.clone(),
+        _ => IrKind::mutable_view(kind.clone()),
+    };
+    NodeKind::new(IrNodeId::ToView, 0, 0, vec![kind.into()], vec![out])
 }
 
 /// 读值:`PartialMut<T>` 进,`T` 出。
