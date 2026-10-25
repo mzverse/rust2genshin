@@ -256,6 +256,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 if from_kind == to_kind {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
+                } else if let IrKind::List(elem) = &to_kind
+                    && **elem == from_kind
+                    && matches!(kind, rustc_middle::mir::CastKind::Transmute)
+                {
+                    // `List::from([x])`:`[T; 1]` 在 MIR 里被拆成了它唯一的元素,
+                    // transmute 的源类型因此成了 `T`。按单元素列表拼装编译。
+                    let node = self.graph.insert(node_ir_list_assemble(from_kind, 1));
+                    let v = self.compile_operand(op, span)?;
+                    self.graph.set_value_in(Link::node(node, 0), v);
+                    ValueIn::link(Link::node(node, 0))
                 } else {
                     let from_kind = from_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{from_ty:?}")));
                     let to_kind = to_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{target_ty:?}")));
