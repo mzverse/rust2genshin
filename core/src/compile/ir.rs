@@ -5,7 +5,7 @@ use crate::node::{
     NativeNodeId, NodeKind,
 };
 use crate::structure::{
-    StructField, StructureDefinition,
+    StructField, StructRef, StructureDefinition,
 };
 use crate::value::{NativeKind, NativeValue};
 use std::fmt::{Display, Formatter};
@@ -179,7 +179,10 @@ impl IrKind {
     pub fn lower(&self, linker: &mut Linker) -> NativeKind {
         match self {
             IrKind::Native(native) => native.clone(),
-            IrKind::List(elem) => NativeKind::List(elem.lower(linker).into()),
+            IrKind::List(elem) => {
+                let (elem, _) = elem.lower_list_elem(linker);
+                NativeKind::List(elem.into())
+            }
             IrKind::Adt(kind) => Self::touch_adt(linker, kind.clone()),
             IrKind::PartialMut(kind) => kind.lower(linker),
             // `&mut T` 只是 IR 里的两槽元组,assemble / destructure 都该在
@@ -204,6 +207,28 @@ impl IrKind {
             }
             IrKind::Unsupported(info) => panic!("Unsupported: {info}"),
         }
+    }
+
+    /// 列表元素降级。
+    ///
+    /// 节点图的列表元素只认原生类型和结构体:元素本身是列表 / 字典时,包一层
+    /// 单字段结构体(Container)再放进去 —— 和 `LocalRef` 对没有 local 变体的
+    /// 类型做的事一样。
+    ///
+    /// 返回降级后的元素,以及那个包装结构体(没包时为 `None`)。
+    pub fn lower_list_elem(&self, linker: &mut Linker) -> (NativeKind, Option<StructRef>) {
+        let elem = self.lower(linker);
+        if !matches!(elem, NativeKind::List(_) | NativeKind::Dict { .. }) {
+            return (elem, None);
+        }
+        let key = format!("__container<{elem}>");
+        linker.target.adts.entry(key.clone()).or_insert_with(|| {
+            AdtInfo::new(vec![FieldInfo::new("value".into(), IrKind::Native(elem.clone()))])
+        });
+        let NativeKind::Struct(st) = IrKind::Adt(key).lower(linker) else {
+            unreachable!()
+        };
+        (NativeKind::Struct(st.clone()), Some(st))
     }
 }
 

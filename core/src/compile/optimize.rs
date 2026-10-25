@@ -198,27 +198,56 @@ impl Optimizer {
                 IrNodeId::ListAssemble => {
                     let count = kind.values_in_types.len();
                     let elem = kind.values_out_types[0].list_elem().expect("拼装列表的输出应当是列表");
+                    let (elem, container) = elem.lower_list_elem(linker);
                     // 原节点前面还有一个隐藏的「元素个数」引脚,IR 里没有:
                     // 这里补出来,默认值就是元素个数,已有连线整体后移一位。
                     self.graph.insert_value_in_front(x);
                     self.graph.set_default(Link::node(x, 0), Some((count as i32).into()));
-                    Some(node_list_assemble(&mut self.graph, elem.lower(linker), count))
+                    // 元素被包成 Container 了:每个元素先装箱。
+                    if let Some(st) = container {
+                        let links: Vec<_> = self.graph.get_node(x).links.values_in[1..].iter().map(|v| v.link).collect();
+                        for (i, link) in links.into_iter().enumerate() {
+                            let Some(link) = link else { continue };
+                            let a = self.graph.insert(node_ir_native(node_assemble_struct(&linker.assets, &st)));
+                            self.graph.set_value_in(Link::node(a, 0), ValueIn::link(link));
+                            self.graph.set_value_in(Link::node(x, i + 1), ValueIn::link(Link::node(a, 0)));
+                        }
+                    }
+                    Some(node_list_assemble(&mut self.graph, elem, count))
                 }
                 IrNodeId::ListGet => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_get_at_index(&mut self.graph, elem.lower(linker)))
+                    let (elem, container) = elem.lower_list_elem(linker);
+                    // 取出来的元素是 Container:下游要的是列表本身,拆箱。
+                    if let Some(st) = container {
+                        let users = self.graph.get_node(x).links.values_out[0].clone();
+                        let d = self.graph.insert(node_ir_native(node_destructure_struct(&linker.assets, &st)));
+                        self.graph.set_value_in(Link::node(d, 0), ValueIn::link(Link::node(x, 0)));
+                        self.reset_values(users, ValueIn::link(Link::node(d, 0)));
+                    }
+                    Some(node_list_get_at_index(&mut self.graph, elem))
                 }
-                IrNodeId::ListSet => {
+                IrNodeId::ListSet | IrNodeId::ListInsert => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_modify_index(&mut self.graph, elem.lower(linker)))
-                }
-                IrNodeId::ListInsert => {
-                    let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_insert(&mut self.graph, elem.lower(linker)))
+                    let (elem, container) = elem.lower_list_elem(linker);
+                    // 写进去的元素先装箱。
+                    if let Some(st) = container
+                        && let Some(link) = self.graph.get_node(x).links.values_in[2].link
+                    {
+                        let a = self.graph.insert(node_ir_native(node_assemble_struct(&linker.assets, &st)));
+                        self.graph.set_value_in(Link::node(a, 0), ValueIn::link(link));
+                        self.graph.set_value_in(Link::node(x, 2), ValueIn::link(Link::node(a, 0)));
+                    }
+                    Some(if kind.id == IrNodeId::ListSet {
+                        node_list_modify_index(&mut self.graph, elem)
+                    } else {
+                        node_list_insert(&mut self.graph, elem)
+                    })
                 }
                 IrNodeId::ListGetLength => {
                     let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
-                    Some(node_list_get_length(&mut self.graph, elem.lower(linker)))
+                    let (elem, _) = elem.lower_list_elem(linker);
+                    Some(node_list_get_length(&mut self.graph, elem))
                 }
                 _ => None,
             };
