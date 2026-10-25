@@ -430,28 +430,9 @@ impl NativeKind {
             | LocalVarRef
             | VarSnapshotRef
             => return None,
-            List(_) => todo!(),
+            List(ele) => encode_field_list(ele, value),
             NativeKind::Dict { key: k, value: v } => encode_field_dict(k, v, value),
-            Struct(st) => {
-                use structure_definition_data::var_def::value::*;
-                let value = value.downcast_ref::<StructValue>().unwrap();
-                Structure(StructVal {
-                    fields: st.fields.iter().enumerate().map(|(i, (name, kind))| structure_definition_data::var_def::Value {
-                        r#type: kind.get_type_id(Side::Server),
-                        kind: structure_definition_data::var_def::Kind {
-                            primary: kind.get_type_id(Side::Server),
-                            sub: kind.encode_subtype().unwrap_or_default().into(),
-                        }.into(),
-                        name: name.to_string().into(),
-                        val: kind.encode_field_value(value[i].as_ref()),
-                    }).collect(),
-                    struct_id: st.id.guid,
-                    id: struct_val::Id {
-                        kind: ServerTypeId::SVarSnapshotRef as i32, // ?
-                        id: 0x40000001, // FIXME
-                    }.into(),
-                })
-            },
+            Struct(st) => Structure(encode_struct_val(st, value)),
         }.into()
     }
 
@@ -645,6 +626,86 @@ fn encode_dict(side: Side, key: &NativeKind, value: &NativeKind, data: &dyn Nati
     }
 }
 
+/// 结构体字段默认值里的列表:每种元素类型对应 `Val` 的一个变体。
+fn encode_field_list(ele: &NativeKind, data: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
+    use NativeKind::*;
+    use structure_definition_data::var_def::value::{self, Val::*};
+    let items = data.downcast_ref::<Vec<Box<dyn NativeValue>>>().unwrap();
+    match ele {
+        Guid => GuidList(value::GuidList {
+            items: items.iter().map(|x| *x.downcast_ref::<i64>().unwrap()).collect(),
+        }),
+        Int => IntList(value::IntList {
+            items: items.iter().map(|x| *x.downcast_ref::<i32>().unwrap()).collect(),
+        }),
+        Bool => BoolList(value::BoolList {
+            items: items.iter().map(|x| *x.downcast_ref::<bool>().unwrap()).collect(),
+        }),
+        Float => FloatList(value::FloatList {
+            items: items.iter().map(|x| *x.downcast_ref::<f32>().unwrap()).collect(),
+        }),
+        String => StrList(value::StrList {
+            items: items.iter().map(|x| x.downcast_ref::<std::string::String>().unwrap().clone()).collect(),
+        }),
+        Faction => FactionList(value::FactionList {
+            items: items.iter().map(|x| x.downcast_ref::<std::string::String>().unwrap().clone()).collect(),
+        }),
+        // 实体在存档里没有可写的值,默认值就是空引用。
+        Entity => EntityList(value::EntityList {
+            items: items.iter().map(|_| 0).collect(),
+        }),
+        Vec3 => Vec3List(value::Vec3List {
+            items: items.iter().map(|x| encode_vec3(x.as_ref())).collect(),
+        }),
+        Config => ConfigList(value::ConfigList {
+            items: items.iter().map(|x| value::RefId { id: *x.downcast_ref::<i64>().unwrap() }).collect(),
+        }),
+        Prefab => PrefabList(value::PrefabList {
+            items: items.iter().map(|x| value::RefId { id: *x.downcast_ref::<i64>().unwrap() }).collect(),
+        }),
+        Struct(st) => StructList(value::StructList {
+            items: items.iter().map(|x| encode_struct_value(st, x.as_ref())).collect(),
+        }),
+        _ => todo!("列表默认值:{ele}"),
+    }.into()
+}
+
+/// 结构体列表的元素:一个完整的 `Value`(带自己的类型与 subtype)。
+fn encode_struct_value(st: &StructRef, value: &dyn NativeValue) -> structure_definition_data::var_def::Value {
+    let kind = NativeKind::Struct(st.clone());
+    let ty = kind.get_server_id();
+    structure_definition_data::var_def::Value {
+        r#type: ty as i32,
+        kind: structure_definition_data::var_def::Kind {
+            primary: ty as i32,
+            sub: kind.encode_subtype().unwrap_or_default().into(),
+        }.into(),
+        name: None,
+        val: Some(structure_definition_data::var_def::value::Val::Structure(encode_struct_val(st, value))),
+    }
+}
+
+fn encode_struct_val(st: &StructRef, value: &dyn NativeValue) -> structure_definition_data::var_def::value::StructVal {
+    use structure_definition_data::var_def::value::struct_val;
+    let value = value.downcast_ref::<StructValue>().unwrap();
+    structure_definition_data::var_def::value::StructVal {
+        fields: st.fields.iter().enumerate().map(|(i, (name, kind))| structure_definition_data::var_def::Value {
+            r#type: kind.get_type_id(Side::Server),
+            kind: structure_definition_data::var_def::Kind {
+                primary: kind.get_type_id(Side::Server),
+                sub: kind.encode_subtype().unwrap_or_default().into(),
+            }.into(),
+            name: name.to_string().into(),
+            val: kind.encode_field_value(value[i].as_ref()),
+        }).collect(),
+        struct_id: st.id.guid,
+        id: struct_val::Id {
+            kind: ServerTypeId::SVarSnapshotRef as i32, // ?
+            id: 0x40000001, // FIXME
+        }.into(),
+    }
+}
+
 fn encode_field_dict(key: &NativeKind, value: &NativeKind, data: &dyn NativeValue) -> structure_definition_data::var_def::value::Val {
     let data = data.downcast_ref::<HashMap<Box<dyn NativeValue>, Box<dyn NativeValue>>>().unwrap();
     if !data.is_empty() {
@@ -680,6 +741,37 @@ mod tests {
         assert_eq!(list.get_server_id(), ServerTypeId::SStructList);
         // 元素本身仍是 S_STRUCT
         assert_eq!(结构体(7).get_server_id(), ServerTypeId::SStruct);
+    }
+
+    /// 每种元素类型的列表默认值都要落到自己那个 `Val` 变体上（字段号
+    /// 见 `asset.proto`，从真实导出里实测）。
+    #[test]
+    fn 列表字段的默认值落在各自的_val_变体上() {
+        use prost::Message;
+        use structure_definition_data::var_def::value::Val;
+        let cases: Vec<(NativeKind, fn(&Val) -> bool)> = vec![
+            (NativeKind::Guid, |v| matches!(v, Val::GuidList(_))),
+            (NativeKind::Int, |v| matches!(v, Val::IntList(_))),
+            (NativeKind::Bool, |v| matches!(v, Val::BoolList(_))),
+            (NativeKind::Float, |v| matches!(v, Val::FloatList(_))),
+            (NativeKind::String, |v| matches!(v, Val::StrList(_))),
+            (NativeKind::Entity, |v| matches!(v, Val::EntityList(_))),
+            (NativeKind::Vec3, |v| matches!(v, Val::Vec3List(_))),
+            (NativeKind::Config, |v| matches!(v, Val::ConfigList(_))),
+            (NativeKind::Prefab, |v| matches!(v, Val::PrefabList(_))),
+            (NativeKind::Faction, |v| matches!(v, Val::FactionList(_))),
+            (结构体(7), |v| matches!(v, Val::StructList(_))),
+        ];
+        for (ele, check) in cases {
+            let list = NativeKind::List(ele.clone().into());
+            let val = list.encode_field_value(list.default().as_ref()).unwrap();
+            let msg = structure_definition_data::var_def::Value {
+                val: Some(val),
+                ..Default::default()
+            };
+            let decoded = structure_definition_data::var_def::Value::decode(msg.encode_to_vec().as_slice()).unwrap();
+            assert!(check(decoded.val.as_ref().unwrap()), "{ele:?} 的默认值变体不对");
+        }
     }
 
     #[test]

@@ -700,12 +700,21 @@ message StructureDefinitionData {
         int64           structId  = 501;
         Id              id        = 502;
       }
-      message IntList {
-        repeated int32 items = 1 [packed = true];
-      }
-      message StructList {
-        // TODO
-      }
+      // 列表字段的默认值。每种列表元素类型各一个 message,字段号从真实
+      // 导出里实测(17/18/19/20/21/23/25/32/33/34,22 与 24 空缺)。
+      message GuidList { repeated int64 items = 1 [packed = true]; }
+      message IntList { repeated int32 items = 1 [packed = true]; }
+      message BoolList { repeated bool items = 1 [packed = true]; }
+      message FloatList { repeated float items = 1 [packed = true]; }
+      message StrList { repeated string items = 1; }
+      message EntityList { repeated int64 items = 1 [packed = true]; }
+      message Vec3List { repeated Vec3f items = 1; }
+      message FactionList { repeated string items = 1; }
+      // 配置 / 预制体的引用:元素是 `{ 2: id }`,和单值的 `Id { value = 1 }` 不同。
+      message RefId { int64 id = 2; }
+      message ConfigList { repeated RefId items = 1; }
+      message PrefabList { repeated RefId items = 1; }
+      message StructList { repeated Value items = 1; }
       message Dict {
         repeated Value  pairs       = 1;
         repeated Value  keys        = 501;
@@ -726,11 +735,19 @@ message StructureDefinitionData {
         Enum        booleanVal  = 14;
         Flt         floatVal    = 15;
         Str         strVal      = 16;
+        GuidList    guidList    = 17;
         IntList     intList     = 18;
-        // TODO: lists
+        BoolList    boolList    = 19;
+        FloatList   floatList   = 20;
+        StrList     strList     = 21;
+        EntityList  entityList  = 23;
         Vec3f       vec3Val     = 22;
+        Vec3List    vec3List    = 25;
+        ConfigList  configList  = 32;
+        PrefabList  prefabList  = 33;
+        FactionList factionList = 34;
         StructVal   structure   = 35;
-        StructList  structList  = 36; // FIXME
+        StructList  structList  = 36;
         Dict        dict        = 37;
       }
     }
