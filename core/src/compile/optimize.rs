@@ -918,7 +918,12 @@ impl Optimizer {
             .expect("set_local 的输入 0 应当是 LocalRef");
         // 能存成局部变量的值(普通值、列表、结构体)才有改接次数上限;
         // 视图是「通过引用写」的,多处使用都是写,不受限制。
-        let max = if variable.is_storable() {
+        // 右值直接来自执行节点时同样不受限制:那是那一次执行的产物。
+        let from_exec = n.links.values_in[1]
+            .link
+            .and_then(|x| x.target.node())
+            .is_some_and(|x| !self.graph.get_node(x).kind.is_calc());
+        let max = if variable.is_storable() && !from_exec {
             DEFAULT_MAX
         } else {
             usize::MAX
@@ -1915,6 +1920,46 @@ mod tests {
             assert_eq!(new_d.kind.id, IrNodeId::Destructure);
             assert_eq!(new_d.links.values_in[0].link, Some(Link::export(0)));
         }
+    }
+
+    /// 右值来自执行节点时，改接次数不设上限。
+    #[test]
+    fn exec_right_hand_side_allows_more_than_one_usage() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "exec_rhs");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let i = g.insert(node_ir_local(int()));
+        // `i = 0`
+        let init = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(i, 0), Link::node(init, 0));
+        // `i = <执行节点的输出>`
+        let set = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(i, 0), Link::node(set, 0));
+        let src = g.insert(crate::compile::ir::node_ir_black_box(int()));
+        g.link_value(Link::node(src, 0), Link::node(set, 1));
+        // 两处读 `i`
+        let users: Vec<NodeRef> = (0..2)
+            .map(|_| {
+                let copy = g.insert(node_ir_copy(int()));
+                g.link_value(Link::node(i, 1), Link::node(copy, 0));
+                let sw = g.insert(node_ir_switch(int(), vec![1i32.into()]));
+                g.link_value(Link::node(copy, 0), Link::node(sw, 0));
+                sw
+            })
+            .collect();
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(set, 0));
+        g.link_control(Link::node(set, 0), Link::node(users[0], 0));
+        g.link_control(Link::node(users[0], 0), Link::node(users[1], 0));
+        g.link_control(Link::node(users[1], 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(opt.eliminate_unnecessary_local_setter(set).is_none());
+        assert!(opt.graph.get_nodes().iter().all(|x| *x != set));
     }
 
     /// 回溯路径上的循环是边界：循环里的值每轮都不一样，不能跨过去改接。
