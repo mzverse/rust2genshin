@@ -451,6 +451,11 @@ pub fn node_ir_list_assemble(elem: IrKind, count: usize) -> NodeKindIr {
     )
 }
 
+/// `List<T>` 的视图形态 —— place 的 owner 永远是视图。
+pub fn partial_mut_list(elem: &IrKind) -> IrKind {
+    IrKind::partial_mut(IrKind::list(elem.clone()))
+}
+
 /// 按下标取列表元素，结果当**视图**用（place 的 getter）：取值要过 `Copy`。
 /// 和 [`node_ir_list_get`] 是同一个节点，只有 IR 层的出口类型不同。
 pub fn node_ir_list_get_partial_mut(elem: IrKind) -> NodeKindIr {
@@ -459,7 +464,7 @@ pub fn node_ir_list_get_partial_mut(elem: IrKind) -> NodeKindIr {
         0,
         0,
         vec![
-            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
+            Some(partial_mut_list(&elem)),
             Some(IrKind::Native(NativeKind::Int)),
         ],
         vec![IrKind::partial_mut(elem)],
@@ -467,27 +472,27 @@ pub fn node_ir_list_get_partial_mut(elem: IrKind) -> NodeKindIr {
 }
 
 /// 按下标取列表元素。
-pub fn node_ir_list_get(elem: IrKind) -> NodeKindIr {
+///
+/// `list` 是第一个引脚的**实际**类型：`&List<T>` 在 `T` 非 `Freeze` 时是
+/// `PartialMut<List<T>>`，`Freeze` 时就是 `List<T>`。节点图里两者同形。
+pub fn node_ir_list_get(list: IrKind, elem: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListGet,
         0,
         0,
-        vec![
-            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
-            Some(IrKind::Native(NativeKind::Int)),
-        ],
+        vec![Some(list), Some(IrKind::Native(NativeKind::Int))],
         vec![elem],
     )
 }
 
 /// 按下标改列表元素(就地修改,没有值输出)。
-pub fn node_ir_list_set(elem: IrKind) -> NodeKindIr {
+pub fn node_ir_list_set(list: IrKind, elem: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListSet,
         1,
         1,
         vec![
-            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
+            Some(list),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -496,13 +501,13 @@ pub fn node_ir_list_set(elem: IrKind) -> NodeKindIr {
 }
 
 /// 往列表里插入元素:列表 / 下标 / 元素进,没有值输出。
-pub fn node_ir_list_insert(elem: IrKind) -> NodeKindIr {
+pub fn node_ir_list_insert(list: IrKind, elem: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListInsert,
         1,
         1,
         vec![
-            Some(IrKind::partial_mut(IrKind::list(elem.clone()))),
+            Some(list),
             Some(IrKind::Native(NativeKind::Int)),
             Some(elem),
         ],
@@ -511,12 +516,12 @@ pub fn node_ir_list_insert(elem: IrKind) -> NodeKindIr {
 }
 
 /// 取列表长度:列表进,长度出。
-pub fn node_ir_list_get_length(elem: IrKind) -> NodeKindIr {
+pub fn node_ir_list_get_length(list: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListGetLength,
         0,
         0,
-        vec![Some(IrKind::partial_mut(IrKind::list(elem)))],
+        vec![Some(list)],
         vec![IrKind::Native(NativeKind::Int)],
     )
 }

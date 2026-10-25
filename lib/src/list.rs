@@ -1,5 +1,4 @@
 use crate::boxed::Box;
-use core::cell::UnsafeCell;
 use core::intrinsics::transmute_unchecked;
 use core::ops::Index;
 use rust2genshin_lib_internal::native;
@@ -8,7 +7,7 @@ use crate::PartialMut;
 #[native("List")]
 pub struct List<T> {
     _internal: Box<[T]>,
-    _marker: UnsafeCell<[T; 0]>, // 阻止递归包含；阻止储存&List<T>
+    _marker: [T; 0], // 阻止递归包含
 }
 
 impl<T, const N: usize> From<[T; N]> for List<T> {

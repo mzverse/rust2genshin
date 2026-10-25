@@ -1,7 +1,7 @@
 use panic_context::panic_context;
 use super::{Result, get_expn_macro_attr};
 use crate::compile::func::{CompilingFn, NodeGraphIr};
-use crate::compile::ir::{node_ir_assemble, node_ir_copy, node_ir_destructure, node_ir_list_get_partial_mut, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, struct_fields, AdtKey, FieldInfo, IrKind};
+use crate::compile::ir::{node_ir_assemble, node_ir_copy, node_ir_destructure, node_ir_list_get_partial_mut, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, partial_mut_list, struct_fields, AdtKey, FieldInfo, IrKind};
 use crate::compile::link::Target;
 use crate::compile::{Block, Compiler};
 use crate::node::{ExportDecl, Link, NodeRef, ValueIn};
@@ -346,7 +346,7 @@ impl CompiledPlace {
             },
             CompiledPlace::Index(owner, index, elem) => {
                 // 列表是句柄,按下标改值就地生效,不需要写回 owner。
-                let node = graph.insert(node_ir_list_set(elem.clone()));
+                let node = graph.insert(node_ir_list_set(partial_mut_list(elem), elem.clone()));
                 let v = owner.getter(target, graph, &IrKind::list(elem.clone()));
                 graph.set_value_in(Link::node(node, 0), v);
                 let i = index.getter(target, graph);

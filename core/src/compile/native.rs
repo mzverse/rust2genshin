@@ -153,15 +153,21 @@ impl<'tcx> Compiler<'tcx> {
         })
     }
 
-    /// 列表内建的第一个参数必须是 `PartialMut<List<T>>` —— 局部变量 / 借用
-    /// 交出来的视图。这里直接断言，不做隐式转换：传进来的是普通值就报错。
-    fn expect_list_partial_mut(&self, expn: Span, name: &str, kind: &IrKind) -> Result<IrKind> {
-        if let IrKind::PartialMut(inner) = kind
+    /// 列表内建的第一个参数是 `&List<T>`。
+    ///
+    /// `T` 是否 `Freeze` 决定它编成视图 `PartialMut<List<T>>` 还是值
+    /// `List<T>` —— 两种都可能，返回 `(第一个引脚的实际类型, 元素类型)`。
+    fn expect_list(&self, expn: Span, name: &str, kind: &IrKind) -> Result<(IrKind, IrKind)> {
+        if let IrKind::List(elem) = kind {
+            return Ok((kind.clone(), (**elem).clone()));
+        }
+        if let Some(inner) = kind.partial_mut_inner()
             && let Some(elem) = inner.list_elem()
         {
-            return Ok(elem);
+            // 引脚类型保持原样（视图还是视图），只把元素类型取出来。
+            return Ok((kind.clone(), elem));
         }
-        self.helper().span_err(expn, format!("{name} 的第一个参数应当是 PartialMut<List<T>>,实际是 {kind}"))
+        self.helper().span_err(expn, format!("{name} 的第一个参数应当是 &List<T>,实际是 {kind}"))
     }
 
     /// 原生调用的名字(`#[native("名字")]` 里的那个名字)。
@@ -214,20 +220,20 @@ impl<'tcx> Compiler<'tcx> {
                                 )
                             },
                             "list_get" => {
-                                let elem = self.expect_list_partial_mut(expn, "list_get", &params[0])?;
-                                node_ir_list_get(elem)
+                                let (list, elem) = self.expect_list(expn, "list_get", &params[0])?;
+                                node_ir_list_get(list, elem)
                             },
                             "list_set" => {
-                                let elem = self.expect_list_partial_mut(expn, "list_set", &params[0])?;
-                                node_ir_list_set(elem)
+                                let (list, elem) = self.expect_list(expn, "list_set", &params[0])?;
+                                node_ir_list_set(list, elem)
                             },
                             "list_insert" => {
-                                let elem = self.expect_list_partial_mut(expn, "list_insert", &params[0])?;
-                                node_ir_list_insert(elem)
+                                let (list, elem) = self.expect_list(expn, "list_insert", &params[0])?;
+                                node_ir_list_insert(list, elem)
                             },
                             "list_len" => {
-                                let elem = self.expect_list_partial_mut(expn, "list_len", &params[0])?;
-                                node_ir_list_get_length(elem)
+                                let (list, _) = self.expect_list(expn, "list_len", &params[0])?;
+                                node_ir_list_get_length(list)
                             },
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),
                         }.into()
