@@ -220,7 +220,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 },
                 CompiledPlace::Field(owner, adt, idx) => {
                     let node = self.graph.insert(node_ir_field_mut(&self.compiler.target, &adt, idx));
-                    let v = owner.getter(
+                    let (v, _) = owner.getter(
                         &self.compiler.target,
                         self.graph,
                         &IrKind::Adt(adt),
@@ -709,11 +709,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         value: &IrKind,
         span: Span,
     ) -> Result<ValueIn> {
-        let got = place.getter_kind(&self.compiler.target, shape);
+        let (raw, got) = place.getter(&self.compiler.target, self.graph, shape);
         if !can_read_into(&got, value) {
             return self.helper().span_err(span, format!("place 交出 {got},读不成 {value}"));
         }
-        let raw = place.getter(&self.compiler.target, self.graph, shape);
         Ok(copy_until(self.graph, raw, got, value))
     }
 
