@@ -1,7 +1,7 @@
 use super::*;
 use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
-use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef};
+use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef, can_read_into, copy_until};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
 use crate::node::list::MAX_ASSEMBLE_ELEMENTS;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
@@ -220,18 +220,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 },
                 CompiledPlace::Field(owner, adt, idx) => {
                     let node = self.graph.insert(node_ir_field_mut(&self.compiler.target, &adt, idx));
-                    let adt_kind = IrKind::Adt(adt);
                     let v = owner.getter(
                         &self.compiler.target,
                         self.graph,
-                        &adt_kind,
-                        &IrKind::partial_mut(adt_kind.clone()),
+                        &IrKind::Adt(adt),
                     );
                     self.graph.set_value_in(Link::node(node, 0), v);
                     ValueIn::link(Link::node(node, 0))
                 },
                 _ => {
-                    self.tcx.dcx().span_err(span, "Only local singleton can be ref mut");
+                    self.tcx.dcx().span_err(span, "`&mut` 只支持整个局部变量或结构体字段,不支持列表下标 / 扁平引用");
                     todo!()
                 },
             },
@@ -242,7 +240,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let kind = self.compiler.compile_ty(span, ty)?;
                 let shape = self.compiler.compile_ty(span, self.mono(place.ty(&self.body.local_decls, self.tcx).ty))?;
                 let place = self.compile_place(*place, span)?;
-                self.value_of(&place, &shape, &kind)?
+                self.value_of(&place, &shape, &kind, span)?
             },
             Rvalue::RawPtr(_, p) => {
                 let Some(ProjectionElem::Deref) = p.projection.last() else {
@@ -690,7 +688,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
             Operand::Move(p) => {
                 let place = self.compile_place(*p, span)?;
                 // Move / Copy 是「读值」:局部变量给的是可变视图,取值要过 `Copy`。
-                self.value_of(&place, &kind, &kind)?
+                self.value_of(&place, &kind, &kind, span)?
             }
             Operand::Constant(co) => {
                 let v = self.const_to_value(co.const_, co.span)?;
@@ -700,16 +698,23 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         })
     }
 
-    /// 取这个 place 的值。
+    /// 取这个 place 的值，类型是 `value`。
     ///
-    /// 局部变量交出来的是可变视图(`PartialMut<T>`):要普通值就 Copy 一份,
-    /// 要视图就原样给(通过引用写)。
-    ///
-    /// `shape` 是 place 自己的类型(决定装配出来的元组长什么样),`value` 是
-    /// 这���值被当成什么类型用(决定要不要 Copy)。
-    fn value_of(&mut self, place: &CompiledPlace, shape: &IrKind, value: &IrKind) -> Result<ValueIn> {
-        // place 交出来的是视图；要 `value` 就一直读到底。
-        Ok(place.getter(&self.compiler.target, self.graph, shape, value))
+    /// `shape` 是 place 自己的类型（存储形态）。getter 交出它的原始形态，
+    /// 这里统一读到 `value`：视图进、值出，多一层视图就多读一次。
+    fn value_of(
+        &mut self,
+        place: &CompiledPlace,
+        shape: &IrKind,
+        value: &IrKind,
+        span: Span,
+    ) -> Result<ValueIn> {
+        let got = place.getter_kind(&self.compiler.target, shape);
+        if !can_read_into(&got, value) {
+            return self.helper().span_err(span, format!("place 交出 {got},读不成 {value}"));
+        }
+        let raw = place.getter(&self.compiler.target, self.graph, shape);
+        Ok(copy_until(self.graph, raw, got, value))
     }
 
     pub fn compile_terminator(

@@ -20,6 +20,16 @@ use std::mem::swap;
 use tap::Tap;
 use crate::unwrap;
 
+/// 一处 usage 该怎么处理。
+enum UsageVerdict {
+    /// 改接到写入值上。
+    Rewrite,
+    /// 与当前 setter 无关，不动它。
+    Skip,
+    /// 来源不明，整个优化放弃。
+    Reject,
+}
+
 /// 一条起点边（局部变量值出口的某一条连线）在数据流上的去向。
 struct Usage {
     /// 起点边本身 —— 优化时改接的就是它。
@@ -756,8 +766,8 @@ impl Optimizer {
             Mut,
             /// 结构里的 setter 槽(`LocalRef<字段>`)。
             Handle,
-            /// 结构里的读槽(字段的 `PartialMut`)。
-            PartialMut,
+            /// 结构里的读槽(字段的视图)。
+            Read,
         }
 
         let mut queue: VecDeque<(Link, Role)> = n
@@ -793,7 +803,7 @@ impl Optimizer {
                         queue.push_back((*e, Role::Handle));
                     }
                     for e in &nx.links.values_out[1] {
-                        queue.push_back((*e, Role::PartialMut));
+                        queue.push_back((*e, Role::Read));
                     }
                 }
                 // 句柄只认「直接写」:存进变量、重新组装都留给以后的内联优化。
@@ -804,7 +814,7 @@ impl Optimizer {
                     writes.push(x);
                 }
                 // 字段视图只认「直接读」(`Copy`);其它用法说不清。
-                Role::PartialMut => {
+                Role::Read => {
                     if nx.kind.id != IrNodeId::Copy {
                         return Some(());
                     }
@@ -915,92 +925,16 @@ impl Optimizer {
         }
         assert!(local_setters.contains(&node));
 
-        // ---- 数据流:每条起点边通向的 exec 是「读」还是「写」 ----
-        //
-        // 从值出口向后 BFS,穿过所有纯计算节点(`Copy` 会翻转 `copied`):
-        // - 带 `copied` 到达执行节点:读值 —— user;
-        // - 没带 `copied` 到达执行节点:拿到的是视图,通过引用写 —— modifier。
-        //
-        // 自定义复合节点(`Fn`)怎么处理这个值完全说不清:整个优化放弃。
-        let mut modifiers: HashSet<LinkTarget> = HashSet::new();
-        let mut usages: Vec<Usage> = Vec::new();
-        for &start in &n_local.links.values_out[1] {
-            let mut usage = Usage {
-                start,
-                users: vec![],
-                modifiers: vec![],
-            };
-            let mut queue: VecDeque<(Link, bool)> = VecDeque::new();
-            let mut visited: HashSet<(Link, bool)> = HashSet::new();
-            queue.push_back((start, false));
-            while let Some((link, copied)) = queue.pop_front() {
-                if !visited.insert((link, copied)) {
-                    continue;
-                }
-                let Some(x) = link.target.node() else {
-                    // 值流出图:也当成一个使用点,回溯时会落到图入口。
-                    usage.users.push(LinkTarget::Export);
-                    continue;
-                };
-                let nx = self.graph.get_node(x);
-                if matches!(nx.kind.id, IrNodeId::Fn(_)) {
-                    // 自定义复合节点:值进去之后会怎么样说不清。
-                    return Some(());
-                }
-                if nx.kind.controls_in_num == 0 {
-                    // 纯计算:继续向后找执行节点。
-                    let copied = copied || nx.kind.id == IrNodeId::Copy;
-                    for edges in &nx.links.values_out {
-                        for e in edges {
-                            queue.push_back((*e, copied));
-                        }
-                    }
-                } else if copied {
-                    usage.users.push(link.target);
-                } else {
-                    usage.modifiers.push(link.target);
-                }
-            }
-            modifiers.extend(usage.modifiers.iter().copied());
-            usages.push(usage);
-        }
-
-        // ---- 控制流回溯:每处 usage 的值到底由谁决定 ----
-        //
-        // 对 usage 的每个执行点,沿控制输入向前走:
-        // - 撞上完整赋值的 setter:值由它决定,路径到此为止;
-        // - 撞上别的 modifier:记一笔,继续向前;
-        // - 走到图入口(export)还没遇到完整赋值的 setter:来源不明,放弃;
-        // - 成环:`vis` 防重入,不再展开。
+        let Some((usages, modifiers)) = self.collect_usages(local) else {
+            // 值流经自定义复合节点:说不清,放弃。
+            return Some(());
+        };
         let mut rewrite: Vec<Link> = vec![];
         for usage in &usages {
-            // 同一条边既被读又被写:改接会破坏写的那一侧,这一处不动。
-            if !usage.users.is_empty() && !usage.modifiers.is_empty() {
-                continue;
-            }
-            if usage.users.is_empty() {
-                continue;
-            }
-            if usage.users.contains(&LinkTarget::Node(node)) {
-                // 读者就是当前 setter:改接会造环。
-                return Some(());
-            }
-            let mut sources: HashSet<NodeRef> = HashSet::new();
-            let mut saw_other = false;
-            for &user in &usage.users {
-                let Ok((s, o)) = self.sources_before(user, &local_setters, &modifiers) else {
-                    return Some(());
-                };
-                sources.extend(s);
-                saw_other |= o;
-            }
-            if sources == HashSet::from([node]) && !saw_other {
-                rewrite.push(usage.start);
-            } else if !saw_other && !sources.is_empty() && !sources.contains(&node) {
-                // 这处 usage 读的值完全来自别的 setter,与当前 setter 无关。
-                continue;
-            } else {
-                return Some(());
+            match self.classify_usage(usage, node, &local_setters, &modifiers) {
+                UsageVerdict::Rewrite => rewrite.push(usage.start),
+                UsageVerdict::Skip => (),
+                UsageVerdict::Reject => return Some(()),
             }
         }
         if rewrite.is_empty() {
@@ -1040,6 +974,104 @@ impl Optimizer {
         self.relink_controls(node, 0, 0);
         self.graph.remove(node);
         None
+    }
+
+    /// 数据流:局部变量值出口的每条起点边,通向的 exec 是「读」还是「写」。
+    ///
+    /// 从值出口向后 BFS,穿过所有纯计算节点(`Copy` 会翻转 `copied`):
+    /// - 带 `copied` 到达执行节点:读值 —— user;
+    /// - 没带 `copied` 到达执行节点:拿到的是视图,通过引用写 —— modifier。
+    ///
+    /// 自定义复合节点(`Fn`)怎么处理这个值完全说不清:返回 `None`,整个优化放弃。
+    fn collect_usages(&self, local: NodeRef) -> Option<(Vec<Usage>, HashSet<LinkTarget>)> {
+        let n_local = self.graph.get_node(local);
+        let mut modifiers: HashSet<LinkTarget> = HashSet::new();
+        let mut usages: Vec<Usage> = Vec::new();
+        for &start in &n_local.links.values_out[1] {
+            let mut usage = Usage {
+                start,
+                users: vec![],
+                modifiers: vec![],
+            };
+            let mut queue: VecDeque<(Link, bool)> = VecDeque::new();
+            let mut visited: HashSet<(Link, bool)> = HashSet::new();
+            queue.push_back((start, false));
+            while let Some((link, copied)) = queue.pop_front() {
+                if !visited.insert((link, copied)) {
+                    continue;
+                }
+                let Some(x) = link.target.node() else {
+                    // 值流出图:也当成一个使用点,回溯时会落到图入口。
+                    usage.users.push(LinkTarget::Export);
+                    continue;
+                };
+                let nx = self.graph.get_node(x);
+                if matches!(nx.kind.id, IrNodeId::Fn(_)) {
+                    return None;
+                }
+                if nx.kind.controls_in_num == 0 {
+                    // 纯计算:继续向后找执行节点。
+                    let copied = copied || nx.kind.id == IrNodeId::Copy;
+                    for edges in &nx.links.values_out {
+                        for e in edges {
+                            queue.push_back((*e, copied));
+                        }
+                    }
+                } else if copied {
+                    usage.users.push(link.target);
+                } else {
+                    usage.modifiers.push(link.target);
+                }
+            }
+            modifiers.extend(usage.modifiers.iter().copied());
+            usages.push(usage);
+        }
+        Some((usages, modifiers))
+    }
+
+    /// 一处 usage 该怎么处理。
+    ///
+    /// 控制流回溯:沿执行点的控制输入向前走 ——
+    /// - 撞上完整赋值的 setter:值由它决定,路径到此为止;
+    /// - 撞上别的 modifier:记一笔,继续向前;
+    /// - 走到图入口(export)还没遇到完整赋值的 setter:来源不明;
+    /// - 成环:`vis` 防重入,不再展开。
+    fn classify_usage(
+        &self,
+        usage: &Usage,
+        current: NodeRef,
+        setters: &HashSet<NodeRef>,
+        modifiers: &HashSet<LinkTarget>,
+    ) -> UsageVerdict {
+        // 同一条边既被读又被写:改接会破坏写的那一侧,这一处不动。
+        if !usage.users.is_empty() && !usage.modifiers.is_empty() {
+            return UsageVerdict::Skip;
+        }
+        if usage.users.is_empty() {
+            // 只被写、没有被读:不是 usage。
+            return UsageVerdict::Skip;
+        }
+        if usage.users.contains(&LinkTarget::Node(current)) {
+            // 读者就是当前 setter:改接会造环。
+            return UsageVerdict::Reject;
+        }
+        let mut sources: HashSet<NodeRef> = HashSet::new();
+        let mut saw_other = false;
+        for &user in &usage.users {
+            let Ok((s, o)) = self.sources_before(user, setters, modifiers) else {
+                return UsageVerdict::Reject;
+            };
+            sources.extend(s);
+            saw_other |= o;
+        }
+        if !saw_other && sources == HashSet::from([current]) {
+            return UsageVerdict::Rewrite;
+        }
+        if !saw_other && !sources.is_empty() && !sources.contains(&current) {
+            // 这处 usage 读的值完全来自别的 setter,与当前 setter 无关。
+            return UsageVerdict::Skip;
+        }
+        UsageVerdict::Reject
     }
 
     /// `root` 执行之前,最后一个**完整赋值**本变量的 setter 是谁。

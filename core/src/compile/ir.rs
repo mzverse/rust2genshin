@@ -67,7 +67,6 @@ impl IrKind {
     pub fn is_storable(&self) -> bool {
         match self {
             IrKind::Native(native) => node_local(native).is_some(),
-            // FIXME
             // 列表能存进局部变量,前提是元素类型在节点图里有列表变体。
             IrKind::List(elem) => elem
                 .to_native()
@@ -178,19 +177,9 @@ impl IrKind {
             IrKind::List(elem) => NativeKind::List(elem.lower(linker).into()),
             IrKind::Adt(kind) => Self::touch_adt(linker, kind.clone()),
             IrKind::PartialMut(kind) => kind.lower(linker),
-            // `&mut T` 在节点图里是「引用结构体」:setter 槽(写) + getter 槽(读)。
-            // 注册成结构体,assemble / destructure 节点才有形态可用。
-            IrKind::Mut(inner) => {
-                let key = format!("&mut {inner}");
-                linker.target.adts.entry(key.clone()).or_insert_with(|| {
-                    let kind = (**inner).clone();
-                    AdtInfo::new(vec![
-                        FieldInfo::new("0".into(), IrKind::LocalRef(kind.clone().into())),
-                        FieldInfo::new("1".into(), IrKind::partial_mut(kind)),
-                    ])
-                });
-                Self::touch_adt(linker, key)
-            }
+            // `&mut T` 只是 IR 里的两槽元组,assemble / destructure 都该在
+            // 优化期被消掉。活到降级说明漏了 —— 节点图里没有这种东西。
+            IrKind::Mut(inner) => panic!("&mut {inner} 没被优化消掉"),
             IrKind::Never => panic!(),
             IrKind::LocalRef(kind) => {
                 if !kind.is_storable() {
@@ -448,32 +437,18 @@ pub fn partial_mut_list(elem: &IrKind) -> IrKind {
     IrKind::partial_mut(IrKind::list(elem.clone()))
 }
 
-/// 按下标取列表元素，结果当**视图**用（place 的 getter）：取值要过 `Copy`。
-/// 和 [`node_ir_list_get`] 是同一个节点，只有 IR 层的出口类型不同。
-pub fn node_ir_list_get_partial_mut(elem: IrKind) -> NodeKindIr {
-    NodeKind::new(
-        IrNodeId::ListGet,
-        0,
-        0,
-        vec![
-            Some(partial_mut_list(&elem)),
-            Some(IrKind::Native(NativeKind::Int)),
-        ],
-        vec![IrKind::partial_mut(elem)],
-    )
-}
-
 /// 按下标取列表元素。
 ///
 /// `list` 是第一个引脚的**实际**类型：`&List<T>` 在 `T` 非 `Freeze` 时是
 /// `PartialMut<List<T>>`，`Freeze` 时就是 `List<T>`。节点图里两者同形。
-pub fn node_ir_list_get(list: IrKind, elem: IrKind) -> NodeKindIr {
+/// `out` 是出口类型 —— place 的 getter 要视图，native 的 `List::get` 要值。
+pub fn node_ir_list_get(list: IrKind, out: IrKind) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::ListGet,
         0,
         0,
         vec![Some(list), Some(IrKind::Native(NativeKind::Int))],
-        vec![elem],
+        vec![out],
     )
 }
 
