@@ -20,6 +20,26 @@ use std::mem::swap;
 use tap::Tap;
 use crate::unwrap;
 
+/// 一个参数占几个图输入引脚(槽)。
+fn pin_count(local: &crate::compile::place::CompiledLocal<()>) -> usize {
+    match local {
+        crate::compile::place::CompiledLocal::Singleton(_) => 1,
+        crate::compile::place::CompiledLocal::Flat(v) => v.iter().map(pin_count).sum(),
+    }
+}
+
+/// 写入值的来源。
+struct ValueSource {
+    /// 右值读到的局部变量:它们被改写,右值就变了。
+    locals: HashSet<NodeRef>,
+    /// 右值读到的图输入所属的参数组(`&mut` 参数的两个引脚是一份引用)。
+    export_groups: HashSet<usize>,
+    /// 引脚 → 参数组。
+    pin_group: Vec<usize>,
+    /// 其它说不清的执行点(依赖变量的 setter、执行节点)。
+    opaque: HashSet<NodeRef>,
+}
+
 /// 一处 usage 该怎么处理。
 enum UsageVerdict {
     /// 改接到写入值上。
@@ -989,9 +1009,20 @@ impl Optimizer {
             // 值流经自定义复合节点:说不清,放弃。
             return Some(());
         };
+        // 改接等于把右值的求值推迟到 usage 处。右值依赖的变量若在中间被
+        // 改写,读到的就是新值 —— `let c = *a; *a = *b; *b = c` 正是这种。
+        let value = self.graph.get_node(node).links.values_in[1].clone();
+        let write_kind = n.kind.values_in_types[1].as_ref().unwrap().clone();
+        let mut pin_group = vec![];
+        for (p, local) in self.decl.params.iter().enumerate() {
+            pin_group.extend(std::iter::repeat_n(p, pin_count(local)));
+        }
+        let Ok(source) = self.value_source(&value, &write_kind, &pin_group) else {
+            return Some(());
+        };
         let mut rewrite: Vec<Link> = vec![];
         for usage in &usages {
-            match self.classify_usage(usage, node, &local_setters, &modifiers) {
+            match self.classify_usage(usage, node, &local_setters, &modifiers, &source) {
                 UsageVerdict::Rewrite => rewrite.push(usage.start),
                 UsageVerdict::Skip => (),
                 UsageVerdict::Reject => return Some(()),
@@ -1013,7 +1044,6 @@ impl Optimizer {
         }
         // 被写入的值不能依赖这个 local 的旧值 —— 否则把 usage 改接到写入的
         // 值上会造环(`i += 1` 就是这种:写入值是 `i + 1`,而 `i` 正是 usage)。
-        let value = n.links.values_in[1].clone();
         if let Some(v) = value.link
             && self.value_depends_on(v, Link::node(local, 1))
         {
@@ -1021,7 +1051,6 @@ impl Optimizer {
         }
         // 改接:目标引脚要的是视图,写入值是普通值 —— 中间补一层 `ToPartialMut`。
         // 读那一侧如果紧跟着 `Copy`,`eliminate_copy` 会把两层一起消掉。
-        let write_kind = n.kind.values_in_types[1].as_ref().unwrap().clone();
         let pm_kind = n_local.kind.values_out_types[1].clone();
         let value = if write_kind == pm_kind {
             value
@@ -1102,6 +1131,7 @@ impl Optimizer {
         current: NodeRef,
         setters: &HashSet<NodeRef>,
         modifiers: &HashSet<LinkTarget>,
+        source: &ValueSource,
     ) -> UsageVerdict {
         // 同一条边既被读又被写:改接会破坏写的那一侧,这一处不动。
         if !usage.users.is_empty() && !usage.modifiers.is_empty() {
@@ -1118,7 +1148,7 @@ impl Optimizer {
         let mut sources: HashSet<NodeRef> = HashSet::new();
         let mut saw_other = false;
         for &user in &usage.users {
-            let Ok((s, o)) = self.sources_before(user, setters, modifiers) else {
+            let Ok((s, o)) = self.sources_before(user, setters, modifiers, source) else {
                 return UsageVerdict::Reject;
             };
             sources.extend(s);
@@ -1143,6 +1173,7 @@ impl Optimizer {
         root: LinkTarget,
         setters: &HashSet<NodeRef>,
         modifiers: &HashSet<LinkTarget>,
+        source: &ValueSource,
     ) -> Result<(HashSet<NodeRef>, bool), ()> {
         let mut sources = HashSet::new();
         let mut saw_other = false;
@@ -1165,6 +1196,21 @@ impl Optimizer {
             {
                 // 循环是一条边界:循环体里的值每轮都不一样,不能跨过去改接。
                 return Err(());
+            }
+            if let Some(x) = now.node() {
+                let nx = self.graph.get_node(x);
+                if source.opaque.contains(&x) {
+                    // 路径上经过会改写右值来源的执行点:改接过去读到的是新值。
+                    return Err(());
+                }
+                // 写的是右值依赖的变量。`&mut` 拆装之后写的不是那个 `Local`
+                // 本身,而是解构出来的 setter 槽 —— 沿值流追回去看。
+                if nx.kind.id == IrNodeId::SetLocal
+                    && let Some(link) = nx.links.values_in.first().and_then(|v| v.link)
+                    && self.writes_source(link, source)
+                {
+                    return Err(());
+                }
             }
             if let Some(x) = now.node()
                 && setters.contains(&x)
@@ -1202,6 +1248,95 @@ impl Optimizer {
             && !n.links.values_out[1].is_empty()
             && n.links.values_in[0].link.is_none()
     }
+    /// 写入的值从哪来。
+    ///
+    /// 消除 setter 等于把写入的值挪到 usage 处求值,所以先沿值流看它依赖
+    /// 什么。返回的东西用来在控制流回溯时判断「中间有没有把它改掉」:
+    ///
+    /// - 读的是另一个变量的值:它所有的 setter 都算不透明,值会被它们改掉;
+    /// - 非 calc 节点:执行节点,什么时候执行会影响求值结果;
+    /// - 不纯的 calc(随机数):挪了就变了,直接放弃优化。
+    ///
+    /// 只沿「读值」的边展开:句柄 / 视图传的是地址,中间怎么写都不改变它,
+    /// 所以 `&mut p` 那种拼装不会把 `p` 的 setter 算进来。
+    fn value_source(&self, value: &ValueIn, value_kind: &IrKind, pin_group: &[usize]) -> Result<ValueSource, ()> {
+        let mut source = ValueSource {
+            locals: HashSet::new(),
+            export_groups: HashSet::new(),
+            pin_group: pin_group.to_vec(),
+            opaque: HashSet::new(),
+        };
+        let mut visited: HashSet<(NodeRef, bool)> = HashSet::new();
+        let mut queue: VecDeque<(Link, bool)> = VecDeque::new();
+        queue.extend(value.link.map(|x| (x, value_kind.is_storable())));
+        while let Some((now, read)) = queue.pop_front() {
+            let Some(x) = now.target.node() else {
+                // 来自图输入。`&mut` 参数的两个引脚是一份引用,后面可能被写。
+                if let Some(&group) = pin_group.get(now.index) {
+                    source.export_groups.insert(group);
+                }
+                continue;
+            };
+            if !visited.insert((x, read)) {
+                continue;
+            }
+            let nx = self.graph.get_node(x);
+            if nx.kind.id == IrNodeId::Local {
+                if read {
+                    // 读的是另一个变量的值:它所有的 setter 都会改掉它。
+                    source.locals.insert(x);
+                    source.opaque.extend(nx.links.values_out[0].iter().filter_map(|l| l.target.node()));
+                    // 它的值的每一处使用也要一起看。
+                    queue.extend(nx.links.values_out[1].iter().map(|l| (*l, true)));
+                }
+                continue;
+            }
+            if !nx.kind.is_calc() {
+                // 执行节点:语义不明。
+                source.opaque.insert(x);
+            } else if !nx.kind.is_pure() {
+                // 不纯的值挪了就变了。
+                return Err(());
+            }
+            for v in &nx.links.values_in {
+                let Some(link) = v.link else { continue };
+                // 读值的路径一旦确立就一直成立(`Copy` / 解构 / 列表取值处开始);
+                // 句柄拼装(比如 `&mut p`)本身不读值,不往里传。
+                let reads = matches!(nx.kind.id, IrNodeId::Copy | IrNodeId::Destructure | IrNodeId::ListGet);
+                queue.push_back((link, read || reads));
+            }
+        }
+        Ok(source)
+    }
+
+    /// 这条写边改的是不是右值依赖的那份数据。
+    ///
+    /// 沿值流向上追:局部变量槽(可能已经被拆装成解构出来的 setter 槽)或
+    /// 图输入(`&mut` 参数)。
+    fn writes_source(&self, link: Link, source: &ValueSource) -> bool {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::from([link]);
+        while let Some(now) = queue.pop_front() {
+            if !visited.insert(now) {
+                continue;
+            }
+            let Some(x) = now.target.node() else {
+                // 图输入的 `&mut` 参数:同组引脚写入会影响读到的值。
+                if matches!(now.target, LinkTarget::Export)
+                    && source.pin_group.get(now.index).is_some_and(|g| source.export_groups.contains(g))
+                {
+                    return true;
+                }
+                continue;
+            };
+            if source.locals.contains(&x) {
+                return true;
+            }
+            queue.extend(self.graph.get_node(x).links.values_in.iter().filter_map(|v| v.link));
+        }
+        false
+    }
+
     fn value_depends_on(&self, link: Link, target: Link) -> bool {
         let mut queue = VecDeque::new();
         queue.push_back(link);
@@ -1974,6 +2109,45 @@ mod tests {
             decl: FnDecl::default(),
         };
         opt.verify_types();
+    }
+
+    /// 右值依赖的变量在 usage 之前被改写：不能把 usage 改接到右值上，
+    /// 否则读到的是新值（`let c = *a; *a = *b; *b = c` 的 swap）。
+    #[test]
+    fn setter_is_kept_when_its_source_is_rewritten_before_the_usage() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "swap");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let a = g.insert(node_ir_local(int()));
+        let c = g.insert(node_ir_local(int()));
+        // `c = *a`
+        let copy_a = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(a, 1), Link::node(copy_a, 0));
+        let set_c = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(c, 0), Link::node(set_c, 0));
+        g.link_value(Link::node(copy_a, 0), Link::node(set_c, 1));
+        // `*a = 1`,在 `c = *a` 之后
+        let set_a = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(a, 0), Link::node(set_a, 0));
+        g.set_value_in(Link::node(set_a, 1), ValueIn::value(1i32.into()));
+        // 读 `c`
+        let copy_c = g.insert(node_ir_copy(int()));
+        g.link_value(Link::node(c, 1), Link::node(copy_c, 0));
+        let sw = g.insert(node_ir_switch(int(), vec![1i32.into()]));
+        g.link_value(Link::node(copy_c, 0), Link::node(sw, 0));
+
+        g.link_control(Link::export(0), Link::node(set_c, 0));
+        g.link_control(Link::node(set_c, 0), Link::node(set_a, 0));
+        g.link_control(Link::node(set_a, 0), Link::node(sw, 0));
+        g.link_control(Link::node(sw, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(opt.eliminate_unnecessary_local_setter(set_c).is_some());
+        assert!(opt.graph.get_nodes().contains(&set_c));
     }
 
     /// 右值来自执行节点时，改接次数不设上限。
