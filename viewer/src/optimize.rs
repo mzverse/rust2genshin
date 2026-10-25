@@ -64,6 +64,10 @@ pub const RULES: &[Rule] = &[
         run: Optimizer::eliminate_calc,
     },
     Rule {
+        name: "eliminate_exec",
+        run: Optimizer::eliminate_exec,
+    },
+    Rule {
         name: "eliminate_copy",
         run: Optimizer::eliminate_copy,
     },
@@ -655,6 +659,7 @@ mod tests {
                 "eliminate_set_local",
                 "eliminate_local",
                 "eliminate_calc",
+                "eliminate_exec",
                 "eliminate_copy",
                 "eliminate_unnecessary_local_setter",
                 "eliminate_assemble",

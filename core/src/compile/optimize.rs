@@ -543,6 +543,7 @@ impl Optimizer {
         self.eliminate_set_local(node)?;
         self.eliminate_local(node)?;
         self.eliminate_calc(node)?;
+        self.eliminate_exec(node)?;
         self.eliminate_copy(node)?;
         self.eliminate_unnecessary_local_setter(node)?;
         self.eliminate_assemble(node)?;
@@ -715,6 +716,18 @@ impl Optimizer {
         } else {
             Some(())
         }
+    }
+
+    /// 有控制输入却没有控制流进入的节点:它不属于任何一段执行流,删掉。
+    ///
+    /// 删完之后它下游的节点也会失去控制输入,跟着被这条规则清掉。
+    pub fn eliminate_exec(&mut self, node: NodeRef) -> Option<()> {
+        let n = self.graph.get_node(node);
+        if n.kind.controls_in_num == 0 || !n.links.controls_in[0].is_empty() {
+            return Some(());
+        }
+        self.graph.remove(node);
+        None
     }
 
     /// `Copy(ToPartialMut(x))`:先标成视图又立刻读回来 —— 直接接 `x`。
@@ -1892,5 +1905,39 @@ mod tests {
             assert_eq!(new_d.kind.id, IrNodeId::Destructure);
             assert_eq!(new_d.links.values_in[0].link, Some(Link::export(0)));
         }
+    }
+
+    /// 没有控制流进入的执行节点属于不可达代码。
+    #[test]
+    fn exec_without_a_control_input_is_removed() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "orphan_exec");
+        let local = g.insert(node_ir_local(int()));
+        let init = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(local, 0), Link::node(init, 0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(opt.eliminate_exec(init).is_none());
+        assert!(!opt.graph.get_nodes().contains(&init));
+    }
+
+    /// 有控制流进入的执行节点不能动。
+    #[test]
+    fn exec_with_a_control_input_is_kept() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "reachable_exec");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        let local = g.insert(node_ir_local(int()));
+        let init = g.insert(node_ir_set_local(int()));
+        g.link_value(Link::node(local, 0), Link::node(init, 0));
+        g.link_control(Link::export(0), Link::node(init, 0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        assert!(opt.eliminate_exec(init).is_some());
+        assert!(opt.graph.get_nodes().contains(&init));
     }
 }
