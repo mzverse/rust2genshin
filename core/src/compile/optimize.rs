@@ -221,6 +221,16 @@ impl Optimizer {
                     continue;
                 }
                 IrNodeId::Local => {
+                    // 变量类型看句柄引脚里的 `LocalRef`。
+                    let variable = kind.values_out_types[0]
+                        .local_ref()
+                        .expect("local 节点的输出 0 应当是 LocalRef");
+                    // `PartialMut` 是中间形态：局部变量存的是值，不是视图。
+                    // 活到降级说明优化器漏了 —— 这里直接报出来。
+                    assert!(
+                        !matches!(variable, IrKind::PartialMut(_)),
+                        "局部变量的类型不该是 {variable}:它应该在优化期被消掉"
+                    );
                     if let NativeKind::Struct(kind) = kind.values_out_types[0].lower(linker) {
                         let kind = kind.clone();
                         let n =
@@ -246,11 +256,6 @@ impl Optimizer {
                         self.graph.remove(x);
                         continue;
                     } else {
-                        // 变量类型看句柄引脚里的 `LocalRef`,不看值出口(那里是
-                        // `PartialMut` 包装)。
-                        let variable = kind.values_out_types[0]
-                            .local_ref()
-                            .expect("local 节点的输出 0 应当是 LocalRef");
                         node_local(&variable.lower(linker)).unwrap()
                     }
                 }
@@ -959,7 +964,9 @@ impl Optimizer {
                             queue.push_back((*e, copied));
                         }
                     }
-                } else if copied {
+                } else if copied || matches!(variable, IrKind::PartialMut(_)) {
+                    // 变量本身就是视图时,传出去的视图被拿去写,写的是它指向
+                    // 的东西,不是这个变量本身 —— 对这个变量来说都是读。
                     usage.users.push(link.target);
                 } else {
                     usage.modifiers.push(link.target);
@@ -1454,13 +1461,12 @@ mod tests {
         g.push_export_control_out(ExportDecl::new("out".into(), None));
 
         let adt = IrKind::Adt("Test".into());
-        let pm = IrKind::PartialMut(adt.clone().into());
-        let s = g.insert(node_ir_local(pm.clone()));
-        // `s = &mut 0`
-        let init = g.insert(node_ir_set_local(pm.clone()));
+        let s = g.insert(node_ir_local(adt.clone()));
+        // `s = 0`
+        let init = g.insert(node_ir_set_local(adt.clone()));
         g.link_value(Link::node(s, 0), Link::node(init, 0));
-        // `s = &mut 1`
-        let set = g.insert(node_ir_set_local(pm.clone()));
+        // `s = 1`
+        let set = g.insert(node_ir_set_local(adt.clone()));
         g.link_value(Link::node(s, 0), Link::node(set, 0));
         // 通过 `s` 改字段：`Modify` 的 `value in[0]` 接的是 `s` 的值
         let modify = g.insert(NodeKind::new(
@@ -1500,9 +1506,58 @@ mod tests {
             opt.graph.get_node(modify).links.values_in[0].link,
             Some(Link::node(s, 1))
         );
-        // 读的地方改接到写入的值上。变量本身就是视图，值不用再标一层：
-        // 写入值没接东西，改接后 `Copy` 的输入也是空的。
-        assert_eq!(opt.graph.get_node(copy).links.values_in[0].link, None);
+        // 读的地方改接到写入的值上（值先经 `ToPartialMut` 标成视图）
+        let src = opt.graph.get_node(copy).links.values_in[0].link.unwrap();
+        let src = src.target.node().unwrap();
+        assert_eq!(opt.graph.get_node(src).kind.id, IrNodeId::ToPartialMut);
+        assert_eq!(opt.graph.get_node(src).links.values_in[0].link, None);
+    }
+
+    /// 变量本身就是视图（`PartialMut<T>`）时，下游拿视图去写，写的是它指向
+    /// 的东西，不是这个变量 —— 对这处 usage 来说仍然是「读」，setter 该消。
+    ///
+    /// `test_list_insert` 踩过：`&mut list` 的读槽 local 一直留着。
+    #[test]
+    fn view_variable_is_read_by_a_write_usage() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "view_write");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+
+        let adt = IrKind::Adt("Test".into());
+        let pm = IrKind::PartialMut(adt.clone().into());
+        let s = g.insert(node_ir_local(pm.clone()));
+        let init = g.insert(node_ir_set_local(pm.clone()));
+        g.link_value(Link::node(s, 0), Link::node(init, 0));
+        let set = g.insert(node_ir_set_local(pm.clone()));
+        g.link_value(Link::node(s, 0), Link::node(set, 0));
+        // 拿视图去改字段
+        let modify = g.insert(NodeKind::new(
+            IrNodeId::Modify,
+            1,
+            1,
+            vec![adt.clone().into(), None],
+            vec![],
+        ));
+        g.link_value(Link::node(s, 1), Link::node(modify, 0));
+
+        g.link_control(Link::export(0), Link::node(init, 0));
+        g.link_control(Link::node(init, 0), Link::node(set, 0));
+        g.link_control(Link::node(set, 0), Link::node(modify, 0));
+        g.link_control(Link::node(modify, 0), Link::export(0));
+
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.eliminate_unnecessary_local_setter(set);
+
+        assert!(
+            opt.graph.get_nodes().iter().all(|x| *x != set),
+            "视图变量的 setter 应该被消掉"
+        );
+        // 写入值没接东西，改接后 `Modify` 的输入也是空的（变量本身就是视图，
+        // 不用再标一层）。
+        assert_eq!(opt.graph.get_node(modify).links.values_in[0].link, None);
     }
 
     /// 值流经自定义复合节点：它会不会写、怎么读完全说不清 —— 整个优化放弃。
