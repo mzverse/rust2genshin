@@ -516,6 +516,18 @@ impl NativeKind {
                 value: None,
                 value_id: None,
             }.into(),
+            // 结构体列表同样要带元素的结构体 id:官方导出里
+            // `kind { primary: S_STRUCT_LIST, sub { is_set, struct_id } }`。
+            List(ele) => match ele.as_ref() {
+                Struct(st) => Subtype {
+                    is_set: true,
+                    struct_id: st.id.guid,
+                    key: None,
+                    value: None,
+                    value_id: None,
+                }.into(),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -683,6 +695,8 @@ fn encode_field_list(ele: &NativeKind, data: &dyn NativeValue) -> structure_defi
         }),
         Struct(st) => StructList(value::StructList {
             items: items.iter().map(|x| encode_struct_value(st, x.as_ref())).collect(),
+            // 501:元素结构体的 id(官方导出里和 items 的 `structId` 一致)。
+            struct_id: Some(st.id.guid),
         }),
         _ => todo!("列表默认值:{ele}"),
     }.into()
@@ -790,6 +804,35 @@ mod tests {
             let decoded = structure_definition_data::var_def::Value::decode(msg.encode_to_vec().as_slice()).unwrap();
             assert!(check(decoded.val.as_ref().unwrap()), "{ele:?} 的默认值变体不对");
         }
+    }
+
+    /// 结构体列表作为结构体字段时,`kind.sub` 要带元素的结构体 id。
+    #[test]
+    fn 结构体列表的_subtype_带元素结构体() {
+        let list = NativeKind::List(结构体(7).into());
+        let sub = list.encode_subtype().expect("结构体列表应当有 subtype");
+        assert!(sub.is_set);
+        assert_eq!(sub.struct_id, 7);
+        // 其他列表没有 subtype
+        assert!(NativeKind::List(NativeKind::Int.into()).encode_subtype().is_none());
+    }
+
+    /// 结构体列表的默认值:`structList { items, 501: 元素结构体 id }`。
+    #[test]
+    fn 结构体列表的默认值带结构体_id() {
+        use prost::Message;
+        use structure_definition_data::var_def::value::Val;
+        let list = NativeKind::List(结构体(7).into());
+        let val = list.encode_field_value(list.default().as_ref()).unwrap();
+        let msg = structure_definition_data::var_def::Value {
+            val: Some(val),
+            ..Default::default()
+        };
+        let decoded = structure_definition_data::var_def::Value::decode(msg.encode_to_vec().as_slice()).unwrap();
+        let Val::StructList(list) = decoded.val.unwrap() else {
+            panic!("默认值应当是 structList");
+        };
+        assert_eq!(list.struct_id, Some(7), "501 要写元素的结构体 id");
     }
 
     #[test]

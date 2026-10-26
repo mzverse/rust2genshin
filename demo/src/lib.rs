@@ -475,3 +475,14 @@ impl Drop for TestDrop {
 pub fn test_list_drop() {
     _ = black_box(list![TestDrop("test"), TestDrop("drop")]);
 }
+
+/// 结构体字段是结构体列表:字段的 `kind.sub` 与默认值里的 `structList`
+/// 都要带上元素结构体的 id(对照官方导出)。
+struct PointList {
+    points: List<Point>,
+}
+
+#[unsafe(no_mangle)]
+pub fn test_struct_list_field(v: &PointList) -> i32 {
+    v.points.len() as i32
+}

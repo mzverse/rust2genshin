@@ -714,7 +714,12 @@ message StructureDefinitionData {
       message RefId { int64 id = 2; }
       message ConfigList { repeated RefId items = 1; }
       message PrefabList { repeated RefId items = 1; }
-      message StructList { repeated Value items = 1; }
+      message StructList {
+        repeated Value items = 1;
+        // 元素的结构体 id。官方导出里这个字段在 501,和 items 里的
+        // `structId` 一致(proto 里没声明,我们自己补上)。
+        optional int64 struct_id = 501;
+      }
       message Dict {
         repeated Value  pairs       = 1;
         repeated Value  keys        = 501;
