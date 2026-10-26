@@ -17,7 +17,7 @@ use rustc_middle::mono::MonoItem;
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{Instance, InstanceKind, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
-use rustc_span::def_id::{CrateNum, LOCAL_CRATE};
+use rustc_span::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc_span::{DUMMY_SP, ErrorGuaranteed, ExpnKind, MacroKind, Span};
 use rustc_structures::CrateType;
 use std::fs::File;
@@ -275,6 +275,21 @@ impl<'tcx> Compiler<'tcx> {
         Ok(mangle)
     }
 
+    /// 函数的文档注释(`/// …` 或 `#[doc = "…"]`)。
+    ///
+    /// 每一行 doc 注释在属性里单独存一条,`comment` 保留 `///` 后面的原始文本
+    /// (通常带一个前导空格),拼回去时去掉那个空格。
+    fn doc_comment(&self, def_id: DefId) -> String {
+        self.tcx.get_all_attrs(def_id).iter()
+            .filter_map(|attr| match attr {
+                Attribute::Parsed(AttributeKind::DocComment { comment, .. }) => Some(comment.as_str()),
+                _ => None,
+            })
+            .map(|line| line.strip_prefix(' ').unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn compile_fn(&mut self, func: Instance<'tcx>) -> Result<FnInfo> {
         panic_context!("Compiling: {func:?}");
         let tcx = self.tcx;
@@ -387,7 +402,7 @@ impl<'tcx> Compiler<'tcx> {
         // optimizer.optimize();
         optimizer.verify(self.helper())?;
         Ok(FnInfo {
-            description: "".to_string(), // TODO
+            description: self.doc_comment(func.def_id()),
             graph: optimizer.graph,
             decl: optimizer.decl,
             exported: self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator(),
