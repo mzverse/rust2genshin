@@ -245,12 +245,15 @@ pub enum IrNodeId {
     Assemble,
     Destructure,
     Modify,
-    /// 对结构体字段取 `&mut`:输出一个「能读能写」的二元组。setter 那头是虚的
-    /// (节点图里没有字段句柄),优化期必须把它消费掉的每一处写入改写成 `Modify`
-    /// —— 见 `Optimizer::eliminate_field_mut`。
+    /// 结构体字段的**写句柄**:`PartialMut<Owner>` 进,该字段的 `LocalRef` 出。
+    ///
+    /// 节点图里没有「字段句柄」这种东西,所以它必须被优化期消掉 —— 用它写的
+    /// 每一处都改写成 `Modify`(见 `Optimizer::eliminate_field_setter`)。
+    /// 读那一侧不走它:直接解构 owner 视图(`Destructure`),取第 `idx` 个输出。
+    /// 两者的输出用 `Assemble` 拼起来,才是 MIR 里那个 `&mut` 字段。
     ///
     /// `fields` 是 owner 结构体的字段类型,带着它是为了让改写不必再回头查 `Target`。
-    FieldMut {
+    FieldSetter {
         idx: usize,
         fields: Vec<IrKind>,
     },
@@ -552,27 +555,27 @@ pub fn node_ir_modify_struct(target: &Target, kind: &IrKind) -> NodeKindIr {
     NodeKind::new(IrNodeId::Modify, 1, 1, params, vec![])
 }
 
-pub fn node_ir_field_mut(target: &Target, adt: &AdtKey, idx: usize) -> NodeKindIr {
+pub fn node_ir_field_setter(target: &Target, adt: &AdtKey, idx: usize) -> NodeKindIr {
     let fields = struct_fields(target, &IrKind::Adt(adt.to_string()))
         .into_iter()
         .map(|x| x.kind)
         .collect::<Vec<_>>();
     NodeKind::new(
-        IrNodeId::FieldMut {
+        IrNodeId::FieldSetter {
             idx,
             fields: fields.clone(),
         },
         0,
         0,
-        vec![IrKind::PartialMut(IrKind::Adt(adt.to_string()).into()).into()],
-        vec![IrKind::Mut(fields[idx].clone().into())],
+        vec![IrKind::partial_mut(IrKind::Adt(adt.to_string())).into()],
+        vec![IrKind::LocalRef(fields[idx].clone().into())],
     )
 }
 
 /// 解构一个视图(`PartialMut<Adt>`),取出各字段的视图。
 ///
 /// 和 [`node_ir_destructure`] 的区别:这里不查 `Target`,字段类型直接由
-/// `fields`(结构体本身的字段类型)包装出来 —— 优化期消 `FieldMut` 时要用。
+/// `fields`(结构体本身的字段类型)包装出来 —— 取字段视图(读)时要用。
 pub fn node_ir_destructure_partial_mut(pm: IrKind, fields: &[IrKind]) -> NodeKindIr {
     NodeKind::new(
         IrNodeId::Destructure,

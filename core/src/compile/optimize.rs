@@ -433,7 +433,7 @@ impl Optimizer {
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
                 IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
-                IrNodeId::FieldMut { idx, .. } => panic!("{idx}"),
+                IrNodeId::FieldSetter { idx, .. } => panic!("{idx}"),
                 IrNodeId::Fn(_) => unreachable!(),
                 // 读值 / 标视图都只是 IR 层的写法,节点图里没有额外动作,
                 // 也没有控制流要接。
@@ -639,7 +639,7 @@ impl Optimizer {
         self.eliminate_assemble(node)?;
         self.eliminate_destructure(node)?;
         self.eliminate_destructure_after_partial_mut(node)?;
-        self.eliminate_field_mut(node)?;
+        self.eliminate_field_setter(node)?;
         self.eliminate_bool_eq_int(node)?;
         self.eliminate_not_not(node)?;
         Some(())
@@ -846,16 +846,21 @@ impl Optimizer {
         None
     }
 
-    /// 把「通过 `&mut` 写结构体字段」改写成 `Modify`。
+    /// 消掉字段的写句柄(`FieldSetter`)。
     ///
-    /// `FieldMut` 给出的 setter 在节点图里没有对应物,只是 IR 层的占位。
-    /// 这里沿句柄流走一遍:句柄经过 `Destructure` 出来、可以存进局部变量再
-    /// 取出来,最终落到某个 `SetLocal` 的句柄输入上 —— 那一处就是写,换成
-    /// `Modify`;读字段的那一侧改成对 owner 视图的解构。剩下的 `FieldMut`
-    /// 降级时还会报错,不会静默走错。
-    pub fn eliminate_field_mut(&mut self, node: NodeRef) -> Option<()> {
+    /// `FieldSetter` 在节点图里没有对应物,只是 IR 层的占位(`&mut s.f` 由它
+    /// 和一次 owner 解构拼成)。这里沿句柄流走一遍:句柄经过 `Destructure`
+    /// 出来、可以存进局部变量再取出来,最终落到某个 `SetLocal` 的句柄输入上
+    /// —— 那一处就是写,换成 `Modify`;读字段的那一侧改成对 owner 视图的解构。
+    /// 剩下的 `FieldSetter` 降级时还会报错,不会静默走错。
+    ///
+    /// 句柄只有两种去处:裹进 `Mut<字段>` 再被拆开(常规的 `&mut s.f`),
+    /// 或者直接接给 `SetLocal`。两条路都最终落到「写某个 SetLocal」上,
+    /// 改写成 `Modify(owner, idx, value, true)`;读那一侧来自 owner 视图的
+    /// 解构,原样保留。
+    pub fn eliminate_field_setter(&mut self, node: NodeRef) -> Option<()> {
         let n = self.graph.get_node(node);
-        let IrNodeId::FieldMut { idx, fields } = n.kind.id.clone() else {
+        let IrNodeId::FieldSetter { idx, fields } = n.kind.id.clone() else {
             return Some(());
         };
         let owner = n.links.values_in[0].clone();
@@ -874,15 +879,29 @@ impl Optimizer {
             Read,
         }
 
-        let mut queue: VecDeque<(Link, Role)> = n
-            .links
-            .values_out[0]
-            .iter()
-            .map(|x| (*x, Role::Mut))
-            .collect();
-        let mut visited: HashSet<(Link, Role)> = HashSet::new();
-        // 通过这个句柄写的 `SetLocal`,要换成 `Modify`。
+        // 句柄的输出先找它被裹进的 `Mut<字段>`;直接接给 `SetLocal` 也行。
+        let mut queue: VecDeque<(Link, Role)> = VecDeque::new();
         let mut writes: Vec<NodeRef> = vec![];
+        let mut assembles: Vec<NodeRef> = vec![];
+        for out in n.links.values_out[0].clone() {
+            let Some(target) = out.target.node() else {
+                return Some(());
+            };
+            let tn = self.graph.get_node(target);
+            if tn.kind.id == IrNodeId::Assemble && out.index == 0 {
+                assembles.push(target);
+                // 从 `Mut<字段>` 的下一跳继续追踪(通常是被解构)。
+                for e in tn.links.values_out[0].clone() {
+                    queue.push_back((e, Role::Mut));
+                }
+            } else if tn.kind.id == IrNodeId::SetLocal && out.index == 0 {
+                writes.push(target);
+            } else {
+                // 句柄流到别处(存进变量、重新组装…):这里没有相应机制,放弃。
+                return Some(());
+            }
+        }
+        let mut visited: HashSet<(Link, Role)> = HashSet::new();
         // 读字段的边,要改接到 owner 视图的解构上。
         let mut partial_muts: Vec<Link> = vec![];
         // 句柄 / 视图经过的解构节点,最后删掉。
@@ -963,6 +982,9 @@ impl Optimizer {
         }
         for d in destructures {
             self.graph.remove(d);
+        }
+        for a in assembles {
+            self.graph.remove(a);
         }
         self.graph.remove(node);
         None
@@ -1965,7 +1987,7 @@ mod tests {
         assert!(opt.graph.get_nodes().contains(&set), "setter 应当保留");
     }
 
-    fn field_mut_graph() -> (NodeGraphIr, NodeRef, NodeRef, NodeRef, NodeRef, NodeRef) {
+    fn field_mut_graph() -> (NodeGraphIr, NodeRef, NodeRef, NodeRef, NodeRef, NodeRef, NodeRef) {
         let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "field_mut");
         g.push_export_control_in(ExportDecl::new("in".into(), None));
         g.push_export_control_out(ExportDecl::new("out".into(), None));
@@ -1973,17 +1995,37 @@ mod tests {
         let adt = IrKind::Adt("Point".into());
         let pm = IrKind::PartialMut(adt.clone().into());
         let owner = g.insert(node_ir_local(pm.clone()));
+        // 字段的写句柄
         let fm = g.insert(NodeKind::new(
-            IrNodeId::FieldMut {
+            IrNodeId::FieldSetter {
                 idx: 0,
                 fields: vec![int(), int()],
             },
             0,
             0,
-            vec![Some(pm)],
-            vec![IrKind::Mut(int().into())],
+            vec![Some(pm.clone())],
+            vec![IrKind::LocalRef(int().into())],
         ));
         g.link_value(Link::node(owner, 1), Link::node(fm, 0));
+        // 字段的视图:解构 owner 视图的第 0 个出
+        let read0 = g.insert(NodeKind::new(
+            IrNodeId::Destructure,
+            0,
+            0,
+            vec![Some(pm.clone())],
+            vec![IrKind::partial_mut(int()), IrKind::partial_mut(int())],
+        ));
+        g.link_value(Link::node(owner, 1), Link::node(read0, 0));
+        // 拼成 `Mut<i32>`:0 号入是句柄,1 号入是视图
+        let asm = g.insert(NodeKind::new(
+            IrNodeId::Assemble,
+            0,
+            0,
+            vec![Some(IrKind::LocalRef(int().into())), Some(IrKind::partial_mut(int()))],
+            vec![IrKind::Mut(int().into())],
+        ));
+        g.link_value(Link::node(fm, 0), Link::node(asm, 0));
+        g.link_value(Link::node(read0, 0), Link::node(asm, 1));
         // 解构 `Mut<i32>`：0 号出是句柄，1 号出是字段视图
         let d = g.insert(NodeKind::new(
             IrNodeId::Destructure,
@@ -1992,7 +2034,7 @@ mod tests {
             vec![Some(IrKind::Mut(int().into()))],
             vec![IrKind::LocalRef(int().into()), IrKind::partial_mut(int())],
         ));
-        g.link_value(Link::node(fm, 0), Link::node(d, 0));
+        g.link_value(Link::node(asm, 0), Link::node(d, 0));
         // 通过句柄写
         let write = g.insert(node_ir_set_local(int()));
         g.link_value(Link::node(d, 0), Link::node(write, 0));
@@ -2005,18 +2047,18 @@ mod tests {
         g.link_control(Link::export(0), Link::node(write, 0));
         g.link_control(Link::node(write, 0), Link::node(sw, 0));
         g.link_control(Link::node(sw, 0), Link::export(0));
-        (g, owner, fm, d, write, copy)
+        (g, owner, fm, d, write, copy, read0)
     }
 
     /// `&mut s.field` 的写入换成 `Modify`，读那一侧改成解构 owner 视图。
     #[test]
     fn field_mut_write_becomes_modify() {
-        let (g, owner, fm, d, write, copy) = field_mut_graph();
+        let (g, owner, fm, d, write, copy, _read0) = field_mut_graph();
         let mut opt = Optimizer {
             graph: g,
             decl: FnDecl::default(),
         };
-        assert_eq!(opt.eliminate_field_mut(fm), None);
+        assert_eq!(opt.eliminate_field_setter(fm), None);
 
         assert!(opt.graph.get_nodes().iter().all(|x| ![fm, d, write].contains(x)));
         let modify = opt

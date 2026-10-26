@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_destructure_partial_mut, node_ir_field_setter, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef, can_read_into, copy_until};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, ROUNDING_TRUNCATE, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_round, node_subtract};
@@ -225,15 +225,28 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     self.graph.set_value_in(Link::node(result, 1), ValueIn::link(getter));
                     ValueIn::link(Link::node(result, 0))
                 },
+                // `&mut owner.field`:`(字段的写句柄, 字段的视图)` 两槽。
+                // 句柄来自 `FieldSetter`,视图来自解构 owner 视图的第 `idx` 个出;
+                // 两者拼起来才等价于 MIR 里那个 `&mut` 字段。
                 CompiledPlace::Field(owner, adt, idx) => {
-                    let node = self.graph.insert(node_ir_field_mut(&self.compiler.target, &adt, idx));
-                    let v = owner.getter(
+                    let owner_kind = IrKind::Adt(adt.clone());
+                    let v = owner.getter(&self.compiler.target, self.graph, &owner_kind);
+                    let setter = self.graph.insert(node_ir_field_setter(&self.compiler.target, &adt, idx));
+                    self.graph.set_value_in(Link::node(setter, 0), v.clone());
+                    let fields = struct_fields(&self.compiler.target, &owner_kind)
+                        .into_iter().map(|x| x.kind).collect::<Vec<_>>();
+                    let de = self.graph.insert(node_ir_destructure_partial_mut(
+                        IrKind::partial_mut(owner_kind.clone()),
+                        &fields,
+                    ));
+                    self.graph.set_value_in(Link::node(de, 0), v);
+                    let asm = self.graph.insert(node_ir_assemble(
                         &self.compiler.target,
-                        self.graph,
-                        &IrKind::Adt(adt),
-                    );
-                    self.graph.set_value_in(Link::node(node, 0), v);
-                    ValueIn::link(Link::node(node, 0))
+                        &IrKind::Mut(fields[idx].clone().into()),
+                    ));
+                    self.graph.set_value_in(Link::node(asm, 0), ValueIn::link(Link::node(setter, 0)));
+                    self.graph.set_value_in(Link::node(asm, 1), ValueIn::link(Link::node(de, idx)));
+                    ValueIn::link(Link::node(asm, 0))
                 },
                 _ => {
                     self.tcx.dcx().span_err(span, "`&mut` 只支持整个局部变量或结构体字段,不支持列表下标 / 扁平引用");

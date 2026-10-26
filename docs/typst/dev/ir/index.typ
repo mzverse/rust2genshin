@@ -46,4 +46,4 @@ pub enum IrKind {
 
 = `&mut` 结构体字段
 
-`s.field` 的 `&mut` 编译成 `FieldMut`：输出 `Mut<字段>`，setter 那头在节点图里没有对应物。优化期把直接经它的写入换成 `Modify`、把直接读换成解构 owner 的 `PartialMut`；中转留给以后的内联优化。没消掉的 `FieldMut` 降级时 panic。
+`s.field` 的 `&mut` 由两半拼成：`FieldSetter<idx>` 吃 `PartialMut<Owner>`、交出 `LocalRef<字段>`（setter 那头在节点图里没有对应物），读的那半是 owner 的普通解构，取第 `idx` 个出口得到 `PartialMut<字段>`。优化期把直接经它的写入换成 `Modify`、把直接读换成同一个解构；中转留给以后的内联优化。没消掉的 `FieldSetter` 降级时 panic。

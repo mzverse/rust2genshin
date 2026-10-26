@@ -483,6 +483,6 @@ struct PointList {
 }
 
 #[unsafe(no_mangle)]
-pub fn test_struct_list_field(v: &PointList) -> i32 {
+pub fn test_struct_list_field(v: PointList) -> i32 {
     v.points.len() as i32
 }
