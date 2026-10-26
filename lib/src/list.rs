@@ -1,11 +1,10 @@
-use crate::boxed::Box;
+use crate::{drop_glue, PartialMut};
 use core::ops::Index;
 use rust2genshin_lib_internal::native;
-use crate::PartialMut;
 
 #[native("List")]
 pub struct List<T> {
-    _internal: Box<[T]>,
+    _internal: *mut [T],
     _marker: [T; 0], // 阻止递归包含
 }
 
@@ -24,6 +23,16 @@ impl<T> Index<usize> for List<T> {
 
     fn index(&self, index: usize) -> &Self::Output {
         self.get(index)
+    }
+}
+impl<T> Drop for List<T> {
+    #[inline]
+    fn drop(&mut self) {
+        for i in 0..self.len() {
+            unsafe {
+                drop_glue(&mut *self.get_mut(i));
+            }
+        }
     }
 }
 
@@ -75,14 +84,20 @@ impl<T> List<T> {
     #[native("list_get")]
     pub fn get(&self, index: usize) -> &T;
 
+    pub fn get_mut(&mut self, index: usize) -> PartialMut<'_, T> {
+        #[native("list_get")]
+        fn get_mut_<T>(list: PartialMut<'_, List<T>>, index: usize) -> PartialMut<'_, T>;
+        get_mut_(self.into(), index)
+    }
+
     #[inline(always)]
     pub fn set(&mut self, index: usize, value: T) {
         #[native("list_get")]
-        fn get0<T>(s: &List<T>, index: usize) -> T;
+        fn get_<T>(s: &List<T>, index: usize) -> T;
         #[native("list_set")]
-        fn set0<T>(s: PartialMut<List<T>>, index: usize, value: T);
-        drop(get0(self, index));
-        set0(self.into(), index, value);
+        fn set_<T>(s: PartialMut<List<T>>, index: usize, value: T);
+        drop(get_(self, index));
+        set_(self.into(), index, value);
     }
 
     #[native("list_len")]

@@ -195,12 +195,20 @@ impl<'tcx> Compiler<'tcx> {
                             Err(e) => return self.helper().span_err(expn, e.to_string()),
                         };
                         match id.as_str() {
-                            "power" => node_ir_native(node_power(params[0].as_native().unwrap().clone())),
-                            "to_string" => node_ir_native(node_cast(params[0].as_native().unwrap().clone(), NativeKind::String).unwrap()),
-                            "enum_eq" => node_ir_native(node_enum_equal(match params[0].as_native().unwrap() {
-                                NativeKind::Enum(id) => *id,
-                                _ => panic!(),
-                            })),
+                            // 这几个要求参数是原生类型;拿到视图说明用法不对,
+                            // 交给普通函数那条路(它会报更清楚的错)。
+                            "power" => match params[0].as_native() {
+                                Some(kind) => node_ir_native(node_power(kind.clone())),
+                                None => return Ok(None),
+                            },
+                            "to_string" => match params[0].as_native().and_then(|x| node_cast(x.clone(), NativeKind::String)) {
+                                Some(node) => node_ir_native(node),
+                                None => return Ok(None),
+                            },
+                            "enum_eq" => match params[0].as_native() {
+                                Some(NativeKind::Enum(id)) => node_ir_native(node_enum_equal(*id)),
+                                _ => return Ok(None),
+                            },
                             "free" => {
                                 // 目标平台没有手动内存管理,释放是空操作。
                                 // 引脚照样接上,免得调用点的连线无处可去。
@@ -214,7 +222,13 @@ impl<'tcx> Compiler<'tcx> {
                             },
                             "list_get" => {
                                 let (list, elem) = self.expect_list(expn, "list_get", &params[0])?;
-                                node_ir_list_get(list, elem)
+                                // 取到的可能是值(`&T`)也可能是视图(`PartialMut<T>`),
+                                // 以声明的返回类型为准。
+                                let out = match ret_kinds.first() {
+                                    Some(out @ IrKind::PartialMut(inner)) if **inner == elem => out.clone(),
+                                    _ => elem,
+                                };
+                                node_ir_list_get(list, out)
                             },
                             "list_set" => {
                                 let (list, elem) = self.expect_list(expn, "list_set", &params[0])?;
@@ -237,12 +251,20 @@ impl<'tcx> Compiler<'tcx> {
                             Ok(id) => id,
                             Err(e) => return self.helper().span_err(expn, e.to_string()),
                         };
+                        // 引脚的标称类型必须是原生类型:有视图 / 结构体混进来
+                        // 就说明这个原生调用不该在这里合成。
+                        let (Some(params), Some(rets)) = (
+                            params.iter().map(IrKind::to_native).collect::<Option<Vec<_>>>(),
+                            ret_kinds.iter().map(IrKind::to_native).collect::<Option<Vec<_>>>(),
+                        ) else {
+                            return Ok(None);
+                        };
                         node_ir_native(NodeKind::simple(
                             id,
                             control as usize,
                             control as usize,
-                            params.iter().map(IrKind::to_native).map(Option::unwrap).collect(),
-                            ret_kinds.iter().map(IrKind::to_native).map(Option::unwrap).collect(),
+                            params,
+                            rets,
                         )).into()
                     },
                     _ => None

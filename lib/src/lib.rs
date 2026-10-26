@@ -28,6 +28,7 @@ pub mod sc;
 
 use core::num::NonZero;
 use core::ops::{Deref, DerefMut};
+use core::ptr::drop_in_place;
 pub use rust2genshin_lib_internal::event_listener;
 
 use rust2genshin_lib_internal::*;
@@ -53,6 +54,15 @@ impl<T> DerefMut for PartialMut<'_, T> {
 impl<'a, T> From<&'a mut T> for PartialMut<'a, T> {
     #[native("partial_mut_from")]
     fn from(value: &'a mut T) -> Self;
+}
+
+/// # Safety
+/// See drop_in_place
+#[rustc_force_inline]
+pub unsafe fn drop_glue<T>(value: &mut T) {
+    unsafe {
+        drop_in_place(value as *mut T);
+    }
 }
 
 pub type String = &'static str;

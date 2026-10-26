@@ -360,6 +360,8 @@ impl<'tcx> Compiler<'tcx> {
             ret,
             proxies_in: (0..compiling_locals.params).collect(),
             proxies_out: vec![None; compiling_locals.rets],
+            // TODO: 记录这个函数用到的节点图变量(黑板变量)。
+            variables: Default::default(),
         };
         let mut vars_name = HashMap::new();
         for x in &body.var_debug_info {

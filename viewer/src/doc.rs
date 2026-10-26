@@ -452,8 +452,10 @@ impl Doc {
         let mut names: Vec<&String> = self.targets[target].functions.keys().collect();
         names.sort();
         for name in names {
-            self.graphs
-                .push(flatten_one(name.clone(), &self.targets[target].functions[name].graph));
+            // 显示名用图自己记的可读名,不用 `functions` 的键 —— 那是 rustc
+            // 的 mangled 符号(链接键),给人看没法读。
+            let f = &self.targets[target].functions[name];
+            self.graphs.push(flatten_one(f.graph.name.clone(), &f.graph));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Fn(name.clone()),
@@ -1278,7 +1280,8 @@ mod tests {
         t.functions.insert("f".into(), fn_info(g));
         let doc = flatten(t);
         let ge = &doc.graphs[0];
-        assert_eq!(ge.name, "f");
+        // 显示名用图自己记的名字(可读名),"f" 只是 `functions` 的链接键。
+        assert_eq!(ge.name, "t");
         assert_eq!(ge.entry, vec![0]);
         assert_eq!(ge.exit, vec![1]);
         assert_eq!(ge.entry[0], ge.index_of[&entry]);

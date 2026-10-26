@@ -4,6 +4,7 @@
 
 #![no_std]
 
+use core::hint::black_box;
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
 #[allow(unused_imports)]
@@ -12,6 +13,7 @@ use rust2genshin_lib::math::*;
 use rust2genshin_lib::asynchronous::{Resume, async_loop, asynchronous};
 use rust2genshin_lib::list::{list, List};
 use rust2genshin_lib::PartialMut;
+use rust2genshin_lib::event::entity::EntityCreatedEvent;
 
 use core::ops::CoroutineState;
 
@@ -450,4 +452,26 @@ pub fn test_float_to_int(f: f32) -> i32 {
 #[unsafe(no_mangle)]
 pub fn test_itrunc(f: f32) -> i32 {
     f.itrunc()
+}
+
+/// 事件监听器:入口点,会生成主图(实体节点图)。
+#[event_listener]
+pub fn on_entity_created(event: EntityCreatedEvent) {
+    let count = pair_sum((1, 2.5));
+    log(count);
+}
+
+struct TestDrop(String);
+
+impl Drop for TestDrop {
+    #[inline(always)]
+    fn drop(&mut self) {
+        log("hello drop");
+        log(self.0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn test_list_drop() {
+    _ = black_box(list![TestDrop("test"), TestDrop("drop")]);
 }

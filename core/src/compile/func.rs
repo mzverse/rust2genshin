@@ -8,6 +8,7 @@ use crate::node::{Link, Lower, NativeNodeId, ValueIn};
 use crate::unwrap;
 use crate::value::{NativeKind, NativeValue};
 use either::Either;
+use std::collections::HashMap;
 use panic_context::panic_context;
 use rustc_abi::{FieldIdx, Integer, IntegerType, Size, TagEncoding, VariantIdx, Variants};
 use rustc_attr_ir::LangItem;
@@ -38,6 +39,12 @@ pub struct FnDecl {
     pub ret: CompiledLocal<()>,
     pub proxies_in: Vec<usize>,
     pub proxies_out: Vec<Option<Either<usize, Option<Box<dyn NativeValue>>>>>,
+    /// 这个函数用到的节点图变量(黑板变量):变量名 → 类型。
+    ///
+    /// 节点图里的局部变量是**图级**的:复合节点内部读写的那份变量,存在
+    /// 主图的变量表里,按名字索引。所以同名变量在各个函数里指的是同一个,
+    /// 类型必须一致(链接期合并时会校验)。
+    pub variables: HashMap<String, IrKind>,
 }
 
 pub fn node_ir_native(kind: NodeKind) -> NodeKindIr {
@@ -858,9 +865,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
         // 原生类型(句柄)的析构是空操作:它的字段在节点图里并不存在,
         // 析构胶水去读字段只会读到不存在的东西。
+        //
+        // 但如果类型自己实现了 `Drop`(`List<T>` 要逐个析构元素),就不能跳过 ——
+        // 那个 `Drop::drop` 是真正的逻辑。
         if let InstanceKind::Shim(ShimKind::DropGlue(..)) = func.def
             && let Some(ty) = func.args.first().and_then(|x| x.as_type())
-            && self.compiler.is_native_ty(ty) {
+            && self.compiler.is_native_ty(ty)
+            && !ty.needs_drop(self.tcx, TypingEnv::fully_monomorphized()) {
             return Ok(Block::nop(self.graph));
         }
         let sig = self.helper().fn_sig(func);
@@ -904,7 +915,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     };
                     let out = self.compiler.compile_ty(span, sig.output())?;
                     // 输入的元组：拆开，第 1 个字段就是那个视图。
-                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(pm)));
+                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(pm.clone())));
                     self.graph.set_value_in(Link::node(de, 0), args[0].clone());
                     // 输出的第 0 个字段是 `LocalSetter` —— 视图里没有 setter 槽，
                     // 造不出来，占 `Unsupported`。
@@ -912,7 +923,11 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let unsupported = self.graph.insert(node_ir_unsupported(fields[0].kind.clone()));
                     let asm = self.graph.insert(node_ir_assemble(&self.compiler.target, &out));
                     self.graph.set_value_in(Link::node(asm, 0), ValueIn::link(Link::node(unsupported, 0)));
-                    self.graph.set_value_in(Link::node(asm, 1), ValueIn::link(Link::node(de, 1)));
+                    // 拆出来的第 1 个字段是 `PartialMut<PartialMut<T>>`,输出要的是
+                    // `PartialMut<T>` —— 视图再读一层。
+                    let got = IrKind::PartialMut(pm.clone());
+                    let value = copy_until(self.graph, ValueIn::link(Link::node(de, 1)), got, &fields[1].kind);
+                    self.graph.set_value_in(Link::node(asm, 1), value);
                     Some(ValueIn::link(Link::node(asm, 0)))
                 },
                 _ => None,
@@ -935,8 +950,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     _ => func = Instance::new_raw(func.def_id(), func.args),
                 }
             }
-            break if params.iter().all(|x| x.to_native().is_some())
-                && let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
+            // 不在这里要求「参数全是原生类型」:列表系列的原生调用(`list_get`)
+            // 的入参本来就是视图(`PartialMut<List<T>>`),由 `compile_native_call`
+            // 自己按签名处理。它处理不了的会返回 `None`。
+            break if let Some(native) = self.compiler.compile_native_call(span, func, sig, &params)? {
                 native
             } else {
                 let ret = self.compiler.compile_ty(span, sig.output())?;

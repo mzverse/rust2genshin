@@ -72,10 +72,9 @@ impl IrKind {
     pub fn is_storable(&self) -> bool {
         match self {
             IrKind::Native(native) => node_local(native).is_some(),
-            // 列表能存进局部变量,前提是元素类型在节点图里有列表变体。
-            IrKind::List(elem) => elem
-                .to_native()
-                .is_some_and(|n| node_local(&NativeKind::List(n.into())).is_some()),
+            // 列表都能存进局部变量:元素类型没有局部变量变体时,`LocalRef::lower`
+            // 会把整张列表包成单字段结构体来存。
+            IrKind::List(_) => true,
             IrKind::Adt(..) => true,
             // 视图(`PartialMut`)和其它中间形态都不能作为局部变量的存储类型:
             // 它们必须在优化期被消掉,活到降级就是 bug。
