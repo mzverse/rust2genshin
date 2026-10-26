@@ -423,17 +423,24 @@ impl<'tcx> CompilingFn<'tcx, '_> {
                         },
                     }
                 },
-                Deref => if ty.ty.ref_mutability().unwrap() == Mutability::Mut { // TODO: raw ptr
-                    let kind = self.compiler.compile_ty(span, ty.ty)?;
-                    let IrKind::Mut(inner) = kind.clone() else {
-                        return self.helper().span_err(span, format!("Deref of non-mut reference: {kind}"));
-                    };
-                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &kind));
-                    let raw = result.getter(&self.compiler.target, self.graph, &kind);
-                    let getter = copy_until(self.graph, raw, IrKind::partial_mut(kind.clone()), &kind);
-                    self.graph.set_value_in(Link::node(de, 0), getter);
-                    result = CompiledPlace::Local(CompiledLocal::Singleton(LocalRef::new(de, *inner)));
-                }, // else nop
+                Deref => match ty.ty.ref_mutability() {
+                    // 原始指针的解引用在节点图里没有对应表示(类型已经落成
+                    // List / 标量),按值直通,不额外造节点。
+                    None => (),
+                    Some(Mutability::Mut) => {
+                        let kind = self.compiler.compile_ty(span, ty.ty)?;
+                        let IrKind::Mut(inner) = kind.clone() else {
+                            return self.helper().span_err(span, format!("Deref of non-mut reference: {kind}"));
+                        };
+                        let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &kind));
+                        let raw = result.getter(&self.compiler.target, self.graph, &kind);
+                        let getter = copy_until(self.graph, raw, IrKind::partial_mut(kind.clone()), &kind);
+                        self.graph.set_value_in(Link::node(de, 0), getter);
+                        result = CompiledPlace::Local(CompiledLocal::Singleton(LocalRef::new(de, *inner)));
+                    },
+                    // 不可变引用:读值直接沿用原 place,不需要节点。
+                    Some(Mutability::Not) => (),
+                },
                 Downcast(_, _id) => {
                     // do nothing
                 }

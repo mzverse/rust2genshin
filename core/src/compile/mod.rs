@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::compile::func::{CompilingFn, FnDecl, NodeGraphIr, node_ir_native};
 use crate::compile::helper::Helper;
 use crate::compile::ir::{FnInfo, IrNodeId, Optimizer, node_ir_assemble, node_ir_nop};
@@ -10,12 +10,13 @@ use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_codegen_ssa::{CompiledModule, ModuleKind};
 use rustc_hir::def::DefKind;
 use rustc_index::{Idx, IndexVec};
-use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::mir;
 use rustc_middle::mir::{BasicBlock, Body, Local, VarDebugInfoContents, RETURN_PLACE};
+use rustc_middle::middle::exported_symbols::ExportedSymbol;
+use rustc_middle::mono::MonoItem;
 use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
-use rustc_middle::ty::{Instance, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
+use rustc_middle::ty::{Instance, InstanceKind, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_span::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_span::{DUMMY_SP, ErrorGuaranteed, ExpnKind, MacroKind, Span};
 use rustc_structures::CrateType;
@@ -170,11 +171,29 @@ impl<'tcx> Compiler<'tcx> {
 
     fn run(&mut self) -> Result<()> {
         let mut main = NodeGraphIr::new(NodeGraphKind::ServerEntity, self.tcx.crate_name(LOCAL_CRATE).to_string());
-        let instance = self.tcx.exported_generic_symbols(LOCAL_CRATE).iter().chain(self.tcx.exported_non_generic_symbols(LOCAL_CRATE)).map(|(x, _)| match x {
-            ExportedSymbol::NonGeneric(d) => Instance::mono(self.tcx, *d),
-            ExportedSymbol::Generic(d, a) => Instance::try_resolve(self.tcx, TypingEnv::fully_monomorphized(), *d, a).unwrap().unwrap(),
-            _ => todo!("{x:?}"),
-        }).collect::<Vec<_>>();
+        // 入口是 rustc 的 mono items —— LLVM / cranelift / jvm 这些后端用的也是
+        // 这一份清单:本 crate 该 codegen 的所有项。它比「导出符号」宽:
+        // `pub` 的非泛型函数、它们的可达调用、以及本 crate 实例化的上游泛型
+        // 实例都在里面,这样 lib 里的普通函数才编得出来、下游才引用得到。
+        // 标准库不是用本后端编的,没有对应的 `.ogia`;它们的语义在节点图里由
+        // 原生节点承担,所以它们的实例(Box 的 drop、drop glue 之类)不进入口。
+        let mono = self.tcx.collect_and_partition_mono_items(());
+        let mut seen = HashSet::new();
+        let instance = mono.codegen_units.iter()
+            .flat_map(|cgu| cgu.items_in_deterministic_order(self.tcx))
+            .filter_map(|(item, _)| match item {
+                // core / alloc / std 的实现不是用这个后端编的(没有 `.ogia`),
+                // 它们在节点图里大多由原生节点承担,不在这里展开。其余上游实例
+                // (rust2genshin-lib 的泛型特化)照常处理,它的 rlib 里有 `.ogia`。
+                MonoItem::Fn(instance) if matches!(self.tcx.crate_name(instance.def_id().krate).as_str(), "core" | "alloc" | "std") => None,
+                // shim(drop glue / 各种自动生成的胶水)不是用户函数,不该各占
+                // 一个复合节点资产;调用点遇到它们时另行处理。
+                MonoItem::Fn(instance) if !matches!(instance.def, InstanceKind::Shim(..)) => Some(instance),
+                // 静态变量 / 全局汇编在节点图里没有对应表示。
+                MonoItem::Fn(_) | MonoItem::Static(_) | MonoItem::GlobalAsm(_) => None,
+            })
+            .filter(|x| seen.insert(*x))
+            .collect::<Vec<_>>();
         for func in instance {
             let sig = self.helper().fn_sig(func);
             let params = self.helper().fn_params(func, sig).iter().map(|x| self.compile_ty(DUMMY_SP, *x)).collect::<Result<Vec<_>>>()?;
@@ -238,7 +257,8 @@ impl<'tcx> Compiler<'tcx> {
                 }
             }
         }
-        if !main.is_empty() {
+        let has_main = !main.is_empty();
+        if has_main {
             self.target.main = main.into();
         }
         Ok(())
@@ -259,8 +279,15 @@ impl<'tcx> Compiler<'tcx> {
         panic_context!("Compiling: {func:?}");
         let tcx = self.tcx;
         let is_closure = matches!(tcx.def_kind(func.def_id()), DefKind::Closure);
-        let mut graph = NodeGraph::new(NodeGraphKind::ServerEntity, self.mangle_func(func));
-        let body = tcx.instance_mir(func.def);
+        let mut graph = NodeGraph::new(NodeGraphKind::ServerEntity, self.func_name(func));
+        // `instance_mir` 给的是**带泛型参数**的 MIR;入口现在会编上游泛型实例
+        // (`<Box<[i32]> as Drop>::drop` 之类),必须先按实例实参单态化,
+        // 否则局部变量类型里会留下 `T`。
+        let body = func.instantiate_mir_and_normalize_erasing_regions(
+            tcx,
+            TypingEnv::fully_monomorphized(),
+            rustc_middle::ty::EarlyBinder::bind(tcx, tcx.instance_mir(func.def).clone()),
+        );
         // graph.description = self.tcx.sess.source_map().span_to_snippet(body.span).unwrap();
         let mut locals = IndexVec::<Local, CompiledLocal<LocalRef>>::new(); // TODO: adapt for struct, struct list and map
         let args = tcx.fn_arg_idents(func.def_id()).iter().enumerate().map(|(i, x)| x.as_ref().map(rustc_span::Ident::to_string).unwrap_or_else(|| format!("arg{i}"))).collect::<Vec<_>>();
@@ -342,7 +369,7 @@ impl<'tcx> Compiler<'tcx> {
                 func,
                 compiler: self,
                 graph: &mut graph,
-                body,
+                body: &body,
                 locals: &locals,
             };
             for x in body.basic_blocks.iter() {

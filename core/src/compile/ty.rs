@@ -89,12 +89,21 @@ impl<'tcx> Compiler<'tcx> {
         })
     }
 
+    /// 函数的链接键:rustc 的 mangled 符号名。
+    ///
+    /// `symbol_name` 是 rustc 给「从本地 crate 调用这个实例」用的符号名,上游
+    /// crate 的实例也会解析成上游那份名字 —— 与 LLVM 链接时用的 key 一致,
+    /// 跨 crate 的引用才能在链接期对上。
     pub fn mangle_func(&self, func: Instance<'tcx>) -> String {
-        if self.tcx.codegen_fn_attrs(func.def_id()).contains_extern_indicator() {
-            self.tcx.symbol_name(func).to_string()
-        } else {
-            Self::mangle_adt(func.def_id(), func.args)
-        }
+        self.tcx.symbol_name(func).to_string()
+    }
+
+    /// 给人看的函数名(节点资产名 / 调试输出)。
+    ///
+    /// 比 mangled 名好读得多,但**不能当链接键**:同一个函数在不同 crate 里
+    /// 拼出来的形式未必一致。
+    pub fn func_name(&self, func: Instance<'tcx>) -> String {
+        Self::mangle_adt(func.def_id(), func.args)
     }
 
     fn mangle_adt(def: DefId, s: GenericArgsRef) -> String {
@@ -183,7 +192,7 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     pub fn compile_ty(&mut self, span: Span, ty: Ty<'tcx>) -> Result<IrKind> {
-        assert!(!ty.has_param());
+        assert!(!ty.has_param(), "has_param: {ty}");
         if let Some(n) = self.compile_native_ty(span, ty) {
             return n;
         }
@@ -243,9 +252,8 @@ impl<'tcx> Compiler<'tcx> {
             // `[T; N]` 在节点图里就是列表,长度不进入类型(和 `List<T>` 同型)。
             TyKind::Array(ele, _) => IrKind::list(self.compile_ty(span, *ele)?),
             TyKind::Pat(e, _) => self.compile_ty(span, *e)?, // TODO?
-            TyKind::Slice(_) => {
-                self.tcx.dcx().span_fatal(span, "Slice is still unsupported, see array and List")
-            },
+            // `[T]` 与 `[T; N]` / `List<T>` 同型:元素类型相同,长度不进类型。
+            TyKind::Slice(ele) => IrKind::list(self.compile_ty(span, *ele)?),
             TyKind::FnDef(_, _) => todo!(),
             TyKind::FnPtr(_, _) => todo!(),
             TyKind::Alias(_, _) => todo!(),
