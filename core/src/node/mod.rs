@@ -160,10 +160,13 @@ impl NodeKind {
         values_in_types: Vec<NativeKind>,
         values_out_types: Vec<NativeKind>,
     ) -> Self {
+        // kernel 默认与 shell 同号:官方导出的固定节点都带着 `kernel_ref`,
+        // 指向同一个 shell id。变体节点(泛型)会另外改写 kernel,结构体变体
+        // 则由 `node_struct` 清零(变体表里没有结构体这一档)。
         Self::native(
             identifier::AssetKind::SysCallStub,
             id,
-            0,
+            id,
             controls_in_num,
             controls_out_num,
             values_in_types.into_iter().map(Some).collect(),
@@ -193,6 +196,8 @@ impl NodeKind {
         }
     }
     fn encode_kernel(&self) -> Option<Identifier> {
+        // kernel 为 0 表示「没有 kernel」:结构体变体节点的变体表里没有这一档,
+        // 官方导出也不带 `kernel_ref`。
         if self.id.kernel == 0 {
             return None;
         }

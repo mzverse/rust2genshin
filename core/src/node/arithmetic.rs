@@ -602,19 +602,16 @@ pub fn node_cast(from_ty: NativeKind, to_ty: NativeKind) -> Option<NodeKind> {
 
 /// 取整(ID 224,`Arithmetic.Math.Round`):`Flt` 进 → `Int` 出。
 ///
-/// 第二个引脚是取整方式(`RoundingLogic` 枚举):四舍五入 / 向上 / 向下 / 截尾。
+/// 第二个引脚是取整方式(`RoundingMode` 枚举):四舍五入 / 向上 / 向下 / 截尾。
 /// 默认值由调用方填 [`ROUNDING_TRUNCATE`]。
 pub fn node_round() -> NodeKind {
-    // kernel 与 shell 同号(官方导出里这个节点的 `kernel_ref` 就是 224)。
-    let mut kind = NodeKind::expr(224, vec![Float, Enum(ROUNDING_LOGIC)], Int);
-    kind.id.kernel = 224;
-    kind
+    NodeKind::expr(224, vec![Float, Enum(ROUNDING_MODE)], Int)
 }
 
-/// `RoundingLogic` 枚举(TypeID 10008 → `Enum(8)`)。
-pub const ROUNDING_LOGIC: i32 = 8;
+/// 取整方式枚举(游戏里叫 `RoundingLogic`,TypeID 10008 → `Enum(8)`)。
+pub const ROUNDING_MODE: i32 = 8;
 
-/// 截尾取整(`RoundingLogic.TRUNCATE`,枚举项 ID 703)。
+/// 截尾取整(`RoundingMode.Truncate`,枚举项 ID 703)。
 ///
 /// Rust 的 `as` 从浮点转整数是**向零取整**,与这个模式一致;游戏里默认的
 /// 类型转换节点是四舍五入,所以浮点转整数要改用取整节点。
@@ -653,7 +650,7 @@ mod tests {
     fn 取整节点的引脚形状() {
         let kind = node_round();
         // 输入:被取整的浮点数 + 取整方式(枚举);输出:整数
-        assert_eq!(kind.values_in_types, vec![Some(Float), Some(Enum(ROUNDING_LOGIC))]);
+        assert_eq!(kind.values_in_types, vec![Some(Float), Some(Enum(ROUNDING_MODE))]);
         assert_eq!(kind.values_out_types, vec![Int]);
         assert_eq!(kind.id.id, 224);
         assert_eq!(kind.id.kernel, 224);
