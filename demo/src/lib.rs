@@ -445,3 +445,9 @@ pub fn test_borrow_tuple() {
 pub fn test_float_to_int(f: f32) -> i32 {
     f as i32
 }
+
+/// 取整成整数:`itrunc` 截尾取整(向零),与 Rust 的 `as` 语义一致。
+#[unsafe(no_mangle)]
+pub fn test_itrunc(f: f32) -> i32 {
+    f.itrunc()
+}

@@ -1,4 +1,4 @@
-use rust2genshin_lib_internal::{native, native_calc};
+use rust2genshin_lib_internal::{native, native_calc, native_enum};
 use crate::{String, ToString};
 
 /// 三维向量 (Server 类型 ID 12,Vec3)
@@ -170,6 +170,11 @@ pub unsafe trait F32 {
     fn asin(self) -> Self;
     fn acos(self) -> Self;
     fn atan(self) -> Self;
+
+    fn ifloor(self) -> i32;
+    fn iceil(self) -> i32;
+    fn iround(self) -> i32;
+    fn itrunc(self) -> i32;
 }
 
 unsafe impl I32 for i32 {
@@ -229,8 +234,44 @@ unsafe impl F32 for f32 {
 
     #[native_calc(296)]
     fn atan(self) -> Self;
+
+    // 这几个方法要在目标 crate 里能用,必须 `inline(always)`:目标 crate 编译时
+    // 拿不到本 crate 的 MIR,只有内联进来之后才会变成对下面那个无体原生
+    // 函数的调用,后端才认得出(与 `log` 的写法同理)。
+    #[inline(always)]
+    fn ifloor(self) -> i32 {
+        f32_to_i32(self, RoundingMode::RoundDown)
+    }
+
+    #[inline(always)]
+    fn iceil(self) -> i32 {
+        f32_to_i32(self, RoundingMode::RoundUp)
+    }
+
+    #[inline(always)]
+    fn iround(self) -> i32 {
+        f32_to_i32(self, RoundingMode::RoundNearest)
+    }
+
+    #[inline(always)]
+    fn itrunc(self) -> i32 {
+        f32_to_i32(self, RoundingMode::Truncate)
+    }
 }
+
 impl ToString for f32 {
     #[native("to_string")]
     fn to_string(&self) -> String;
 }
+
+/// 取整方式(对应游戏的 `RoundingLogic`,TypeID 10008 → `Enum(8)`)。
+#[native_enum(8)]
+enum RoundingMode {
+    RoundUp = 700,
+    RoundDown = 701,
+    RoundNearest = 702,
+    Truncate = 703,
+}
+
+#[native_calc(224)]
+fn f32_to_i32(value: f32, mode: RoundingMode) -> i32;
