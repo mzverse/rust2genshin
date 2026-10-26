@@ -2,7 +2,7 @@ use super::*;
 use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_field_mut, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef, can_read_into, copy_until};
-use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_subtract};
+use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, ROUNDING_TRUNCATE, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_round, node_subtract};
 use crate::node::list::MAX_ASSEMBLE_ELEMENTS;
 use crate::node::{Link, Lower, NativeNodeId, ValueIn};
 use crate::unwrap;
@@ -256,6 +256,16 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 if from_kind == to_kind {
                     // No-op cast (e.g. i32 as isize, or identity casts inside expressions).
                     self.compile_operand(op, span)?
+                } else if from_kind.to_native() == Some(NativeKind::Float)
+                    && to_kind.to_native() == Some(NativeKind::Int)
+                {
+                    // 浮点转整数:Rust 的 `as` 是**向零取整**,而游戏里的类型转换
+                    // 节点默认四舍五入,所以改用取整节点(ID 224)+ 截尾取整。
+                    let node = self.graph.insert(node_ir_native(node_round()));
+                    let v = self.compile_operand(op, span)?;
+                    self.graph.set_value_in(Link::node(node, 0), v);
+                    self.graph.set_default(Link::node(node, 1), Some(ROUNDING_TRUNCATE.into()));
+                    ValueIn::link(Link::node(node, 0))
                 } else {
                     let from_kind = from_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{from_ty:?}")));
                     let to_kind = to_kind.to_native().unwrap_or_else(|| self.tcx.dcx().span_fatal(span, format!("{target_ty:?}")));

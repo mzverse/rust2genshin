@@ -439,3 +439,9 @@ pub fn test_borrow() {
 pub fn test_borrow_tuple() {
     log(borrow_tuple_read((1, 2)));
 }
+
+/// 浮点转整数:Rust 的 `as` 是向零取整(`3.9 → 3`),编译成取整节点 + 截尾取整。
+#[unsafe(no_mangle)]
+pub fn test_float_to_int(f: f32) -> i32 {
+    f as i32
+}
