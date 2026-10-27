@@ -43,7 +43,12 @@
         html_elem("head", {
             html.meta(charset: "utf-8");
             html.meta(name:"viewport", content: "width=device-width, initial-scale=1.0");
-            context html.base(href: base_path + this-doc().path);
+            {
+                let doc = this-doc();
+                if doc != none {
+                    context html.base(href: base_path + doc.path);
+                }
+            }
             if document.title != none {
                 html_elem("title", contentToString(document.title));
             }

@@ -59,6 +59,10 @@ cargo run -p rust2genshin-docs --bin watch
 
     - Project resolution 可设为 Lock database (experimental) （增量解析）
 
+- Preview
+
+    - Compilation设为`HTML`（需要Tinymist 0.15.10+），或者你想以PDF模式预览也行
+
 == VS Code
 
 安装插件Tinymist Typst并自动安装Tinymist
