@@ -19,10 +19,17 @@
 //! 要返回一个 `Entity<W> where W: Render` 拖拽负载(`div.rs:499`),为了拖一个节点
 //! 建一整个 Render 实体不划算;路 A 已经够用。
 //!
-//! 事件分工:节点的 `on_mouse_down` 只记 `drag = Some(Drag { node: Some(i) })` 并
-//! `stop_propagation()`(否则同一次按下会既拖节点又平移画布);
-//! 容器的 `on_mouse_down` 看到冒上来的事件就记 `node: None`(平移);
-//! 移动、缩放全部在容器上。
+//! 事件分工:节点的左键 `on_mouse_down` 算出这次要拖的一组节点、记进
+//! [`Drag::Nodes`] 并 `stop_propagation()`(否则同一次按下会既拖节点又框选 /
+//! 平移画布);冒到容器的左键按下 = 空白处框选([`Drag::Marquee`]),中键 = 平移
+//! ([`Drag::Pan`]);移动、缩放、松手全部在容器上。
+//!
+//! # 焦点
+//!
+//! 画布持有焦点([`Viewer::canvas_focus`]),左栏持有另一个焦点
+//! ([`Viewer::search_focus`])。这不是为了输入字符 —— 是为了让
+//! `ModifiersChanged` 事件能到达根 `div`:gpui 只沿"根 → 已聚焦元素"这条路径
+//! 分发它,焦点为空时路径上只剩根 View 的 dispatch 节点。
 //!
 //! # 坐标
 //!
@@ -47,10 +54,10 @@ use std::rc::Rc;
 // `gpui::util` 是私有模块,`FluentBuilder`(提供 `.when(..)`)只能从 prelude 拿。
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Bounds, Context, ExternalPaths, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Point, Render, ScrollDelta,
-    ScrollWheelEvent, Size, StatefulInteractiveElement, Styled, Window, canvas, div, hsla, point,
-    px, rgba, size,
+    Bounds, Context, ExternalPaths, InteractiveElement, IntoElement, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels,
+    Point, Render, ScrollDelta, ScrollWheelEvent, Size, StatefulInteractiveElement, Styled, Window,
+    canvas, div, hsla, point, px, rgba, size,
 };
 use rust2genshin::compile::ir::IrNodeId;
 use rust2genshin::compile::link::Target;
@@ -58,14 +65,14 @@ use rust2genshin::node::NodeRef;
 
 use crate::doc::{
     BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y, Doc,
-    Edge, GraphEntry, NodeEntry, comment_height, comment_width, label,
+    Edge, GraphEntry, NodeEntry, comment_height, comment_width,
 };
 use crate::optimize::{self, RULES, Snapshot};
 
 // Ctrl+Z → 撤销。`actions!` 展开出一个单元结构体 + `gpui::Action` 实现;
 // 键位在 `main.rs` 绑(`AppContext::bind_keys`),处理也挂在 App 级
-// (`AppContext::on_action`)。**不依赖焦点** —— 画布里的节点 div 都没焦点,
-// 走元素级 `on_key_down` 得先搭一套 focus 机制,不值。
+// (`AppContext::on_action`)。**不依赖焦点** —— 焦点在左栏时也该能撤销,
+// 挂在 App 级就不用每个持有焦点的元素各绑一遍。
 gpui::actions!([Undo]);
 
 /// 缩放下限。再小节点上就是一个点,看不清。
@@ -74,6 +81,14 @@ const MIN_SCALE: f32 = 0.2;
 const MAX_SCALE: f32 = 4.0;
 /// 一格滚轮的缩放倍率。
 const ZOOM_STEP: f32 = 1.1;
+/// 左栏默认宽度(px)。
+const TOC_WIDTH: f32 = 240.0;
+/// 左栏宽度下限:再窄连函数名都放不下。
+const TOC_MIN_WIDTH: f32 = 160.0;
+/// 左栏宽度上限。
+const TOC_MAX_WIDTH: f32 = 720.0;
+/// 左栏右侧分隔条的宽度(px)。
+const TOC_DIVIDER_WIDTH: f32 = 5.0;
 
 // ------------------------------------------------------------------ 配色
 
@@ -85,6 +100,15 @@ fn canvas_bg() -> gpui::Rgba {
 /// 之前用 0x161a22 太暗,字和底色几乎糊在一起。
 fn panel_bg() -> gpui::Rgba {
     rgba(0x232a36ff)
+}
+/// 左栏分隔条的底色。**不透明** —— 之前没设背景,空隙里透出的是窗口底色,
+/// 看起来像左栏裂了一道缝。
+fn divider_bg() -> gpui::Rgba {
+    rgba(0x2c3442ff)
+}
+/// 分隔条悬停时的底色(和按下拖动的反馈)。
+fn divider_hover_bg() -> gpui::Rgba {
+    rgba(0x3d4a5eff)
 }
 fn edge_ctrl() -> gpui::Rgba {
     rgba(0x7aa2f7c0)
@@ -106,6 +130,21 @@ fn text_hi() -> gpui::Rgba {
 }
 fn text_dim() -> gpui::Rgba {
     rgba(0x8a93a6ff)
+}
+/// 选中节点的描边色。亮黄 —— 和各类节点自己的颜色都区分得开。
+fn selected_border() -> gpui::Rgba {
+    rgba(0xffd866ff)
+}
+/// 按住 Ctrl 悬停复合节点时的描边色。青色 —— 提示"点一下能跳进定义"。
+fn link_hint_border() -> gpui::Rgba {
+    rgba(0x4ec9b0ff)
+}
+/// 框选矩形的边框 / 底色。
+fn marquee_border() -> gpui::Rgba {
+    rgba(0x7aa2f7ff)
+}
+fn marquee_bg() -> gpui::Rgba {
+    rgba(0x7aa2f733)
 }
 /// 注释框底色。比节点淡一档,读起来是「备注」而不是另一个节点。
 fn comment_bg() -> gpui::Rgba {
@@ -154,6 +193,10 @@ struct NodeView {
     w: f32,
     h: f32,
     border: gpui::Rgba,
+    /// 这是不是复合节点(`Fn`)。Ctrl+点击 / Ctrl+悬停只对它有意义。
+    is_fn: bool,
+    /// 这个节点当前是不是被选中(单选 / 框选)。选中态用另一种描边色。
+    selected: bool,
     /// 图边界节点(`entry` / `exit`)描粗一档。
     ///
     /// ⚠️ 这**只是**"这里是图边界"的视觉标记,**不是**可达性结论,
@@ -247,6 +290,7 @@ fn build_nodes(
     pos: &[Point<f32>],
     origin: Point<f32>,
     scale: f32,
+    selected: &[usize],
 ) -> Vec<NodeView> {
     g.nodes
         .iter()
@@ -257,12 +301,14 @@ fn build_nodes(
             let (p, s) = node_box(pos, &g.nodes, origin, scale, i).unwrap_or_default();
             NodeView {
                 index: i,
-                label: label(&n.kind, &n.type_label),
+                label: n.display.clone(),
                 x: p.x,
                 y: p.y,
                 w: s.width,
                 h: s.height,
                 border: node_color(&n.kind),
+                is_fn: matches!(n.kind, IrNodeId::Fn(_)),
+                selected: selected.contains(&i),
                 boundary: g.entry.contains(&i) || g.exit.contains(&i),
                 scale,
                 comment: n.comment.as_ref().map(|c| {
@@ -687,15 +733,23 @@ struct NodeMenu {
     y: f32,
 }
 
-struct Drag {
-    /// `Some(i)` = 拖第 `i` 个节点;`None` = 平移画布。
-    node: Option<usize>,
-    /// 上一次事件的鼠标位置,**窗口**坐标。
-    ///
-    /// 存窗口坐标而不是容器局部坐标是刻意的:拖动和平移都只用**增量**
-    /// (`event.position - last`),平移量与坐标系原点无关,所以两条路径
-    /// 都不需要知道画布容器在哪。只有缩放要换算(见 `on_scroll_wheel`)。
-    last: Point<f32>,
+/// 拖拽的种类。
+enum Drag {
+    /// 拖动**一组**节点(可能只有一个)。`last` 是上一次鼠标位置(窗口坐标)。
+    Nodes {
+        /// 这次要一起移动的节点(展平下标)。
+        indices: Vec<usize>,
+        /// 按下的那个节点 —— 松手时用它判断"是单击还是拖动"。
+        primary: usize,
+        /// 有没有真的动过。没动过 = 单击 = 选区收成一个节点。
+        moved: bool,
+        last: Point<f32>,
+    },
+    /// 平移画布。`last` 是上一次鼠标位置(窗口坐标)。
+    Pan { last: Point<f32> },
+    /// 框选。`start` / `cur` 是**容器局部**坐标(和节点框同一个坐标系,
+    /// 判交才不用来回换算)。
+    Marquee { start: Point<f32>, cur: Point<f32> },
 }
 
 pub struct Viewer {
@@ -730,10 +784,46 @@ pub struct Viewer {
     menu: Option<NodeMenu>,
     /// 当前悬停命中的引脚 / 边,`None` = 鼠标不在任何带气泡的东西上。
     hover: Option<Hover>,
+    /// 左栏宽度(px),拖左栏右边那条分隔条改。
+    toc_width: f32,
+    /// 正在拖分隔条。放在 `Viewer` 上而不是分隔条自己的状态里:
+    /// 指针拖出去以后分隔条的 hitbox 不再 hover,移动事件收不到。
+    resizing_toc: bool,
+    /// 上一次移动事件的指针 x(**窗口**坐标),算宽度增量用。
+    toc_drag_x: f32,
+    /// 左栏搜索框里的文字。空串 = 不过滤。
+    search: String,
+    /// 搜索框的焦点。点击搜索框时 `window.focus(..)`,键盘输入才进得来。
+    search_focus: gpui::FocusHandle,
+    /// 画布的焦点。点画布 / 节点时焦点落在这里(而不是 `window.blur()`)。
+    ///
+    /// **为什么非得有个焦点**:gpui 的 `ModifiersChanged` 事件只沿"根 → 已聚焦
+    /// 元素"这条路径分发(`window.rs` 的 `dispatch_modifiers_changed_event`)。
+    /// 焦点是 `None` 时路径上只有根 View 的那一个 dispatch 节点,我们挂在根 `div`
+    /// 上的 `on_modifiers_changed` 收不到 —— 表现就是"按住 Ctrl 不动鼠标时
+    /// 节点不变色"。让画布始终持有焦点,根 `div` 就总在路径上。
+    canvas_focus: gpui::FocusHandle,
+    /// 当前选中的节点(展平后的**下标**,不是 `NodeRef`)。
+    ///
+    /// 跟着当前图走:切图时清空(`select` 里做)。下标只在**这一张图**里
+    /// 有意义,换图就换一套。
+    selected: Vec<usize>,
+    /// 框选的实时矩形(容器局部坐标)。`None` = 没在框选。
+    ///
+    /// 只在拖动过程中存在,松手后清掉 —— 选中的结果记在 [`Viewer::selected`]。
+    marquee: Option<(Point<f32>, Point<f32>)>,
+    /// Ctrl 是否按着。悬停复合节点时用它决定要不要变色(提示"点一下能跳进去")。
+    ctrl_held: bool,
+    /// 鼠标当前压在哪个节点上(展平下标)。`None` = 没压在任何节点上。
+    ///
+    /// 和 [`Viewer::hover`](引脚/边的气泡)是两回事:这个只用来判断
+    /// "Ctrl+悬停"要不要给节点换色。
+    hover_node: Option<usize>,
 }
 
 impl Viewer {
-    pub fn new() -> Self {
+    /// `cx` 只用来拿 [`gpui::FocusHandle`],没有别的初始化要上下文。
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             doc: Doc::new(),
             current: 0,
@@ -747,7 +837,30 @@ impl Viewer {
             status: None,
             menu: None,
             hover: None,
+            toc_width: TOC_WIDTH,
+            resizing_toc: false,
+            toc_drag_x: 0.0,
+            search: String::new(),
+            search_focus: cx.focus_handle(),
+            canvas_focus: cx.focus_handle(),
+            selected: Vec::new(),
+            marquee: None,
+            ctrl_held: false,
+            hover_node: None,
         }
+    }
+
+    /// 开窗时该把焦点交给谁:画布。
+    ///
+    /// 见 [`Viewer::canvas_focus`]:焦点为 `None` 时 modifier 事件到不了根
+    /// `div`,按住 Ctrl 悬停复合节点就不变色。
+    pub fn initial_focus(&self) -> gpui::FocusHandle {
+        self.canvas_focus.clone()
+    }
+
+    /// 图名是否命中搜索词。空搜索词一律命中;比较前两边都转小写。
+    fn matches_search(name: &str, query: &str) -> bool {
+        query.is_empty() || name.to_lowercase().contains(&query.to_lowercase())
     }
 
     /// 追加一个已解析的 `Target`,并切到它的第一张图。拖放回调与命令行入口都走这里。
@@ -785,6 +898,8 @@ impl Viewer {
         self.status = None;
         // 菜单记的节点下标属于上一张图,不能留着。
         self.menu = None;
+        // 选区也是上一张图的下标,换图就得清空。
+        self.clear_selection();
         cx.notify();
     }
 
@@ -831,6 +946,7 @@ impl Viewer {
             });
         }
         self.set_pos(r.pos);
+        self.clear_selection();
         self.status = Some(r.status);
         cx.notify();
     }
@@ -933,8 +1049,17 @@ impl Viewer {
             });
         }
         self.set_pos(r.pos);
+        // 优化会删 / 换节点,展平下标跟着变 —— 旧选区不能再留着指别人。
+        self.clear_selection();
         self.status = Some(r.status);
         cx.notify();
+    }
+
+    /// 清空选区与框选矩形。凡是有可能改动"展平下标 → 节点"对应关系的操作
+    /// 都要调它,否则高亮会落到别的节点上、拖动还会拖错。
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.marquee = None;
     }
 
     /// 当前图的展平顺序(`NodeRef` 序列),与 `positions[current]` 同序。
@@ -966,6 +1091,7 @@ impl Viewer {
             });
         }
         self.set_pos(r.pos);
+        self.clear_selection();
         self.status = Some(r.status);
         cx.notify();
     }
@@ -981,6 +1107,8 @@ impl Viewer {
         let pos = self.positions.get(self.current).cloned().unwrap_or_default();
         let (new_pos, status) = optimize::undo(&mut self.doc, self.current, &refs, &pos, &entry);
         self.set_pos(new_pos);
+        // 撤销会把节点列表换回旧版本,下标对应关系跟着变。
+        self.clear_selection();
         self.status = Some(status);
         cx.notify();
     }
@@ -993,7 +1121,7 @@ impl Viewer {
     ///
     /// **只有气泡内容变了才 `notify`** —— 光标在同一个引脚上移动时文案不变,
     /// 每帧重绘纯属浪费(气泡锚点会跟着光标动,所以位置变了也要重绘)。
-    fn update_hover(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
+    fn update_hover(&mut self, at_window: Point<f32>, ctrl: bool, cx: &mut Context<Self>) {
         let o = self.canvas_origin.get();
         let at = point(at_window.x - o.x, at_window.y - o.y);
         let hit = self.pick(at);
@@ -1002,10 +1130,53 @@ impl Viewer {
             (Some(h), Some(n)) => h.text != n.text || h.at != n.at,
             _ => true,
         };
+        // Ctrl 按下/松开也要重绘:它决定复合节点要不要换成"可跳转"的青色。
+        // 不动鼠标、只按 Ctrl 的那条路走根 `div` 的 `on_modifiers_changed`,
+        // 这里只是让鼠标事件也顺手同步一次(焦点万一丢了也能跟上)。
+        let ctrl_changed = self.set_ctrl_held(ctrl);
+        let node = self.node_at(at);
+        let node_changed = self.hover_node != node;
         if changed {
             self.hover = hit;
+        }
+        if node_changed {
+            self.hover_node = node;
+        }
+        if changed || ctrl_changed || node_changed {
             cx.notify();
         }
+    }
+
+    /// 记录 Ctrl 的按下状态;真变了返回 `true`(调用方据此决定要不要重绘)。
+    fn set_ctrl_held(&mut self, ctrl: bool) -> bool {
+        if self.ctrl_held == ctrl {
+            return false;
+        }
+        self.ctrl_held = ctrl;
+        true
+    }
+
+    /// 容器局部坐标 `at` 处的节点(展平下标)。
+    ///
+    /// 命中多个时取**最后一个**(后画的在上层)。节点框用和渲染一样的
+    /// [`node_box`],所以"看到的"和"命中的"是同一套几何。
+    fn node_at(&self, at: Point<f32>) -> Option<usize> {
+        let g = self.doc.graphs.get(self.current)?;
+        let pos = self
+            .positions
+            .get(self.current)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let mut hit = None;
+        for i in 0..g.nodes.len() {
+            let Some((p, s)) = node_box(pos, &g.nodes, self.origin, self.scale, i) else {
+                continue;
+            };
+            if at.x >= p.x && at.x <= p.x + s.width && at.y >= p.y && at.y <= p.y + s.height {
+                hit = Some(i);
+            }
+        }
+        hit
     }
 
     /// 在容器局部坐标 `at` 上做一次命中测试。悬停和渲染共用这一条路径,
@@ -1043,7 +1214,7 @@ impl Viewer {
 }
 
 impl Render for Viewer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // ---- 占位分支:错误 / 没有文档 / 当前图是空的 ----
         if let Some(msg) = self.placeholder() {
             return div()
@@ -1076,6 +1247,10 @@ impl Render for Viewer {
         let origin = self.origin;
         let scale = self.scale;
         let canvas_origin = self.canvas_origin.clone();
+        let canvas_focus = self.canvas_focus.clone();
+        // Ctrl 悬停复合节点 → 换青色描边(提示"点一下能跳进定义")。
+        let ctrl_held = self.ctrl_held;
+        let hover_node = self.hover_node;
         // 当前图的坐标。缺(理论上只有坐标还没跟上时)按空切片处理 ——
         // `build_nodes` / `build_edges` 对每个节点都是 `get` + 默认值。
         let pos = self
@@ -1083,7 +1258,7 @@ impl Render for Viewer {
             .get(self.current)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let nodes = build_nodes(g, pos, origin, scale);
+        let nodes = build_nodes(g, pos, origin, scale, &self.selected);
         let edges = build_edges(g, pos, origin, scale);
         let boundaries = build_boundaries(g, pos, origin, scale);
         let pins = build_pins(g, pos, origin, scale);
@@ -1193,7 +1368,15 @@ impl Render for Viewer {
                 .px_1()
                 .rounded_md()
                 .bg(node_bg())
-                .border_color(nv.border)
+                // 选中的节点描边换成亮色,一眼看得出选中了哪些。
+                .border_color(if nv.selected {
+                    selected_border()
+                } else if nv.is_fn && ctrl_held && hover_node == Some(nv.index) {
+                    // 按住 Ctrl 悬停复合节点:提示"点一下能跳进定义"。
+                    link_hint_border()
+                } else {
+                    nv.border
+                })
                 .text_color(text_hi())
                 // 字号**跟随缩放**:`text_xs()` 是固定 rem(≈12px),缩放时节点框
                 // 会跟着变大变小而字不变 —— 放大后字挤成一小撮、缩小后又溢出被裁。
@@ -1201,15 +1384,39 @@ impl Render for Viewer {
                 .text_size(px((BASE_FONT_PX * nv.scale).max(6.0)))
                 .overflow_hidden()
                 .cursor_grab();
-            d = if nv.boundary { d.border_2() } else { d.border_1() };
+            d = if nv.boundary || nv.selected {
+                d.border_2()
+            } else {
+                d.border_1()
+            };
             layer = layer.child(
                 // 节点拖拽用**左键**;画布平移才用中键。
                 d.on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |v, e: &MouseDownEvent, _w, cx| {
+                    cx.listener(move |v, e: &MouseDownEvent, window, cx| {
                         // 左键按在节点上顺手关掉已经弹出的菜单。
                         v.menu = None;
-                        v.begin_drag(Some(nv.index), from_px(e.position));
+                        // 焦点从左侧列表挪到画布 —— 之后打字不该再进搜索框。
+                        window.focus(&v.canvas_focus);
+                        // Ctrl+左键:跳到复合节点的定义。
+                        if e.modifiers.control && nv.is_fn {
+                            v.jump_to_definition(nv.index, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                        // Shift+左键:加选 / 取消选这一个节点(不动选区其余部分)。
+                        if e.modifiers.shift {
+                            if let Some(p) = v.selected.iter().position(|x| *x == nv.index) {
+                                v.selected.remove(p);
+                            } else {
+                                v.selected.push(nv.index);
+                            }
+                            v.selected.sort_unstable();
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                        v.begin_node_drag(nv.index, from_px(e.position));
                         // 不拦住的话同一次左键按下会**又拖节点又平移画布**:
                         // 事件继续冒泡到容器的 `on_mouse_down`。容器只监听中键,
                         // 所以左键本来也不会走到那儿 —— 这个 stop_propagation 是双保险。
@@ -1296,6 +1503,24 @@ impl Render for Viewer {
                     .text_size(px((BASE_FONT_PX * scale).max(6.0)))
                     .text_color(text_dim())
                     .child(dv.text.clone()),
+            );
+        }
+
+        // ---- 框选矩形:半透明蓝框,画在节点之上 ----
+        // 坐标是**容器局部**(和节点框同一套),直接用 left/top。
+        if let Some((a, b)) = self.marquee {
+            let (x0, x1) = if a.x <= b.x { (a.x, b.x) } else { (b.x, a.x) };
+            let (y0, y1) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(x0))
+                    .top(px(y0))
+                    .w(px(x1 - x0))
+                    .h(px(y1 - y0))
+                    .border_1()
+                    .border_color(marquee_border())
+                    .bg(marquee_bg()),
             );
         }
 
@@ -1400,6 +1625,21 @@ impl Render for Viewer {
                             .text_xs()
                             .child("link")
                             .on_click(cx.listener(|v, _e, _w, cx| v.link_menu_node(cx))),
+                    )
+                    .child(
+                        // 跳到定义:切到被调用函数的那张图。
+                        div()
+                            .id("menu-goto")
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .overflow_hidden()
+                            .text_xs()
+                            .child("跳转到定义")
+                            .on_click(cx.listener(|v, _e, _w, cx| {
+                                v.goto_menu_node(cx);
+                            })),
                     ),
             );
         }
@@ -1410,6 +1650,9 @@ impl Render for Viewer {
             .flex_1()
             .h_full()
             .overflow_hidden()
+            // 画布自己持有焦点(见 `Viewer::canvas_focus` 的注释):
+            // 这样"根 → 画布"总在键盘 / modifier 事件的分发路径上。
+            .track_focus(&canvas_focus)
             .bg(canvas_bg())
             // 中键拖 = 平移画布,和 AutoCAD / Blender 的约定一致,用 move 光标。
             .cursor_move()
@@ -1418,17 +1661,34 @@ impl Render for Viewer {
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|v, e: &MouseDownEvent, _w, _cx| {
-                    v.begin_drag(None, from_px(e.position));
+                    v.drag = Some(Drag::Pan {
+                        last: from_px(e.position),
+                    });
                 }),
             )
-            // 左键 / 右键落在空白处:关掉菜单(节点上的按下已经 stop_propagation,
-            // 冒到这里的一定是空白处)。空白左键没有别的语义 —— 平移是中间拖。
+            // 左键落在空白处 = **框选**。节点上的按下已经 stop_propagation,
+            // 冒到这里的一定是空白处。
+            //
+            // 起手点记在**容器局部**坐标里(和节点框同一个坐标系),框选
+            // 判交时不用来回换算。
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|v, _e: &MouseDownEvent, _w, cx| {
+                cx.listener(|v, e: &MouseDownEvent, window, cx| {
+                    // 点画布空白 = 离开左栏,和 IDEA 里点编辑器一样把焦点交给
+                    // 编辑器(这里就是画布),打字不再进搜索框。
+                    window.focus(&v.canvas_focus);
                     if v.menu.take().is_some() {
                         cx.notify();
                     }
+                    let o = v.canvas_origin.get();
+                    let at = from_px(e.position);
+                    let local = point(at.x - o.x, at.y - o.y);
+                    v.drag = Some(Drag::Marquee {
+                        start: local,
+                        cur: local,
+                    });
+                    v.marquee = Some((local, local));
+                    cx.notify();
                 }),
             )
             .on_mouse_down(
@@ -1444,13 +1704,13 @@ impl Render for Viewer {
             // 详见模块头「拖拽路线」。
             .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
                 // 悬停命中**先**算:它跟"是不是在拖"无关,静止时也要跟手。
-                v.update_hover(from_px(e.position), cx);
+                v.update_hover(from_px(e.position), e.modifiers.control, cx);
                 // `take` 出来再放回去:下面有一支要把 `drag` 直接清成 None,
                 // 拿着 `&mut Drag` 就没法同时改 `v.drag`。
                 let Some(mut d) = v.drag.take() else {
                     return;
                 };
-                // 左键=拖节点,中键=平移,两种都在推进,别把一种挡掉。
+                // 左键=拖节点/框选,中键=平移,两种都在推进,别把一种挡掉。
                 if !matches!(
                     e.pressed_button,
                     Some(MouseButton::Left) | Some(MouseButton::Middle)
@@ -1461,26 +1721,42 @@ impl Render for Viewer {
                     return;
                 }
                 let now = from_px(e.position);
-                let delta = point(now.x - d.last.x, now.y - d.last.y);
-                d.last = now;
-                match d.node {
-                    Some(i) => {
+                match &mut d {
+                    Drag::Nodes {
+                        indices,
+                        last,
+                        moved,
+                        ..
+                    } => {
+                        let delta = point(now.x - last.x, now.y - last.y);
+                        *last = now;
+                        if delta.x != 0.0 || delta.y != 0.0 {
+                            *moved = true;
+                        }
                         // 位移要除以 `scale`,否则缩放越大节点跑得越快。
                         // `scale` 被夹在 [MIN_SCALE, MAX_SCALE],恒 > 0。
-                        // 坐标按图存:改的是当前图里第 `i` 个节点。
-                        if let Some(p) = v
-                            .positions
-                            .get_mut(v.current)
-                            .and_then(|ps| ps.get_mut(i))
-                        {
-                            p.x += delta.x / v.scale;
-                            p.y += delta.y / v.scale;
+                        // 坐标按图存:改的是当前图里那几个节点。
+                        if let Some(ps) = v.positions.get_mut(v.current) {
+                            for i in indices.iter() {
+                                if let Some(p) = ps.get_mut(*i) {
+                                    p.x += delta.x / v.scale;
+                                    p.y += delta.y / v.scale;
+                                }
+                            }
                         }
                     }
-                    None => {
+                    Drag::Pan { last } => {
+                        let delta = point(now.x - last.x, now.y - last.y);
+                        *last = now;
                         // 平移量与坐标系原点无关,所以直接用窗口坐标的增量。
                         v.origin.x += delta.x;
                         v.origin.y += delta.y;
+                    }
+                    Drag::Marquee { start, cur } => {
+                        // 框选的矩形用**容器局部**坐标 —— 和节点框同一坐标系。
+                        let o = v.canvas_origin.get();
+                        *cur = point(now.x - o.x, now.y - o.y);
+                        v.marquee = Some((*start, *cur));
                     }
                 }
                 v.drag = Some(d);
@@ -1495,6 +1771,32 @@ impl Render for Viewer {
                     v.drag = None;
                 }),
             )
+            // 左键松开:结束框选(把框里的节点选上),或者结束"拖了没动"的
+            // 单击(把选区收成这一个节点)。
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                    let Some(d) = v.drag.take() else {
+                        return;
+                    };
+                    match d {
+                        Drag::Marquee { start, cur } => {
+                            v.marquee_select(start, cur);
+                            v.marquee = None;
+                            cx.notify();
+                        }
+                        Drag::Nodes { primary, moved, .. } => {
+                            // 按下没动 = 单击,选区收成这一个节点。
+                            // (拖动过就不动选区 —— 那是"整组拖动"。)
+                            if !moved {
+                                v.select_only(primary);
+                                cx.notify();
+                            }
+                        }
+                        Drag::Pan { .. } => {}
+                    }
+                }),
+            )
             // 拖到窗口边缘外再松开时上面那个收不到(capture 阶段,要求容器**没被**
             // hover,正好补上另一半)。两个 handler 合起来覆盖"松手时指针在/
             // 不在画布内"两种情况。
@@ -1502,6 +1804,19 @@ impl Render for Viewer {
                 MouseButton::Middle,
                 cx.listener(|v, _e: &MouseUpEvent, _w, _cx| {
                     v.drag = None;
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                    let Some(d) = v.drag.take() else {
+                        return;
+                    };
+                    if let Drag::Marquee { start, cur } = d {
+                        v.marquee_select(start, cur);
+                        v.marquee = None;
+                        cx.notify();
+                    }
                 }),
             )
             .on_scroll_wheel(cx.listener(|v, e: &ScrollWheelEvent, _w, cx| {
@@ -1542,31 +1857,136 @@ impl Render for Viewer {
         // 而不是 `Styled` / `InteractiveElement` 上,所以每一层都得先 `.id(..)`
         // 变成 stateful 元素。**`.id()` 必须在调用它们之前**,链式调用是从左往右
         // 推导接收者的,写反了就还是普通 `Div`。
+        let toc_width = self.toc_width;
+        // 左栏(而不是搜索框本身)拿焦点 —— 和 IDEA 的项目栏一样:
+        // 焦点在左栏里时,键盘输入直接进搜索框。
+        let toc_focused = self.search_focus.is_focused(window);
+        let search_hint = self.search.is_empty();
+        let search_text = if search_hint {
+            "搜索节点名…".to_string()
+        } else {
+            self.search.clone()
+        };
+        let query = self.search.clone();
         let toc = div()
             .id("toc")
-            .w(px(240.0))
+            // 焦点在**整个左栏**上,不在搜索框上:点在列表项、空白处都能直接打字,
+            // 和 IDEA 的项目栏一样。键盘事件由此处的 `on_key_down` 收。
+            .track_focus(&self.search_focus)
+            .w(px(toc_width))
             .h_full()
             .flex_shrink_0()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
             .bg(panel_bg())
             .border_r_1()
             .border_color(hsla(0.0, 0.0, 1.0, 0.12))
             .p_2()
             .text_color(text_hi())
-            .children(self.doc.graphs.iter().enumerate().map(|(i, entry)| {
-                let active = i == self.current;
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, _e, window, cx| {
+                window.focus(&v.search_focus);
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _w, cx| {
+                let ks = &e.keystroke;
+                // Ctrl+V 粘贴:搜索词只取一行,把粘贴进来的多行裁剪/压平。
+                if ks.modifiers.control && ks.key == "v" {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
+                        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if !flat.is_empty() {
+                            v.search.push_str(&flat);
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                // 其余 Ctrl/Alt/Win 组合留给全局快捷键(Ctrl+Z 等)。
+                if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
+                    return;
+                }
+                match ks.key.as_str() {
+                    "backspace" => {
+                        v.search.pop();
+                    }
+                    "escape" => v.search.clear(),
+                    _ => match &ks.key_char {
+                        Some(ch) => v.search.push_str(ch),
+                        None => return,
+                    },
+                }
+                cx.notify();
+            }))
+            // 搜索框:自绘的最小输入框。gpui 0.2.2 没有现成的 TextInput,
+            // 焦点 + `on_key_down` 就能收字符(`KeyDownEvent::keystroke.key_char`)。
+            // 左栏有焦点时高亮,提示"现在打字的会进这里"。
+            .child(
                 div()
-                    .id(("graph", i))
+                    .id("search")
+                    .mb_2()
                     .px_2()
                     .py_1()
-                    .mb_1()
                     .rounded_sm()
-                    .cursor_pointer()
+                    .cursor_text()
                     .overflow_hidden()
                     .text_xs()
-                    .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
-                    .child(format!("{} ({})", entry.name, entry.nodes.len()))
-                    .on_click(cx.listener(move |v, _e, _w, cx| v.select(i, cx)))
+                    .border_1()
+                    .border_color(if toc_focused {
+                        hsla(0.0, 0.0, 1.0, 0.35)
+                    } else {
+                        hsla(0.0, 0.0, 1.0, 0.0)
+                    })
+                    .bg(hsla(0.0, 0.0, 1.0, if toc_focused { 0.14 } else { 0.08 }))
+                    .when(search_hint, |d| d.text_color(text_dim()))
+                    .child(search_text),
+            )
+            .child(
+                div()
+                    .id("toc-list")
+                    .flex_1()
+                    // flex 子项默认 `min-height: auto`,不加这条列表会把左栏撑高,
+                    // 滚动条永远不出现。
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(
+                        self.doc
+                            .graphs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, entry)| Self::matches_search(&entry.name, &query))
+                            .map(|(i, entry)| {
+                                let active = i == self.current;
+                                div()
+                                    .id(("graph", i))
+                                    .px_2()
+                                    .py_1()
+                                    .mb_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .overflow_hidden()
+                                    .text_xs()
+                                    .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
+                                    .child(format!("{} ({})", entry.name, entry.nodes.len()))
+                                    .on_click(cx.listener(move |v, _e, _w, cx| v.select(i, cx)))
+                            }),
+                    ),
+            );
+
+        // 分隔条:拖它改左栏宽度。宽度推进挂在**根节点**的 `on_mouse_move` 上,
+        // 因为指针一旦离开这 5px,分隔条自己的移动事件就没有 hitbox 了。
+        let divider = div()
+            .id("toc-divider")
+            .w(px(TOC_DIVIDER_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .bg(divider_bg())
+            .hover(|s| s.bg(divider_hover_bg()))
+            .cursor(gpui::CursorStyle::ResizeColumn)
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, e: &MouseDownEvent, _w, cx| {
+                v.resizing_toc = true;
+                v.toc_drag_x = from_px(e.position).x;
+                // 别让这次按下冒到画布那边当成"点空白处"。
+                cx.stop_propagation();
+                cx.notify();
             }));
 
         // ---- 右栏:优化 ----
@@ -1691,7 +2111,48 @@ impl Render for Viewer {
             .on_drop::<ExternalPaths>(cx.listener(|v, paths: &ExternalPaths, _w, cx| {
                 v.handle_drop(paths, cx);
             }))
+            // Ctrl 的按下/松开**不动鼠标**也要跟上(悬停复合节点要换成青色)。
+            //
+            // 挂在根 `div` 上而不是画布上:事件只沿"根 → 已聚焦元素"分发,
+            // 焦点在左栏搜索框时画布不在路径上,根 `div` 则在(它是左右两栏的
+            // 共同祖先)。画布始终持有焦点是为了"焦点为 None 时路径上只有根
+            // View 那一个节点"这个坑,见 `Viewer::canvas_focus`。
+            .on_modifiers_changed(cx.listener(|v, e: &ModifiersChangedEvent, _w, cx| {
+                if v.set_ctrl_held(e.modifiers.control) {
+                    cx.notify();
+                }
+            }))
+            // 分隔条拖动:根节点覆盖整窗,指针走到哪都能收到移动事件。
+            .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
+                if !v.resizing_toc {
+                    return;
+                }
+                // 和画布拖拽一样的兜底:指针移出窗口再回来时按键已经没了。
+                if !matches!(e.pressed_button, Some(MouseButton::Left)) {
+                    v.resizing_toc = false;
+                    cx.notify();
+                    return;
+                }
+                let x = from_px(e.position).x;
+                v.toc_width =
+                    (v.toc_width + (x - v.toc_drag_x)).clamp(TOC_MIN_WIDTH, TOC_MAX_WIDTH);
+                v.toc_drag_x = x;
+                cx.notify();
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                if v.resizing_toc {
+                    v.resizing_toc = false;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                if v.resizing_toc {
+                    v.resizing_toc = false;
+                    cx.notify();
+                }
+            }))
             .child(toc)
+            .child(divider)
             .child(canvas_el)
             .child(rules_panel)
             .into_any_element()
@@ -1699,8 +2160,103 @@ impl Render for Viewer {
 }
 
 impl Viewer {
-    fn begin_drag(&mut self, node: Option<usize>, last: Point<f32>) {
-        self.drag = Some(Drag { node, last });
+    /// 开始拖**一组**节点。
+    ///
+    /// `indices` 是这次要一起移动的节点(展平下标)。按下时已经把选区
+    /// 算好了 —— 这里只记下"要动哪些"和起点。
+    fn begin_drag(&mut self, indices: Vec<usize>, primary: usize, last: Point<f32>) {
+        self.drag = Some(Drag::Nodes {
+            indices,
+            primary,
+            moved: false,
+            last,
+        });
+    }
+
+    /// 按下节点:决定这次拖哪些节点。
+    ///
+    /// - 该节点**已经在选区里** → 拖整个选区(多选的"整体拖动")。
+    /// - 不在选区里 → 只选它自己,拖它自己(并且把它设成新的选区)。
+    fn begin_node_drag(&mut self, index: usize, last: Point<f32>) {
+        let indices = if self.selected.contains(&index) {
+            self.selected.clone()
+        } else {
+            self.selected = vec![index];
+            vec![index]
+        };
+        self.begin_drag(indices, index, last);
+    }
+
+    /// 单选:只留这一个节点。
+    fn select_only(&mut self, index: usize) {
+        self.selected = vec![index];
+    }
+
+    /// 框选:把和矩形相交的节点全选上。
+    ///
+    /// `a` / `b` 是**容器局部**坐标(和节点框同一个坐标系)。
+    /// 判定用"相交"而不是"完全包住"——和文件管理器、浏览器一致:
+    /// 擦过节点的一角就选中它,框小了也不容易一个都选不到。
+    fn marquee_select(&mut self, a: Point<f32>, b: Point<f32>) {
+        let (x0, x1) = if a.x <= b.x { (a.x, b.x) } else { (b.x, a.x) };
+        let (y0, y1) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
+        let Some(g) = self.doc.graphs.get(self.current) else {
+            return;
+        };
+        let pos = self
+            .positions
+            .get(self.current)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let mut hit = Vec::new();
+        for i in 0..g.nodes.len() {
+            let Some((p, s)) = node_box(pos, &g.nodes, self.origin, self.scale, i) else {
+                continue;
+            };
+            let nx0 = p.x;
+            let ny0 = p.y;
+            let nx1 = p.x + s.width;
+            let ny1 = p.y + s.height;
+            if nx0 <= x1 && nx1 >= x0 && ny0 <= y1 && ny1 >= y0 {
+                hit.push(i);
+            }
+        }
+        self.selected = hit;
+    }
+
+    /// 当前图里某个复合节点对应的**图下标**(跳转到定义用)。
+    ///
+    /// `IrNodeId::Fn` 里带的是链接键(和 `functions` 的键一致),
+    /// 所以能直接对上。
+    fn fn_target_graph(&self, node_index: usize) -> Option<usize> {
+        let g = self.doc.graphs.get(self.current)?;
+        let n = g.nodes.get(node_index)?;
+        let IrNodeId::Fn(key) = &n.kind else {
+            return None;
+        };
+        self.doc.graph_of_fn(key)
+    }
+
+    /// 跳到复合节点的定义(那张函数图)。
+    fn jump_to_definition(&mut self, node_index: usize, cx: &mut Context<Self>) {
+        let Some(target) = self.fn_target_graph(node_index) else {
+            self.status = Some("这个节点没有可跳转的定义".to_string());
+            cx.notify();
+            return;
+        };
+        if target == self.current {
+            return;
+        }
+        // 走 `select`,和左栏点图一样:切图会复位视图、关掉菜单。
+        self.select(target, cx);
+    }
+
+    /// 右键菜单里点了「跳转到定义」:跳到菜单记下的那个节点的定义。
+    pub fn goto_menu_node(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        self.jump_to_definition(menu.node_index, cx);
     }
 }
 
@@ -1711,6 +2267,15 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::doc::{NODE_H, NODE_W};
+
+    /// 搜索:空词全命中,大小写不敏感,子串命中,没子串的过滤掉。
+    #[test]
+    fn search_filters_graph_names_by_substring() {
+        assert!(Viewer::matches_search("test_drop_list", ""));
+        assert!(Viewer::matches_search("test_drop_list", "DROP"));
+        assert!(Viewer::matches_search("test_drop_list", "op_li"));
+        assert!(!Viewer::matches_search("test_drop_list", "point"));
+    }
 
     /// 侧边 pin 排布:**控制流在前、值流在后,值流依次排在控制流下方**。
     #[test]
@@ -1756,6 +2321,7 @@ mod tests {
             // 渲染测试自带坐标,不走布局。
             position: point(0.0, 0.0),
             kind: IrNodeId::SetLocal,
+            display: "SetLocal".to_string(),
             type_label: String::new(),
             controls_in_num: controls_in,
             controls_out_num: controls_out,
@@ -1793,7 +2359,7 @@ mod tests {
             edges: vec![],
         };
         let pos = vec![point(40.0, 80.0)];
-        let ns = build_nodes(&g, &pos, point(0.0, 0.0), 2.0);
+        let ns = build_nodes(&g, &pos, point(0.0, 0.0), 2.0, &[]);
         let (text, w, h) = ns[0].comment.as_ref().expect("注释没进 NodeView");
         assert_eq!(text, "第一行
 第二行");

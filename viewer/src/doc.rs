@@ -91,6 +91,20 @@ pub use rust2genshin::node::layout::{
     NODE_H, NODE_W, PIN_GAP, comment_height, comment_width, node_height, node_width,
 };
 
+/// 链接键(rustc 的 mangled 符号)→ 可读函数名。
+///
+/// `IrNodeId::Fn` 里存的是**链接键**,给人看没法读;可读名在
+/// `Target::functions[键].graph.name` 里 —— 和左栏图列表用的是同一个来源。
+pub type FnNames = HashMap<String, String>;
+
+/// 从一个 `Target` 里抽出「链接键 → 可读名」的映射。
+pub fn fn_names(t: &Target) -> FnNames {
+    t.functions
+        .iter()
+        .map(|(key, info)| (key.clone(), info.graph.name.clone()))
+        .collect()
+}
+
 /// 节点标签。
 ///
 /// `IrNodeId` 没有 `Display` 但有 `Debug`,而 `Debug` 对**全部六个单元变体**
@@ -106,9 +120,17 @@ pub use rust2genshin::node::layout::{
 /// 这个字符串也是 [`node_width`] 的依据(展平时就算好宽度),所以它放展平层,
 /// 不留在渲染层 —— 两边必须是同一个函数,不然算出来的宽对不上显示的字。
 pub fn label(kind: &IrNodeId, type_label: &str) -> String {
+    label_named(kind, type_label, &FnNames::new())
+}
+
+/// 同 [`label`],但 `Fn` 节点用**可读名**而不是链接键。
+///
+/// `names` 里查不到(函数不在本 Target 里 / 被优化掉了)时回退到链接键,
+/// 不会因为查不到就显示成空。
+pub fn label_named(kind: &IrNodeId, type_label: &str, names: &FnNames) -> String {
     let base = match kind {
         IrNodeId::Native(x) => sys_call_label(x),
-        IrNodeId::Fn(s) => s.clone(),
+        IrNodeId::Fn(s) => names.get(s).cloned().unwrap_or_else(|| s.clone()),
         // 分支名标在每个控制出引脚上(`ctrl_out_labels`),标题只留节点本身
         // 的名字 —— `Switch` 的 `Debug` 会把整张分支表塞进标题。
         IrNodeId::Switch(_) => "switch".to_string(),
@@ -244,6 +266,28 @@ mod sys_call_label_tests {
         assert!(node_width(&short) <= NODE_W, "短名不应撑宽,实测 {}px", node_width(&short));
     }
 
+    /// `Fn` 节点显示**可读名**(函数的 `graph.name`),不是链接键
+    /// (rustc 的 mangled 符号)。查不到时回退到链接键,不显示空串。
+    #[test]
+    fn fn_node_uses_readable_name_not_link_key() {
+        let mut names = FnNames::new();
+        names.insert("_ZN4test3foo17h0E".to_string(), "test::foo".to_string());
+        assert_eq!(
+            label_named(&IrNodeId::Fn("_ZN4test3foo17h0E".to_string()), "", &names),
+            "test::foo"
+        );
+        // 类型后缀照旧。
+        assert_eq!(
+            label_named(&IrNodeId::Fn("_ZN4test3foo17h0E".to_string()), "Int", &names),
+            "test::foo<Int>"
+        );
+        // 查不到 → 回退到链接键。
+        assert_eq!(
+            label_named(&IrNodeId::Fn("_ZN4test3bar17h0E".to_string()), "", &names),
+            "_ZN4test3bar17h0E"
+        );
+    }
+
     /// `Switch` 的标题只留 `switch`,分支值逐个标在控制出引脚上,最后一个
     /// 控制出是 default —— 两边必须对上,否则画出来的分支名错位。
     #[test]
@@ -282,6 +326,11 @@ pub struct NodeEntry {
     /// 节点,下标会变,`NodeRef` 不变:坐标就是靠它跨重展平对上的。
     pub node_ref: NodeRef,
     pub kind: IrNodeId,
+    /// 节点标题(渲染出来的字)。`Fn` 节点这里放**可读函数名**,不是链接键 ——
+    /// 链接键是 rustc 的 mangled 符号,给人看没法读。
+    ///
+    /// 宽度估算([`node_width`])用的也是它,两边必须一致。
+    pub display: String,
     /// 类型标注,如 `"Int"`。取自 `NodeKind`:
     ///   `Local`    → `values_out_types[1]`  (`[0]` 是 `LocalRef(T)`)
     ///   `SetLocal` → `values_in_types[1]`   (`values_out_types` 为空)
@@ -428,11 +477,13 @@ impl Doc {
     pub fn push_target(&mut self, mut t: Target) -> Option<usize> {
         let target = self.targets.len();
         let first = self.graphs.len();
+        // 链接键 → 可读名。**先**算出来:布局和展平都要用它给 `Fn` 节点取名。
+        let names = fn_names(&t);
         if let Some(main) = &mut t.main {
-            layout_graph(main);
+            layout_graph(main, &names);
         }
         for f in t.functions.values_mut() {
-            layout_graph(&mut f.graph);
+            layout_graph(&mut f.graph, &names);
         }
         // 喂给 Linker 的是 **clone** —— `Linker::new` 会把传进去的 `Target`
         // 抢走,`targets[k]` 必须留着,后面 `take` / `put` / `reflatten` 全
@@ -443,22 +494,22 @@ impl Doc {
             .push(Linker::new(GameMode::Beyond, linker_t, PathBuf::new()));
         // 展平读 `targets[k]`,**不读** `linkers[k].target`(后者的状态不可信)。
         if let Some(main) = &self.targets[target].main {
-            self.graphs.push(flatten_one("main".to_string(), main));
+            self.graphs.push(flatten_one("main".to_string(), main, &names));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Main,
             });
         }
-        let mut names: Vec<&String> = self.targets[target].functions.keys().collect();
-        names.sort();
-        for name in names {
+        let mut keys: Vec<&String> = self.targets[target].functions.keys().collect();
+        keys.sort();
+        for key in keys {
             // 显示名用图自己记的可读名,不用 `functions` 的键 —— 那是 rustc
             // 的 mangled 符号(链接键),给人看没法读。
-            let f = &self.targets[target].functions[name];
-            self.graphs.push(flatten_one(f.graph.name.clone(), &f.graph));
+            let f = &self.targets[target].functions[key];
+            self.graphs.push(flatten_one(f.graph.name.clone(), &f.graph, &names));
             self.owners.push(GraphOwner {
                 target,
-                source: GraphSource::Fn(name.clone()),
+                source: GraphSource::Fn(key.clone()),
             });
         }
         (self.graphs.len() > first).then_some(first)
@@ -474,6 +525,13 @@ impl Doc {
         let Some(owner) = self.owners.get(i).cloned() else {
             return false;
         };
+        // 函数表在优化(展开 `Fn`)后会变,名字映射每次重新算。
+        let names = {
+            let Some(t) = self.targets.get(owner.target) else {
+                return false;
+            };
+            fn_names(t)
+        };
         let Some(t) = self.targets.get_mut(owner.target) else {
             return false;
         };
@@ -487,7 +545,7 @@ impl Doc {
                 None => return false,
             },
         };
-        layout_graph(g);
+        layout_graph(g, &names);
         self.reflatten(i)
     }
 
@@ -510,8 +568,22 @@ impl Doc {
                 None => return false,
             },
         };
-        self.graphs[i] = flatten_one(self.graphs[i].name.clone(), g);
+        self.graphs[i] = flatten_one(
+            self.graphs[i].name.clone(),
+            g,
+            &fn_names(t),
+        );
         true
+    }
+
+    /// 某个复合节点(`IrNodeId::Fn` 里带的链接键)对应的**图下标**。
+    ///
+    /// 链接键是 rustc 的 mangled 符号,和 `functions` 的键一致 ——
+    /// 所以能直接对上。找不到(函数在别的 Target 里 / 已被优化展开)返回 `None`。
+    pub fn graph_of_fn(&self, key: &str) -> Option<usize> {
+        self.owners
+            .iter()
+            .position(|o| matches!(&o.source, GraphSource::Fn(k) if k == key))
     }
 
     /// 第 `i` 张图的当前状态编码成字节(撤销 / panic 回滚共用)。
@@ -679,10 +751,10 @@ fn node_type_label(kind: &NodeKind<IrNodeId, IrKind>) -> String {
 
 /// 对 IR 图跑一遍自动整理(core 的布局),坐标写进每个节点的 `Node::position`。
 ///
-/// 标签用**渲染同一个** `label`(带 `<类型>` 后缀)—— core 的宽度估算就是按
-/// 这个字符串来的,换别的字符串算出来的宽度和画出来的字对不上。
-fn layout_graph(g: &mut NodeGraphIr) {
-    layout_with(g, |kind| label(&kind.id, &node_type_label(kind)));
+/// 标签用**渲染同一个** `label_named`(带 `<类型>` 后缀)—— core 的宽度估算
+/// 就是按这个字符串来的,换别的字符串算出来的宽度和画出来的字对不上。
+fn layout_graph(g: &mut NodeGraphIr, names: &FnNames) {
+    layout_with(g, |kind| label_named(&kind.id, &node_type_label(kind), names));
 }
 
 /// 从一侧的 pin 列表里挑出「连到图外」的 pin(保持升序)。
@@ -711,14 +783,15 @@ fn ctrl_out_labels(kind: &IrNodeId) -> Vec<String> {
     }
 }
 
-fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
+fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames) -> GraphEntry {
     let mut index_of = HashMap::new();
     let mut nodes = Vec::new();
     for (key, node) in g.nodes.iter() {
         index_of.insert(NodeRef::from(key), nodes.len());
         let node_type = node_type_label(&node.kind);
-        // 宽度按**显示出来的**标签估算 —— 和渲染用的是同一个 `label` 函数。
-        let width = node_width(&label(&node.kind.id, &node_type));
+        // 宽度按**显示出来的**标签估算 —— 和渲染用的是同一个 `label_named`。
+        let display = label_named(&node.kind.id, &node_type, names);
+        let width = node_width(&display);
         // 连到图外的 pin。节点侧的 `links` 里存着 `LinkTarget::Export` 的反向
         // 记录(`node/mod.rs:405`:Export 那侧才是 `externals`),所以按 pin
         // 逐个查即可 —— 边界号就在 `Link::index` 里,不用去翻 `g.externals`。
@@ -742,6 +815,7 @@ fn flatten_one(name: String, g: &NodeGraphIr) -> GraphEntry {
             position: point(node.position.0, node.position.1),
             kind: node.kind.id.clone(),
             type_label: node_type,
+            display,
             controls_in_num: node.kind.controls_in_num,
             controls_out_num: node.kind.controls_out_num,
             values_in_num: node.kind.values_in_types.len(),
@@ -874,7 +948,7 @@ mod tests {
         g.set_comment(n, Some("第一行
 第二行".into()));
 
-        let e = flatten_one("t".into(), &g);
+        let e = flatten_one("t".into(), &g, &FnNames::new());
         assert_eq!(e.nodes[0].comment.as_deref(), Some("第一行
 第二行"));
     }

@@ -125,9 +125,9 @@ fn open_window(cx: &mut App, initial: Option<PathBuf>) {
             window_min_size: Some(size(px(640.0), px(480.0))),
             ..Default::default()
         },
-        |_window, cx| {
+        |window, cx| {
             let viewer = cx.new(move |cx| {
-                let mut v = Viewer::new();
+                let mut v = Viewer::new(cx);
                 if let Some(p) = &initial {
                     // 解析失败不 panic,走 UI 上的错误文案(spec 错误处理章)。
                     match doc::load(p) {
@@ -137,6 +137,10 @@ fn open_window(cx: &mut App, initial: Option<PathBuf>) {
                 }
                 v
             });
+            // 一开始就把焦点交给画布:gpui 的 modifier 事件只沿"根 → 已聚焦
+            // 元素"分发,焦点为 None 时按住 Ctrl 悬停节点不会变色
+            // (见 `view::Viewer::canvas_focus`)。
+            window.focus(&viewer.read(cx).initial_focus());
             // Ctrl+Z 的处理挂在 **App 级**:窗口里没有任何元素拿焦点
             // (节点是普通 div,没有 focus),动作冒泡到最后只有这里能兜住。
             let weak = viewer.downgrade();
