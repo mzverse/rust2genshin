@@ -14,10 +14,9 @@ use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeKind, No
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
 use crate::value::NativeKind;
 use either::Either;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::mem::swap;
-use tap::Tap;
 use crate::unwrap;
 
 /// 一个参数占几个图输入引脚(槽)。
@@ -48,6 +47,70 @@ enum UsageVerdict {
     Skip,
     /// 来源不明，整个优化放弃。
     Reject,
+}
+
+/// 一次「消引脚」：按保留位图删掉若干引脚，并把后面的引脚整体前移。
+///
+/// 引脚在图里是**平行记账**的，少改一处就会错位：
+/// - `graph.exports[<侧>]`（引脚声明）与 `graph.externals` 里对应的数组必须同删同留；
+/// - 图里已有的、指向 `LinkTarget::Export` 的连线记的是**旧下标**，要整体改写；
+/// - `decl` 里的代理表按同一套下标压缩。
+///
+/// 这三件事以前散在六处手写循环里（还用 `retain` + 外部计数器做压缩），把它们
+/// 收进一个结构，序号只在这一处算。
+struct PinCompaction {
+    /// 旧下标 → 新下标。被删掉的引脚没有条目。
+    renumber: Vec<Option<usize>>,
+}
+
+impl PinCompaction {
+    /// 按「每个引脚是否保留」的位图建立重映射。
+    fn new(keep: &[bool]) -> Self {
+        let mut next = 0;
+        let renumber = keep
+            .iter()
+            .map(|&k| {
+                k.then(|| {
+                    let i = next;
+                    next += 1;
+                    i
+                })
+            })
+            .collect();
+        Self { renumber }
+    }
+
+    /// 把一条指向图边界的连线改写到新下标。
+    ///
+    /// 返回 `false` 表示它的目标引脚已被删除，调用方应当丢掉这条连线。
+    /// 指向节点的连线原样保留。
+    fn remap(&self, link: &mut Link) -> bool {
+        if !link.target.is_export() {
+            return true;
+        }
+        match self.renumber.get(link.index).copied().flatten() {
+            Some(new) => {
+                link.index = new;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 按同一套位图压缩一个平行数组。
+    fn compact<T>(&self, items: &mut Vec<T>) {
+        assert_eq!(
+            items.len(),
+            self.renumber.len(),
+            "平行数组与引脚数不一致"
+        );
+        let mut slot = 0;
+        items.retain(|_| {
+            let keep = self.renumber[slot].is_some();
+            slot += 1;
+            keep
+        });
+    }
 }
 
 /// 一条起点边（局部变量值出口的某一条连线）在数据流上的去向。
@@ -453,122 +516,9 @@ impl Optimizer {
             });
         }
 
-        if self.graph.externals.controls_in.first() == Some(&vec![Link::export(0)])
-            || self.graph.externals.controls_in.first() == Some(&vec![])
-        {
-            // fn is unreachable
-            self.decl.control = false;
-            *self.graph.exports.get_mut(&PinType::InControl).unwrap() = vec![];
-            *self.graph.exports.get_mut(&PinType::OutControl).unwrap() = vec![];
-            self.graph.externals.controls_in = vec![];
-            self.graph.externals.controls_out = vec![];
-        }
-
-        let active: Vec<_> = self
-            .graph
-            .externals
-            .values_out
-            .iter()
-            .map(|v| v.iter().any(|&l| l.target.is_node()))
-            .collect();
-        let mut rm = HashMap::new();
-        for (i, (j, _)) in active.iter().enumerate().filter(|(_, x)| **x).enumerate() {
-            rm.insert(j, i);
-        }
-        for (_i, node) in self.graph.nodes.iter_mut() {
-            for x in node.links.values_in.iter_mut() {
-                if let Some(Link {
-                    target: LinkTarget::Export,
-                    index,
-                }) = &mut x.link
-                {
-                    *index = rm[index];
-                }
-            }
-        }
-        let mut i = 0;
-        self.graph
-            .exports
-            .get_mut(&PinType::InValue)
-            .unwrap()
-            .retain(|_| active[i].tap(|_| i += 1));
-        let mut i = 0;
-        self.graph
-            .externals
-            .values_out
-            .retain(|_| active[i].tap(|_| i += 1));
-        let mut i = 0;
-        self.decl.proxies_in.retain(|_| active[i].tap(|_| i += 1));
-        self.decl.proxies_out = self
-            .graph
-            .externals
-            .values_in
-            .iter()
-            .map(|x| match x.link {
-                Some(Link {
-                    target: LinkTarget::Node(..),
-                    ..
-                }) => None,
-                Some(Link {
-                    target: LinkTarget::Export,
-                    index,
-                }) => Either::Left(index).into(),
-                None => Either::Right(x.default.clone()).into(),
-            })
-            .collect();
-
-        let active: Vec<_> = self
-            .graph
-            .externals
-            .values_in
-            .iter()
-            .map(|v| {
-                matches!(
-                    v.link,
-                    Some(Link {
-                        target: LinkTarget::Node(..),
-                        ..
-                    })
-                )
-            })
-            .collect();
-        let mut rm = HashMap::new();
-        for (i, (j, _)) in active.iter().enumerate().filter(|(_, x)| **x).enumerate() {
-            rm.insert(j, i);
-        }
-        for (_, node) in self.graph.nodes.iter_mut() {
-            for x in node.links.values_out.iter_mut().flatten() {
-                if let Link {
-                    target: LinkTarget::Export,
-                    index,
-                } = x
-                {
-                    *index = rm[index];
-                }
-            }
-        }
-        let mut i = 0;
-        self.graph
-            .exports
-            .get_mut(&PinType::OutValue)
-            .unwrap()
-            .retain(|_| active[i].tap(|_| i += 1));
-        let mut i = 0;
-        self.graph
-            .externals
-            .values_in
-            .retain(|_| active[i].tap(|_| i += 1));
-
-        for x in &mut self.graph.externals.values_out {
-            x.retain(|&l| l.target.is_node());
-        }
-        for x in &mut self.graph.externals.values_in {
-            if let Some(link) = x.link.as_mut()
-                && link.target.is_export()
-            {
-                x.link = None;
-            }
-        }
+        self.drop_unreachable_control_boundary();
+        self.compact_value_exports();
+        self.compact_value_imports();
 
         // lower all kinds
         for x in self.graph.kinds_mut() {
@@ -591,6 +541,106 @@ impl Optimizer {
             }
         }
         (Lowerer.lower_graph(self.graph), self.decl)
+    }
+
+    /// 控制边界收尾：函数不可达时把整条控制流入口/出口撤掉。
+    ///
+    /// 「不可达」的判据是控制入口既没接任何东西、又只指向自己的出口
+    /// （`[export(0)]`），或干脆是空的。
+    fn drop_unreachable_control_boundary(&mut self) {
+        let inbound = &self.graph.externals.controls_in;
+        let unreachable = matches!(inbound.first().map(Vec::as_slice), Some([]) | Some([Link { target: LinkTarget::Export, index: 0 }]));
+        if !unreachable {
+            return;
+        }
+        self.decl.control = false;
+        for kind in [PinType::InControl, PinType::OutControl] {
+            self.graph.exports.insert(kind, vec![]);
+        }
+        self.graph.externals.controls_in.clear();
+        self.graph.externals.controls_out.clear();
+    }
+
+    /// 消掉没人用的**值入口**引脚（图入参）。
+    ///
+    /// 判据：入口连到节点才算有用；只接到别的入口或什么都没接的都算闲置。
+    /// `proxies_in` 与入口一一对应，跟着一起压缩。
+    fn compact_value_imports(&mut self) {
+        let keep: Vec<bool> = self
+            .graph
+            .externals
+            .values_out
+            .iter()
+            .map(|targets| targets.iter().any(|l| l.target.is_node()))
+            .collect();
+        let pins = PinCompaction::new(&keep);
+
+        // 指向被删入口的入线一并断掉：入线从节点侧指向 `Export`，
+        // 所以要扫全图的 `values_in`。
+        for (_, node) in self.graph.nodes.iter_mut() {
+            for slot in node.links.values_in.iter_mut() {
+                let Some(link) = slot.link.as_mut() else { continue };
+                if !pins.remap(link) {
+                    slot.link = None;
+                }
+            }
+        }
+        pins.compact(self.graph.exports.get_mut(&PinType::InValue).unwrap());
+        pins.compact(&mut self.graph.externals.values_out);
+        pins.compact(&mut self.decl.proxies_in);
+        // 入口喂给入口的连线没有意义（新表里两边都换了号），断掉。
+        for targets in &mut self.graph.externals.values_out {
+            targets.retain(|l| l.target.is_node());
+        }
+    }
+
+    /// 消掉没人读的**值出口**引脚（图返回值）。
+    ///
+    /// 判据：出口被节点读才算有用。出口的消费者记在节点的 `values_out`
+    /// （节点 → 出口方向），所以扫的是那里。
+    fn compact_value_exports(&mut self) {
+        // ⚠️ `proxies_out` 必须在压缩**之前**按原始出口表建立。它的长度要和
+        // callee 的 `decl.ret` 叶子数对齐 —— `link_node` 用它逐项喂
+        // `assemble_all`，多出来的项会被忽略，少了就直接 unwrap 炸掉。
+        self.decl.proxies_out = self
+            .graph
+            .externals
+            .values_in
+            .iter()
+            .map(|slot| match slot.link {
+                Some(Link { target: LinkTarget::Node(..), .. }) => None,
+                Some(Link { target: LinkTarget::Export, index }) => {
+                    Some(Either::Left(index))
+                }
+                None => Some(Either::Right(slot.default.clone())),
+            })
+            .collect();
+
+        let keep: Vec<bool> = self
+            .graph
+            .externals
+            .values_in
+            .iter()
+            .map(|slot| matches!(slot.link, Some(Link { target: LinkTarget::Node(..), .. })))
+            .collect();
+        let pins = PinCompaction::new(&keep);
+
+        for (_, node) in self.graph.nodes.iter_mut() {
+            for targets in node.links.values_out.iter_mut() {
+                targets.retain_mut(|link| {
+                    // 指向节点的边不动；指向出口的按位图改写或丢弃。
+                    link.target.is_node() || pins.remap(link)
+                });
+            }
+        }
+        pins.compact(self.graph.exports.get_mut(&PinType::OutValue).unwrap());
+        pins.compact(&mut self.graph.externals.values_in);
+        // 出口指向出口的连线在新表里已经没有意义，直接断掉。
+        for slot in &mut self.graph.externals.values_in {
+            if slot.link.is_some_and(|l| l.target.is_export()) {
+                slot.link = None;
+            }
+        }
     }
 
     /// 完整优化:消除规则跑到不动点 + 控制边界收尾(清空空的控制导出、
