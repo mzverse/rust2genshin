@@ -907,6 +907,11 @@ impl TabHost {
         self.tabs.get(self.active).copied()
     }
 
+    /// 已经开着这张图的页签下标(没有则 `None`)。
+    fn find_graph(&self, graph: usize) -> Option<usize> {
+        self.tabs.iter().position(|t| t.graph == graph)
+    }
+
     /// 把当前标签页的视野记账更新(平移 / 缩放 / 换图之后调)。
     fn store_view(&mut self, graph: usize, origin: Point<f32>, scale: f32) {
         if let Some(tab) = self.tabs.get_mut(self.active) {
@@ -1242,6 +1247,21 @@ impl Viewer {
         let tab = self.tabs.open(i);
         self.show(tab.graph, tab.origin, tab.scale);
         true
+    }
+
+    /// 在标签页里打开第 `i` 张图(左栏点图走这里)。
+    ///
+    /// 已经开在某个页签里就**切过去**,否则新开一页。这样反复点同一项不会
+    /// 堆出一排指向同一张图的重复页签 —— 编辑器和浏览器都是这个规则。
+    pub fn open_graph_in_tab(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.doc.graphs.get(i).is_none() {
+            return;
+        }
+        if let Some(idx) = self.tabs.find_graph(i) {
+            self.switch_tab(idx, cx);
+        } else {
+            self.open_tab(i, cx);
+        }
     }
 
     /// [`Viewer::switch_tab`] 的纯逻辑部分。
@@ -2448,7 +2468,13 @@ impl Render for Viewer {
                                     .text_xs()
                                     .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
                                     .child(format!("{} ({})", entry.name, entry.nodes.len()))
-                                    .on_click(cx.listener(move |v, _e, _w, cx| v.select(i, cx)))
+                                    // 点左栏 = **在标签页里打开这张图**(不是偷偷换掉
+                                    // 当前页签的内容)。这张图已经开在某个页签里就切
+                                    // 过去,否则新开一页 —— 和编辑器 / 浏览器一致,
+                                    // 也不会因为反复点同一项堆出一排重复页签。
+                                    .on_click(cx.listener(move |v, _e, _w, cx| {
+                                        v.open_graph_in_tab(i, cx)
+                                    }))
                             }),
                     ),
             );
@@ -2472,12 +2498,9 @@ impl Render for Viewer {
             }));
 
         // ---- 右栏:优化 ----
-        // 按钮 = `eliminate_solo`(`core/src/compile/ir.rs:402`)调用链上的每条规则,
-        // 点一次 = 该规则在当前图的所有节点上各跑一次(**一遍**,不循环到不动点)。
-        // 标签省掉 `eliminate_` 前缀:栏名已经说了这是优化,240px 宽放不下全名。
-        // ---- 右栏:优化 ----
         // 按钮 = `eliminate_solo` 调用链上的每条规则,点一次 = 该规则在当前图的
         // 所有节点上各跑一次(**一遍**,不循环到不动点)。
+        // 标签省掉 `eliminate_` 前缀:栏名已经说了这是优化,240px 宽放不下全名。
         //
         // 改写类按钮(链接全部 / 一键优化 / 循环改写 / lower)在**图已经 lower
         // 过**时全部禁用:判据是显式记下的 `lowered` 集合(不是从图上推,理由见
@@ -2622,8 +2645,11 @@ impl Render for Viewer {
                     .when(active, |d| d.bg(hsla(0.0, 0.0, 1.0, 0.18)))
                     .when(!active, |d| d.text_color(text_dim()))
                     .child(title)
-                    // 关闭按钮。用独立的小块接点击,并且 `stop_propagation`
-                    // —— 否则这一下会同时把标签切过去。
+                    // 关闭按钮。**只在 `on_click` 里 stop_propagation** ——
+                    // 不能另挂 `on_mouse_down` 去停冒泡:gpui 的 `on_click` 靠
+                    // mouse-down 的 bubble 监听器写 `pending_mouse_down`
+                    // (`div.rs:2138-2144`),提前停掉冒泡会让自己的 click 也失效,
+                    // 表现就是"点 × 没反应"。
                     .child(
                         div()
                             .id(("tab-close", i))
@@ -2633,19 +2659,21 @@ impl Render for Viewer {
                             .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.16)))
                             .text_color(text_dim())
                             .child("×")
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |_v, _e, _w, cx| {
-                                cx.stop_propagation();
-                            }))
                             .on_click(cx.listener(move |v, _e, _w, cx| {
                                 cx.stop_propagation();
                                 v.close_tab(i, cx);
                             })),
                     )
+                    .on_click(cx.listener(move |v, _e, _w, cx| v.switch_tab(i, cx)))
+                    // 中键关闭。中键没有 `on_click` 可依赖(那个只认左键,
+                    // 见 `div.rs:2139`),所以在 down 上直接关。
+                    //
+                    // **不调 `stop_propagation`**:这个 handler 挂在页签自己的
+                    // hitbox 上,父容器的中键监听器本来就不处理这件事;停冒泡
+                    // 反而会让画布的"中键平移"在页签区域彻底失灵。
                     .on_mouse_down(MouseButton::Middle, cx.listener(move |v, _e, _w, cx| {
-                        cx.stop_propagation();
                         v.close_tab(i, cx);
                     }))
-                    .on_click(cx.listener(move |v, _e, _w, cx| v.switch_tab(i, cx)))
             }));
 
         // ---- 整窗:接收文件拖放,左中右分栏 ----
@@ -2722,7 +2750,6 @@ impl Render for Viewer {
                     v.nav_forward(cx);
                 }),
             )
-            .child(tab_bar)
             .child(
                 div()
                     .flex()
@@ -2731,7 +2758,18 @@ impl Render for Viewer {
                     .min_h(px(0.0))
                     .child(toc)
                     .child(divider)
-                    .child(canvas_el)
+                    // 标签栏**只盖在画布上方**,不横跨左栏 / 右栏 ——
+                    // 页签说的是"这个画布在看哪张图",和左栏的图列表、右栏的
+                    // 优化面板都不是一个层级的东西。
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .child(tab_bar)
+                            .child(canvas_el),
+                    )
                     .child(rules_panel),
             )
             .into_any_element()
@@ -2972,6 +3010,23 @@ mod tests {
         h.record(nav(0, 0.0, 1.0));
         h.record(nav(0, 0.0, 1.0));
         assert_eq!(h.nav.back.len(), 1);
+    }
+
+    /// 同一张图**不会**开出多个页签:已经开在某个页签里就切过去。
+    ///
+    /// 这是左栏点图那条路径的规则(`Viewer::open_graph_in_tab`)——
+    /// 它先查 `tabs` 里有没有这张图。这里直接测查重本身。
+    #[test]
+    fn a_graph_is_opened_at_most_once() {
+        let mut h = TabHost::new();
+        h.open(1);
+        h.open(2);
+        assert_eq!(h.tabs.len(), 3);
+
+        // 第 1 张已经在第 1 个页签里了 —— 查得到,所以不该再开。
+        assert_eq!(h.find_graph(1), Some(1), "图 1 开在页签 1");
+        assert_eq!(h.find_graph(2), Some(2), "图 2 开在页签 2");
+        assert_eq!(h.find_graph(3), None, "图 3 没开过");
     }
 
     /// 侧边 pin 排布:**控制流在前、值流在后,值流依次排在控制流下方**。
