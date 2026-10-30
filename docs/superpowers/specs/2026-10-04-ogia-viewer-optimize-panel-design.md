@@ -73,8 +73,22 @@
 
 - 不做「选中某节点 → 只对它执行」:那需要先有节点选中态;按钮语义按上文的
   「过一遍」。
-- 不做 redo;不做 `lower()` 里 `optimize()` 之后的**类型 lower 段** ——
-  那是编码前的事,与翻图无关。「一键优化」按用户要求恰好跑到 `optimize()`
-  为止(含 externals 收尾),类型 lower 不碰。
+- 不做 `lower()` 里 `optimize()` 之后的**类型 lower 段** —— 那是编码前的事,
+  与翻图无关。「一键优化」按用户要求恰好跑到 `optimize()` 为止(含 externals
+  收尾),类型 lower 不碰。
+
+## 后续追加(2026-10-30)
+
+- **「lower」按钮**:跑 core 的完整降级流程。为此把 `Optimizer::lower` 拆成
+  `lower_ir(&mut self, linker)`(IR 段,留在 `NodeGraphIr`) + 一层只换类型包装
+  的收尾,`lower()` 变成两者的组合。viewer 只调 `lower_ir`,所以跑完还能渲染。
+- **lower 之后禁用改写类按钮**:标记**显式记录**在 `Viewer::lowered`(按图下标),
+  存在 `Snapshot::lowered` 里跟着存档走,撤销 / 重做时一起恢复。
+  最初写成"从图上推"(所有节点都是 `IrNodeId::Native`),**这个判据是错的**:
+  真实产物里 `add_n` / `borrow_read` / `pair_sum` 等 7 张图点一次「一键优化」
+  就只剩 1~2 个原生节点,会被误判成 lower 过、改写按钮无故变灰。
+  回归测试 `optimize_alone_can_make_every_node_native` 锁住这个反例。
+- **撤销按钮去掉**,只留 `Ctrl+Z`;**新增 `Ctrl+Y` 重做**。重做栈按图分开,
+  任何新操作都会清空它。`SnapshotKind` 多一个 `Redo`(坐标整份照存档)。
 - 不自动 `verify()`:图被改坏时,本工具的任务是**看见**坏图,不是替 core 报错
   (且 `Helper` 出不了 rustc 环境)。

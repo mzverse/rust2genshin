@@ -277,7 +277,18 @@ impl Optimizer {
         self.graph.remove(x);
     }
 
-    pub fn lower(mut self, linker: &mut Linker) -> (NodeGraph, FnDecl) {
+    /// 降级的 **IR 段**:展开 Fn 调用 → 优化到不动点 → 改写循环 → 再优化 →
+    /// 把列表类节点展开成真正的列表节点 → 把每个节点的类型降到 wire 层 →
+    /// 收尾引脚。
+    ///
+    /// 跑完之后图里不再有 IR 专有的东西(`Copy` / `PartialMut` / `FieldSetter` /
+    /// 列表 IR 节点 / 非 native 的 `IrKind`),但**类型仍是 `NodeGraphIr`** ——
+    /// 最后那一步 `Lowerer` 只是把 `IrNodeId::Native` 换成 `NativeNodeId`、
+    /// `IrKind::Native` 换成 `NativeKind`,不改变任何连线或语义。
+    ///
+    /// 拆出这一步是为了 viewer 的「lower」按钮:它要跑完整条流程,又必须把
+    /// 结果留在 viewer 能渲染的 `NodeGraphIr` 形态里。
+    pub fn lower_ir(&mut self, linker: &mut Linker) {
         // link
         for x in self.graph.get_nodes() {
             self.link_node(linker, x);
@@ -524,6 +535,11 @@ impl Optimizer {
         for x in self.graph.kinds_mut() {
             *x = IrKind::Native(x.lower(linker));
         }
+    }
+
+    /// 完整降级:IR 段(`lower_ir`)+ 最后把节点 id / 类型换成 wire 层。
+    pub fn lower(mut self, linker: &mut Linker) -> (NodeGraph, FnDecl) {
+        self.lower_ir(linker);
 
         struct Lowerer;
         impl Lower for Lowerer {

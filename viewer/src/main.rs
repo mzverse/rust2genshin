@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use gpui::AppContext as _;
 use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use view::{Undo, Viewer};
+use view::{NavBack, NavForward, Redo, Undo, Viewer};
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
@@ -102,9 +102,19 @@ fn main() {
 /// 开窗(唯一一条真的建 GPUI 应用的路径;`--check` / `--emit-fixture` 不经这里)。
 fn run_window(initial: Option<PathBuf>) {
     gpui::Application::new().run(move |cx| {
-        // Ctrl+Z → `view::Undo`。context 为 `None` ⇒ 不看焦点 / 上下文,全局生效;
-        // 处理挂在 App 级(见 [`open_window`] 里的 `cx.on_action`)。
-        cx.bind_keys([KeyBinding::new("ctrl-z", Undo, None)]);
+        // Ctrl+Z / Ctrl+Y → `view::Undo` / `view::Redo`;Alt+←/→ → 后退 / 前进。
+        // context 为 `None` ⇒ 不看焦点 / 上下文,全局生效;处理挂在 App 级
+        // (见 [`open_window`] 里的 `cx.on_action`)。
+        //
+        // 后退 / 前进还有另一条来源:鼠标的后退 / 前进消息,在 gpui 里是
+        // `MouseButton::Navigate(..)`,由 `view.rs` 的根 `div` 接 —— 键位只管
+        // 键盘那一半。
+        cx.bind_keys([
+            KeyBinding::new("ctrl-z", Undo, None),
+            KeyBinding::new("ctrl-y", Redo, None),
+            KeyBinding::new("alt-left", NavBack, None),
+            KeyBinding::new("alt-right", NavForward, None),
+        ]);
         open_window(cx, initial);
     });
 }
@@ -141,13 +151,32 @@ fn open_window(cx: &mut App, initial: Option<PathBuf>) {
             // 元素"分发,焦点为 None 时按住 Ctrl 悬停节点不会变色
             // (见 `view::Viewer::canvas_focus`)。
             window.focus(&viewer.read(cx).initial_focus());
-            // Ctrl+Z 的处理挂在 **App 级**:窗口里没有任何元素拿焦点
-            // (节点是普通 div,没有 focus),动作冒泡到最后只有这里能兜住。
+            // Ctrl+Z / Ctrl+Y / Alt+← / Alt+→ 的处理挂在 **App 级**:窗口里没有
+            // 任何元素拿焦点(节点是普通 div,没有 focus),动作冒泡到最后
+            // 只有这里能兜住。
             let weak = viewer.downgrade();
             cx.on_action(move |_: &Undo, cx: &mut App| {
                 if let Some(v) = weak.upgrade() {
                     // App 的 `update` 是必成(`C::Result<()> == ()`),不用处理错误。
                     v.update(cx, |v, cx| v.undo_step(cx));
+                }
+            });
+            let weak = viewer.downgrade();
+            cx.on_action(move |_: &Redo, cx: &mut App| {
+                if let Some(v) = weak.upgrade() {
+                    v.update(cx, |v, cx| v.redo_step(cx));
+                }
+            });
+            let weak = viewer.downgrade();
+            cx.on_action(move |_: &NavBack, cx: &mut App| {
+                if let Some(v) = weak.upgrade() {
+                    v.update(cx, |v, cx| v.nav_back(cx));
+                }
+            });
+            let weak = viewer.downgrade();
+            cx.on_action(move |_: &NavForward, cx: &mut App| {
+                if let Some(v) = weak.upgrade() {
+                    v.update(cx, |v, cx| v.nav_forward(cx));
                 }
             });
             viewer

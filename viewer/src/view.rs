@@ -48,16 +48,16 @@
 //! 长度短暂不齐(优化删完节点、坐标还没跟着重排)是可能的。
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 // `gpui::util` 是私有模块,`FluentBuilder`(提供 `.when(..)`)只能从 prelude 拿。
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Bounds, Context, ExternalPaths, InteractiveElement, IntoElement, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels,
-    Point, Render, ScrollDelta, ScrollWheelEvent, Size, StatefulInteractiveElement, Styled, Window,
-    canvas, div, hsla, point, px, rgba, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
+    ParentElement, PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Size,
+    StatefulInteractiveElement, Styled, Window, canvas, div, hsla, point, px, rgba, size,
 };
 use rust2genshin::compile::ir::IrNodeId;
 use rust2genshin::compile::link::Target;
@@ -69,11 +69,12 @@ use crate::doc::{
 };
 use crate::optimize::{self, RULES, Snapshot};
 
-// Ctrl+Z → 撤销。`actions!` 展开出一个单元结构体 + `gpui::Action` 实现;
-// 键位在 `main.rs` 绑(`AppContext::bind_keys`),处理也挂在 App 级
-// (`AppContext::on_action`)。**不依赖焦点** —— 焦点在左栏时也该能撤销,
-// 挂在 App 级就不用每个持有焦点的元素各绑一遍。
-gpui::actions!([Undo]);
+// Ctrl+Z → 撤销、Ctrl+Y → 重做、Alt+←/→ → 后退 / 前进。
+// `actions!` 展开出一个单元结构体 + `gpui::Action` 实现;键位在 `main.rs` 绑
+// (`AppContext::bind_keys`),处理也挂在 App 级(`AppContext::on_action`)。
+// **不依赖焦点** —— 焦点在左栏时也该能撤销,挂在 App 级就不用每个持有焦点的
+// 元素各绑一遍。
+gpui::actions!([Undo, Redo, NavBack, NavForward]);
 
 /// 缩放下限。再小节点上就是一个点,看不清。
 const MIN_SCALE: f32 = 0.2;
@@ -152,6 +153,47 @@ fn comment_bg() -> gpui::Rgba {
 }
 fn comment_border() -> gpui::Rgba {
     rgba(0x8a93a655)
+}
+
+/// 右栏按钮的**禁用**底色:比可用的暗一档,读起来像"按不动"。
+fn button_disabled_bg() -> gpui::Rgba {
+    rgba(0xffffff08)
+}
+/// 右栏按钮**禁用**时的文字色。
+fn button_disabled_text() -> gpui::Rgba {
+    rgba(0x8a93a680)
+}
+
+/// 右栏一个按钮的外壳(尺寸 / 位置一样,只有可用与否不同)。
+///
+/// **禁用态不挂 `on_click`** —— 这是最省事也最不会出错的做法:没有回调就没有
+/// 任何路径能触发那个操作。不用 `cursor_pointer`,再压暗一档。
+///
+/// `enabled` 为 `true` 时**仍然要调用方自己挂 `on_click`**(见 `render` 里的
+/// `.when(editable, |d| d.on_click(..))`):这里拿不到 `cx`,硬塞一个回调进去
+/// 反而把"谁负责触发"这件事藏起来。
+///
+/// 返回 `Stateful<Div>` 而不是 `Div` —— `.id(..)` 的产物就是它,`on_click`
+/// 也只在这一层(`StatefulInteractiveElement`)。
+fn panel_button(id: &'static str, label: &'static str, enabled: bool) -> gpui::Stateful<gpui::Div> {
+    let base = div()
+        .id(id)
+        .px_2()
+        .py_1()
+        .mb_1()
+        .rounded_sm()
+        .overflow_hidden()
+        .text_xs();
+    if enabled {
+        base.cursor_pointer()
+            .bg(hsla(0.0, 0.0, 1.0, 0.10))
+            .child(label)
+    } else {
+        base.cursor_default()
+            .bg(button_disabled_bg())
+            .text_color(button_disabled_text())
+            .child(label)
+    }
 }
 
 /// 节点类别色(描边用)。
@@ -733,6 +775,148 @@ struct NodeMenu {
     y: f32,
 }
 
+/// 一个标签页:打开着哪张图,以及它自己的视图状态。
+///
+/// 标签页存的是**图下标**而不是图本身 —— `Doc::graphs` 只 append,下标是稳定的,
+/// 同一张图在两个标签页里打开时也天然共享同一份数据(改了都能看见)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tab {
+    /// 这张标签页显示 `Doc::graphs` 里的第几张图。
+    pub graph: usize,
+    /// 平移量(**容器局部**坐标)。每个标签页各记一份 —— 切走再切回来,
+    /// 视野还停在原处,不会被复位。
+    pub origin: Point<f32>,
+    /// 缩放。
+    pub scale: f32,
+}
+
+/// 前进 / 后退历史里的一条记录。
+///
+/// 记的是"当时在哪张图、视野在哪",所以后退不只是切回上一张图,而是连
+/// 平移缩放一起还回来 —— 这两个动作对用户来说是同一件"我刚才在看哪儿"。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NavEntry {
+    graph: usize,
+    origin: Point<f32>,
+    scale: f32,
+}
+
+/// 前进 / 后退历史。
+///
+/// 语义照浏览器:`back` 把当前状态压进 `forward`,自己退一格;`forward` 反过来。
+/// 任何**新的**导航(切图、跳转、点左栏)都会清空 `forward`。
+#[derive(Default)]
+struct NavHistory {
+    back: Vec<NavEntry>,
+    forward: Vec<NavEntry>,
+}
+
+/// 标签页 + 前进/后退历史。
+///
+/// 单独成一个结构是为了**能测**:它不碰 GPUI,也不碰 `Doc`(下标的合法性由
+/// 调用方 `Viewer` 判断)。`Viewer` 持有一个,所有标签页 / 历史的规则都在
+/// 这里,视图层只负责把结果搬到 `current` / `origin` / `scale` 上。
+struct TabHost {
+    tabs: Vec<Tab>,
+    active: usize,
+    nav: NavHistory,
+}
+
+impl TabHost {
+    fn new() -> Self {
+        Self {
+            tabs: vec![Tab {
+                graph: 0,
+                origin: point(0.0, 0.0),
+                scale: 1.0,
+            }],
+            active: 0,
+            nav: NavHistory::default(),
+        }
+    }
+
+    /// 把"当前看过的位置"压进后退历史,清空前进历史。
+    ///
+    /// 连续两次记同一个位置**不重复记** —— 否则来回点同一张图会把后退栈
+    /// 塞满同一条,按十次后退还在原地。
+    fn record(&mut self, entry: NavEntry) {
+        if self.nav.back.last() == Some(&entry) {
+            return;
+        }
+        self.nav.back.push(entry);
+        self.nav.forward.clear();
+    }
+
+    /// 后退一步:返回要跳到的位置,并把当前位置压进前进栈。
+    fn back(&mut self, current: NavEntry) -> Option<NavEntry> {
+        let prev = self.nav.back.pop()?;
+        self.nav.forward.push(current);
+        Some(prev)
+    }
+
+    /// 前进一步:返回要跳到的位置,并把当前位置压回后退栈。
+    fn forward(&mut self, current: NavEntry) -> Option<NavEntry> {
+        let next = self.nav.forward.pop()?;
+        self.nav.back.push(current);
+        Some(next)
+    }
+
+    /// 新开一个标签页并激活。返回新标签页的副本。
+    ///
+    /// **不校验图下标** —— 那要问 `Doc`,由调用方(`Viewer`)负责。
+    fn open(&mut self, graph: usize) -> Tab {
+        let tab = Tab {
+            graph,
+            origin: point(0.0, 0.0),
+            scale: 1.0,
+        };
+        self.tabs.push(tab);
+        self.active = self.tabs.len() - 1;
+        tab
+    }
+
+    /// 切到第 `idx` 个标签页。返回它的副本。下标越界或已是当前页时 `None`。
+    fn switch(&mut self, idx: usize) -> Option<Tab> {
+        if idx >= self.tabs.len() || idx == self.active {
+            return None;
+        }
+        self.active = idx;
+        self.tabs.get(idx).copied()
+    }
+
+    /// 关掉第 `idx` 个标签页,返回新的活动标签页。
+    ///
+    /// 只剩一个时**不真的关**(窗口总得有东西可看),只把视野复位。
+    fn close(&mut self, idx: usize) -> Option<Tab> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        if self.tabs.len() == 1 {
+            let tab = self.tabs.first_mut()?;
+            tab.origin = point(0.0, 0.0);
+            tab.scale = 1.0;
+            return Some(*tab);
+        }
+        self.tabs.remove(idx);
+        // 活动标签的落点:关掉的在它左边就左移一位;关掉的正是它就取右邻。
+        if idx < self.active {
+            self.active -= 1;
+        } else if idx == self.active {
+            self.active = self.active.min(self.tabs.len() - 1);
+        }
+        self.tabs.get(self.active).copied()
+    }
+
+    /// 把当前标签页的视野记账更新(平移 / 缩放 / 换图之后调)。
+    fn store_view(&mut self, graph: usize, origin: Point<f32>, scale: f32) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.graph = graph;
+            tab.origin = origin;
+            tab.scale = scale;
+        }
+    }
+}
+
 /// 拖拽的种类。
 enum Drag {
     /// 拖动**一组**节点(可能只有一个)。`last` 是上一次鼠标位置(窗口坐标)。
@@ -778,6 +962,26 @@ pub struct Viewer {
     /// 每张图一个撤销栈。图下标只增不改(`Doc::graphs` 只会 append),
     /// 所以栈不会串到别的图上;切图不清栈,切回来还能接着撤。
     undo_stack: HashMap<usize, Vec<Snapshot>>,
+    /// 每张图一个重做栈,与 [`Viewer::undo_stack`] 同构。
+    ///
+    /// 任何**新的**操作都会把它清空(标准撤销语义:改过的分支就不能再重做了);
+    /// 撤销时把"撤之前的这一帧"压进来,重做时再弹出去。
+    redo_stack: HashMap<usize, Vec<Snapshot>>,
+    /// 哪些图跑过「lower」。图下标只增不改,所以这个集合不会串台。
+    ///
+    /// **必须显式记下来,不能从图上推**:lower 之后节点全成了 `IrNodeId::Native`,
+    /// 但反过来推不成立 —— 点「一键优化」也可能把一张小图消到只剩一两个原生节点
+    /// (`add_n` / `borrow_read` / `pair_sum` 这些在真实产物里就是这样),
+    /// 那种图**没有**被 lower,改写按钮必须还能点。
+    ///
+    /// 这个标志跟着**存档**走([`Snapshot::lowered`]):撤销 / 重做恢复图的同时
+    /// 也恢复它,所以 lower 之后 Ctrl+Z 会把按钮放回来。
+    lowered: HashSet<usize>,
+    /// 打开的标签页 + 前进/后退历史(规则都在 [`TabHost`] 里,可单独测)。
+    tabs: TabHost,
+    /// 正在执行历史导航中 —— 这期间切图**不该**再往后退历史里压一条,
+    /// 否则后退会把自己也算成一次新导航,历史立刻变成"后退/前进/后退/前进"。
+    navigating: bool,
     /// 右栏底部的一行状态(最近一次优化 / 撤销的结果)。
     status: Option<String>,
     /// 节点右键菜单,`None` = 没弹。
@@ -834,6 +1038,10 @@ impl Viewer {
             drag: None,
             canvas_origin: Rc::new(Cell::new(point(0.0, 0.0))),
             undo_stack: HashMap::new(),
+            redo_stack: HashMap::new(),
+            lowered: HashSet::new(),
+            tabs: TabHost::new(),
+            navigating: false,
             status: None,
             menu: None,
             hover: None,
@@ -863,11 +1071,16 @@ impl Viewer {
         query.is_empty() || name.to_lowercase().contains(&query.to_lowercase())
     }
 
-    /// 追加一个已解析的 `Target`,并切到它的第一张图。拖放回调与命令行入口都走这里。
+    /// 追加一个已解析的 `Target`,并在一张**新标签页**里打开它的第一张图。
+    /// 拖放回调与命令行入口都走这里。
     ///
     /// **追加而不是替换** —— spec:"拖入第二个文件不清空已有内容"。
     /// 新图在这里算好坐标;已有图的坐标(含拖动)原样保留。
+    ///
+    /// 第一个文件复用那张初始空标签页,之后每个文件各开一张新标签页
+    /// —— 和浏览器"新开一个文件就是新开一页"一致。
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
+        let had_graphs = !self.doc.graphs.is_empty();
         if let Some(first) = self.doc.push_target(t) {
             // 布局只在**加载时**算一次(`push_target` 里由 core 的
             // `node::layout` 写进 IR 节点),这里只是把坐标读进视图状态。
@@ -877,22 +1090,70 @@ impl Viewer {
                     .push(g.nodes.iter().map(|n| n.position).collect());
             }
             self.error = None;
-            self.select(first, cx);
+            if had_graphs {
+                self.open_tab(first, cx);
+            } else {
+                self.select(first, cx);
+            }
         } else {
             cx.notify();
         }
     }
 
-    /// 切到第 `i` 张图,把视图(平移/缩放)复位。**不重算坐标**。
+    /// 在当前标签页里切到第 `i` 张图。
+    ///
+    /// 左栏点图 / 跳转到定义都走这里。**会记一条后退历史**
+    /// (除非正在执行历史导航本身,见 [`Viewer::navigating`])。
+    ///
+    /// 视野复位到原点 —— 这是"换了一张图"的语义,不是"回到刚才的位置"。
+    /// 想保住视野请用标签页(每个标签页各记一份 origin/scale)。
     pub fn select(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.select_graph(i) {
+            cx.notify();
+        }
+    }
+
+    /// [`Viewer::select`] 的纯逻辑部分。返回是否真的改了。
+    fn select_graph(&mut self, i: usize) -> bool {
         // 越界直接返回:**不索引**。切图是交互驱动的,双击列表/拖入文件
         // 交叠时给一个越界下标是完全可能的。
         if self.doc.graphs.get(i).is_none() {
-            return;
+            return false;
         }
-        self.current = i;
-        self.origin = point(0.0, 0.0);
-        self.scale = 1.0;
+        if !self.navigating {
+            self.record_nav();
+        }
+        // 换图 = 视野复位(不是"回到刚才的位置")。
+        self.show(i, point(0.0, 0.0), 1.0);
+        true
+    }
+
+    // -------------------------------------------------- 视野 / 导航 / 标签页
+
+    /// 当前的"看过的位置"。
+    fn here(&self) -> NavEntry {
+        NavEntry {
+            graph: self.current,
+            origin: self.origin,
+            scale: self.scale,
+        }
+    }
+
+    /// 把"当前在看哪儿"压进后退历史,并清掉前进历史(新导航 = 前进分支作废)。
+    fn record_nav(&mut self) {
+        let now = self.here();
+        self.tabs.record(now);
+    }
+
+    /// 把视图切到"第 `graph` 张图 + 这个视野",并同步进当前标签页。
+    ///
+    /// 所有"换视野"的路径最后都落到这里 —— 标签页切换、历史导航、左栏点图的
+    /// 差别只在归一化(视野复位 / 保留)和历史记账上,搬运是同一份。
+    fn show(&mut self, graph: usize, origin: Point<f32>, scale: f32) {
+        self.current = graph;
+        self.origin = origin;
+        self.scale = scale;
+        self.tabs.store_view(graph, origin, scale);
         self.drag = None;
         // 状态行说的是"上一张图的操作",切过来还挂着会误导。
         self.status = None;
@@ -900,7 +1161,126 @@ impl Viewer {
         self.menu = None;
         // 选区也是上一张图的下标,换图就得清空。
         self.clear_selection();
-        cx.notify();
+    }
+
+    /// 后退:回到上一个"看过的位置"(图 + 视野)。
+    pub fn nav_back(&mut self, cx: &mut Context<Self>) {
+        if self.nav_back_step() {
+            cx.notify();
+        }
+    }
+
+    /// 前进:抵消上一次后退。
+    pub fn nav_forward(&mut self, cx: &mut Context<Self>) {
+        if self.nav_forward_step() {
+            cx.notify();
+        }
+    }
+
+    /// [`Viewer::nav_back`] 的纯逻辑部分。返回是否真的动了。
+    fn nav_back_step(&mut self) -> bool {
+        let now = self.here();
+        let Some(prev) = self.tabs.back(now) else {
+            self.status = Some("没有可后退的位置".to_string());
+            return false;
+        };
+        self.apply_nav(prev)
+    }
+
+    /// [`Viewer::nav_forward`] 的纯逻辑部分。返回是否真的动了。
+    fn nav_forward_step(&mut self) -> bool {
+        let now = self.here();
+        let Some(next) = self.tabs.forward(now) else {
+            self.status = Some("没有可前进的位置".to_string());
+            return false;
+        };
+        self.apply_nav(next)
+    }
+
+    /// 跳到历史里记的那个位置。**不碰历史本身**(调用方已经维护好了)。
+    fn apply_nav(&mut self, entry: NavEntry) -> bool {
+        if self.doc.graphs.get(entry.graph).is_none() {
+            self.status = Some("那个位置已经不在了".to_string());
+            return false;
+        }
+        // 期间若再走 `select` 也不会重复记历史。
+        self.navigating = true;
+        self.show(entry.graph, entry.origin, entry.scale);
+        self.navigating = false;
+        true
+    }
+
+    /// 新开一个标签页显示第 `i` 张图,并切过去。
+    ///
+    /// 这是**导航**的一种(用户换了视野),所以会记一条后退历史。
+    pub fn open_tab(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.open_tab_step(i) {
+            cx.notify();
+        }
+    }
+
+    /// 切到第 `idx` 个标签页。**记一条后退历史**(用户要求:切标签页可后退)。
+    pub fn switch_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.switch_tab_step(idx) {
+            cx.notify();
+        }
+    }
+
+    /// 关掉第 `idx` 个标签页。中键、标签上的关闭按钮都走这里。
+    pub fn close_tab(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.close_tab_step(idx) {
+            cx.notify();
+        }
+    }
+
+    /// [`Viewer::open_tab`] 的纯逻辑部分。
+    fn open_tab_step(&mut self, i: usize) -> bool {
+        if self.doc.graphs.get(i).is_none() {
+            return false;
+        }
+        self.record_nav();
+        let tab = self.tabs.open(i);
+        self.show(tab.graph, tab.origin, tab.scale);
+        true
+    }
+
+    /// [`Viewer::switch_tab`] 的纯逻辑部分。
+    fn switch_tab_step(&mut self, idx: usize) -> bool {
+        // 先记历史再切 —— `record_nav` 记的是"切之前"的位置。
+        if idx >= self.tabs.tabs.len() || idx == self.tabs.active {
+            return false;
+        }
+        self.record_nav();
+        let Some(tab) = self.tabs.switch(idx) else {
+            return false;
+        };
+        self.show(tab.graph, tab.origin, tab.scale);
+        true
+    }
+
+    /// [`Viewer::close_tab`] 的纯逻辑部分。
+    ///
+    /// 关掉最后一个时**不真的关**(窗口得有东西可看):退回"只剩这一张图"的
+    /// 单标签状态。
+    fn close_tab_step(&mut self, idx: usize) -> bool {
+        if idx >= self.tabs.tabs.len() {
+            return false;
+        }
+        self.record_nav();
+        let Some(tab) = self.tabs.close(idx) else {
+            return false;
+        };
+        self.show(tab.graph, tab.origin, tab.scale);
+        true
+    }
+
+    /// 当前标签页的标题(图名)。没有图时给个占位。
+    fn tab_title(&self, tab: &Tab) -> String {
+        self.doc
+            .graphs
+            .get(tab.graph)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "?".to_string())
     }
 
     /// 右键节点:能给出菜单项(`Fn` 节点 → link)才弹;别的节点只关旧菜单。
@@ -938,12 +1318,8 @@ impl Viewer {
         };
         let r = optimize::link_fn_node(&mut self.doc, self.current, &refs, &pos, node);
         if let Some(bytes) = r.undo {
-            self.undo_stack.entry(self.current).or_default().push(Snapshot {
-                bytes,
-                refs,
-                pos,
-                kind: optimize::SnapshotKind::Optimize,
-            });
+            let snap = self.snapshot(self.current, bytes, refs, pos, optimize::SnapshotKind::Optimize);
+            self.push_undo(self.current, snap);
         }
         self.set_pos(r.pos);
         self.clear_selection();
@@ -975,6 +1351,54 @@ impl Viewer {
         }
     }
 
+    /// 压一条新的撤销存档,并**清空当前图的重做栈**。
+    ///
+    /// 所有会改图的入口都必须走这里(而不是直接 `undo_stack.push`):
+    /// 一旦用户做了新操作,原来那条"重做"分支就不成立了 —— 标准撤销语义。
+    fn push_undo(&mut self, i: usize, snapshot: Snapshot) {
+        self.undo_stack.entry(i).or_default().push(snapshot);
+        self.redo_stack.remove(&i);
+    }
+
+    /// 给某一帧拍一个存档(还没决定压到哪个栈)。
+    ///
+    /// `lowered` 在这里统一从 [`Viewer::lowered`] 读 —— 调用方不必各自记得填。
+    fn snapshot(
+        &self,
+        i: usize,
+        bytes: Vec<u8>,
+        refs: Vec<NodeRef>,
+        pos: Vec<Point<f32>>,
+        kind: optimize::SnapshotKind,
+    ) -> Snapshot {
+        Snapshot {
+            bytes,
+            refs,
+            pos,
+            kind,
+            lowered: self.lowered.contains(&i),
+        }
+    }
+
+    /// 设置某张图的「已 lower」标记。
+    ///
+    /// 撤销 / 重做恢复图之后调它 —— 存档里记着那一帧的状态,所以按钮的
+    /// 禁用态跟着一起回滚。
+    fn set_lowered(&mut self, i: usize, lowered: bool) {
+        if lowered {
+            self.lowered.insert(i);
+        } else {
+            self.lowered.remove(&i);
+        }
+    }
+
+    /// 当前图是不是已经跑过「lower」(决定右栏那几个按钮是否禁用)。
+    ///
+    /// 直接查 [`Viewer::lowered`],**不从图上推导** —— 理由见那个字段的注释。
+    fn is_lowered(&self) -> bool {
+        self.lowered.contains(&self.current)
+    }
+
     /// 右栏「自动整理」:重算当前图的坐标。拖动结果会丢,Ctrl+Z 能撤回。
     pub fn arrange(&mut self, cx: &mut Context<Self>) {
         let i = self.current;
@@ -993,11 +1417,12 @@ impl Viewer {
                 return;
             }
         };
-        self.undo_stack.entry(i).or_default().push(Snapshot {
+        self.push_undo(i, Snapshot {
             bytes,
             refs,
             pos: old_pos,
             kind: optimize::SnapshotKind::Arrange,
+            lowered: self.lowered.contains(&i),
         });
         // 布局在 core(`Doc::relayout`):对 IR 图跑自动整理 + 重展平,
         // 再把新坐标读进视图状态。
@@ -1016,37 +1441,54 @@ impl Viewer {
     /// **不含**展开 Fn 节点 —— 那是单独的「链接全部」按钮。
     /// 整次点击只留一个存档:一次 Ctrl+Z 回到点击前。
     pub fn optimize_all(&mut self, cx: &mut Context<Self>) {
-        self.batch_op(optimize::optimize_all, cx);
+        self.batch_op(optimize::optimize_all, false, cx);
     }
 
     /// 右栏「链接全部」:把当前图里所有 Fn 节点展开成内联的复合节点
     /// (右键「link」的批量版)。
     pub fn link_all(&mut self, cx: &mut Context<Self>) {
-        self.batch_op(optimize::link_all, cx);
+        self.batch_op(optimize::link_all, false, cx);
     }
 
     /// 右栏「循环改写」:把控制流里的环换成 native 的「有限循环」节点。
     pub fn lower_loops(&mut self, cx: &mut Context<Self>) {
-        self.batch_op(optimize::lower_loops_step, cx);
+        self.batch_op(optimize::lower_loops_step, false, cx);
     }
 
-    /// 批量操作(优化 / 链接全部 / 循环改写)的公共外壳:
+    /// 右栏「lower」:跑 core 的**完整**降级流程(`Optimizer::lower_ir`)。
+    ///
+    /// 跑完之后图里不再有 Fn / 循环 / 列表 IR 节点,右栏那几个改写按钮就没有
+    /// 对象了 —— 禁用态由 [`Viewer::is_lowered`] 决定,判据是显式记下来的
+    /// [`Viewer::lowered`],**不是**从图上推(理由见那个字段的注释)。
+    pub fn lower(&mut self, cx: &mut Context<Self>) {
+        self.batch_op(optimize::lower_full, true, cx);
+    }
+
+    /// 批量操作(优化 / 链接全部 / 循环改写 / lower)的公共外壳:
     /// 取当前图的展平顺序与坐标 → 调 `f` → 存撤销档 → 换坐标 → 写状态栏。
+    ///
+    /// `marks_lowered` 只有「lower」传 `true`:存档**先**拍(那时还没标记),
+    /// 再把这张图记进 [`Viewer::lowered`] —— 于是撤销回到"没 lower 过"的那一帧,
+    /// 按钮跟着复活。
     fn batch_op(
         &mut self,
         f: fn(&mut Doc, usize, &[NodeRef], &[Point<f32>]) -> optimize::ApplyResult,
+        marks_lowered: bool,
         cx: &mut Context<Self>,
     ) {
+        let i = self.current;
         let refs = self.current_refs();
-        let pos = self.positions.get(self.current).cloned().unwrap_or_default();
-        let r = f(&mut self.doc, self.current, &refs, &pos);
+        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        let r = f(&mut self.doc, i, &refs, &pos);
+        // 先看有没有变化 —— `r.undo` 下面要移进存档里。
+        let changed = r.undo.is_some();
         if let Some(bytes) = r.undo {
-            self.undo_stack.entry(self.current).or_default().push(Snapshot {
-                bytes,
-                refs,
-                pos,
-                kind: optimize::SnapshotKind::Optimize,
-            });
+            let snap = self.snapshot(i, bytes, refs, pos, optimize::SnapshotKind::Optimize);
+            self.push_undo(i, snap);
+        }
+        // 只有真的改了图才记标记:lower 报"无变化"时不该禁用按钮。
+        if marks_lowered && changed {
+            self.lowered.insert(i);
         }
         self.set_pos(r.pos);
         // 优化会删 / 换节点,展平下标跟着变 —— 旧选区不能再留着指别人。
@@ -1083,12 +1525,8 @@ impl Viewer {
         let pos = self.positions.get(self.current).cloned().unwrap_or_default();
         let r = optimize::apply_rule(&mut self.doc, self.current, &refs, &pos, rule);
         if let Some(bytes) = r.undo {
-            self.undo_stack.entry(self.current).or_default().push(Snapshot {
-                bytes,
-                refs,
-                pos,
-                kind: optimize::SnapshotKind::Optimize,
-            });
+            let snap = self.snapshot(self.current, bytes, refs, pos, optimize::SnapshotKind::Optimize);
+            self.push_undo(self.current, snap);
         }
         self.set_pos(r.pos);
         self.clear_selection();
@@ -1096,18 +1534,62 @@ impl Viewer {
         cx.notify();
     }
 
-    /// Ctrl+Z / 右栏「撤销」按钮:撤掉当前图最近一次优化或整理。
+    /// Ctrl+Z:撤掉当前图最近一次操作。
+    ///
+    /// **右栏没有撤销按钮** —— 只留快捷键(用户要求)。撤之前先把"当前这一帧"
+    /// 压进重做栈,所以撤销随时可以被 Ctrl+Y 反向抵掉。
     pub fn undo_step(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.undo_stack.get_mut(&self.current).and_then(|s| s.pop()) else {
+        let i = self.current;
+        let Some(entry) = self.undo_stack.get_mut(&i).and_then(|s| s.pop()) else {
             self.status = Some("没有可撤销的操作".to_string());
             cx.notify();
             return;
         };
         let refs = self.current_refs();
-        let pos = self.positions.get(self.current).cloned().unwrap_or_default();
-        let (new_pos, status) = optimize::undo(&mut self.doc, self.current, &refs, &pos, &entry);
+        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        // 先给"撤之前"这一帧拍个快照 —— 它就是重做要回到的状态。
+        let current = self
+            .doc
+            .encode(i)
+            .ok()
+            .map(|bytes| self.snapshot(i, bytes, refs.clone(), pos.clone(), optimize::SnapshotKind::Redo));
+        let (new_pos, status) = optimize::undo(&mut self.doc, i, &refs, &pos, &entry);
+        if let Some(s) = current {
+            self.redo_stack.entry(i).or_default().push(s);
+        }
+        // 存档里记着那一帧的 lower 状态 —— 恢复图的同时也把按钮恢复回来。
+        self.set_lowered(i, entry.lowered);
         self.set_pos(new_pos);
         // 撤销会把节点列表换回旧版本,下标对应关系跟着变。
+        self.clear_selection();
+        self.status = Some(status);
+        cx.notify();
+    }
+
+    /// Ctrl+Y:重做刚被撤销的那一步。
+    pub fn redo_step(&mut self, cx: &mut Context<Self>) {
+        let i = self.current;
+        let Some(entry) = self.redo_stack.get_mut(&i).and_then(|s| s.pop()) else {
+            self.status = Some("没有可重做的操作".to_string());
+            cx.notify();
+            return;
+        };
+        let refs = self.current_refs();
+        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        // 这一帧的反向存档:重做之后还能再撤销回来,且要**整份**回到这一帧
+        // (所以 kind 用 `Redo` = 坐标也照存档,而不是优化那种"当前优先")。
+        // 走 `push_undo` 会清空重做栈 —— 所以这里**直接**压,不能经过那个入口。
+        let current = self
+            .doc
+            .encode(i)
+            .ok()
+            .map(|bytes| self.snapshot(i, bytes, refs.clone(), pos.clone(), optimize::SnapshotKind::Redo));
+        let (new_pos, status) = optimize::redo(&mut self.doc, i, &refs, &pos, &entry);
+        if let Some(s) = current {
+            self.undo_stack.entry(i).or_default().push(s);
+        }
+        self.set_lowered(i, entry.lowered);
+        self.set_pos(new_pos);
         self.clear_selection();
         self.status = Some(status);
         cx.notify();
@@ -1993,6 +2475,15 @@ impl Render for Viewer {
         // 按钮 = `eliminate_solo`(`core/src/compile/ir.rs:402`)调用链上的每条规则,
         // 点一次 = 该规则在当前图的所有节点上各跑一次(**一遍**,不循环到不动点)。
         // 标签省掉 `eliminate_` 前缀:栏名已经说了这是优化,240px 宽放不下全名。
+        // ---- 右栏:优化 ----
+        // 按钮 = `eliminate_solo` 调用链上的每条规则,点一次 = 该规则在当前图的
+        // 所有节点上各跑一次(**一遍**,不循环到不动点)。
+        //
+        // 改写类按钮(链接全部 / 一键优化 / 循环改写 / lower)在**图已经 lower
+        // 过**时全部禁用:判据是显式记下的 `lowered` 集合(不是从图上推,理由见
+        // 那个字段的注释)。撤销回退到"没 lower 过"的那一帧后自动恢复。
+        let lowered = self.is_lowered();
+        let editable = !lowered;
         let rules_panel = div()
             .id("rules")
             .w(px(240.0))
@@ -2005,6 +2496,7 @@ impl Render for Viewer {
             .p_2()
             .text_color(text_hi())
             .child(
+                // 自动整理不受 lower 影响:lower 之后的图照样需要排布。
                 div()
                     .id("arrange")
                     .px_2()
@@ -2022,49 +2514,44 @@ impl Render for Viewer {
                 // 链接全部:把所有 Fn 节点展开成内联的复合节点
                 // (右键「link」的批量版)。和「一键优化」分开 —— 展开会把
                 // 整张图换掉,混在规则消除里看不出是哪一步改坏的。
-                div()
-                    .id("link_all")
-                    .px_2()
-                    .py_1()
-                    .mb_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("链接全部")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.link_all(cx))),
+                panel_button("link_all", "链接全部", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.link_all(cx)))
+                    }),
             )
             .child(
                 // 一键优化:消除规则跑到不动点(不含展开 Fn)。
-                div()
-                    .id("optimize_all")
-                    .px_2()
-                    .py_1()
-                    .mb_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("一键优化")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx))),
+                panel_button("optimize_all", "一键优化", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx)))
+                    }),
             )
             .child(
                 // 循环改写:控制流里的环 → native 的「有限循环」节点。
-                div()
-                    .id("lower_loops")
-                    .px_2()
-                    .py_1()
-                    .mb_3()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("循环改写")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.lower_loops(cx))),
+                panel_button("lower_loops", "循环改写", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower_loops(cx)))
+                    }),
             )
+            .child(
+                // lower:core 的**完整**降级流程(展开 Fn → 优化 → 改写环 →
+                // 展开列表 → 类型降到 wire 层)。跑完之后上面那三个按钮就没有
+                // 对象了,一起变灰 —— 见 `Viewer::is_lowered`。
+                panel_button("lower", "lower", editable)
+                    .mb_3()
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower(cx)))
+                    }),
+            )
+            .when(lowered, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(text_dim())
+                        .mb_2()
+                        .child("已 lower —— 改写按钮已停用(Ctrl+Z 可退回)"),
+                )
+            })
             .child(
                 div()
                     .text_xs()
@@ -2086,27 +2573,85 @@ impl Render for Viewer {
                     .child(r.name.strip_prefix("eliminate_").unwrap_or(r.name))
                     .on_click(cx.listener(move |v, _e, _w, cx| v.apply_rule(i, cx)))
             }))
+            // 撤销 / 重做**没有按钮**:只留 Ctrl+Z / Ctrl+Y,见 `main.rs` 的绑定。
             .child(
                 div()
-                    .id("undo")
-                    .px_2()
-                    .py_1()
                     .mt_2()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
                     .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("撤销 (Ctrl+Z)")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.undo_step(cx))),
+                    .text_color(text_dim())
+                    .child("Ctrl+Z 撤销 · Ctrl+Y 重做"),
             )
             .when_some(self.status.clone(), |d, s| {
                 d.child(div().mt_2().text_xs().text_color(text_dim()).child(s))
             });
 
+        // ---- 标签栏:一行横向的页签,每页带关闭按钮 ----
+        // 点页签切过去(记一条后退历史,用户要求切标签页可后退);
+        // 中键点页签 = 关闭;页签上的 × 也是关闭。
+        let tabs: Vec<(usize, String, bool)> = self
+            .tabs
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, self.tab_title(t), i == self.tabs.active))
+            .collect();
+        let tab_bar = div()
+            .id("tab-bar")
+            .flex()
+            .flex_row()
+            // 页签多了要能横向滚,而不是把画布挤窄。
+            .overflow_x_scroll()
+            .flex_shrink_0()
+            .bg(panel_bg())
+            .border_b_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .children(tabs.into_iter().map(|(i, title, active)| {
+                div()
+                    .id(("tab", i))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .flex_shrink_0()
+                    .border_r_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.10))
+                    .text_xs()
+                    .cursor_pointer()
+                    .when(active, |d| d.bg(hsla(0.0, 0.0, 1.0, 0.18)))
+                    .when(!active, |d| d.text_color(text_dim()))
+                    .child(title)
+                    // 关闭按钮。用独立的小块接点击,并且 `stop_propagation`
+                    // —— 否则这一下会同时把标签切过去。
+                    .child(
+                        div()
+                            .id(("tab-close", i))
+                            .px_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.16)))
+                            .text_color(text_dim())
+                            .child("×")
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |_v, _e, _w, cx| {
+                                cx.stop_propagation();
+                            }))
+                            .on_click(cx.listener(move |v, _e, _w, cx| {
+                                cx.stop_propagation();
+                                v.close_tab(i, cx);
+                            })),
+                    )
+                    .on_mouse_down(MouseButton::Middle, cx.listener(move |v, _e, _w, cx| {
+                        cx.stop_propagation();
+                        v.close_tab(i, cx);
+                    }))
+                    .on_click(cx.listener(move |v, _e, _w, cx| v.switch_tab(i, cx)))
+            }));
+
         // ---- 整窗:接收文件拖放,左中右分栏 ----
         div()
             .flex()
+            .flex_col()
             .size_full()
             .on_drop::<ExternalPaths>(cx.listener(|v, paths: &ExternalPaths, _w, cx| {
                 v.handle_drop(paths, cx);
@@ -2151,10 +2696,44 @@ impl Render for Viewer {
                     cx.notify();
                 }
             }))
-            .child(toc)
-            .child(divider)
-            .child(canvas_el)
-            .child(rules_panel)
+            // 后退 / 前进:**两条语义消息**,不是"侧键"。
+            //
+            // gpui 把它们建模成 `MouseButton::Navigate(Back|Forward)`;Windows
+            // 后端由 `WM_XBUTTONDOWN` 的 XBUTTON1/2 映射过来
+            // (`gpui/src/platform/windows/events.rs:513-514`)。
+            //
+            // ⚠️ gpui 的窗口过程**完全不处理** `WM_APPCOMMAND`(全 crate 搜不到
+            // 一处),而 XBUTTON 分支返回非 `None`,所以 `DefWindowProcW` 连那次
+            // "侧键 → 浏览器后退"的系统翻译都不会发生。在这个宿主里,
+            // `Navigate` 就是唯一能拿到这两条消息的途径。
+            //
+            // 挂在根 `div` 上:整个窗口范围内都生效,和撤销一样不依赖焦点。
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|v, _e: &MouseDownEvent, _w, cx| {
+                    cx.stop_propagation();
+                    v.nav_back(cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|v, _e: &MouseDownEvent, _w, cx| {
+                    cx.stop_propagation();
+                    v.nav_forward(cx);
+                }),
+            )
+            .child(tab_bar)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(toc)
+                    .child(divider)
+                    .child(canvas_el)
+                    .child(rules_panel),
+            )
             .into_any_element()
     }
 }
@@ -2275,6 +2854,124 @@ mod tests {
         assert!(Viewer::matches_search("test_drop_list", "DROP"));
         assert!(Viewer::matches_search("test_drop_list", "op_li"));
         assert!(!Viewer::matches_search("test_drop_list", "point"));
+    }
+
+    // ---------------------------------------------------- 标签页 / 前进后退
+    //
+    // 这些规则全在 [`TabHost`] 里,它不碰 GPUI 也不碰 `Doc` —— 所以能直接测。
+
+    fn nav(g: usize, x: f32, s: f32) -> NavEntry {
+        NavEntry {
+            graph: g,
+            origin: point(x, 0.0),
+            scale: s,
+        }
+    }
+
+    /// 带 y 的版本 —— 验"视野整份恢复"时要确认 y 也跟着回来。
+    fn nav2(g: usize, x: f32, y: f32, s: f32) -> NavEntry {
+        NavEntry {
+            graph: g,
+            origin: point(x, y),
+            scale: s,
+        }
+    }
+
+    /// 标签页:新开一个 → 数量 +1 且切过去;关掉 → 回到原来的。
+    #[test]
+    fn opening_and_closing_tabs() {
+        let mut h = TabHost::new();
+        assert_eq!(h.tabs.len(), 1);
+        assert_eq!(h.active, 0);
+
+        let t = h.open(1);
+        assert_eq!(t.graph, 1);
+        assert_eq!(h.tabs.len(), 2);
+        assert_eq!(h.active, 1, "新开的标签页应当成为活动页");
+
+        h.open(2);
+        assert_eq!(h.tabs.len(), 3);
+        assert_eq!(h.active, 2);
+
+        // 关掉左边那个(下标 1):活动页是 2,在它右边,所以下标要跟着左移。
+        let active = h.close(1).expect("关掉之后还有活动标签页");
+        assert_eq!(h.tabs.len(), 2);
+        assert_eq!(h.active, 1);
+        assert_eq!(active.graph, 2, "关掉左边的标签不该换掉当前图");
+
+        // 关掉当前标签:落到新的活动页。
+        let active = h.close(1).expect("还有一张");
+        assert_eq!(h.tabs.len(), 1);
+        assert_eq!(h.active, 0);
+        assert_eq!(active.graph, h.tabs[0].graph);
+    }
+
+    /// 只剩一个标签页时点关闭**不真的关**:窗口总得有东西可看。
+    #[test]
+    fn closing_the_last_tab_keeps_a_tab() {
+        let mut h = TabHost::new();
+        h.store_view(0, point(50.0, 60.0), 2.0);
+        let tab = h.close(0).expect("关最后一个也要给回一个标签页");
+        assert_eq!(h.tabs.len(), 1, "最后一个标签页不能真的关掉");
+        assert_eq!(tab.scale, 1.0, "关最后一个 = 回到刚打开的样子");
+        assert_eq!(tab.origin, point(0.0, 0.0));
+    }
+
+    /// 切标签页可以后退 —— 用户明确要求。后退同时恢复**视野**,不只是图。
+    #[test]
+    fn switching_tabs_can_be_undone_by_back() {
+        let mut h = TabHost::new();
+        h.open(1);
+        h.store_view(1, point(120.0, -40.0), 1.5);
+
+        // 切到第 0 页(记下"切之前"的位置)。
+        h.record(nav2(1, 120.0, -40.0, 1.5));
+        let tab = h.switch(0).expect("切到第 0 页");
+        assert_eq!(tab.graph, 0);
+        assert_eq!(h.active, 0);
+
+        // 后退:回到刚才那一页,视野也一起回来。
+        let back = h.back(nav(0, 0.0, 1.0)).expect("应当能后退");
+        assert_eq!(back.graph, 1);
+        assert_eq!(back.origin, point(120.0, -40.0), "视野也要一起回来");
+        assert_eq!(back.scale, 1.5);
+
+        // 再前进,回到第 0 页。
+        let fwd = h.forward(back).expect("应当能前进");
+        assert_eq!(fwd.graph, 0);
+    }
+
+    /// 后退到底 / 前进到头时返回 `None`(调用方据此给状态提示)。
+    #[test]
+    fn back_at_the_beginning_is_a_noop() {
+        let mut h = TabHost::new();
+        assert!(h.back(nav(0, 0.0, 1.0)).is_none());
+        assert!(h.forward(nav(0, 0.0, 1.0)).is_none());
+    }
+
+    /// 新的导航会清空前进历史(浏览器语义)。
+    #[test]
+    fn a_new_navigation_clears_forward_history() {
+        let mut h = TabHost::new();
+        h.record(nav(0, 0.0, 1.0));
+        h.record(nav(1, 10.0, 1.0));
+        assert!(h.back(nav(2, 20.0, 1.0)).is_some());
+        assert!(!h.nav.forward.is_empty(), "后退之后前进栈里应当有东西");
+
+        // 做一次新导航 → 前进分支作废。位置要和栈里已有的都不同,
+        // 否则会被 `record` 的去重挡掉,测不到清空。
+        h.record(nav(0, 30.0, 1.0));
+        assert!(h.nav.forward.is_empty(), "新导航必须清掉前进历史");
+    }
+
+    /// 连续两次导航到同一位置**不重复记账** —— 否则来回点同一张图会把
+    /// 后退栈塞满同一条,按十次后退还在原地。
+    #[test]
+    fn recording_the_same_position_twice_is_a_noop() {
+        let mut h = TabHost::new();
+        h.record(nav(0, 0.0, 1.0));
+        h.record(nav(0, 0.0, 1.0));
+        assert_eq!(h.nav.back.len(), 1);
     }
 
     /// 侧边 pin 排布:**控制流在前、值流在后,值流依次排在控制流下方**。

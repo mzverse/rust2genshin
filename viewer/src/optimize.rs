@@ -1,4 +1,4 @@
-//! 右栏「优化」的纯逻辑层 —— 规则表、一遍扫描、一键优化、坐标重建、撤销。
+//! 右栏「优化」的纯逻辑层 —— 规则表、一遍扫描、一键优化、坐标重建、撤销 / 重做。
 //!
 //! 规则就是 `core/src/compile/ir.rs` 里 `Optimizer::eliminate_solo`(`ir.rs:402`)
 //! 调用链上的每一条,顺序与它一致。单条规则的按钮**不做** `eliminate_solos`
@@ -6,8 +6,9 @@
 //! 便于逐步观察是哪一步把图改坏的;要一步到位就点「一键优化」
 //! ([`optimize_all`]:消除规则到不动点)。
 //!
-//! 另外两个批量操作各自独立:「链接全部」([`link_all`]:展开所有 Fn 节点)
-//! 与「循环改写」([`lower_loops_step`]:控制流里的环 → 有限循环节点)。
+//! 另外三个批量操作各自独立:「链接全部」([`link_all`]:展开所有 Fn 节点)、
+//! 「循环改写」([`lower_loops_step`]:控制流里的环 → 有限循环节点)与
+//! 「lower」([`lower_full`]:core 的完整降级流程)。
 //!
 //! 这里不碰 GPUI:全部输入输出是 `Doc` / `NodeRef` / `Point<f32>`,
 //! 所以能在 `cargo test` 里直接验证(右栏按钮只是这些函数的薄壳)。
@@ -209,6 +210,20 @@ pub enum SnapshotKind {
     Optimize,
     /// 整理:改的就是坐标。以**存档**为准,把整理前的坐标还回来。
     Arrange,
+    /// 重做:存档就是"那次操作之后的样子",整份恢复 —— 坐标也照存档。
+    Redo,
+}
+
+impl SnapshotKind {
+    /// 恢复这份存档时,坐标以存档为准还是以当前为准。
+    fn saved_coords_win(&self) -> bool {
+        match self {
+            // 只有"优化"允许当前坐标压过存档:优化之后用户可能拖过节点,
+            // 撤销不该把那一次拖动一起撤掉。
+            SnapshotKind::Optimize => false,
+            SnapshotKind::Arrange | SnapshotKind::Redo => true,
+        }
+    }
 }
 
 /// 一次操作的存档:图的字节 + 当时的展平顺序与坐标。
@@ -218,6 +233,13 @@ pub struct Snapshot {
     pub refs: Vec<NodeRef>,
     pub pos: Vec<Point<f32>>,
     pub kind: SnapshotKind,
+    /// 存档那一帧,这张图是不是已经跑过「lower」。
+    ///
+    /// **只能记下来,不能从图上推**:lower 之后节点全成了 `IrNodeId::Native`,
+    /// 但反过来不成立 —— 「一键优化」也可能把一张小图消到只剩一两个原生节点
+    /// (真实产物里 `add_n` / `borrow_read` / `pair_sum` 就是这样),那种图
+    /// **没** lower 过,改写按钮必须还能点。
+    pub lowered: bool,
 }
 
 pub struct ApplyResult {
@@ -507,6 +529,70 @@ pub fn lower_loops_step(
     })
 }
 
+/// 完整 lower:跑 core 的整条降级流程(`Optimizer::lower_ir`)。
+///
+/// 这一步之后图里不再有 IR 专有的东西 —— Fn 调用被展开成复合节点、优化到
+/// 不动点、环改写成有限循环节点、列表类节点展开、类型降到 wire 层。图**仍然
+/// 是 `NodeGraphIr`**(只是每个节点都是 `IrNodeId::Native`),所以照样能渲染。
+///
+/// 不复用 [`batch_apply`] 的原因:它把闭包签名定成
+/// `fn(&mut Optimizer, Option<&mut Linker>)`,而这里**必须**拿到 linker
+/// (整条流程都要它)。行为上两者一致:整段跑在 `catch_unwind` 里,panic 时用
+/// 点击前的字节把**图**整体换回来,状态栏说明,`undo` 留空(这一跳没成功)。
+///
+/// 唯一的残留是 `Linker` 的持久状态(已展开函数的缓存 / 资产)收不回来 ——
+/// 和「链接全部」同一个限制,原因也一样:这条路径就是 core 自己在跑的展开
+/// 逻辑,panic 意味着 core 出错。
+pub fn lower_full(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+) -> ApplyResult {
+    let noop = |status: String| ApplyResult {
+        undo: None,
+        pos: pos.to_vec(),
+        status,
+    };
+    let bytes = match doc.encode(i) {
+        Ok(b) => b,
+        Err(e) => return noop(e),
+    };
+    let Some(mut opt) = doc.take(i) else {
+        return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
+    };
+    let Some(linker) = doc.linker_mut(i) else {
+        doc.put(i, opt);
+        return noop("这张图背后的 Linker 不见了".to_string());
+    };
+    match catch_unwind(AssertUnwindSafe(|| opt.lower_ir(linker))) {
+        Ok(()) => {
+            doc.put(i, opt);
+            doc.reflatten(i);
+            ApplyResult {
+                undo: Some(bytes),
+                pos: reposition(doc, i, refs, pos, None),
+                status: "lower:已跑完整条降级流程".to_string(),
+            }
+        }
+        Err(p) => {
+            drop(opt);
+            let status = match doc.decode_into(i, &bytes) {
+                Ok(()) => {
+                    doc.reflatten(i);
+                    format!("lower:panic 已拦截,图已回滚 —— {}", panic_message(p.as_ref()))
+                }
+                Err(e) => format!("lower:panic 后回滚也失败了:{e}"),
+            };
+            ApplyResult {
+                undo: None,
+                pos: reposition(doc, i, refs, pos, None),
+                status,
+            }
+        }
+    }
+}
+
 /// 撤销一步:把存档换回去,再看 [`SnapshotKind`] 决定坐标以哪边为准。
 pub fn undo(
     doc: &mut Doc,
@@ -525,11 +611,35 @@ pub fn undo(
     let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
     let current = (refs, pos);
     let saved = (entry.refs.as_slice(), entry.pos.as_slice());
-    let sources = match entry.kind {
-        SnapshotKind::Optimize => [current, saved],
-        SnapshotKind::Arrange => [saved, current],
+    let sources = if entry.kind.saved_coords_win() {
+        [saved, current]
+    } else {
+        [current, saved]
     };
     (rebuild_pos(&new_refs, &sources, None), "已撤销".to_string())
+}
+
+/// 重做一步:把一次撤销换回来的那份状态**再撤回去**。
+///
+/// 和 [`undo`] 是同一份恢复逻辑,只是方向相反 —— 存档里的 `kind` 是
+/// [`SnapshotKind::Redo`],所以坐标整份照存档(重做的语义就是"回到那一帧")。
+pub fn redo(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+    entry: &Snapshot,
+) -> (Vec<Point<f32>>, String) {
+    if let Err(e) = doc.decode_into(i, &entry.bytes) {
+        return (pos.to_vec(), format!("重做失败:{e}"));
+    }
+    doc.reflatten(i);
+    let Some(g) = doc.graphs.get(i) else {
+        return (Vec::new(), "重做失败:图不见了".to_string());
+    };
+    let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
+    let sources = [(entry.refs.as_slice(), entry.pos.as_slice()), (refs, pos)];
+    (rebuild_pos(&new_refs, &sources, None), "已重做".to_string())
 }
 
 fn reposition(
@@ -755,6 +865,7 @@ mod tests {
             refs: refs0.clone(),
             pos: pos0.clone(),
             kind: SnapshotKind::Optimize,
+            lowered: false,
         };
         let mut pos1 = r.pos;
         let refs1 = refs_of(&doc, 0);
@@ -839,6 +950,7 @@ mod tests {
             refs: refs.clone(),
             pos: old_pos.clone(),
             kind: SnapshotKind::Arrange,
+            lowered: false,
         };
 
         let (pos, status) = undo(&mut doc, 0, &refs, &arranged, &entry);
@@ -1074,5 +1186,117 @@ mod tests {
         );
     }
 
-}
+    /// 「lower」跑的是**完整**流程:Fn 被展开、循环被改写、类型降到 wire 层
+    /// —— 跑完之后图里一个非 `Native` 的节点都不该剩。
+    #[test]
+    fn lower_runs_the_whole_pipeline() {
+        let t = crate::doc::fixture::linkable_target();
+        let mut doc = flatten(t);
+        let gi = doc
+            .graphs
+            .iter()
+            .position(|g| g.name == "caller")
+            .expect("caller 图存在");
+        let refs = refs_of(&doc, gi);
+        let pos = positions(&doc, gi);
+        assert!(
+            doc.graphs[gi]
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, IrNodeId::Fn(_))),
+            "lower 之前应当还有 Fn 节点"
+        );
 
+        let r = lower_full(&mut doc, gi, &refs, &pos);
+        assert!(r.undo.is_some(), "成功的 lower 应留下撤销存档:{}", r.status);
+        assert!(r.status.contains("完整"), "状态栏:{}", r.status);
+
+        let g = &doc.graphs[gi];
+        assert!(
+            g.nodes.iter().all(|n| matches!(n.kind, IrNodeId::Native(_))),
+            "lower 之后每个节点都该是 Native 了:{:?}",
+            g.nodes
+                .iter()
+                .filter(|n| !matches!(n.kind, IrNodeId::Native(_)))
+                .map(|n| n.display.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 「一键优化」不该被当成"lower 过" —— 而这条测试本身就是那个错误判据的
+    /// 反例:**一张从没 lower 过的图,优化之后节点全部是 `Native`。**
+    ///
+    /// 所以 `Viewer::is_lowered` 绝不能写成"所有节点都是 Native"。真实产物里
+    /// `add_n` / `borrow_read` / `pair_sum` 那几张图正是这样(点一次「一键优化」
+    /// 就只剩 1~2 个原生节点),用推导式判据会让它们的改写按钮无故变灰。
+    /// 判据必须是显式记下来的 bool —— 见 `view.rs` 的 `Viewer::lowered`。
+    #[test]
+    fn optimize_alone_can_make_every_node_native() {
+        let (g, _l0, _s1, _l2, _s3) = two_setters();
+        let mut doc = flatten(target_with(g));
+        let refs = refs_of(&doc, 0);
+        let pos = positions(&doc, 0);
+        let r = optimize_all(&mut doc, 0, &refs, &pos);
+        assert!(r.undo.is_some(), "两个 setter 应被消掉:{}", r.status);
+
+        // 这条断言就是判据不可靠的证明:图里已经一个非 Native 节点都不剩,
+        // 但它**没有** lower 过(没展开 Fn、没改写循环、没降类型)。
+        // (这张合成图被消成了空图 —— 空集的"所有节点都是 Native"同样成立,
+        //  也同样是假信号。真实产物里的 `add_n` 是另一种:剩 1 个原生节点。)
+        let non_native = doc.graphs[0]
+            .nodes
+            .iter()
+            .filter(|n| !matches!(n.kind, IrNodeId::Native(_)))
+            .count();
+        assert_eq!(
+            non_native, 0,
+            "这正是问题所在:优化之后一个非 Native 都不剩,却根本没 lower 过"
+        );
+    }
+
+    /// 重做把撤销掉的那一步**原样**还回来:节点集合与坐标都回到撤销前。
+    ///
+    /// 撤销栈里存的是"之前",重做栈里存的是"之后" —— 两者都必须是对的,
+    /// 只实现一边的实现会在这里失败。
+    #[test]
+    fn redo_restores_the_state_that_undo_left() {
+        let (g, _l0, _s1, _l2, _s3) = two_setters();
+        let mut doc = flatten(target_with(g));
+        let refs0 = refs_of(&doc, 0);
+        let pos0 = positions(&doc, 0);
+
+        // 先做一步真操作(消掉两个 setter)。
+        let r = apply_rule(&mut doc, 0, &refs0, &pos0, rule_named("eliminate_set_local"));
+        let after_bytes = doc.encode(0).expect("编码");
+        let after_refs = refs_of(&doc, 0);
+        let after_pos = r.pos.clone();
+        assert!(after_refs.len() < refs0.len());
+
+        // 撤销:回到操作前。重做存档 = 操作后的那一帧。
+        let undo_entry = Snapshot {
+            bytes: r.undo.expect("有存档"),
+            refs: refs0.clone(),
+            pos: pos0.clone(),
+            kind: SnapshotKind::Optimize,
+            lowered: false,
+        };
+        let (pos1, _) = undo(&mut doc, 0, &after_refs, &after_pos, &undo_entry);
+        assert_eq!(refs_of(&doc, 0), refs0, "撤销后回到操作前");
+
+        let redo_entry = Snapshot {
+            bytes: after_bytes,
+            refs: after_refs.clone(),
+            pos: after_pos.clone(),
+            kind: SnapshotKind::Redo,
+            lowered: false,
+        };
+        let (pos2, status) = redo(&mut doc, 0, &refs0, &pos1, &redo_entry);
+        assert_eq!(status, "已重做");
+
+        assert_eq!(refs_of(&doc, 0), after_refs, "重做后节点集合应与撤销前一致");
+        for (k, r0) in after_refs.iter().enumerate() {
+            let j = doc.graphs[0].index_of[r0];
+            assert_eq!(pos2[j], after_pos[k], "重做要整份恢复坐标");
+        }
+    }
+}
