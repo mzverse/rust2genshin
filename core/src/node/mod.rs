@@ -376,6 +376,14 @@ impl<Kind> ExportDecl<Kind> {
         }
     }
 
+    /// 引脚名(参数名 / 返回值名)。
+    ///
+    /// 给 viewer 的「调用约定」视图用:它要按名字把冻结的外层引脚和当前的
+    /// 状态对上 —— 优化会增删引脚、**下标会移位**,名字不会。
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn kind(&self) -> Option<&Kind> {
         self.kind.as_ref()
     }

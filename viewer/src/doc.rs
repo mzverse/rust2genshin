@@ -398,6 +398,66 @@ pub struct Edge {
     pub ctrl: bool,
 }
 
+/// 一个对外引脚(参数 / 返回值)。
+#[derive(Clone, Debug)]
+pub struct PortInfo {
+    /// 引脚名(参数名 / 返回值名)。
+    pub name: String,
+    /// 类型标签,和节点上的类型标注同一套格式(`Int` / `MyStruct` …)。
+    pub type_label: String,
+}
+
+/// 一个返回值当前的数据来源。
+///
+/// 图的**值出口**(返回值)是「外部」那一侧的槽位:它要么接函数体里的某个
+/// 节点(`Body`),要么直接接某个**值入口**(参数)—— 就是「这个函数原样
+/// 把参数还回去」(`Param`),要么什么都没接、只带一个默认值(`Const`)。
+///
+/// 为什么要分这三类:「调用约定」视图里,外层那个冻结的返回值引脚要按这个
+/// 画成不同的连线 —— 从内层的出引脚来 / 从外层的入引脚来 / 一个常数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetOrigin {
+    /// 由函数体里的节点产生。
+    Body,
+    /// 直接透传某个**参数**。带的是**参数名**而不是下标 —— 优化会压缩引脚、
+    /// 下标会移位,名字不会。
+    Param(String),
+    /// 一个常数(带它的 `Debug` 文本)。
+    Const(String),
+    /// 既没有来源也没有默认值。
+    Unset,
+}
+
+/// 一个函数的对外接口(调用约定)。
+///
+/// 展平时从图的 `exports` / `externals` 读出来 —— 这就是**调用方**看到
+/// 的那个节点:参数进、返回值出、可能有控制流。
+///
+/// 「调用约定」视图要同时显示两份:
+/// - **外层**:加载时的这份,**永远不变**;
+/// - **内层**:当前这一份,优化 / lower 之后会变(引脚会被消掉、常数会变成
+///   函数体里的节点、参数可能被透传出去)。
+#[derive(Clone, Debug, Default)]
+pub struct FnInterface {
+    /// 值入引脚(参数),按 `exports[InValue]` 的顺序。
+    pub params: Vec<PortInfo>,
+    /// 值出引脚(返回值),按 `exports[OutValue]` 的顺序。
+    pub rets: Vec<PortInfo>,
+    /// 控制入引脚的数量(`exports[InControl]` 的长度)。
+    pub ctrl_in_num: usize,
+    /// 控制出引脚的数量(`exports[OutControl]` 的长度)。
+    pub ctrl_out_num: usize,
+    /// 每个返回值的来源,与 `rets` 同序。
+    pub ret_origins: Vec<RetOrigin>,
+}
+
+impl FnInterface {
+    /// 值入引脚里第 `idx` 个的名字(越界回 `None`)。
+    pub fn param_name(&self, idx: usize) -> Option<&str> {
+        self.params.get(idx).map(|p| p.name.as_str())
+    }
+}
+
 pub struct GraphEntry {
     pub name: String,
     /// `NodeRef` → `nodes` 下标。`Slab` 删过节点后 key 有空洞,
@@ -409,6 +469,11 @@ pub struct GraphEntry {
     pub exit: Vec<usize>,
     pub nodes: Vec<NodeEntry>,
     pub edges: Vec<Edge>,
+    /// 这张图的**对外接口**(调用约定):参数 / 返回值 / 控制流引脚。
+    ///
+    /// 主图没有这套接口(`link.rs:79` 给主图的 decl 是 `Default::default()`),
+    /// 所以主图这里是空的 —— 「调用约定」视图只对**复合节点图**显示。
+    pub interface: FnInterface,
     // 注:`externals` 本身的**值边**(参数传入 / 返回值传出 / 入口 / 返回)不画
     // 成普通边 —— 图外没有对端节点。边界改由每个节点侧边的桩线 + 图边界号覆盖
     // (`NodeEntry::*_exports`),两侧都不缺表示。
@@ -457,6 +522,15 @@ pub struct Doc {
     /// 之后与 `targets` 状态分叉)。只供 `Optimizer::link_node` 摸 —
     /// **不要从这里读图数据**。
     linkers: Vec<Linker>,
+    /// **加载时**的对外接口,与 `graphs` 同长、同下标。
+    ///
+    /// 「调用约定」视图的**外层**就是它 —— 永远不变,代表"调用方看到的
+    /// 那个复合节点长什么样"。优化 / lower 会改 `graphs[i].interface`
+    /// (那是**内层**),但外层不动。
+    ///
+    /// 为什么要单独存一份:加载之后没人再保留"原始的 exports 表"了 ——
+    /// 优化会压缩引脚、撤销会换图,唯一稳定的锚点是**加载那一刻**。
+    frozen: Vec<FnInterface>,
 }
 
 impl Doc {
@@ -466,6 +540,7 @@ impl Doc {
             owners: Vec::new(),
             targets: Vec::new(),
             linkers: Vec::new(),
+            frozen: Vec::new(),
         }
     }
 
@@ -512,7 +587,40 @@ impl Doc {
                 source: GraphSource::Fn(key.clone()),
             });
         }
+        // 冻结加载时的接口 —— 「调用约定」视图的**外层**。
+        // 主图没有这套接口(它的 decl 是 `Default::default()`),冻结一份空的。
+        //
+        // `truncate(first)` 而不是 `clear()`:多次加载文件时 `graphs` 只增不减,
+        // `frozen` 必须和它**同下标** —— 清空的话先前那些图的冻结接口就丢了。
+        self.frozen.truncate(first);
+        self.frozen.reserve(self.graphs.len() - first);
+        for i in first..self.graphs.len() {
+            let src = &self.owners[i].source;
+            let iface = match src {
+                GraphSource::Main => FnInterface::default(),
+                GraphSource::Fn(_) => self.graphs[i].interface.clone(),
+            };
+            self.frozen.push(iface);
+        }
         (self.graphs.len() > first).then_some(first)
+    }
+
+    /// 第 `i` 张图**加载时**的对外接口(调用约定的外层,永远不变)。
+    ///
+    /// 越界回 `None` —— 调用方是交互驱动的,下标可能已过期。
+    pub fn frozen_interface(&self, i: usize) -> Option<&FnInterface> {
+        self.frozen.get(i)
+    }
+
+    /// 第 `i` 张图是不是**复合节点图**(一个函数)。
+    ///
+    /// 主图不是 —— 主图没有对外接口(`link.rs:79` 给它的是
+    /// `Default::default()` 的 decl),所以「调用约定」视图只对函数图显示。
+    pub fn is_fn_graph(&self, i: usize) -> bool {
+        matches!(
+            self.owners.get(i).map(|o| &o.source),
+            Some(GraphSource::Fn(_))
+        )
     }
 
     /// 对第 `i` 张图跑一次自动整理(core 的布局把坐标写回 IR 节点),然后
@@ -915,6 +1023,73 @@ fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames) -> GraphEntry {
         exit,
         nodes,
         edges,
+        interface: fn_interface(g),
+    }
+}
+
+/// 从一张 IR 图里读出它的**对外接口**(调用约定)。
+///
+/// 参数 / 返回值 / 控制流引脚都从 `exports` 读 —— 那张表就是**调用方**在
+/// 复合节点上看到的引脚列表(`link.rs` 的 `CompositeNodeGraph::apply` 把它
+/// 写成 `NodeDecl` 的 `pins`)。
+///
+/// 返回值的**来源**从 `externals.values_in` 读:每个值出口对应一个
+/// `ValueIn`,里面记着这个返回值是从哪来的:
+/// - 接着一个**节点** → 函数体里算出来的(`Body`);
+/// - 接着一个**值入口**(`LinkTarget::Export`)→ 原样透传某个参数(`Param`);
+/// - 只带一个**默认值** → 一个常数(`Const`);
+/// - 什么都没有 → `Unset`。
+///
+/// 类型用 [`type_label`] 格式化(和节点上的类型标注同一套)。
+fn fn_interface(g: &NodeGraphIr) -> FnInterface {
+    let ports = |kind: rust2genshin::node::PinType| -> Vec<PortInfo> {
+        g.exports
+            .get(&kind)
+            .map(|v| {
+                v.iter()
+                    .map(|d| PortInfo {
+                        name: d.name().to_string(),
+                        type_label: type_label(d.kind()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let params = ports(rust2genshin::node::PinType::InValue);
+    let rets = ports(rust2genshin::node::PinType::OutValue);
+    // 返回值的来源:`externals.values_in[i]` 是第 i 个值出口的来源。
+    let ret_origins: Vec<RetOrigin> = g
+        .externals
+        .values_in
+        .iter()
+        .map(|slot| match slot.link {
+            Some(l) if l.target.is_node() => RetOrigin::Body,
+            // 指向 `Export` = 指向某个值入口(= 参数)。按**名字**记,不用下标 ——
+            // 优化会压缩引脚,下标会移位,名字不会。
+            Some(l) => RetOrigin::Param(
+                params
+                    .get(l.index)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("#{}", l.index)),
+            ),
+            None => match &slot.default {
+                Some(v) => RetOrigin::Const(format!("{v:?}")),
+                None => RetOrigin::Unset,
+            },
+        })
+        .collect();
+    FnInterface {
+        params,
+        rets,
+        ctrl_in_num: g
+            .exports
+            .get(&rust2genshin::node::PinType::InControl)
+            .map_or(0, Vec::len),
+        ctrl_out_num: g
+            .exports
+            .get(&rust2genshin::node::PinType::OutControl)
+            .map_or(0, Vec::len),
+        ret_origins,
     }
 }
 
@@ -1003,16 +1178,53 @@ mod tests {
                 );
                 let d = super::flatten(t);
                 println!("展平出 {} 张图", d.graphs.len());
-                for g in &d.graphs {
+                for (i, g) in d.graphs.iter().enumerate() {
+                    // 「调用约定」视图的数据:外层(冻结)+ 内层(当前)是否对得上。
+                    let frozen = d.frozen_interface(i);
+                    let conv = match frozen {
+                        Some(o) if d.is_fn_graph(i) => {
+                            let c = crate::conv::Convention::build(o, &g.interface);
+                            // 几何也要真的算一遍 —— 引脚多 / 名字长时最容易
+                            // 在这里出问题(除零、负宽、夹取反)。
+                            let l = crate::conv::layout(o, &g.interface, &c, (0.0, 0.0), 264.0);
+                            let sane = l.outer.w > 0.0
+                                && l.outer.h > 0.0
+                                && l.inner.w > 0.0
+                                && l.inner.h > 0.0
+                                && l.inner.x >= l.outer.x
+                                && l.inner.y >= l.outer.y
+                                && l.inner.x + l.inner.w <= l.outer.x + l.outer.w + 0.01
+                                && l.inner.y + l.inner.h <= l.outer.y + l.outer.h + 0.01;
+                            format!(
+                                " | 约定:线 {} 常数 {} 掉参 {:?} 掉ret {:?} 外层 {:.0}x{:.0} 内层 {:.0}x{:.0} {}",
+                                c.links.len(),
+                                c.constants.len(),
+                                c.dropped_params,
+                                c.dropped_rets,
+                                l.outer.w,
+                                l.outer.h,
+                                l.inner.w,
+                                l.inner.h,
+                                if sane { "几何OK" } else { "几何错!" }
+                            )
+                        }
+                        _ => String::new(),
+                    };
                     println!(
-                        "  {:<24} 节点 {:>4} 边 {:>4}(控制 {:>3} 值 {:>3}) 入口 {:?} 返回 {:?}",
+                        "  {:<24} 节点 {:>4}  边 {:>4}(控制 {:>3} 值 {:>3})  入口 {:?}  返回 {:?}  接口 参{} 返{} 控{}/{} 来源 {:?}{}",
                         g.name,
                         g.nodes.len(),
                         g.edges.len(),
                         g.edges.iter().filter(|e| e.ctrl).count(),
                         g.edges.iter().filter(|e| !e.ctrl).count(),
                         g.entry,
-                        g.exit
+                        g.exit,
+                        g.interface.params.len(),
+                        g.interface.rets.len(),
+                        g.interface.ctrl_in_num,
+                        g.interface.ctrl_out_num,
+                        g.interface.ret_origins,
+                        conv,
                     );
                 }
             }
@@ -1770,6 +1982,126 @@ mod tests {
             assert!(gap >= PIN_GAP, "{pins} 个 pin 的段距 {gap} 小于 {PIN_GAP}");
         }
     }
+
+    // ------------------------------------------------- 调用约定(对外接口)
+
+    /// 函数图要展平出它的对外接口:参数名 / 返回值名 / 控制流引脚。
+    #[test]
+    fn a_function_graph_exposes_its_interface() {
+        let doc = flatten(fixture::signature_target());
+        let g = doc.graphs.iter().find(|g| g.name == "sig").expect("有 sig 图");
+        assert_eq!(g.interface.params.len(), 2, "两个参数");
+        assert_eq!(g.interface.params[0].name, "x");
+        assert_eq!(g.interface.params[1].name, "y");
+        assert_eq!(g.interface.params[0].type_label, "Int");
+        assert_eq!(g.interface.rets.len(), 1, "一个返回值");
+        assert_eq!(g.interface.rets[0].name, "z");
+        assert_eq!(g.interface.ctrl_in_num, 1);
+        assert_eq!(g.interface.ctrl_out_num, 1);
+    }
+
+    /// **主图的冻结接口是空的** —— 主图没有"调用约定"(没人调用它),
+    /// 所以「调用约定」视图不显示它。判据是 `is_fn_graph`,不是"接口非空":
+    /// 主图自己也有控制流 export(入口/返回),那和"参数/返回值"不是一回事。
+    #[test]
+    fn the_main_graph_has_no_frozen_interface() {
+        let doc = flatten(fixture::target());
+        assert_eq!(doc.graphs[0].name, "main");
+        let frozen = doc.frozen_interface(0).expect("有槽位");
+        assert!(frozen.params.is_empty(), "主图没有参数");
+        assert!(frozen.rets.is_empty(), "主图没有返回值");
+        assert_eq!(frozen.ctrl_in_num, 0, "冻结的控制流引脚也是空的");
+        assert!(!doc.is_fn_graph(0), "判据在这里 —— 主图不是复合节点图");
+    }
+
+    /// `is_fn_graph` 认得函数图、不认主图。
+    #[test]
+    fn is_fn_graph_distinguishes_main_from_functions() {
+        let doc = flatten(fixture::target());
+        assert!(!doc.is_fn_graph(0), "main 不是复合节点图");
+        assert!(doc.is_fn_graph(1), "函数图是");
+    }
+
+    /// **冻结的外层接口不随图变化** —— 这是「调用约定」视图的核心不变式。
+    ///
+    /// 优化删掉引脚之后,`graphs[i].interface`(内层)会变,但
+    /// `frozen_interface(i)`(外层)必须还是加载时那份。
+    #[test]
+    fn the_frozen_interface_survives_optimization() {
+        let mut doc = flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+        let outer_before = doc.frozen_interface(i).expect("有冻结接口").clone();
+        assert_eq!(outer_before.params.len(), 2);
+
+        // 手动删掉一个参数引脚(模拟优化压缩):改的是 `targets` 里的图。
+        {
+            let opt = doc.take(i).expect("取出图");
+            let mut opt = opt;
+            opt.graph.exports.get_mut(&rust2genshin::node::PinType::InValue).unwrap().remove(1);
+            opt.graph.externals.values_out.remove(1);
+            doc.put(i, opt);
+            doc.reflatten(i);
+        }
+
+        let inner = &doc.graphs[i].interface;
+        assert_eq!(inner.params.len(), 1, "内层应当只剩一个参数");
+        let outer_after = doc.frozen_interface(i).expect("冻结接口还在");
+        assert_eq!(
+            outer_after.params.len(),
+            2,
+            "外层(冻结的调用约定)绝不能跟着变"
+        );
+        assert_eq!(outer_after.params[1].name, "y", "外层仍是加载时那份");
+    }
+
+    /// 返回值的来源:`z` 由函数体算出 → `RetOrigin::Body`。
+    #[test]
+    fn a_body_computed_return_is_marked_as_body() {
+        let doc = flatten(fixture::signature_target());
+        let g = doc.graphs.iter().find(|g| g.name == "sig").unwrap();
+        assert_eq!(g.interface.ret_origins, vec![RetOrigin::Body]);
+    }
+
+    /// 返回值直接把某个参数透传出去:来源记成 `Param(名字)`。
+    #[test]
+    fn a_passthrough_return_names_its_param() {
+        use rust2genshin::node::{Link, LinkTarget};
+        let mut doc = flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+        {
+            let mut opt = doc.take(i).expect("取出图");
+            // 把返回值出口改成直接接参数 0(`x`)。
+            // 出口那侧记在 node 的 `values_out`,但 `externals.values_in[0]`
+            // 才是出口的来源槽 —— 直接把它指向 `Export(0)`。
+            opt.graph.externals.values_in[0].link = Some(Link::new(LinkTarget::Export, 0));
+            doc.put(i, opt);
+            doc.reflatten(i);
+        }
+        let g = &doc.graphs[i];
+        assert_eq!(
+            g.interface.ret_origins,
+            vec![RetOrigin::Param("x".to_string())],
+            "返回值透传的是参数 x"
+        );
+    }
+
+    /// 返回值只带一个默认值 → 常数。
+    #[test]
+    fn a_default_only_return_is_a_constant() {
+        let mut doc = flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+        {
+            let mut opt = doc.take(i).expect("取出图");
+            opt.graph.externals.values_in[0].link = None;
+            opt.graph.externals.values_in[0].default = Some(5.into());
+            doc.put(i, opt);
+            doc.reflatten(i);
+        }
+        assert_eq!(
+            doc.graphs[i].interface.ret_origins,
+            vec![RetOrigin::Const("5".to_string())]
+        );
+    }
 }
 
 // ------------------------------------------------------------------ 夹具产出
@@ -2047,6 +2379,57 @@ pub mod fixture {
                 graph: caller,
                 decl: Default::default(),
                 exported: false,
+            },
+        );
+        t
+    }
+
+    /// 一个**有参数和返回值**的函数图 —— 「调用约定」视图的夹具。
+    ///
+    /// `sig(x, y) -> z`:
+    /// - 两个值入引脚(`x` / `y`),一个值出引脚(`z`);
+    /// - 一个控制入、一个控制出;
+    /// - 返回值 `z` 由函数体里的节点算出(所以是 `RetOrigin::Body`)。
+    ///
+    /// 单独造一个是因为 `target()` 里的函数都没有参数 —— 没有参数就没有
+    /// 「调用约定」可看。
+    pub fn signature_target() -> Target {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "sig");
+        g.push_export_control_in(ExportDecl::new("in".into(), None));
+        g.push_export_control_out(ExportDecl::new("out".into(), None));
+        g.push_export_value_in(ExportDecl::new("x".into(), Some(int())));
+        g.push_export_value_in(ExportDecl::new("y".into(), Some(int())));
+        g.push_export_value_out(ExportDecl::new("z".into(), Some(int())));
+
+        // 函数体:`x` 进 → 写进局部变量 → 读出来当返回值。
+        let lx = g.insert(node_ir_local(int()));
+        let sx = g.insert(node_ir_set_local(int()));
+        let lz = g.insert(node_ir_local(int()));
+        let sz = g.insert(node_ir_set_local(int()));
+        // 参数 x 接进 SetLocal 的值槽(下标 1)。
+        g.link_value(Link::export(0), Link::node(sx, 1));
+        g.link_value(Link::node(lx, 0), Link::node(sx, 0));
+        // 局部变量 lz 的值出口 1 接返回值出口。
+        g.link_value(Link::node(lz, 1), Link::export(0));
+        g.link_value(Link::node(lz, 0), Link::node(sz, 0));
+        // 控制流:入口 → sx → sz → 出口。
+        g.link_control(Link::export(0), Link::node(sx, 0));
+        g.link_control(Link::node(sx, 0), Link::node(sz, 0));
+        g.link_control(Link::node(sz, 0), Link::export(0));
+
+        let mut t = Target::default();
+        t.functions.insert(
+            "sig".into(),
+            FnInfo {
+                description: "带参数和返回值的函数".into(),
+                graph: g,
+                decl: FnDecl {
+                    control: true,
+                    proxies_in: vec![0, 1],
+                    proxies_out: vec![None],
+                    ..Default::default()
+                },
+                exported: true,
             },
         );
         t

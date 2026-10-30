@@ -63,11 +63,20 @@ use rust2genshin::compile::ir::IrNodeId;
 use rust2genshin::compile::link::Target;
 use rust2genshin::node::NodeRef;
 
+use crate::conv;
 use crate::doc::{
     BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y, Doc,
-    Edge, GraphEntry, NodeEntry, comment_height, comment_width,
+    Edge, FnInterface, GraphEntry, NodeEntry, comment_height, comment_width,
 };
 use crate::optimize::{self, RULES, Snapshot};
+
+/// 右栏(优化按钮 + 调用约定)的宽度(px)。
+const RULES_WIDTH: f32 = 280.0;
+/// 「调用约定」面板的高度**下限**(px)。实际高度由外层盒子的引脚数决定 ——
+/// 真实产物里有 20+ 个参数的函数,固定高度会把盒子裁掉。
+const CONV_HEIGHT: f32 = 240.0;
+/// 「调用约定」面板的内边距。
+const CONV_PAD: f32 = 8.0;
 
 // Ctrl+Z → 撤销、Ctrl+Y → 重做、Alt+←/→ → 后退 / 前进。
 // `actions!` 展开出一个单元结构体 + `gpui::Action` 实现;键位在 `main.rs` 绑
@@ -1038,6 +1047,15 @@ pub struct Viewer {
     /// 和 [`Viewer::hover`](引脚/边的气泡)是两回事:这个只用来判断
     /// "Ctrl+悬停"要不要给节点换色。
     hover_node: Option<usize>,
+    /// 「调用约定」视图里**内层节点**的位置(右栏面板局部坐标)。
+    ///
+    /// 每个图各记一份 —— 换图时位置复原,免得串台。
+    conv_pos: HashMap<usize, (f32, f32)>,
+    /// 正在拖「调用约定」视图里的内层节点。
+    ///
+    /// `last` 是上一次鼠标位置(窗口坐标)。位置本身记在 `conv_pos` 里,
+    /// 拖动只用**增量** —— 和画布平移一个道理,不需要知道面板在窗口里的原点。
+    conv_drag: Option<(usize, Point<f32>)>,
 }
 
 impl Viewer {
@@ -1070,6 +1088,8 @@ impl Viewer {
             marquee: None,
             ctrl_held: false,
             hover_node: None,
+            conv_pos: HashMap::new(),
+            conv_drag: None,
         }
     }
 
@@ -2561,15 +2581,12 @@ impl Render for Viewer {
         // 那个字段的注释)。撤销回退到"没 lower 过"的那一帧后自动恢复。
         let lowered = self.is_lowered();
         let editable = !lowered;
-        let rules_panel = div()
+        let rules_body = div()
             .id("rules")
-            .w(px(240.0))
-            .h_full()
-            .flex_shrink_0()
+            .w(px(RULES_WIDTH))
+            .flex_1()
+            .min_h(px(0.0))
             .overflow_y_scroll()
-            .bg(panel_bg())
-            .border_l_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
             .p_2()
             .text_color(text_hi())
             .child(
@@ -2662,6 +2679,33 @@ impl Render for Viewer {
                 d.child(div().mt_2().text_xs().text_color(text_dim()).child(s))
             });
 
+        // ---- 「调用约定」面板:只对**复合节点图**显示(主图没有对外接口)----
+        //
+        // 视图的形状是「内外两层」:
+        // - **外层** = 加载时冻结的那个调用节点(调用方看到的样子),永远不变;
+        // - **内层** = 当前状态,画成**一个普通节点**,可以在外层里拖动。
+        //
+        // 连线按用户定的三条规则走(逻辑在 `conv.rs`,那里能直接测)。
+        let conv_panel = self.render_conv_panel(cx);
+
+        // 右栏 = 「调用约定」+ 优化按钮,上下排在一栏里。
+        //
+        // 放一栏而不是两栏:窗口本来就窄(左栏 240 + 右栏 240),再开第三栏
+        // 画布就没剩多少了。调用约定是**当前图的补充说明**,和优化按钮是
+        // 同一层的东西。
+        let rules_panel = div()
+            .id("right")
+            .w(px(RULES_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .bg(panel_bg())
+            .border_l_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .child(conv_panel)
+            .child(rules_body);
+
         // ---- 标签栏:一行横向的页签,每页带关闭按钮 ----
         // 点页签切过去(记一条后退历史,用户要求切标签页可后退);
         // 中键点页签 = 关闭;页签上的 × 也是关闭。
@@ -2751,6 +2795,14 @@ impl Render for Viewer {
             }))
             // 分隔条拖动:根节点覆盖整窗,指针走到哪都能收到移动事件。
             .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
+                // 「调用约定」面板里拖内层节点。**先**处理它:拖节点时指针
+                // 会离开面板,面板自己的 move 监听器就收不到了,所以挂在
+                // 覆盖整窗的根节点上(同分隔条拖动一个道理)。
+                if v.conv_drag.is_some() {
+                    v.drag_conv_inner(from_px(e.position), cx);
+                    return;
+                }
+                // 分隔条拖动:根节点覆盖整窗,指针走到哪都能收到移动事件。
                 if !v.resizing_toc {
                     return;
                 }
@@ -2771,10 +2823,18 @@ impl Render for Viewer {
                     v.resizing_toc = false;
                     cx.notify();
                 }
+                // 「调用约定」面板里拖内层节点:松手结束。
+                if v.conv_drag.take().is_some() {
+                    cx.notify();
+                }
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
                 if v.resizing_toc {
                     v.resizing_toc = false;
+                    cx.notify();
+                }
+                // 指针在窗口外松开:同样要结束拖动。
+                if v.conv_drag.take().is_some() {
                     cx.notify();
                 }
             }))
@@ -2930,6 +2990,394 @@ impl Viewer {
             return;
         };
         self.jump_to_definition(menu.node_index, cx);
+    }
+
+    /// 拖「调用约定」视图里的内层节点。
+    ///
+    /// `at_window` 是事件的**窗口**坐标(`Point<f32>`)—— 位置是**面板局部**
+    /// 坐标,所以增量直接用窗口坐标的差就行(平移与坐标系原点无关)。
+    fn drag_conv_inner(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
+        let Some((graph, last)) = self.conv_drag else {
+            return;
+        };
+        let now = at_window;
+        let delta = point(now.x - last.x, now.y - last.y);
+        self.conv_drag = Some((graph, now));
+        if delta.x == 0.0 && delta.y == 0.0 {
+            return;
+        }
+        // 先算布局 —— 夹边界要用外层盒子的大小。
+        let Some((outer, inner)) = self.conv_data() else {
+            return;
+        };
+        let conv = conv::Convention::build(outer, inner);
+        let width = RULES_WIDTH - 2.0 * CONV_PAD;
+        let probe = conv::layout(outer, inner, &conv, (0.0, 0.0), width);
+        // 位置存的是**面板局部**坐标(相对 `conv-body`),和布局同一坐标系。
+        let cur = self.conv_pos.get(&graph).copied().unwrap_or_else(|| {
+            (
+                probe.outer.x + 24.0,
+                probe.outer.y + (probe.outer.h - probe.inner.h) / 2.0,
+            )
+        });
+        let next = (cur.0 + delta.x, cur.1 + delta.y);
+        let clamped = conv::clamp_inner(next, &probe);
+        self.conv_pos.insert(graph, clamped);
+        cx.notify();
+    }
+}
+
+/// 「调用约定」视图的渲染。
+///
+/// 这个视图和主画布**完全独立**:它有自己的坐标系(右栏面板的局部坐标)、
+/// 自己的缩放(固定 1 倍)、自己的命中测试。所以它不共用 `Drag` 那一套 ——
+/// 那样会把"拖节点"和"拖内层节点"混在一起。
+impl Viewer {
+    /// 当前图的「调用约定」数据:外层(冻结) + 内层(当前)。
+    ///
+    /// 主图返回 `None` —— 主图没有对外接口,这个视图不显示。
+    fn conv_data(&self) -> Option<(&FnInterface, &FnInterface)> {
+        if !self.doc.is_fn_graph(self.current) {
+            return None;
+        }
+        let outer = self.doc.frozen_interface(self.current)?;
+        let inner = &self.doc.graphs.get(self.current)?.interface;
+        Some((outer, inner))
+    }
+
+    /// 内层节点在面板里的当前位置(没拖过就在外层盒子中间偏左)。
+    fn conv_inner_pos(&self, layout: &conv::Layout) -> (f32, f32) {
+        let stored = self.conv_pos.get(&self.current).copied();
+        let default = (
+            layout.outer.x + 24.0,
+            layout.outer.y + (layout.outer.h - layout.inner.h) / 2.0,
+        );
+        conv::clamp_inner(stored.unwrap_or(default), layout)
+    }
+
+    /// 渲染「调用约定」面板。
+    ///
+    /// 返回一个 `Stateful<Div>`(右栏里的一段)。主图时返回一个空的占位
+    /// (什么都不画)。
+    fn render_conv_panel(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let Some((outer, inner)) = self.conv_data() else {
+            return div().id("conv");
+        };
+        let conv = conv::Convention::build(outer, inner);
+        let width = RULES_WIDTH - 2.0 * CONV_PAD;
+        // 内层位置要**先**布局一次(拿到外层盒子的大小),再夹一次 —— 拖动时
+        // 就是靠 `conv_inner_pos` 把位置夹在外层里面。
+        let probe = conv::layout(outer, inner, &conv, (0.0, 0.0), width);
+        let inner_pos = self.conv_inner_pos(&probe);
+        let l = conv::layout(outer, inner, &conv, inner_pos, width);
+
+        // ---- 连线:canvas 画 ----
+        // 线全是**面板局部**坐标;canvas 的 bounds 是窗口坐标,加个偏移。
+        let outer_left = l.outer_left.clone();
+        let outer_right = l.outer_right.clone();
+        let inner_left = l.inner_left.clone();
+        let inner_right = l.inner_right.clone();
+        let links = conv.links.clone();
+        // canvas 的闭包是 `move` 的 —— 给它**另一份**引脚位置,
+        // 免得把渲染层还要用的那份搬走。
+        let edge_pins = (
+            l.outer_left.clone(),
+            l.outer_right.clone(),
+            l.inner_left.clone(),
+            l.inner_right.clone(),
+        );
+        let edges_el = canvas(
+            move |_bounds: Bounds<Pixels>, _window, _cx| (),
+            move |bounds, _, window, _cx| {
+                let (outer_left, outer_right, inner_left, inner_right) = &edge_pins;
+                let o = bounds.origin;
+                let at = |p: Point<f32>| add_px(o, p);
+                // 取两个引脚位置的辅助:按种类取。
+                let pick = |pins: &conv::Pins, ctrl: bool, i: usize| -> Option<Point<f32>> {
+                    if ctrl {
+                        pins.ctrl.get(i).map(|&(x, y)| point(x, y))
+                    } else {
+                        pins.value.get(i).map(|&(x, y)| point(x, y))
+                    }
+                };
+                for link in &links {
+                    let (from, to, ctrl) = match *link {
+                        conv::Link::Param {
+                            outer: o,
+                            inner: i,
+                        } => (
+                            pick(&outer_left, false, o),
+                            pick(&inner_left, false, i),
+                            false,
+                        ),
+                        conv::Link::Ret {
+                            outer: o,
+                            inner: i,
+                        } => (
+                            pick(&inner_right, false, i),
+                            pick(&outer_right, false, o),
+                            false,
+                        ),
+                        conv::Link::PassThrough { param, ret } => (
+                            pick(&outer_left, false, param),
+                            pick(&outer_right, false, ret),
+                            false,
+                        ),
+                        conv::Link::CtrlIn {
+                            outer: o,
+                            inner: i,
+                        } => (
+                            pick(&outer_left, true, o),
+                            pick(&inner_left, true, i),
+                            true,
+                        ),
+                        conv::Link::CtrlOut {
+                            outer: o,
+                            inner: i,
+                        } => (
+                            pick(&inner_right, true, i),
+                            pick(&outer_right, true, o),
+                            true,
+                        ),
+                        // 直接贯穿:从外层控制入**横穿**到外层控制出。
+                        conv::Link::CtrlThrough { from, to } => (
+                            pick(&outer_left, true, from),
+                            pick(&outer_right, true, to),
+                            true,
+                        ),
+                    };
+                    let (Some(from), Some(to)) = (from, to) else {
+                        continue;
+                    };
+                    let mut pb = PathBuilder::stroke(px(if ctrl { 2.0 } else { 1.0 }));
+                    if !ctrl {
+                        pb = pb.dash_array(&[px(4.0), px(3.0)]);
+                    }
+                    // 贝塞尔:水平方向拉开,和主画布一个画法。
+                    let dx = ((to.x - from.x).abs() * 0.5).max(6.0);
+                    pb.move_to(at(from));
+                    pb.cubic_bezier_to(
+                        at(to),
+                        at(point(from.x + dx, from.y)),
+                        at(point(to.x - dx, to.y)),
+                    );
+                    if let Ok(path) = pb.build() {
+                        window.paint_path(path, if ctrl { edge_ctrl() } else { edge_value() });
+                    }
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        // ---- 引脚:值流圆点 / 控制流三角形 ----
+        let mut layer = div().absolute().inset_0();
+        for (pins, ctrl) in [
+            (&outer_left, true),
+            (&outer_left, false),
+            (&outer_right, true),
+            (&outer_right, false),
+            (&inner_left, true),
+            (&inner_left, false),
+            (&inner_right, true),
+            (&inner_right, false),
+        ] {
+            let list = if ctrl {
+                &pins.ctrl
+            } else {
+                &pins.value
+            };
+            for &(x, y) in list {
+                if ctrl {
+                    continue; // 三角形在下面的 canvas 里画
+                }
+                layer = layer.child(
+                    div()
+                        .absolute()
+                        .left(px(x - PIN_D / 2.0))
+                        .top(px(y - PIN_D / 2.0))
+                        .w(px(PIN_D))
+                        .h(px(PIN_D))
+                        .rounded_full()
+                        .bg(edge_value()),
+                );
+            }
+        }
+
+        // 控制流引脚的三角形:canvas 填色(div 画不出三角形)。
+        let ctrl_tri: Vec<[Point<f32>; 3]> = [
+            (&outer_left, true),
+            (&outer_right, true),
+            (&inner_left, true),
+            (&inner_right, true),
+        ]
+        .into_iter()
+        .flat_map(|(pins, _)| pins.ctrl.iter().map(|&(x, y)| pin_triangle(x, y, PIN_D)))
+        .collect();
+        layer = layer.child(
+            canvas(
+                move |_b, _w, _c| (),
+                move |bounds, _, window, _cx| {
+                    let o = bounds.origin;
+                    for t in &ctrl_tri {
+                        let mut pb = PathBuilder::fill();
+                        pb.move_to(add_px(o, t[0]));
+                        pb.line_to(add_px(o, t[1]));
+                        pb.line_to(add_px(o, t[2]));
+                        pb.close();
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, pin_ctrl());
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
+
+        // ---- 外层盒子:冻结的调用节点 ----
+        let mut outer_box = div()
+            .id("conv-outer")
+            .absolute()
+            .left(px(l.outer.x))
+            .top(px(l.outer.y))
+            .w(px(l.outer.w))
+            .h(px(l.outer.h))
+            .rounded_md()
+            .border_2()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.28))
+            .bg(hsla(0.0, 0.0, 1.0, 0.03));
+        // 外层每个引脚的名字标在盒子内侧(参数名 / 返回值名)。
+        for (i, p) in outer.params.iter().enumerate() {
+            if let Some(&(_, y)) = outer_left.value.get(i) {
+                outer_box = outer_box.child(
+                    div()
+                        .absolute()
+                        .left(px(l.outer.x + 6.0))
+                        .top(px(y - 7.0))
+                        .text_size(px(10.0))
+                        .text_color(text_dim())
+                        .whitespace_nowrap()
+                        .child(port_label(p)),
+                );
+            }
+        }
+        for (i, p) in outer.rets.iter().enumerate() {
+            if let Some(&(_, y)) = outer_right.value.get(i) {
+                outer_box = outer_box.child(
+                    div()
+                        .absolute()
+                        .left(px(l.outer.x + l.outer.w - 6.0))
+                        .top(px(y - 7.0))
+                        .w(px(110.0))
+                        .flex()
+                        .justify_end()
+                        .text_size(px(10.0))
+                        .text_color(text_dim())
+                        .whitespace_nowrap()
+                        .child(port_label(p)),
+                );
+            }
+        }
+        layer = layer.child(outer_box);
+
+        // ---- 内层节点:当前状态,可以在外层里拖 ----
+        let inner_label = if inner.params.is_empty() && inner.rets.is_empty() {
+            "空"
+        } else {
+            "当前"
+        };
+        let mut inner_box = div()
+            .id("conv-inner")
+            .absolute()
+            .left(px(l.inner.x))
+            .top(px(l.inner.y))
+            .w(px(l.inner.w))
+            .h(px(l.inner.h))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .bg(node_bg())
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.20))
+            .text_color(text_hi())
+            .text_size(px(10.0))
+            .overflow_hidden()
+            .cursor_grab()
+            .child(inner_label);
+        inner_box = inner_box.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, e: &MouseDownEvent, _w, cx| {
+                v.conv_drag = Some((v.current, from_px(e.position)));
+                cx.stop_propagation();
+            }),
+        );
+        layer = layer.child(inner_box);
+
+        // ---- 常数:写在内侧(内层节点右侧)----
+        for (x, y, text) in &l.constants {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(*x))
+                    .top(px(*y - 7.0))
+                    .text_size(px(10.0))
+                    .text_color(edge_value())
+                    .whitespace_nowrap()
+                    .child(text.clone()),
+            );
+        }
+
+        // ---- 面板外壳 ----
+        //
+        // 主图没有这套接口 —— 那时返回**空的**占位(什么都不画)。
+        // 这里不能画一个空框:用户会以为"这个函数没有参数"。
+        if outer.params.is_empty()
+            && outer.rets.is_empty()
+            && outer.ctrl_in_num == 0
+            && outer.ctrl_out_num == 0
+        {
+            return div().id("conv");
+        }
+        div()
+            .id("conv")
+            .w(px(RULES_WIDTH))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .p_2()
+            .text_color(text_hi())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(text_dim())
+                    .mb_1()
+                    .child("调用约定 —— 外层 = 调用方看到的,内层 = 当前"),
+            )
+            .child(
+                div()
+                    .id("conv-body")
+                    .relative()
+                    .w(px(width))
+                    // 高度跟着布局走 —— 引脚多的时候外层盒子会长高,
+                    // 用固定高度会把它裁掉(真实产物里 20 个参数的函数有)。
+                    .h(px(l.outer.h.max(CONV_HEIGHT)))
+                    .overflow_hidden()
+                    .child(edges_el)
+                    .child(layer),
+            )
+    }
+}
+
+/// 引脚标签:`名字 <类型>`(类型为空就只写名字)。
+fn port_label(p: &crate::doc::PortInfo) -> String {
+    if p.type_label.is_empty() {
+        p.name.clone()
+    } else {
+        format!("{} <{}>", p.name, p.type_label)
     }
 }
 
@@ -3264,6 +3712,7 @@ mod tests {
             exit: vec![],
             nodes: vec![n],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(40.0, 80.0)];
         let ns = build_nodes(&g, &pos, point(0.0, 0.0), 2.0, &[]);
@@ -3285,6 +3734,7 @@ mod tests {
             exit: vec![],
             // 0:1 控制出 + 2 值出;1:1 控制入 + 2 值入
             nodes: vec![node(0, 1, 0, 2), node(1, 0, 2, 0)],
+            interface: Default::default(),
             edges: vec![
                 // 控制边:0 控制出 0 -> 1 控制入 0
                 Edge {
@@ -3340,6 +3790,7 @@ mod tests {
             exit: vec![],
             nodes: vec![n0],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(10.0, 20.0)];
         let bs = build_boundaries(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3389,6 +3840,7 @@ mod tests {
             exit: vec![],
             nodes: vec![node(1, 1, 2, 2)],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(10.0, 20.0)];
         let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3419,6 +3871,7 @@ mod tests {
             exit: vec![],
             nodes: vec![n0],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(10.0, 20.0)];
         let ds = build_defaults(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3459,6 +3912,7 @@ mod tests {
                 node_with_types(0, 0, 2, 0, &["Int", "Bool"], &[]),
             ],
             edges: vec![],
+            interface: Default::default(),
         };
         let edge = |from: usize, from_pin: usize, to: usize, to_pin: usize, ctrl: bool| Edge {
             from: (from, from_pin),
@@ -3497,6 +3951,7 @@ mod tests {
                 to: (1, 0),
                 ctrl: false,
             }],
+            interface: Default::default(),
         };
         assert_eq!(edge_tip(&g, &g.edges[0]).as_deref(), Some("None → Bool"));
     }
@@ -3521,6 +3976,7 @@ mod tests {
             exit: vec![],
             nodes: vec![node_with_types(1, 0, 1, 0, &["Int"], &[])],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(0.0, 0.0)];
         let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3565,6 +4021,7 @@ mod tests {
                 to: (1, 0),
                 ctrl: false,
             }],
+            interface: Default::default(),
         };
         let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
         let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3594,6 +4051,7 @@ mod tests {
                 to: (1, 0),
                 ctrl: false,
             }],
+            interface: Default::default(),
         };
         let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
         let edges = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3617,6 +4075,7 @@ mod tests {
             exit: vec![],
             nodes: vec![node_with_types(0, 0, 0, 1, &[], &["Int"])],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(0.0, 0.0)];
         let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
@@ -3634,6 +4093,7 @@ mod tests {
             exit: vec![],
             nodes: vec![node(1, 1, 0, 0)],
             edges: vec![],
+            interface: Default::default(),
         };
         let pos = vec![point(0.0, 0.0)];
         let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
