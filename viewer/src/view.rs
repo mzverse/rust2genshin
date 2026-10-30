@@ -1212,6 +1212,18 @@ impl Viewer {
         self.apply_nav(next)
     }
 
+    /// 把当前的 `origin` / `scale` 回写进**当前标签页**。
+    ///
+    /// 平移和缩放是直接改 `self.origin` / `self.scale` 的,页签自己不会知道。
+    /// 不调这个,切走再切回来就会看到**打开时那一刻**的视野 —— 用户实测的
+    /// "切回来缩放和位置被重置"就是这个。
+    ///
+    /// 视野一动就调一次(平移、缩放、滚轮)。开销只是一个 `Vec` 里的字段赋值。
+    fn sync_view(&mut self) {
+        self.tabs
+            .store_view(self.current, self.origin, self.scale);
+    }
+
     /// 跳到历史里记的那个位置。**不碰历史本身**(调用方已经维护好了)。
     ///
     /// 关键是**不要改写当前页签的内容** —— 那是"替换",用户明确否掉了。
@@ -2291,6 +2303,8 @@ impl Render for Viewer {
                         // 平移量与坐标系原点无关,所以直接用窗口坐标的增量。
                         v.origin.x += delta.x;
                         v.origin.y += delta.y;
+                        // 回写进当前页签:切走再切回来要停在这里。
+                        v.sync_view();
                     }
                     Drag::Marquee { start, cur } => {
                         // 框选的矩形用**容器局部**坐标 —— 和节点框同一坐标系。
@@ -2387,6 +2401,8 @@ impl Render for Viewer {
                 v.origin.x = cur.x - (cur.x - v.origin.x) * ratio;
                 v.origin.y = cur.y - (cur.y - v.origin.y) * ratio;
                 v.scale = new_scale;
+                // 回写进当前页签:切走再切回来要停在同样的缩放。
+                v.sync_view();
                 cx.notify();
             }))
             .child(edges_el)
@@ -3093,6 +3109,55 @@ mod tests {
         assert_eq!(h.tabs.len(), 2, "页签数量不能变 —— 不能替换当前页");
         // 关键:原来那一页仍然是图 1,没被改写。
         assert_eq!(h.tabs[1].graph, 1, "另一半页签的内容必须原样保留");
+    }
+
+    /// 每个页签各记一份视野:**切走再切回来不能复位**。
+    ///
+    /// 这条锁的是「平移 / 缩放之后要回写页签」——`Viewer::sync_view`
+    /// (`render` 里的平移、缩放两条路径都调它)。只把视野存在 `Viewer` 上
+    /// 的实现会在这里失败。
+    #[test]
+    fn each_tab_remembers_its_own_view() {
+        let mut h = TabHost::new();
+
+        // 第 0 页:挪一挪、放大。
+        h.store_view(0, point(120.0, -40.0), 2.5);
+        let a = h.open(1);
+        assert_eq!(a.origin, point(0.0, 0.0), "新页签从原点开始");
+
+        // 第 1 页:另一个视野。
+        h.store_view(1, point(-300.0, 77.0), 0.5);
+
+        // 切回第 0 页,视野必须是它自己的那份。
+        let back_to_0 = h.switch(0).expect("切回第 0 页");
+        assert_eq!(back_to_0.origin, point(120.0, -40.0), "第 0 页的平移要回来");
+        assert_eq!(back_to_0.scale, 2.5, "第 0 页的缩放要回来");
+
+        // 再切到第 1 页,同样。
+        let to_1 = h.switch(1).expect("切到第 1 页");
+        assert_eq!(to_1.origin, point(-300.0, 77.0));
+        assert_eq!(to_1.scale, 0.5);
+    }
+
+    /// 历史条目带着视野:切走再后退回来,视野也要一起回来。
+    #[test]
+    fn nav_entries_carry_the_view() {
+        let mut h = TabHost::new();
+        h.open(1);
+        // 在页签 1 里调到某个视野,然后记录(模拟"要切走了")。
+        h.store_view(1, point(55.0, 66.0), 3.0);
+        let here = nav2(1, 55.0, 66.0, 3.0);
+        h.record(here);
+
+        // 切到页签 0(视野复位)。
+        let t0 = h.switch(0).expect("切到第 0 页");
+        assert_eq!(t0.scale, 1.0);
+
+        // 后退:回到页签 1 的位置,视野照历史还原。
+        let back = h.back(nav(0, 0.0, 1.0)).expect("有历史");
+        assert_eq!(back.graph, 1);
+        assert_eq!(back.origin, point(55.0, 66.0));
+        assert_eq!(back.scale, 3.0);
     }
 
     /// 历史记的那张图**所有页签都关掉了**:这时按"打开这张图"新开一页,
