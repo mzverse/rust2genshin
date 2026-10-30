@@ -875,6 +875,16 @@ impl TabHost {
         tab
     }
 
+    /// 切到已经开着这张图的页签(没有则 `None`)。**不新建**。
+    ///
+    /// 这是"按图定位页签"的唯一实现:左栏点图、历史导航都靠它决定
+    /// "是切过去还是新开一页"。
+    fn activate_graph(&mut self, graph: usize) -> Option<Tab> {
+        let idx = self.find_graph(graph)?;
+        self.active = idx;
+        self.tabs.get(idx).copied()
+    }
+
     /// 切到第 `idx` 个标签页。返回它的副本。下标越界或已是当前页时 `None`。
     fn switch(&mut self, idx: usize) -> Option<Tab> {
         if idx >= self.tabs.len() || idx == self.active {
@@ -1203,6 +1213,11 @@ impl Viewer {
     }
 
     /// 跳到历史里记的那个位置。**不碰历史本身**(调用方已经维护好了)。
+    ///
+    /// 关键是**不要改写当前页签的内容** —— 那是"替换",用户明确否掉了。
+    /// 正确的做法和左栏点图完全一样:那张图已经开在某个页签里就切过去,
+    /// 否则新开一页。历史记的页签可能早就被关掉了,所以这里不能按页签找,
+    /// 只能按**图**找。
     fn apply_nav(&mut self, entry: NavEntry) -> bool {
         if self.doc.graphs.get(entry.graph).is_none() {
             self.status = Some("那个位置已经不在了".to_string());
@@ -1210,7 +1225,16 @@ impl Viewer {
         }
         // 期间若再走 `select` 也不会重复记历史。
         self.navigating = true;
-        self.show(entry.graph, entry.origin, entry.scale);
+        match self.tabs.activate_graph(entry.graph) {
+            // 这张图已经开着:切过去,并按历史还原视野。
+            Some(_) => self.show(entry.graph, entry.origin, entry.scale),
+            // 原来那页已经关掉了 —— 按"打开这张图"的规则新开一页,
+            // 而不是把当前页签改掉。
+            None => {
+                let tab = self.tabs.open(entry.graph);
+                self.show(tab.graph, entry.origin, entry.scale);
+            }
+        }
         self.navigating = false;
         true
     }
@@ -1253,15 +1277,29 @@ impl Viewer {
     ///
     /// 已经开在某个页签里就**切过去**,否则新开一页。这样反复点同一项不会
     /// 堆出一排指向同一张图的重复页签 —— 编辑器和浏览器都是这个规则。
+    ///
+    /// 后退 / 前进走的是同一条规则(见 [`Viewer::apply_nav`]):那张图开着就
+    /// 切过去,原来那页已经关掉才新开 —— **绝不改写当前页签的内容**。
     pub fn open_graph_in_tab(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.open_graph_step(i) {
+            cx.notify();
+        }
+    }
+
+    /// [`Viewer::open_graph_in_tab`] 的纯逻辑部分。
+    fn open_graph_step(&mut self, i: usize) -> bool {
         if self.doc.graphs.get(i).is_none() {
-            return;
+            return false;
         }
-        if let Some(idx) = self.tabs.find_graph(i) {
-            self.switch_tab(idx, cx);
-        } else {
-            self.open_tab(i, cx);
+        self.record_nav();
+        match self.tabs.activate_graph(i) {
+            Some(tab) => self.show(tab.graph, tab.origin, tab.scale),
+            None => {
+                let tab = self.tabs.open(i);
+                self.show(tab.graph, tab.origin, tab.scale);
+            }
         }
+        true
     }
 
     /// [`Viewer::switch_tab`] 的纯逻辑部分。
@@ -2854,7 +2892,10 @@ impl Viewer {
         self.doc.graph_of_fn(key)
     }
 
-    /// 跳到复合节点的定义(那张函数图)。
+    /// 跳转到复合节点的定义(那张函数图)。
+    ///
+    /// 走和左栏点图一样的规则:那张图已经开着就切过去,否则新开一页 ——
+    /// 不覆盖当前页签。
     fn jump_to_definition(&mut self, node_index: usize, cx: &mut Context<Self>) {
         let Some(target) = self.fn_target_graph(node_index) else {
             self.status = Some("这个节点没有可跳转的定义".to_string());
@@ -2864,8 +2905,7 @@ impl Viewer {
         if target == self.current {
             return;
         }
-        // 走 `select`,和左栏点图一样:切图会复位视图、关掉菜单。
-        self.select(target, cx);
+        self.open_graph_in_tab(target, cx);
     }
 
     /// 右键菜单里点了「跳转到定义」:跳到菜单记下的那个节点的定义。
@@ -3027,6 +3067,56 @@ mod tests {
         assert_eq!(h.find_graph(1), Some(1), "图 1 开在页签 1");
         assert_eq!(h.find_graph(2), Some(2), "图 2 开在页签 2");
         assert_eq!(h.find_graph(3), None, "图 3 没开过");
+    }
+
+    /// 后退**不能**把当前页签的内容换成目标图 —— 那是"替换",不是导航。
+    ///
+    /// 目标图已经开在另一页时,应当切到那一页(页数不变)。
+    #[test]
+    fn back_switches_to_the_existing_tab_instead_of_overwriting() {
+        let mut h = TabHost::new();
+        // 页签 0 显示图 0;再开一个页签显示图 1。
+        h.open(1);
+        assert_eq!(h.tabs.len(), 2);
+        assert_eq!(h.active, 1);
+
+        // 假装刚从图 0 导航到图 1(那时记的是"图 0")。
+        h.record(nav(0, 0.0, 1.0));
+
+        // 后退到一个指向图 0 的位置:应当切到页签 0,而不是把页签 1 改成图 0。
+        let back = h.back(nav(1, 0.0, 1.0)).expect("有历史");
+        assert_eq!(back.graph, 0);
+
+        let tab = h.activate_graph(back.graph).expect("图 0 已经开着");
+        assert_eq!(tab.graph, 0);
+        assert_eq!(h.active, 0, "应当切到已经开着图 0 的那一页");
+        assert_eq!(h.tabs.len(), 2, "页签数量不能变 —— 不能替换当前页");
+        // 关键:原来那一页仍然是图 1,没被改写。
+        assert_eq!(h.tabs[1].graph, 1, "另一半页签的内容必须原样保留");
+    }
+
+    /// 历史记的那张图**所有页签都关掉了**:这时按"打开这张图"新开一页,
+    /// 仍然不改写当前页签。
+    #[test]
+    fn back_reopens_a_graph_whose_tab_was_closed() {
+        let mut h = TabHost::new();
+        h.open(1);
+        // 关掉图 1 那一页,再切回图 0 的页。
+        h.close(1);
+        assert_eq!(h.tabs.len(), 1);
+        assert_eq!(h.tabs[0].graph, 0);
+
+        // 历史里记着"曾经在图 1"。现在图 1 那一页已经关掉了。
+        h.record(nav(1, 30.0, 2.0));
+
+        let back = h.back(nav(0, 0.0, 1.0)).expect("有历史");
+        assert_eq!(back.graph, 1);
+        assert_eq!(h.find_graph(back.graph), None, "图 1 确实没开着");
+
+        let tab = h.open(back.graph);
+        assert_eq!(tab.graph, 1);
+        assert_eq!(h.tabs.len(), 2, "应当新开一页,而不是替换");
+        assert_eq!(h.tabs[0].graph, 0, "原来那一页不能被动");
     }
 
     /// 侧边 pin 排布:**控制流在前、值流在后,值流依次排在控制流下方**。
