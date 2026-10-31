@@ -44,7 +44,9 @@ impl Display for NativeKind {
             NativeKind::Enum(id) => write!(f, "Enum<{id}>"),
             NativeKind::List(ele) => write!(f, "List<{ele}>"),
             NativeKind::Dict { key, value } => write!(f, "Dict<{key},{value}>"),
-            NativeKind::Struct(r) => panic!("{r:?}"),
+            // 结构体没有名字,只能打字段 —— 关键是**别 panic**:
+            // panic 消息里要显示类型时再 panic 一次,原始信息就没了。
+            NativeKind::Struct(r) => write!(f, "Struct({})", r.fields.iter().map(|(n, k)| format!("{n}:{k}")).collect::<Vec<_>>().join(",")),
             _ => Debug::fmt(self, f),
         }
     }
