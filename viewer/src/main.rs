@@ -23,9 +23,11 @@
 //! 里面就带 `rust2genshin_demo.ogia` entry。所以这个夹具只是给**测试**用的
 //! 确定性输入,不是"没有真数据可用时的替代品"。
 
+pub mod canvas_geom;
 pub mod conv;
 pub mod doc;
 pub mod optimize;
+pub mod theme;
 pub mod view;
 
 use std::path::PathBuf;
