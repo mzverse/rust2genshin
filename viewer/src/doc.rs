@@ -1208,15 +1208,15 @@ mod tests {
                                     .iter()
                                     .all(|(x, _, _)| *x > l.outer.x + l.outer.w);
                             format!(
-                                " | 约定:线 {} 常数 {} 掉参 {:?} 掉ret {:?} 外层 {:.0}x{:.0} 内层 {:.0}x{:.0} {} {}",
+                                " | 约定:线 {} 常数 {} 外层 {:.0}x{:.0} 内层 {:.0}x{:.0} 槽 {:.0}/{:.0} {} {}",
                                 c.links.len(),
                                 c.constants.len(),
-                                c.dropped_params,
-                                c.dropped_rets,
                                 l.outer.w,
                                 l.outer.h,
                                 l.inner.w,
                                 l.inner.h,
+                                l.left_gutter,
+                                l.right_gutter,
                                 if sane { "几何OK" } else { "几何错!" },
                                 if names_fit { "名字OK" } else { "名字错!" },
                             )

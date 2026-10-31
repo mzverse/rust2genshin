@@ -72,9 +72,6 @@ use crate::optimize::{self, RULES, Snapshot};
 
 /// 右栏(优化按钮 + 调用约定)的宽度(px)。
 const RULES_WIDTH: f32 = 360.0;
-/// 「调用约定」面板的高度**下限**(px)。实际高度由外层盒子的引脚数决定 ——
-/// 真实产物里有 20+ 个参数的函数,固定高度会把盒子裁掉。
-const CONV_HEIGHT: f32 = 300.0;
 /// 「调用约定」面板的内边距。
 const CONV_PAD: f32 = 8.0;
 
@@ -3532,13 +3529,13 @@ impl Viewer {
         //
         // 外层引脚名画在盒子**外侧**:左边(参数)右对齐贴盒子左边,右边
         // (返回值)左对齐贴盒子右边。**只写名字** —— 类型在悬停气泡里。
-        for (right, y, name) in &l.outer_left_labels {
+        for (_right, y, name) in &l.outer_left_labels {
             layer = layer.child(
                 div()
                     .absolute()
-                    .left(px(*right - conv::LABEL_GUTTER))
+                    .left(px(l.outer.x - l.left_gutter))
                     .top(px(*y - 8.0))
-                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .w(px(l.left_gutter - 4.0))
                     .flex()
                     .justify_end()
                     .text_size(px(11.0))
@@ -3554,7 +3551,7 @@ impl Viewer {
                     .absolute()
                     .left(px(*left))
                     .top(px(*y - 8.0))
-                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .w(px(l.right_gutter - 4.0))
                     .text_size(px(11.0))
                     .text_color(text_dim())
                     .whitespace_nowrap()
@@ -3633,16 +3630,17 @@ impl Viewer {
                     .text_xs()
                     .text_color(text_dim())
                     .mb_1()
-                    .child("调用约定 —— 外层 = 调用方看到的,内层 = 当前(悬停看类型)"),
+                    .child("调用约定"),
             )
             .child(
                 div()
                     .id("conv-body")
                     .relative()
                     .w(px(width))
-                    // 高度跟着布局走 —— 引脚多的时候外层盒子会长高,
-                    // 用固定高度会把它裁掉(真实产物里 20 个参数的函数有)。
-                    .h(px(l.outer.h.max(CONV_HEIGHT)))
+                    // 高度**就是外层盒子的高** —— 不再和固定下限取 max。
+                    // 以前 `max(outer.h, 300)` 会把 96px 的盒子撑到 300px,
+                    // 底下白空一大片(用户报的"下部空余太多")。
+                    .h(px(l.outer.y + l.outer.h + conv::MARGIN))
                     .overflow_hidden()
                     // 悬停命中:鼠标移动时重新算,和主画布同一套规矩。
                     .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {

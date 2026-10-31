@@ -263,6 +263,10 @@ pub struct Layout {
     ///
     /// `(左对齐的左缘 x, y, 文本)` —— 左缘贴盒子右边,文字往右展开。
     pub outer_right_labels: Vec<(f32, f32, String)>,
+    /// 左边那条引脚名槽的宽度(渲染层用它给标签定宽)。
+    pub left_gutter: f32,
+    /// 右边那条引脚名槽的宽度。
+    pub right_gutter: f32,
 }
 
 /// 外层盒子左右各留的边距(盒**内**的留白)。引脚从这之后开始排。
@@ -273,13 +277,39 @@ pub const INNER_W: f32 = 150.0;
 pub const INNER_MIN_H: f32 = 32.0;
 /// 外层盒子的最小高度。
 pub const OUTER_MIN_H: f32 = 96.0;
-/// 盒**外**留给引脚名的横向空间(左右各一份)。
+/// 盒**外**留给引脚名的横向空间的**下限**(左右各一份)。
 ///
-/// 引脚名画在盒子外侧(用户要求),所以盒子不能占满整个面板宽度 ——
-/// 名字得有地方放,不然就被裁掉了。
-pub const LABEL_GUTTER: f32 = 74.0;
+/// 引脚名画在盒子外侧(用户要求),盒子不能占满整个面板宽度 —— 名字得有
+/// 地方放。实际宽度按**最长的那个名字**估(见 [`label_gutter`]),
+/// 名字都短的时候不白留一大条空白。
+pub const LABEL_GUTTER_MIN: f32 = 8.0;
+/// 盒**外**留给引脚名的横向空间的**上限**。
+///
+/// 名字极长时不能把盒子挤没 —— 超出的部分由标签自己的 `overflow_hidden`
+/// 裁掉(省略号没有,裁掉比压扁盒子好)。
+pub const LABEL_GUTTER_MAX: f32 = 96.0;
 /// 面板左右各留的边距。
 pub const MARGIN: f32 = 4.0;
+
+/// 按名字长度估一条引脚名槽要多宽。
+///
+/// `names` 是**这一侧全部**引脚名。估宽用和画布 `node_width` 同一套规则
+/// (ASCII 6.6px/字、非 ASCII 按 11px),左右各再留一点间距。
+///
+/// 名字都短时返回 [`LABEL_GUTTER_MIN`],不会白占地方;名字很长时封顶到
+/// [`LABEL_GUTTER_MAX`]。
+pub fn label_gutter<'a>(names: impl IntoIterator<Item = &'a str>) -> f32 {
+    let widest = names
+        .into_iter()
+        .map(|s| {
+            s.chars()
+                .map(|c| if c.is_ascii() { 6.6 } else { 11.0 })
+                .sum::<f32>()
+        })
+        .fold(0.0f32, f32::max);
+    // 文字两侧各留 6px(贴盒子那侧 6px + 边距 4px 取整)。
+    (widest + 10.0).clamp(LABEL_GUTTER_MIN, LABEL_GUTTER_MAX)
+}
 
 /// 一层要画的东西。
 ///
@@ -386,10 +416,14 @@ pub fn layout(
         .max(OUTER_MIN_H)
         .max(inner_h + 2.0 * PAD + PIN_GAP);
 
-    // 盒子在面板里的横向位置:左右各留一条给引脚名的槽。
-    let outer_x = MARGIN + LABEL_GUTTER;
+    // 盒子左右各留一条给引脚名的槽 —— 宽度按**最长的名字**算,名字都短
+    // 就不白留空白(用户报"左右空余太多")。
+    let left_gutter = label_gutter(outer.params.iter().map(|p| p.name.as_str()));
+    let right_gutter = label_gutter(outer.rets.iter().map(|p| p.name.as_str()));
+    let outer_x = MARGIN + left_gutter;
     // 盒子宽度 = 面板宽 - 两条槽 - 两条边距。窄的时候不能算成负数。
-    let outer_w = (width - 2.0 * (MARGIN + LABEL_GUTTER)).max(INNER_W + 8.0);
+    let outer_w =
+        (width - (MARGIN + left_gutter) - (MARGIN + right_gutter)).max(INNER_W + 8.0);
     let outer_rect = Rect {
         x: outer_x,
         y: MARGIN,
@@ -499,6 +533,8 @@ pub fn layout(
         constants,
         outer_left_labels,
         outer_right_labels,
+        left_gutter,
+        right_gutter,
     }
 }
 
@@ -980,6 +1016,9 @@ mod tests {
     }
 
     /// 盒子左右各留一条给引脚名的槽 —— 盒子不能占满整个面板宽度。
+    ///
+    /// 槽宽按**最长的名字**估,不是固定值:名字短就不白留空白(用户报
+    /// "左右空余太多")。
     #[test]
     fn the_box_leaves_room_for_the_names() {
         let outer = iface(&["x"], &[], vec![], 1, 1);
@@ -987,13 +1026,33 @@ mod tests {
         let c = Convention::build(&outer, &inner);
         let width = 344.0;
         let l = layout(&outer, &inner, &c, (0.0, 0.0), width);
-        assert!(l.outer.x >= LABEL_GUTTER, "左边要有槽");
+        assert_eq!(l.outer.x, MARGIN + l.left_gutter, "左边槽宽就是 left_gutter");
         assert!(
-            l.outer.x + l.outer.w <= width - LABEL_GUTTER,
-            "右边也要有槽:{} + {} vs {}",
+            l.outer.x + l.outer.w <= width - l.right_gutter,
+            "右边也要有槽:{} + {} vs {} - {}",
             l.outer.x,
             l.outer.w,
-            width
+            width,
+            l.right_gutter
+        );
+    }
+
+    /// 槽宽**跟着名字长度走**:短名字窄、长名字宽(有上下限)。
+    #[test]
+    fn the_gutter_follows_the_longest_name() {
+        let short = label_gutter(["x"]);
+        // 一个字符 + 内边距,比下限略宽 —— 但**远小于**以前固定的 74px。
+        assert!(short < 24.0, "短名字不该白留一大条:{short}");
+        let longer = label_gutter(["abc"]);
+        assert!(longer > short, "名字变长,槽也变宽:{longer} vs {short}");
+        // 封顶:再长也不能把盒子挤没。
+        let huge = label_gutter(["x".repeat(200).as_str()]);
+        assert_eq!(huge, LABEL_GUTTER_MAX, "超长名字封顶");
+        // 取**最长**的那个,不是第一个。
+        assert_eq!(
+            label_gutter(["a", "a_longer_one"]),
+            label_gutter(["a_longer_one"]),
+            "按最长的那一个算"
         );
     }
 
