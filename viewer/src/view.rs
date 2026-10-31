@@ -322,9 +322,9 @@ pub struct Tab {
     /// 这个页签里选中了哪些节点(展平后的**下标**,只在这一张图里有意义)。
     pub selected: Vec<usize>,
     /// 右键菜单。节点下标属于这张图,所以跟着页签走。
-    pub menu: Option<NodeMenu>,
+    menu: Option<NodeMenu>,
     /// 正在进行的拖动。切走的页签如果正拖着,回来接着拖。
-    pub drag: Option<Drag>,
+    drag: Option<Drag>,
     /// 框选矩形(正在拖的时候)。
     pub marquee: Option<(Point<f32>, Point<f32>)>,
     /// 当前悬停的节点(画布内)。
@@ -333,9 +333,9 @@ pub struct Tab {
     /// 页签里打开时看的是同一个函数,内层位置没必要各记一份。
     pub conv_pos: HashMap<usize, (f32, f32)>,
     /// 正在拖「调用约定」内层节点。
-    pub conv_drag: Option<ConvDrag>,
+    conv_drag: Option<ConvDrag>,
     /// 「调用约定」的悬停命中。
-    pub conv_hover: Option<(conv::Hit, Point<f32>)>,
+    conv_hover: Option<(conv::Hit, Point<f32>)>,
 }
 
 /// 前进 / 后退历史里的一条记录。
@@ -721,7 +721,7 @@ impl Viewer {
     /// 第一个文件复用那张初始空标签页,之后每个文件各开一张新标签页
     /// —— 和浏览器"新开一个文件就是新开一页"一致。
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
-        if let Some(first) = self.doc.push_target(t) {
+        if self.doc.push_target(t).is_some() {
             // **不在这里读坐标**:加载时还没布局(`Doc::push_target` 只展平,
             // 不算坐标)。`positions` 按图下标惰性补齐 —— 缺的位置是空表,
             // 等 `show()` 里 `ensure_layout` 算完再由 `reload_positions` 填。
@@ -733,12 +733,9 @@ impl Viewer {
             // 进来看到的是文件全貌,而不是被迫先看某一张 —— 和 IDE 打开
             // 一个项目不自动打开某个文件一样。
             //
-            // 只把左栏的**选中项**锚到第一项(免得看上去什么都没选),
-            // **不动 `current`** —— 它还指着上次的下标,改它会让别处以为
-            // "画布正在显示那一张"(用户报过左栏显示开着 main)。
-            if self.tabs.tabs.is_empty() {
-                self.toc_selected = Some(first);
-            }
+            // ⚠️ **连 `toc_selected` 也别碰**:它会让第一项带上选中底色,
+            // 看起来像"已经打开了 main"(用户报过)。刚加载完就该干干净净的,
+            // 什么都没选。
             cx.notify();
         } else {
             cx.notify();
@@ -1576,14 +1573,31 @@ impl Render for Viewer {
         };
 
         // ---- 左栏:图列表(实现在 `render_toc`)----
-        let (toc, divider) = self.render_toc(window, cx);
+        //
+        // ⚠️ **没加载文件时整块不显示** —— 左栏列的是文件里的图,文件都没有
+        // 就只剩一个空搜索框,没意义(用户要求)。有文件但没开页签时**要显示**:
+        // 那时正是"从列表里挑一个打开"的时候。
+        let has_file = !self.doc.is_empty();
+        let (toc, divider) = if has_file {
+            let (toc, divider) = self.render_toc(window, cx);
+            (Some(toc), Some(divider))
+        } else {
+            (None, None)
+        };
 
         // ---- 右栏:调用约定 + 优化按钮(实现在 `render_rules_panel`)----
-        let rules_panel = self.render_rules_panel(cx);
+        //
+        // ⚠️ **没打开页签时整块不显示** —— 它作用在"当前图"上,没有当前图
+        // 就没有它要展示/操作的东西(用户要求)。
+        let has_tab = !self.tabs.tabs.is_empty();
+        let rules_panel = has_tab.then(|| self.render_rules_panel(cx));
 
         // ---- 标签栏:一行横向的页签,每页带关闭按钮 ----
         // 点页签切过去(记一条后退历史,用户要求切标签页可后退);
         // 中键点页签 = 关闭;页签上的 × 也是关闭。
+        //
+        // **一页都没有时整条不渲染** —— 空的标签栏会留下一条带底边框的空白带,
+        // 看着像"这里本该有页签"。改用 `Option`,由外层决定要不要挂。
         let tabs: Vec<(usize, String, bool)> = self
             .tabs
             .tabs
@@ -1591,7 +1605,8 @@ impl Render for Viewer {
             .enumerate()
             .map(|(i, t)| (i, self.tab_title(t), i == self.tabs.active))
             .collect();
-        let tab_bar = div()
+        let tab_bar = has_tab.then(|| {
+            div()
             .id("tab-bar")
             .flex()
             .flex_row()
@@ -1651,7 +1666,8 @@ impl Render for Viewer {
                     .on_mouse_down(MouseButton::Middle, cx.listener(move |v, _e, _w, cx| {
                         v.close_tab(i, cx);
                     }))
-            }));
+            }))
+        });
 
         // ---- 整窗:接收文件拖放,左中右分栏 ----
         div()
@@ -1749,21 +1765,31 @@ impl Render for Viewer {
                     .flex_row()
                     .flex_1()
                     .min_h(px(0.0))
-                    .child(toc)
-                    .child(divider)
-                    // 标签栏**只盖在画布上方**,不横跨左栏 / 右栏 ——
-                    // 页签说的是"这个画布在看哪张图",和左栏的图列表、右栏的
-                    // 优化面板都不是一个层级的东西。
+                    // 左栏 + 分隔条:没文件时两块都不在。
+                    .when_some(toc, |d, toc| d.child(toc))
+                    .when_some(divider, |d, divider| d.child(divider))
+                    // 中栏 + 右栏
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .min_w(px(0.0))
-                            .child(tab_bar)
-                            .child(canvas_el),
-                    )
-                    .child(rules_panel),
+                            // 标签栏在**最上方**,横跨"画布 + 右栏"这一整块 ——
+                            // 右栏是当前页签的一部分(它讲的是这张图),所以
+                            // 页签条要盖在它上面,而不是让它挤在右边当第三栏。
+                            .when_some(tab_bar, |d, bar| d.child(bar))
+                            // 标签栏**下面**:左边画布、右边「调用约定 + 优化」。
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .child(canvas_el)
+                                    .when_some(rules_panel, |d, panel| d.child(panel)),
+                            ),
+                    ),
             )
             .into_any_element()
     }
