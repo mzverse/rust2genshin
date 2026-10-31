@@ -13,5 +13,10 @@ crate-type = ["dylib", "rlib"]
 [lints]
 workspace = true
 
+[features]
+# 打开它才会编译 `src/unsupported.rs` 里的例子 —— 那些是后端还没落地的
+# 缺口,默认编不过。用途见该文件的模块文档。
+unsupported = []
+
 [dependencies]
 rust2genshin-lib = { workspace = true }
