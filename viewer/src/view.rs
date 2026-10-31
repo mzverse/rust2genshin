@@ -81,12 +81,21 @@ use crate::theme::{
     marquee_bg, marquee_border, node_bg, panel_bg, pin_ctrl, selected_border, text_dim, text_hi,
 };
 
-// Ctrl+Z → 撤销、Ctrl+Y → 重做、Alt+←/→ → 后退 / 前进。
+// Ctrl+Z → 撤销、Ctrl+Y → 重做、Alt+←/→ → 后退 / 前进、Ctrl+W → 关标签页。
 // `actions!` 展开出一个单元结构体 + `gpui::Action` 实现;键位在 `main.rs` 绑
 // (`AppContext::bind_keys`),处理也挂在 App 级(`AppContext::on_action`)。
-// **不依赖焦点** —— 焦点在左栏时也该能撤销,挂在 App 级就不用每个持有焦点的
-// 元素各绑一遍。
-gpui::actions!([Undo, Redo, NavBack, NavForward]);
+//
+// ⚠️ 这几个里只有 `Ctrl+W` 是**跟焦点**的(见 `CANVAS_CONTEXT`),其余全局生效。
+gpui::actions!([Undo, Redo, NavBack, NavForward, CloseTab]);
+
+/// 画布元素的 key context。`Ctrl+W` 只在这个 context 下生效 ——
+/// 也就是**画布持有焦点**时(焦点在左栏搜索框里时不关标签页)。
+///
+/// gpui 的机制:`.key_context("Canvas")` 挂在元素上,按键事件的 context 栈
+/// 由"根 → 焦点元素"那条路径上的元素依次贡献(`window.rs:4196` 的
+/// `context_stack`)。所以 `KeyBinding::new("ctrl-w", CloseTab, Some("Canvas"))`
+/// 只在这条路径上有 `Canvas` 时匹配。
+pub const CANVAS_CONTEXT: &str = "Canvas";
 
 // ------------------------------------------------------------------ 配色
 //
@@ -841,6 +850,18 @@ impl Viewer {
         if self.close_tab_step(idx) {
             cx.notify();
         }
+    }
+
+    /// `Ctrl+W`:关掉**当前活动**的标签页。
+    ///
+    /// 和 `close_tab(idx)` 的区别只是"哪一页":这个取 `tabs.active`,
+    /// 那个由调用方指定(页签上的 × 按钮 / 中键点页签)。
+    ///
+    /// 只有一页时不会真的关掉 —— `TabHost::close` 的规则是"总得有东西可看",
+    /// 它会复位那一页(见 `closing_the_last_tab_keeps_a_tab` 测试)。
+    pub fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        let active = self.tabs.active;
+        self.close_tab(active, cx);
     }
 
     /// [`Viewer::open_tab`] 的纯逻辑部分。
@@ -2160,6 +2181,8 @@ impl Viewer {
             // 画布自己持有焦点(见 `Viewer::canvas_focus` 的注释):
             // 这样"根 → 画布"总在键盘 / modifier 事件的分发路径上。
             .track_focus(&canvas_focus)
+            // `Ctrl+W`(关标签页)只在画布持焦点时生效 —— 见 `CANVAS_CONTEXT`。
+            .key_context(CANVAS_CONTEXT)
             .bg(canvas_bg())
             // 中键拖 = 平移画布,和 AutoCAD / Blender 的约定一致,用 move 光标。
             .cursor_move()
@@ -3151,6 +3174,33 @@ mod tests {
         assert_eq!(h.tabs.len(), 1);
         assert_eq!(h.active, 0);
         assert_eq!(active.graph, h.tabs[0].graph);
+    }
+
+    /// `Ctrl+W` 关的是**当前活动**那一页,不是第 0 页、也不是最后页。
+    ///
+    /// 这是 `close_active_tab` 的全部逻辑(`tabs.active` → `close`)——
+    /// 它自己不碰 GPUI,所以能在这里直接验。
+    #[test]
+    fn ctrl_w_closes_the_active_tab() {
+        let mut h = TabHost::new();
+        h.open(1);
+        h.open(2);
+        // 切回中间那页(下标 1),让它成为活动页。
+        h.switch(1).expect("切到第 1 页");
+        assert_eq!(h.active, 1);
+        let closing = h.tabs[1].graph;
+
+        // `close_active_tab` 取的就是 `tabs.active`。
+        let active = h.active;
+        let tab = h.close(active).expect("还有别的页");
+        assert_eq!(h.tabs.len(), 2, "只关掉一页");
+        assert!(
+            !h.tabs.iter().any(|t| t.graph == closing),
+            "被关掉的是活动页那一张图"
+        );
+        // 关完之后活动页仍然有效。
+        assert!(h.active < h.tabs.len());
+        assert_eq!(tab.graph, h.tabs[h.active.min(h.tabs.len() - 1)].graph);
     }
 
     /// 只剩一个标签页时点关闭**不真的关**:窗口总得有东西可看。

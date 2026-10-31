@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use gpui::AppContext as _;
 use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use view::{NavBack, NavForward, Redo, Undo, Viewer};
+use view::{CloseTab, NavBack, NavForward, Redo, Undo, Viewer};
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
@@ -117,6 +117,14 @@ fn run_window(initial: Option<PathBuf>) {
             KeyBinding::new("ctrl-y", Redo, None),
             KeyBinding::new("alt-left", NavBack, None),
             KeyBinding::new("alt-right", NavForward, None),
+            // 只在**画布持焦点**时生效(第三个参数 = key context)。
+            // 焦点在左栏搜索框里时不关标签页 —— 那里 `Ctrl+W` 是"删一个词"
+            // 之类的文本编辑语义。
+            KeyBinding::new(
+                "ctrl-w",
+                CloseTab,
+                Some(view::CANVAS_CONTEXT),
+            ),
         ]);
         open_window(cx, initial);
     });
@@ -180,6 +188,14 @@ fn open_window(cx: &mut App, initial: Option<PathBuf>) {
             cx.on_action(move |_: &NavForward, cx: &mut App| {
                 if let Some(v) = weak.upgrade() {
                     v.update(cx, |v, cx| v.nav_forward(cx));
+                }
+            });
+            // `Ctrl+W`:关掉当前活动标签页。键位绑在 `Canvas` context 上,
+            // 所以只有画布持焦点时才会走到这里。
+            let weak = viewer.downgrade();
+            cx.on_action(move |_: &CloseTab, cx: &mut App| {
+                if let Some(v) = weak.upgrade() {
+                    v.update(cx, |v, cx| v.close_active_tab(cx));
                 }
             });
             viewer
