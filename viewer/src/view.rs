@@ -66,7 +66,7 @@ use rust2genshin::node::NodeRef;
 use crate::conv;
 use crate::doc::{
     BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y, Doc,
-    Edge, FnInterface, GraphEntry, NodeEntry, comment_height, comment_width,
+    Edge, FnInterface, GraphEntry, NodeEntry, PinRows, comment_height, comment_width, pin_rows,
 };
 use crate::optimize::{self, RULES, Snapshot};
 
@@ -291,8 +291,9 @@ fn add_px(offset: Point<Pixels>, p: Point<f32>) -> Point<Pixels> {
 ///
 /// 用 `N+1` 段而不是 `N-1` 段:`N == 1` 时后者要除零,`N == 0` 时没有意义。
 ///
-/// **公用的**:「调用约定」视图的引脚排布也用它(`conv::pins_on_side`)——
-/// 两边各写一份的话,画布上的引脚和调用约定里的引脚就会对不上。
+/// ⚠️ **引脚不再用这个分布** —— 用户要求引脚**靠上**排,不用整条边均分。
+/// 那个是 [`pin_row_y`](rust2genshin::node::layout::pin_row_y) 的活。
+/// 这个函数只剩 `spread` 的旧用法(如果有的话)。
 pub fn spread(lo: f32, len: f32, pin: usize, total: usize) -> f32 {
     if total == 0 {
         return lo + len / 2.0;
@@ -300,16 +301,33 @@ pub fn spread(lo: f32, len: f32, pin: usize, total: usize) -> f32 {
     lo + len * (pin as f32 + 1.0) / (total as f32 + 1.0)
 }
 
-/// 侧边上第 `pin` 个 pin 的纵向位置(容器局部坐标)。
+/// 侧边上第 `pin` 个 pin 的纵向位置(容器局部坐标,已含 `scale`)。
 ///
-/// 一条侧边上,控制流 pin 在前、值流 pin 在后 —— **值流的连接点依次排在
-/// 控制流下方**(和游戏内节点编辑器的排法一致)。`ctrl_num` / `value_num`
-/// 是这条侧边上两类 pin 的总数,`pin` 是 `is_ctrl` 那一类里的序号。
+/// 几何**全部由 core 提供**(`node::layout`):引脚靠上排(`pin_row_y`),
+/// 值流的起始行跨两侧取最大(`pin_rows`)—— 见那边的注释。
+/// **不要**在这里自己算一份:画布、「调用约定」视图、`.gia` 的自动整理
+/// 用的必须是同一套,否则它们会互相漂开。
 ///
-/// **公用的**:「调用约定」视图的引脚排布也用它 —— 见 [`spread`]。
-pub fn pin_y(lo: f32, len: f32, ctrl_num: usize, value_num: usize, is_ctrl: bool, pin: usize) -> f32 {
-    let k = if is_ctrl { pin } else { ctrl_num + pin };
-    spread(lo, len, k, ctrl_num + value_num)
+/// `top` 是节点顶部(容器局部 y),`ctrl_num` / `value_num` / `value_start`
+/// 来自 [`pin_rows`](rust2genshin::node::layout::pin_rows)。
+pub fn pin_y(
+    top: f32,
+    scale: f32,
+    ctrl_num: usize,
+    value_num: usize,
+    value_start: usize,
+    is_ctrl: bool,
+    pin: usize,
+) -> f32 {
+    use rust2genshin::node::layout::{pin_row_y, side_pin_ys};
+    let (ctrl, value) = side_pin_ys(ctrl_num, value_num, value_start);
+    let row = if is_ctrl {
+        ctrl.get(pin).copied()
+    } else {
+        value.get(pin).copied()
+    };
+    // 拿不到(畸形数据 / 越界)时退回首行 —— 不 panic。
+    top + row.unwrap_or_else(|| pin_row_y(0)) * scale
 }
 
 /// 节点 `i` 的左上角(容器局部坐标)与尺寸。
@@ -393,7 +411,36 @@ fn build_edges(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f3
         .filter_map(|(index, e): (usize, &Edge)| {
             let (from, fs) = node_box(pos, &g.nodes, origin, scale, e.from.0)?;
             let (to, ts) = node_box(pos, &g.nodes, origin, scale, e.to.0)?;
-            // 两侧各自的 pin 总数:控制流 + 值流,值流排在下方。
+            // 两侧各自的 pin 行数(值流起点跨两侧取最大 —— 见 core 的
+            // `pin_rows`)。拿不到节点时按"没有引脚"兜底,不 unwrap。
+            let (from_rows, to_rows) = match (g.nodes.get(e.from.0), g.nodes.get(e.to.0)) {
+                (Some(a), Some(b)) => (
+                    pin_rows(
+                        a.controls_in_num,
+                        a.values_in_num,
+                        a.controls_out_num,
+                        a.values_out_num,
+                    )
+                    .1,
+                    pin_rows(
+                        b.controls_in_num,
+                        b.values_in_num,
+                        b.controls_out_num,
+                        b.values_out_num,
+                    )
+                    .0,
+                ),
+                _ => (
+                    PinRows {
+                        value_start: 0,
+                        rows: 0,
+                    },
+                    PinRows {
+                        value_start: 0,
+                        rows: 0,
+                    },
+                ),
+            };
             let (out_c, out_v) = g
                 .nodes
                 .get(e.from.0)
@@ -402,8 +449,25 @@ fn build_edges(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f3
                 .nodes
                 .get(e.to.0)
                 .map_or((0, 0), |n| (n.controls_in_num, n.values_in_num));
-            let y0 = pin_y(from.y, fs.height, out_c, out_v, e.ctrl, e.from.1);
-            let y1 = pin_y(to.y, ts.height, in_c, in_v, e.ctrl, e.to.1);
+            let y0 = pin_y(
+                from.y,
+                scale,
+                out_c,
+                out_v,
+                from_rows.value_start,
+                e.ctrl,
+                e.from.1,
+            );
+            let y1 = pin_y(
+                to.y,
+                scale,
+                in_c,
+                in_v,
+                to_rows.value_start,
+                e.ctrl,
+                e.to.1,
+            );
+
             // 目标在源左边时(有回边的控制流图;值流的源常在最右一列、
             // 往左指)`to.x - from.x` 是负的,取绝对值再夹一个下限,
             // 避免控制点挤在一起看不出走向。
@@ -454,13 +518,27 @@ fn build_boundaries(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scal
         let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
             continue;
         };
+        let (left_rows, right_rows) = pin_rows(
+            n.controls_in_num,
+            n.values_in_num,
+            n.controls_out_num,
+            n.values_out_num,
+        );
         let mut stub = |ctrl: bool, left: bool, pin: usize, export: usize| {
-            let (ctrl_num, value_num) = if left {
-                (n.controls_in_num, n.values_in_num)
+            let (ctrl_num, value_num, rows) = if left {
+                (n.controls_in_num, n.values_in_num, left_rows)
             } else {
-                (n.controls_out_num, n.values_out_num)
+                (n.controls_out_num, n.values_out_num, right_rows)
             };
-            let y = pin_y(p.y, s.height, ctrl_num, value_num, ctrl, pin);
+            let y = pin_y(
+                p.y,
+                scale,
+                ctrl_num,
+                value_num,
+                rows.value_start,
+                ctrl,
+                pin,
+            );
             let x = if left { p.x } else { p.x + s.width };
             out.push(BoundaryView {
                 ctrl,
@@ -582,17 +660,37 @@ fn build_pins(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale: f32
         let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
             continue;
         };
-        // 入边一侧在左边缘、出边一侧在右边缘;纵向档位就是 `0..(控制+值)`,
-        // 与控制流/值流的先后无关 —— 那个顺序只决定颜色。
-        for (ctrl_num, value_num, is_out, x) in [
-            (n.controls_in_num, n.values_in_num, false, p.x),
-            (n.controls_out_num, n.values_out_num, true, p.x + s.width),
+        // 入边一侧在左边缘、出边一侧在右边缘。纵向位置由 core 的
+        // `pin_rows` / `pin_row_y` 决定(引脚靠上排,值流起点跨两侧取最大)。
+        let (left_rows, right_rows) = pin_rows(
+            n.controls_in_num,
+            n.values_in_num,
+            n.controls_out_num,
+            n.values_out_num,
+        );
+        for (ctrl_num, value_num, rows, is_out, x) in [
+            (n.controls_in_num, n.values_in_num, left_rows, false, p.x),
+            (
+                n.controls_out_num,
+                n.values_out_num,
+                right_rows,
+                true,
+                p.x + s.width,
+            ),
         ] {
             for k in 0..(ctrl_num + value_num) {
                 let ctrl = k < ctrl_num;
                 out.push(PinView {
                     x,
-                    y: spread(p.y, s.height, k, ctrl_num + value_num),
+                    y: pin_y(
+                        p.y,
+                        scale,
+                        ctrl_num,
+                        value_num,
+                        rows.value_start,
+                        ctrl,
+                        if ctrl { k } else { k - ctrl_num },
+                    ),
                     ctrl,
                     // 控制流 pin 一般没有类型可显示 —— 唯一的例外是
                     // `Switch` 的分支名(`ctrl_out_labels`),出边才标。
@@ -626,13 +724,27 @@ fn build_defaults(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, scale:
         let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
             continue;
         };
+        let (left_rows, _) = pin_rows(
+            n.controls_in_num,
+            n.values_in_num,
+            n.controls_out_num,
+            n.values_out_num,
+        );
         for (pin, default) in n.value_in_defaults.iter().enumerate() {
             let Some(text) = default else {
                 continue;
             };
             out.push(DefaultView {
                 right: p.x - (PIN_D / 2.0 + 3.0) * scale,
-                y: pin_y(p.y, s.height, n.controls_in_num, n.values_in_num, false, pin),
+                y: pin_y(
+                    p.y,
+                    scale,
+                    n.controls_in_num,
+                    n.values_in_num,
+                    left_rows.value_start,
+                    false,
+                    pin,
+                ),
                 text: text.clone(),
             });
         }
@@ -659,10 +771,24 @@ fn build_ctrl_labels(g: &GraphEntry, pos: &[Point<f32>], origin: Point<f32>, sca
         let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
             continue;
         };
+        let (_, right_rows) = pin_rows(
+            n.controls_in_num,
+            n.values_in_num,
+            n.controls_out_num,
+            n.values_out_num,
+        );
         for (pin, text) in n.ctrl_out_labels.iter().enumerate() {
             out.push(CtrlLabelView {
                 right: p.x + s.width - (PIN_D / 2.0 + 3.0) * scale,
-                y: pin_y(p.y, s.height, n.controls_out_num, n.values_out_num, true, pin),
+                y: pin_y(
+                    p.y,
+                    scale,
+                    n.controls_out_num,
+                    n.values_out_num,
+                    right_rows.value_start,
+                    true,
+                    pin,
+                ),
                 text: text.clone(),
             });
         }
@@ -3859,30 +3985,50 @@ mod tests {
         assert_eq!(h.tabs[0].graph, 0, "原来那一页不能被动");
     }
 
-    /// 侧边 pin 排布:**控制流在前、值流在后,值流依次排在控制流下方**。
+    /// 侧边 pin 排布:**控制流靠上、值流紧接其后**,整排不居中。
     #[test]
     fn value_pins_sit_below_control_pins() {
-        let (lo, len) = (100.0, 60.0);
+        let top = 100.0;
         let (c, v) = (2, 2);
-        let c0 = pin_y(lo, len, c, v, true, 0);
-        let c1 = pin_y(lo, len, c, v, true, 1);
-        let v0 = pin_y(lo, len, c, v, false, 0);
-        let v1 = pin_y(lo, len, c, v, false, 1);
+        let (c0, c1, v0, v1) = (
+            pin_y(top, 1.0, c, v, c, true, 0),
+            pin_y(top, 1.0, c, v, c, true, 1),
+            pin_y(top, 1.0, c, v, c, false, 0),
+            pin_y(top, 1.0, c, v, c, false, 1),
+        );
         assert!(c0 < c1 && c1 < v0 && v0 < v1, "顺序:{c0} {c1} {v0} {v1}");
         assert!(v0 > c1, "值流最靠上的 pin 也要在控制流最靠下的 pin 之下");
-        assert!(c0 > lo && v1 < lo + len, "pin 不贴边");
+        // **靠上**:第一个引脚就在顶部附近,不是浮在中间。
+        assert!(c0 < top + 20.0, "第一个引脚应当靠上:{c0}");
     }
 
-    /// 纯值节点(GetLocal / 表达式,控制 pin 为 0):值 pin 均分整条侧边。
+    /// 纯值节点(GetLocal / 表达式,控制 pin 为 0):值 pin 从顶部开始排。
     #[test]
-    fn value_only_node_spreads_across_the_whole_side() {
+    fn value_only_node_starts_at_the_top() {
         let (y0, y1, y2) = (
-            pin_y(0.0, 30.0, 0, 3, false, 0),
-            pin_y(0.0, 30.0, 0, 3, false, 1),
-            pin_y(0.0, 30.0, 0, 3, false, 2),
+            pin_y(0.0, 1.0, 0, 3, 0, false, 0),
+            pin_y(0.0, 1.0, 0, 3, 0, false, 1),
+            pin_y(0.0, 1.0, 0, 3, 0, false, 2),
         );
         assert!(y0 < y1 && y1 < y2, "依次排开:{y0} {y1} {y2}");
-        assert!(y0 > 0.0 && y2 < 30.0);
+        assert!(y0 < 20.0, "第一个引脚靠上:{y0}");
+    }
+
+    /// **左右控制流数量不同时,第一个数据流引脚仍然对齐**(用户要求)。
+    ///
+    /// 值流的起始行跨两侧取最大 —— 各算各的话会错开一格。
+    #[test]
+    fn the_first_value_pin_lines_up_when_control_counts_differ() {
+        // 左边 1 个控制流,右边 3 个。
+        let (l, r) = pin_rows(1, 2, 3, 2);
+        assert_eq!(l.value_start, 3, "值流起点取两侧最大(3)");
+        assert_eq!(r.value_start, 3);
+        // 两侧第一个值流引脚的 y 必须**完全相等**。
+        let left_first = pin_y(0.0, 1.0, 1, 2, l.value_start, false, 0);
+        let right_first = pin_y(0.0, 1.0, 3, 2, r.value_start, false, 0);
+        assert_eq!(left_first, right_first, "首个数据流引脚要对齐");
+        // 控制流各自从顶部开始,数量不同不影响它们自己的位置。
+        assert_eq!(pin_y(0.0, 1.0, 1, 2, l.value_start, true, 0), pin_y(0.0, 1.0, 3, 2, r.value_start, true, 0));
     }
 
     fn node(controls_in: usize, controls_out: usize, values_in: usize, values_out: usize) -> NodeEntry {
@@ -3985,18 +4131,18 @@ mod tests {
         assert!(ctrl.ctrl);
         assert_eq!(ctrl.from.x, NODE_W, "从来源右边缘出");
         assert_eq!(ctrl.to.x, 300.0, "进目标左边缘");
-        // 「1 控制 + 2 值」共 3 档:控制流 pin 0 在最上面(36 * 1/4 = 9)。
-        assert_eq!(ctrl.from.y, NODE_H / 4.0);
-        assert_eq!(ctrl.to.y, NODE_H / 4.0);
+        // 引脚**靠上**排:控制流 pin 0 在首行(`PIN_TOP`),不是节点中心。
+        assert_eq!(ctrl.from.y, crate::doc::PIN_TOP);
+        assert_eq!(ctrl.to.y, crate::doc::PIN_TOP);
 
         let value = &es[1];
         assert!(!value.ctrl, "仍是值流样式(虚线)");
         assert_eq!(value.from.x, NODE_W);
         assert_eq!(value.to.x, 300.0);
-        // 值流 pin 1 在「1 控制 + 2 值」里的第 2 位(0 基):36 * 3/4 = 27 ——
-        // 落在控制流下方,不是节点中心(18)。
-        assert_eq!(value.from.y, NODE_H * 3.0 / 4.0, "落在值流档位,不是节点中心");
-        assert_eq!(value.to.y, NODE_H * 3.0 / 4.0);
+        // 值流 pin **1**(第 2 个值引脚):值流从第 1 行开始,所以它落在第 2 行。
+        let expect = crate::doc::pin_row_y(2);
+        assert_eq!(value.from.y, expect, "落在值流那一行");
+        assert_eq!(value.to.y, expect);
         assert!(value.from.y > ctrl.from.y, "值流的连接点在控制流下方");
     }
 
@@ -4027,8 +4173,8 @@ mod tests {
         assert_eq!(ctrl.from.x, 10.0, "从节点左边缘起");
         assert_eq!(ctrl.to.x, 10.0 - STUB_LEN, "往左伸");
         assert_eq!(ctrl.from.y, ctrl.to.y, "桩是水平的");
-        // 入边侧「1 控制 + 2 值」共 3 档,控制流 pin 0 在最上面。
-        assert_eq!(ctrl.from.y, 20.0 + NODE_H / 4.0);
+        // 入边侧控制流 pin 0 在**首行**。
+        assert_eq!(ctrl.from.y, 20.0 + crate::doc::PIN_TOP);
         assert_eq!(ctrl.export, 0, "控制入连的是边界 0");
         let (tp, tsz) = tag_box(ctrl, 1.0);
         assert_eq!(tp.x, ctrl.to.x - TAG_W - TAG_GAP, "左侧出:框在末端左边");
@@ -4037,8 +4183,8 @@ mod tests {
         let value = bs.iter().find(|b| !b.ctrl).expect("有值流桩");
         assert_eq!(value.from.x, 10.0 + NODE_W, "从节点右边缘起");
         assert_eq!(value.to.x, 10.0 + NODE_W + STUB_LEN, "往右伸");
-        // 出边侧「1 控制 + 2 值」共 3 档,值流 pin 1 在第 2 位。
-        assert_eq!(value.from.y, 20.0 + NODE_H * 3.0 / 4.0);
+        // 出边侧值流 pin 1 紧接在 1 个控制流之后 —— 第 3 行(0 基)。
+        assert_eq!(value.from.y, 20.0 + crate::doc::pin_row_y(2));
         assert_eq!(value.export, 7, "边界号要逐 pin 对上,不是清一色 0");
         let (vp, _) = tag_box(value, 1.0);
         assert_eq!(vp.x, value.to.x + TAG_GAP, "右侧出:框在末端右边");
@@ -4079,11 +4225,14 @@ mod tests {
         assert!(in_side[0].ctrl, "第 1 档是控制流");
         assert!(!in_side[1].ctrl && !in_side[2].ctrl, "后两档是值流");
         assert!(in_side[0].y < in_side[1].y && in_side[1].y < in_side[2].y);
-        assert_eq!(in_side[0].y, 20.0 + NODE_H / 4.0);
+        // 控制流在**首行**(靠上,不是居中)。
+        assert_eq!(in_side[0].y, 20.0 + crate::doc::PIN_TOP);
 
         let out_side: Vec<_> = pins.iter().filter(|p| p.x == 10.0 + NODE_W).collect();
         assert_eq!(out_side.len(), 3, "出边一侧也要画");
-        assert!(out_side.iter().all(|p| p.y > 20.0 && p.y < 20.0 + NODE_H));
+        // 靠上:第一个引脚就在顶部附近,整排不越过节点高度。
+        assert!(out_side[0].y < 20.0 + 20.0, "第一个引脚靠上");
+        assert!(out_side.iter().all(|p| p.y < 20.0 + crate::doc::node_height(3)));
     }
 
     /// 值入默认值:只有 `Some` 的才显示,右缘贴引脚圆点左侧、纵向对齐该 pin。
@@ -4105,8 +4254,12 @@ mod tests {
         assert_eq!(ds.len(), 1, "只有 pin 1 有默认值");
         assert_eq!(ds[0].text, "5");
         assert_eq!(ds[0].right, 10.0 - (PIN_D / 2.0 + 3.0), "右缘贴引脚左侧");
-        // 入边侧「1 控制 + 2 值」共 3 档,值入 pin 1 在第 2 位。
-        assert_eq!(ds[0].y, 20.0 + NODE_H * 3.0 / 4.0, "纵向对齐值入 pin 1");
+        // 值入 pin **1**(第 2 个值引脚):值流从第 1 行开始,所以落在第 2 行。
+        assert_eq!(
+            ds[0].y,
+            20.0 + crate::doc::pin_row_y(2),
+            "纵向对齐值入 pin 1"
+        );
     }
 
     // ------------------------------------------------------- 悬停:气泡文案

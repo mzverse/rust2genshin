@@ -40,8 +40,87 @@ pub const PIN_GAP: f32 = 16.0;
 pub const BASE_FONT_PX: f32 = 11.0;
 
 /// 按一侧最多的 pin 数算节点高度:pin 越多节点越高,连接点才不挤。
-pub fn node_height(pins: usize) -> f32 {
-    NODE_H.max((pins + 1) as f32 * PIN_GAP)
+///
+/// `pins` 是这条侧边上**要占的行数**(控制流 + 值流,见 [`pin_rows`])。
+/// 引脚靠上排,所以高度就是"够放下这些行"—— 行数 `rows` 时:
+/// 首行中心距顶 [`PIN_TOP`],末行中心距底也是 [`PIN_TOP`],
+/// 正好 `rows * PIN_GAP`。
+pub fn node_height(rows: usize) -> f32 {
+    NODE_H.max(rows as f32 * PIN_GAP)
+}
+
+/// 第一个引脚的中心到节点顶部的距离。
+///
+/// **引脚靠上排,不居中**(用户要求)—— 所以首行有一个固定的顶部留白,
+/// 而不是像以前那样按 `N+1` 均分、让整排浮在中间。
+pub const PIN_TOP: f32 = PIN_GAP / 2.0;
+
+/// 第 `row` 行引脚的中心 y(相对节点顶部,1 倍缩放)。
+pub fn pin_row_y(row: usize) -> f32 {
+    PIN_TOP + row as f32 * PIN_GAP
+}
+
+/// 一个节点两侧各要占多少行,以及值流从第几行开始。
+///
+/// # 为什么值流的起点要**跨两侧取最大**
+///
+/// 用户明确要求:「当左右的控制流引脚数量不一样时,首个数据流引脚仍然对齐」。
+///
+/// 如果两侧各算各的(左边值流从 `ctrl_in` 行开始、右边从 `ctrl_out` 行开始),
+/// 控制流数量不同时,左右第一个数据流引脚就会错开一格 —— 看起来就像数据
+/// 从半空里接过去的。所以值流的起始行取 `max(ctrl_in, ctrl_out)`,
+/// 两侧共用。
+///
+/// 控制流引脚本身仍然从第 0 行开始,两侧各自有几个就排几个 —— 它们本来就
+/// 不成对,不需要对齐。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PinRows {
+    /// 值流从这一行开始(两侧共用)。
+    pub value_start: usize,
+    /// 这一侧总共占的行数(装下控制流与值流)。
+    pub rows: usize,
+}
+
+/// 算两侧的引脚行数。
+///
+/// - `ctrl_in` / `ctrl_out`:两侧的控制流引脚数;
+/// - `value_in` / `value_out`:两侧的值流引脚数。
+///
+/// 返回 `(左, 右)`:各自的 `value_start` 相同(跨两侧取最大),
+/// `rows` 各自按自己那一侧算。
+pub fn pin_rows(
+    ctrl_in: usize,
+    value_in: usize,
+    ctrl_out: usize,
+    value_out: usize,
+) -> (PinRows, PinRows) {
+    // 值流的起始行:两侧控制流数量的**较大者** —— 这就是"首个数据流引脚
+    // 仍然对齐"的那条规则。
+    let value_start = ctrl_in.max(ctrl_out);
+    let left = PinRows {
+        value_start,
+        rows: value_start.max(ctrl_in) + value_in,
+    };
+    let right = PinRows {
+        value_start,
+        rows: value_start.max(ctrl_out) + value_out,
+    };
+    (left, right)
+}
+
+/// 一侧引脚的纵向位置(相对节点顶部,1 倍缩放)。
+///
+/// 控制流从第 0 行开始,值流从 `value_start` 行开始 —— 见 [`pin_rows`]。
+/// 返回 `(控制流各行 y, 值流各行 y)`。
+pub fn side_pin_ys(
+    ctrl_num: usize,
+    value_num: usize,
+    value_start: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    (
+        (0..ctrl_num).map(pin_row_y).collect(),
+        (0..value_num).map(|j| pin_row_y(value_start + j)).collect(),
+    )
 }
 
 /// 节点宽度:按标签**估算**文字宽度,长了自动拉宽(`NODE_W` 是下限)。
@@ -147,8 +226,15 @@ pub fn layout_with<NodeId, Kind>(
     let mut index_of: HashMap<NodeRef, usize> = HashMap::new();
     for (key, node) in graph.nodes.iter() {
         index_of.insert(NodeRef::from(key), w.len());
-        let pins = (node.kind.controls_in_num + node.kind.values_in_types.len())
-            .max(node.kind.controls_out_num + node.kind.values_out_types.len());
+        // 节点高度按**行数**算 —— 引脚靠上排,行数由两侧的
+        // `pin_rows` 决定(值流起点跨两侧取最大,见那个函数的注释)。
+        let (l, r) = pin_rows(
+            node.kind.controls_in_num,
+            node.kind.values_in_types.len(),
+            node.kind.controls_out_num,
+            node.kind.values_out_types.len(),
+        );
+        let rows = l.rows.max(r.rows);
         let mut width = node_width(&label(&node.kind));
         // 注释贴在节点上方:宽度参与列宽(不然长注释会压到邻居身上),
         // 高度在列内打包时单独留出来(见 `pack`)。
@@ -158,7 +244,7 @@ pub fn layout_with<NodeId, Kind>(
             reserve = comment_height(comment) + COMMENT_GAP;
         }
         w.push(width);
-        h.push(node_height(pins));
+        h.push(node_height(rows));
         ch.push(reserve);
     }
 
@@ -967,6 +1053,70 @@ mod tests {
         assert_eq!(pos[1].0 - pos[0].0, NODE_W + LAYER_GAP, "层 0 不受影响");
         assert_eq!(pos[2].0 - pos[1].0, 300.0 + LAYER_GAP, "层 1 按最宽节点步进");
         assert_eq!(pos[2].0, pos[3].0, "同层仍然对齐");
+    }
+
+    /// 引脚**靠上**排,不是居中:首个引脚就在 `PIN_TOP`,不浮在中间。
+    #[test]
+    fn pins_start_at_the_top_not_centered() {
+        assert_eq!(pin_row_y(0), PIN_TOP);
+        assert_eq!(pin_row_y(1) - pin_row_y(0), PIN_GAP);
+        // 靠上 = 整排在节点里从上往下排,末行离底部也留 `PIN_TOP`
+        // (而不是像居中那样上下各留一大截)。
+        let rows = 3;
+        let h = node_height(rows);
+        assert_eq!(
+            h - pin_row_y(rows - 1),
+            PIN_TOP,
+            "末行到节点底部也只留 PIN_TOP"
+        );
+    }
+
+    /// **左右控制流数量不同时,首个数据流引脚仍然对齐**(用户要求)。
+    #[test]
+    fn the_first_value_pin_aligns_across_both_sides() {
+        // 左边 1 个控制流,右边 3 个 —— 值流的起点取较大者。
+        let (l, r) = pin_rows(1, 2, 3, 2);
+        assert_eq!(l.value_start, r.value_start, "两侧值流起点必须相同");
+        assert_eq!(l.value_start, 3, "取两侧控制流数的较大者");
+        // 两侧第一个值流引脚的 y 完全相等。
+        assert_eq!(
+            pin_row_y(l.value_start),
+            pin_row_y(r.value_start),
+            "首个数据流引脚要对齐"
+        );
+        // 控制流各自从第 0 行开始,数量不同不影响它们自己的位置。
+        assert_eq!(pin_row_y(0), PIN_TOP);
+    }
+
+    /// 值流起点相同、但两侧行数各自按自己那一侧算。
+    #[test]
+    fn each_side_counts_its_own_rows() {
+        let (l, r) = pin_rows(1, 1, 3, 5);
+        assert_eq!(l.rows, 3 + 1, "左边:3 行控制流位 + 1 个值流");
+        assert_eq!(r.rows, 3 + 5, "右边:3 行控制流位 + 5 个值流");
+        // 值流起点都是 3。
+        assert_eq!((l.value_start, r.value_start), (3, 3));
+    }
+
+    /// `side_pin_ys`:控制流从第 0 行起,值流从 `value_start` 起。
+    #[test]
+    fn side_pin_ys_splits_control_and_value_rows() {
+        let (ctrl, value) = side_pin_ys(2, 2, 2);
+        assert_eq!(ctrl, vec![pin_row_y(0), pin_row_y(1)]);
+        assert_eq!(value, vec![pin_row_y(2), pin_row_y(3)]);
+    }
+
+    /// 高度按行数长高,行距是**定值**(不是"高度除以行数")。
+    #[test]
+    fn node_height_uses_a_fixed_row_pitch() {
+        // 2 行:2×16 = 32 < NODE_H(36),所以取下限。
+        assert_eq!(node_height(2), NODE_H);
+        // 3 行:3×16 = 48 > 36。
+        assert_eq!(node_height(3), 3.0 * PIN_GAP);
+        // 每多一行正好多 PIN_GAP。
+        for rows in 3..8 {
+            assert_eq!(node_height(rows + 1) - node_height(rows), PIN_GAP);
+        }
     }
 
     /// 节点高度按 pin 数不同(见 [`node_height`]),同层内推进必须用**真实高度** ——

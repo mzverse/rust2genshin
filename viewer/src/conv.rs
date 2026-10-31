@@ -265,13 +265,11 @@ pub struct Layout {
     pub outer_right_labels: Vec<(f32, f32, String)>,
 }
 
-/// 外层盒子左右各留的边距(盒**内**的留白)。
+/// 外层盒子左右各留的边距(盒**内**的留白)。引脚从这之后开始排。
 pub const PAD: f32 = 12.0;
-/// 一行引脚占的高度。
-pub const PIN_ROW: f32 = 16.0;
 /// 内层节点的宽度。
 pub const INNER_W: f32 = 150.0;
-/// 内层节点的最小高度。
+/// 内层节点的最小高度(和画布的 `node_height` 取大的那个)。
 pub const INNER_MIN_H: f32 = 32.0;
 /// 外层盒子的最小高度。
 pub const OUTER_MIN_H: f32 = 96.0;
@@ -318,20 +316,30 @@ pub const LAYER_ORDER: &[Layer] = &[
     Layer::Hover,
 ];
 
-/// 一侧引脚的排布:控制流在上、值流在下,两者在整条边上均分。
+/// 一侧引脚的排布:控制流靠上、值流紧接其后,整排**靠上**不居中。
 ///
-/// ⚠️ **必须用画布那套 [`crate::view::pin_y`]**,不要自己写一份 —— 两边
-/// 各写一份的话,画布上的引脚和调用约定里的引脚就会对不上(同一条边的
-/// 档位算得不一样)。
+/// ⚠️ **必须用画布那套**(core 的 [`pin_rows`] / [`pin_row_y`]),不要自己
+/// 写一份 —— 两边各写一份的话,画布上的引脚和调用约定里的引脚就会对不上。
 ///
-/// 控制流 pin 在前、值流在后,值流依次排在控制流下方 —— 和画布一致。
-fn pins_on_side(x: f32, lo: f32, len: f32, ctrl_n: usize, value_n: usize) -> Pins {
+/// 值流的起始行由 `value_start` 给出(跨两侧取最大 —— 见 core 里
+/// `pin_rows` 的注释),所以左右控制流数量不同时,两侧的第一个值流引脚
+/// 仍然对齐。
+///
+/// `top` 是这一侧盒子的顶部,`scale` 恒为 1(这个视图不缩放)。
+fn pins_on_side(
+    x: f32,
+    top: f32,
+    ctrl_n: usize,
+    value_n: usize,
+    rows: crate::doc::PinRows,
+) -> Pins {
+    use crate::doc::pin_row_y;
     Pins {
         ctrl: (0..ctrl_n)
-            .map(|i| (x, crate::view::pin_y(lo, len, ctrl_n, value_n, true, i)))
+            .map(|i| (x, top + pin_row_y(i)))
             .collect(),
         value: (0..value_n)
-            .map(|i| (x, crate::view::pin_y(lo, len, ctrl_n, value_n, false, i)))
+            .map(|j| (x, top + pin_row_y(rows.value_start + j)))
             .collect(),
     }
 }
@@ -350,19 +358,33 @@ pub fn layout(
     inner_pos: (f32, f32),
     width: f32,
 ) -> Layout {
-    // 内层节点的高:按它自己两侧最多的引脚数。
-    let inner_rows = (inner.params.len() + inner.ctrl_in_num)
-        .max(inner.rets.len() + inner.ctrl_out_num)
-        .max(1);
-    let inner_h = (inner_rows as f32 * PIN_ROW).max(INNER_MIN_H);
+    use crate::doc::{PIN_GAP, node_height, pin_rows};
+
+    // 两侧的引脚行数 —— 和画布同一套(core 的 `pin_rows`)。值流起点跨
+    // 两侧取最大,所以左右控制流数量不同时第一个值流引脚仍然对齐。
+    let (outer_left_rows, outer_right_rows) = pin_rows(
+        outer.ctrl_in_num,
+        outer.params.len(),
+        outer.ctrl_out_num,
+        outer.rets.len(),
+    );
+    let (inner_left_rows, inner_right_rows) = pin_rows(
+        inner.ctrl_in_num,
+        inner.params.len(),
+        inner.ctrl_out_num,
+        inner.rets.len(),
+    );
+
+    // 内层节点的高:和画布同一个公式(引脚靠上排,按行数算)。
+    let inner_h = node_height(inner_left_rows.rows.max(inner_right_rows.rows))
+        .max(INNER_MIN_H);
 
     // 外层盒子的高:装下**两侧**的引脚,也要装得下内层节点(内层要在里面拖)。
-    let outer_rows = (outer.params.len() + outer.ctrl_in_num)
-        .max(outer.rets.len() + outer.ctrl_out_num)
-        .max(1);
-    let outer_h = (outer_rows as f32 * PIN_ROW + 2.0 * PAD)
+    // 盒子顶部先留 `PAD`(引脚从 `PAD` 之后的第一行开始)。
+    let outer_rows = outer_left_rows.rows.max(outer_right_rows.rows).max(1);
+    let outer_h = (outer_rows as f32 * PIN_GAP + 2.0 * PAD)
         .max(OUTER_MIN_H)
-        .max(inner_h + 2.0 * PAD);
+        .max(inner_h + 2.0 * PAD + PIN_GAP);
 
     // 盒子在面板里的横向位置:左右各留一条给引脚名的槽。
     let outer_x = MARGIN + LABEL_GUTTER;
@@ -394,31 +416,32 @@ pub fn layout(
 
     let outer_left = pins_on_side(
         outer_rect.x,
-        outer_rect.y,
-        outer_rect.h,
+        outer_rect.y + PAD,
         outer.ctrl_in_num,
         outer.params.len(),
+        outer_left_rows,
     );
     let outer_right = pins_on_side(
         outer_rect.x + outer_rect.w,
-        outer_rect.y,
-        outer_rect.h,
+        outer_rect.y + PAD,
         outer.ctrl_out_num,
         outer.rets.len(),
+        outer_right_rows,
     );
+    // 内层的引脚也从它自己顶部那行开始(靠上,不居中)。
     let inner_left = pins_on_side(
         inner_rect.x,
-        inner_rect.y,
-        inner_rect.h,
+        inner_rect.y + PAD,
         inner.ctrl_in_num,
         inner.params.len(),
+        inner_left_rows,
     );
     let inner_right = pins_on_side(
         inner_rect.x + inner_rect.w,
-        inner_rect.y,
-        inner_rect.h,
+        inner_rect.y + PAD,
         inner.ctrl_out_num,
         inner.rets.len(),
+        inner_right_rows,
     );
 
     // 常数文本:画在**内层节点右侧**、纵向对准内层那个出引脚 —— 常数是
@@ -1129,38 +1152,41 @@ mod tests {
         (l.outer.x + 2.0, l.outer.y + 2.0)
     }
 
-    /// **引脚的排布必须和画布那套一样** —— 用户报"层级不对,引脚被自己
-    /// 遮挡了",根源之一是 `conv.rs` 自己算了一份档位。
+    /// **引脚的排布必须和画布那套一样** —— 两边各算一份的话,同一个函数
+    /// 在画布和调用约定里会画得不一样。
     ///
-    /// 这里逐个比对:同一条边、同样的控制流/值流数量,画布的
-    /// `view::pin_y` 和调用约定的引脚位置必须**逐一相等**。
+    /// 这里逐个比对:同样的控制流/值流数量,调用约定的引脚纵坐标必须和
+    /// core 的 `pin_row_y` 算出来的**逐一相等**,而且整排**靠上**(不是居中)。
     #[test]
     fn the_pin_positions_match_the_canvas() {
+        use crate::doc::pin_row_y;
+
         // 外层左边:1 个控制流入 + 2 个值流入。
         let outer = iface(&["a", "b"], &["c", "d"], vec![], 1, 1);
         let inner = iface(&["a", "b"], &["c"], vec![RetOrigin::Body], 1, 1);
         let c = Convention::build(&outer, &inner);
         let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
 
-        let (lo, len) = (l.outer.y, l.outer.h);
+        let top = l.outer.y + PAD;
         assert_eq!(l.outer_left.ctrl.len(), 1, "一个控制流入");
         assert_eq!(l.outer_left.value.len(), 2, "两个值流入");
-        for i in 0..1 {
-            assert_eq!(
-                l.outer_left.ctrl[i].1,
-                crate::view::pin_y(lo, len, 1, 2, true, i),
-                "控制流引脚 {i} 的档位要和画布一致"
-            );
-        }
-        for i in 0..2 {
-            assert_eq!(
-                l.outer_left.value[i].1,
-                crate::view::pin_y(lo, len, 1, 2, false, i),
-                "值流引脚 {i} 的档位要和画布一致"
-            );
-        }
+        assert_eq!(
+            l.outer_left.ctrl[0].1,
+            top + pin_row_y(0),
+            "控制流首个引脚在首行(靠上)"
+        );
+        assert_eq!(
+            l.outer_left.value[0].1,
+            top + pin_row_y(1),
+            "值流紧接控制流之后"
+        );
         // 值流排在控制流**下方** —— 和画布、和游戏内编辑器一个规矩。
         assert!(l.outer_left.value[0].1 > l.outer_left.ctrl[0].1);
+        // **靠上**:首个引脚不该浮在盒子中间。
+        assert!(
+            l.outer_left.ctrl[0].1 < l.outer.y + l.outer.h / 2.0,
+            "引脚应当靠上排,不是居中"
+        );
     }
 
     /// 内层节点的引脚在它自己的边上,横向贴着节点的两端。

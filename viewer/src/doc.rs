@@ -88,7 +88,8 @@ pub fn load(path: &Path) -> Result<Target, String> {
 // 排布坐标的,两份尺寸漂开的那一刻,框、字、间距和坐标就会互相压盖。
 pub use rust2genshin::node::layout::{
     BASE_FONT_PX, COMMENT_FONT_PX, COMMENT_GAP, COMMENT_LINE_H, COMMENT_PAD_X, COMMENT_PAD_Y,
-    NODE_H, NODE_W, PIN_GAP, comment_height, comment_width, node_height, node_width,
+    NODE_H, NODE_W, PIN_GAP, PIN_TOP, PinRows, comment_height, comment_width, node_height,
+    node_width, pin_row_y, pin_rows, side_pin_ys,
 };
 
 /// 链接键(rustc 的 mangled 符号)→ 可读函数名。
@@ -1983,15 +1984,21 @@ mod tests {
         );
     }
 
-    /// 节点高度按 pin 数长高(`spread` 的段距 = 高/(pin+1)),间距才有下限。
+    /// 节点高度按**行数**长高 —— 引脚靠上排,行距恒为 `PIN_GAP`。
     #[test]
     fn node_height_grows_with_pin_count() {
         assert_eq!(node_height(0), NODE_H, "没 pin 的节点用下限");
-        assert_eq!(node_height(1), NODE_H, "1 个 pin 下限就够");
-        assert!(node_height(3) > node_height(2), "3 个 pin 的节点要更高");
-        for pins in 0..8 {
-            let gap = node_height(pins) / (pins + 1) as f32;
-            assert!(gap >= PIN_GAP, "{pins} 个 pin 的段距 {gap} 小于 {PIN_GAP}");
+        assert_eq!(node_height(1), NODE_H, "1 行仍在下限内");
+        assert!(node_height(3) > node_height(2), "3 行的节点要更高");
+        // 引脚靠上排:行距是**定值**。高出下限之后每多一行就多 `PIN_GAP`
+        // (下限以下那几行被 `NODE_H` 兜住,不涨)。
+        let base = node_height(3);
+        for extra in 0..5 {
+            assert_eq!(
+                node_height(3 + extra) - base,
+                extra as f32 * PIN_GAP,
+                "{extra} 行增量应当正好是 {extra} × {PIN_GAP}"
+            );
         }
     }
 

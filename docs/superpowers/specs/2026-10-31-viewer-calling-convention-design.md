@@ -75,6 +75,22 @@ viewer 能点「一键优化」「lower」改图,但改的是**这张图内部**
 | `viewer/src/conv.rs` | 配对、连线分类、几何(纯逻辑,可单测) |
 | `viewer/src/view.rs` | `render_conv_panel`;拖动(`conv_drag` / `drag_conv_inner` / `conv_pos`) |
 
+## 引脚靠上排,值流起点跨两侧取最大
+
+两个都是用户提的,而且都落在 **core 的共享几何**里(`core/src/node/layout.rs`),
+因为画布、「调用约定」视图、`.gia` 的自动整理用的必须是同一套:
+
+- **引脚靠上,不居中** —— `pin_row_y(row) = PIN_TOP + row × PIN_GAP`,
+  首个引脚在 `PIN_TOP`(=`PIN_GAP/2`),末行到节点底部也只留 `PIN_TOP`。
+  以前是"整条边 `N+1` 均分",一行也居中、十行也居中。
+  `node_height(rows) = max(NODE_H, rows × PIN_GAP)` —— 行距是**定值**,
+  不再是"高度除以行数"。
+
+- **首个数据流引脚跨两侧对齐** —— `pin_rows(ctrl_in, value_in, ctrl_out, value_out)`
+  里 `value_start = max(ctrl_in, ctrl_out)`。两侧各算各的话,控制流数量不同时
+  左右第一个值流引脚会错开一格,看起来像数据从半空接过去。
+  控制流引脚本身仍从第 0 行开始,各自有几个排几个(它们本来就不成对)。
+
 ## 层级与引脚排布:和画布共用同一套
 
 调用约定的视图和主画布是**两个视图**,但引脚的排布和绘制顺序必须**一致** ——
