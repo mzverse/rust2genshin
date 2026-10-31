@@ -1,5 +1,5 @@
 use crate::{drop_glue, PartialMut};
-use core::ops::Index;
+use core::ops::{Index, IndexMut};
 use rust2genshin_lib_internal::native;
 
 #[native("List")]
@@ -21,8 +21,18 @@ impl<T> Default for List<T> {
 impl<T> Index<usize> for List<T> {
     type Output = T;
 
+    #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
         self.get(index)
+    }
+}
+impl<T> IndexMut<usize> for List<T> {
+    /// 必须 `#[inline(always)]`:节点图里写元素是「写视图」,这个 `&mut` 的
+    /// 写句柄是假的(见 [`crate::PartialMut::into_mut`])。不内联的话它就是个
+    /// 独立函数,假句柄会留在函数体里降级时报 `Unsupported`。
+    #[inline(always)]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        PartialMut::into_mut(self.get_mut(index))
     }
 }
 impl<T> Drop for List<T> {
@@ -87,7 +97,7 @@ impl<T> List<T> {
     pub fn get_mut(&mut self, index: usize) -> PartialMut<'_, T> {
         #[native("list_get")]
         fn get_mut_<T>(list: PartialMut<'_, List<T>>, index: usize) -> PartialMut<'_, T>;
-        get_mut_(self.into(), index)
+        get_mut_(PartialMut::from_mut(self), index)
     }
 
     #[inline(always)]
@@ -97,11 +107,15 @@ impl<T> List<T> {
         #[native("list_set")]
         fn set_<T>(s: PartialMut<List<T>>, index: usize, value: T);
         drop(get_(self, index));
-        set_(self.into(), index, value);
+        set_(PartialMut::from_mut(self), index, value);
     }
 
     #[native("list_len")]
     pub fn len(&self) -> usize;
+
+    /// 移除下标处的元素,后面的元素前移。
+    #[native("list_remove")]
+    pub fn remove(&mut self, index: usize);
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
@@ -112,7 +126,7 @@ impl<T> List<T> {
     pub fn insert(&mut self, index: usize, value: T) {
         #[native("list_insert")]
         fn insert_<T>(list: PartialMut<List<T>>, index: usize, value: T);
-        insert_(self.into(), index, value);
+        insert_(PartialMut::from_mut(self), index, value);
     }
 
     #[inline(always)]

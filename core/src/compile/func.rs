@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_destructure_partial_mut, node_ir_field_setter, node_ir_list_assemble, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_destructure_partial_mut, node_ir_field_setter, node_ir_list_assemble, node_ir_list_remove, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef, can_read_into, copy_until};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, ROUNDING_TRUNCATE, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_round, node_subtract};
@@ -953,6 +953,26 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 // `List::from([T; N])` / `List::into_array`:数组在节点图里就是
                 // 列表,两边的类型完全相同,值直接过。
                 "identity" => Some(args[0].clone()),
+                // `List::remove(&mut self, index)`:和 `partial_mut_from` 一样,
+                // 先把 `&mut List<T>` 的两槽元组拆开取读槽(第 1 个字段),
+                // 再接「移除元素」节点。节点图里写列表就是写原处。
+                //
+                // 它**没有值输出** —— `remove` 返回 `()`,调用点把它当语句。
+                "list_remove" => {
+                    let Some(IrKind::Mut(inner)) = params.first().cloned() else {
+                        return self.helper().span_err(span, "list_remove 的参数应当是 &mut List<T>");
+                    };
+                    if inner.list_elem().is_none() {
+                        return self.helper().span_err(span, format!("list_remove 的参数应当是 &mut List<T>,实际是 {inner}"));
+                    }
+                    let de = self.graph.insert(node_ir_destructure(&self.compiler.target, &IrKind::Mut(inner.clone())));
+                    self.graph.set_value_in(Link::node(de, 0), args[0].clone());
+                    let node = self.graph.insert(node_ir_list_remove(IrKind::partial_mut((*inner).clone())));
+                    self.graph.set_value_in(Link::node(node, 0), ValueIn::link(Link::node(de, 1)));
+                    self.graph.set_value_in(Link::node(node, 1), args[1].clone());
+                    // `remove` 是语句,没有返回值;`()` 不需要写进任何 place。
+                    return Ok(Block::singleton(node, 0));
+                },
                 // `PartialMut::from(&mut T)`：把元组拆开，取第 1 个字段（读槽）。
                 "partial_mut_from" => {
                     let Some(IrKind::Mut(inner)) = params.first().cloned() else {
@@ -999,6 +1019,59 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     let value = copy_until(self.graph, ValueIn::link(Link::node(de, 1)), got, &fields[1].kind);
                     self.graph.set_value_in(Link::node(asm, 1), value);
                     Some(ValueIn::link(Link::node(asm, 0)))
+                },
+                // `PartialMut::into_mut(self) -> &'a mut T`：`from` 的逆。
+                //
+                // 输入是 `PartialMut<T>`（视图），输出是 `&mut T` 的两槽元组
+                // `(LocalRef<T>, PartialMut<T>)`。第 1 槽（读 / 写都走它）就是
+                // 输入本身 —— 节点图里「写视图」就是写原处。
+                //
+                // 第 0 槽（`LocalRef` 写句柄）问题：视图不带写句柄。但**节点图
+                // 里根本不需要它** —— `list_set` / `Modify` 吃的都是视图本身
+                // （见 `node_ir_list_set` 的注释「列表是句柄，按下标改值就地
+                // 生效」）。所以塞一个 `LocalRef` 形态的空节点让它自洽，
+                // 优化期 `compact_value_exports` 会把没人读的出口摘掉。
+                //
+                // 真有人把第 0 槽当 setter 用（`FieldSetter` 那类消费者），
+                // 会被 `eliminate_field_setter` 改成 `Modify` —— 和 `&mut s.f`
+                // 走的是同一条路。
+                "partial_mut_into_mut" => {
+                    let Some(IrKind::PartialMut(inner)) = params.first().cloned() else {
+                        return self.helper().span_err(span, "partial_mut_into_mut 的参数应当是 PartialMut<T>");
+                    };
+                    let out = self.compiler.compile_ty(span, sig.output())?;
+                    if !matches!(out, IrKind::Mut(_)) {
+                        return self.helper().span_err(span, format!("partial_mut_into_mut 的返回值应当是 &mut T,实际是 {out}"));
+                    }
+                    let fields = struct_fields(&self.compiler.target, &out);
+                    let asm = self.graph.insert(node_ir_assemble(&self.compiler.target, &out));
+                    // 第 0 槽：`LocalRef<T>` 写句柄。视图里没有它 —— 节点图里
+                    // 写视图就是写原处，`list_set` / `Modify` 吃的都是视图本身
+                    // （见 `node_ir_list_set`）。读者只需要第 1 槽（`partial_mut_from`
+                    // 就是拆元组取第 1 个），没人读第 0 槽时优化期会把它摘掉。
+                    let handle = self.graph.insert(node_ir_unsupported(fields[0].kind.clone()));
+                    self.graph.set_value_in(Link::node(asm, 0), ValueIn::link(Link::node(handle, 0)));
+                    // 第 1 槽：视图原样接过。
+                    let value = copy_until(self.graph, args[0].clone(), IrKind::PartialMut(inner), &fields[1].kind);
+                    self.graph.set_value_in(Link::node(asm, 1), value);
+                    Some(ValueIn::link(Link::node(asm, 0)))
+                },
+                // `PartialMut::into_ref(self) -> &'a T`：和 `Deref::deref` 同义。
+                //
+                // `T: Freeze` 时 `&T` 在节点图里就是值本身，读一次；否则仍是
+                // 同一份视图，直通。
+                "partial_mut_into_ref" => {
+                    if !matches!(params.first(), Some(IrKind::PartialMut(_))) {
+                        return self.helper().span_err(span, "partial_mut_into_ref 的参数应当是 PartialMut<T>");
+                    }
+                    let out = self.compiler.compile_ty(span, sig.output())?;
+                    if out == params[0] {
+                        Some(args[0].clone())
+                    } else {
+                        let node = self.graph.insert(node_ir_copy(out));
+                        self.graph.set_value_in(Link::node(node, 0), args[0].clone());
+                        Some(ValueIn::link(Link::node(node, 0)))
+                    }
                 },
                 _ => None,
             };

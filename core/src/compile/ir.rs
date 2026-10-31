@@ -280,6 +280,8 @@ pub enum IrNodeId {
     ListSet,
     /// 往列表里插入元素,对应 `List::insert`。
     ListInsert,
+    /// 按下标移除元素,对应 `List::remove`。
+    ListRemove,
     /// 取列表长度,对应 `List::len`。
     ListGetLength,
 }
@@ -514,9 +516,22 @@ pub fn node_ir_list_insert(list: IrKind, elem: IrKind) -> NodeKindIr {
     )
 }
 
-/// 取列表长度:列表进,长度出。
-pub fn node_ir_list_get_length(list: IrKind) -> NodeKindIr {
+/// 按下标移除元素:列表 / 下标进,没有值输出。
+pub fn node_ir_list_remove(list: IrKind) -> NodeKindIr {
     NodeKind::new(
+        IrNodeId::ListRemove,
+        1,
+        1,
+        vec![
+            Some(list),
+            Some(IrKind::Native(NativeKind::Int)),
+        ],
+        vec![],
+    )
+}
+
+/// 取列表长度:列表进,长度出。
+pub fn node_ir_list_get_length(list: IrKind) -> NodeKindIr {    NodeKind::new(
         IrNodeId::ListGetLength,
         0,
         0,

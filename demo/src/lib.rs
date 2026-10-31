@@ -240,10 +240,45 @@ pub fn test_list_ops() {
     log(list.len());
 }
 
+/// `PartialMut::into_mut`:把视图换回 `&mut`,只读用法。
+#[unsafe(no_mangle)]
+pub fn test_partial_mut_into_mut() {
+    let mut list = list![114, 10];
+    let view = list.get_mut(0);
+    let r = PartialMut::into_mut(view);
+    let v = *r;
+    log(v);
+}
+
+/// `PartialMut::into_ref`:视图 → `&T`,只读。
+#[unsafe(no_mangle)]
+pub fn test_partial_mut_into_ref() {
+    let mut list = list![114, 10];
+    let view = list.get_mut(0);
+    let r = PartialMut::into_ref(view);
+    log(*r);
+}
+
+/// `List::index_mut`:经它读元素。
+#[unsafe(no_mangle)]
+pub fn test_index_mut() {
+    let mut list = list![114, 10];
+    let r = &mut list[1];
+    let v = *r;
+    log(v);
+}
+
+/// `List::remove`:移除下标处的元素。
+#[unsafe(no_mangle)]
+pub fn test_list_remove() {
+    let mut list = list![114, 10, 1919810];
+    list.remove(1);
+    log(list.len());
+}
+
 /// 数组 → 列表:字面量、重复初始化、按下标读、按下标写。
 #[unsafe(no_mangle)]
-pub fn test_array() {
-    let mut a = [1, 2, 3];
+pub fn test_array() {    let mut a = [1, 2, 3];
     a[0] = 7;
     let mut b = [0; 3];
     b[1] = 10;
@@ -382,7 +417,7 @@ pub fn test_mut_field() {
 #[unsafe(no_mangle)]
 pub fn test_partial_mut() {
     let mut list = list![114, 10];
-    let pm = PartialMut::from(&mut list);
+    let pm = PartialMut::from_mut(&mut list);
     log(pm.len());
 }
 

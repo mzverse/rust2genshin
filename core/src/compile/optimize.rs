@@ -8,7 +8,7 @@ use crate::node::arithmetic::{NODE_NOT, node_cast, node_equal};
 use crate::node::control::{node_switch, NODE_IF};
 use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
-use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_get_length, node_list_insert, node_list_modify_index};
+use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_get_length, node_list_insert, node_list_modify_index, node_list_remove};
 use crate::node::query::node_local;
 use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeKind, NodeRef, ValueIn};
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
@@ -372,6 +372,11 @@ impl Optimizer {
                     let (elem, _) = elem.lower_list_elem(linker);
                     Some(node_list_get_length(&mut self.graph, elem))
                 }
+                IrNodeId::ListRemove => {
+                    let elem = list_input_elem(kind.values_in_types[0].as_ref().unwrap());
+                    let (elem, _) = elem.lower_list_elem(linker);
+                    Some(node_list_remove(&mut self.graph, elem))
+                }
                 _ => None,
             };
             if let Some(node) = lowered {
@@ -389,6 +394,7 @@ impl Optimizer {
                 IrNodeId::ListGet |
                 IrNodeId::ListSet |
                 IrNodeId::ListInsert |
+                IrNodeId::ListRemove |
                 IrNodeId::ListGetLength => panic!(),
                 IrNodeId::Unreachable => {
                     self.graph.remove(x);

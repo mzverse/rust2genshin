@@ -150,6 +150,9 @@ impl<'tcx> Compiler<'tcx> {
     ///
     /// `T` 是否 `Freeze` 决定它编成视图 `PartialMut<List<T>>` 还是值
     /// `List<T>` —— 两种都可能，返回 `(第一个引脚的实际类型, 元素类型)`。
+    ///
+    /// `&mut List<T>`(`Mut` 两槽元组)不在这里处理:拆元组要拿到参数**值**,
+    /// 而这里只拿得到类型。`List::remove` 那条走 `compile_call` 的特判。
     fn expect_list(&self, expn: Span, name: &str, kind: &IrKind) -> Result<(IrKind, IrKind)> {
         if let IrKind::List(elem) = kind {
             return Ok((kind.clone(), (**elem).clone()));
@@ -237,11 +240,22 @@ impl<'tcx> Compiler<'tcx> {
                             "list_insert" => {
                                 let (list, elem) = self.expect_list(expn, "list_insert", &params[0])?;
                                 node_ir_list_insert(list, elem)
-                            },
-                            "list_len" => {
+                            },                            "list_len" => {
                                 let (list, _) = self.expect_list(expn, "list_len", &params[0])?;
                                 node_ir_list_get_length(list)
                             },
+                            // 有些内建要拆 `&mut` 的元组、要拿到参数**值**,
+                            // 这里只拿得到类型 —— 它们在 `compile_call` 里特判
+                            // (`partial_mut_*` 系、`list_remove`),这里认出来
+                            // 交给后面,不要报错。
+                            | "partial_mut_from"
+                            | "partial_mut_into_mut"
+                            | "partial_mut_deref"
+                            | "partial_mut_into_ref"
+                            | "partial_mut_deref_mut"
+                            | "list_remove"
+                            | "identity"
+                            => return Ok(None),
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),
                         }.into()
                     },

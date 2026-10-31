@@ -51,9 +51,45 @@ impl<T> DerefMut for PartialMut<'_, T> {
     #[native("partial_mut_deref_mut")]
     fn deref_mut(&mut self) -> &mut Self::Target;
 }
-impl<'a, T> From<&'a mut T> for PartialMut<'a, T> {
+/// 从 `&mut T` 造视图、以及把视图换回引用。
+///
+/// 都是**关联函数**而不是方法:`&mut` 和视图是同一种东西的两种写法,
+/// 调用点应当写明方向(`from_mut` / `into_mut`),而不是让 `.into()`
+/// 悄悄替人挑一个。
+///
+/// 单独一块、`T` 不带 `?Sized`：节点图里的值类型都是定长的（列表 / 结构体 /
+/// 标量），没有 `str` / `[T]` 这种不定长值。
+impl<'a, T> PartialMut<'a, T> {
+    /// 从 `&'a mut T` 造一个视图。
+    ///
+    /// 「拆开 `&mut` 取视图」—— 和 [`PartialMut::into_mut`] 互逆。
+    ///
+    /// 调用点要能被 MIR 内联（`#[inline(always)]`），否则这套拆装的中间形态
+    /// 会固化在一层独立的子图里，降级时报 `Unsupported`。
     #[native("partial_mut_from")]
-    fn from(value: &'a mut T) -> Self;
+    pub fn from_mut(value: &'a mut T) -> Self;
+
+    /// 把视图换回 `&'a mut T`。
+    ///
+    /// 和 [`PartialMut::from_mut`] 互逆。要调用 `&mut self` 方法时用它。
+    ///
+    /// # 假 `&mut`
+    ///
+    /// 节点图里没有写句柄 —— 写视图就是写原处。所以这个 `&mut` 的「写句柄」
+    /// 是假的：能读、能借字段、能调 `&mut self` 的方法，但**不能整体赋值**
+    /// (`*r = v`)。整体赋值请改用能写回原处的 API（比如 `List::set`）。
+    ///
+    /// 调用点要能被 MIR 内联（`#[inline(always)]`），否则假句柄会固化在
+    /// 一层独立的子图里，降级时报 `Unsupported`。
+    #[native("partial_mut_into_mut")]
+    pub fn into_mut(self) -> &'a mut T;
+
+    /// 把视图换成 `&'a T`。
+    ///
+    /// `T: Freeze` 时 `&T` 在节点图里就是值本身，要读一次；否则还是同一份
+    /// 视图，直通。
+    #[native("partial_mut_into_ref")]
+    pub fn into_ref(self) -> &'a T;
 }
 
 /// # Safety
