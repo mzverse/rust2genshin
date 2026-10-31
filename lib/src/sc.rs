@@ -18,6 +18,7 @@ struct ScInner<T> {
     value: T,
 }
 
+#[repr(transparent)]
 pub struct Sc<T: 'static>(BoxRaw<ScInner<T>>);
 
 impl<T: 'static> Drop for Sc<T> {
