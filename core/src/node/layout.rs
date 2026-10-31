@@ -207,17 +207,31 @@ impl NodeLabel for IrNodeId {
 
 /// 对整张图跑一遍自动整理,把坐标写进每个节点的 [`position`](crate::node::Node)。
 ///
-/// 标签取 [`NodeLabel`];需要更丰富的显示文本(宽度会跟着变)用 [`layout_with`]。
+/// # 宽度是**固定值**,不按标签估算
+///
+/// 布局只负责"谁在哪一列、列内怎么排",它**不需要**知道节点渲染出来多宽。
+/// 宽度在这里退化成 [`NODE_W`] 这个常量(注释框例外:它是多行文本块,长了
+/// 会压到邻居身上,仍按最长一行估)。
+///
+/// 为什么不再按标签估宽:文字宽度只能靠排版引擎测量,而布局是**纯函数**、
+/// 还要在 `.gia` 编码前跑(那时没有渲染上下文)。以前按字符数估宽,估出来
+/// 比实际宽,节点内部左右空出一大截;现在布局不管标签宽度,渲染按内容撑开
+/// (`min_w` + 自然尺寸)。
 pub fn layout<NodeId: NodeLabel, Kind>(graph: &mut NodeGraph<NodeId, Kind>) {
-    layout_with(graph, |kind| kind.id.node_label());
+    layout_impl(graph);
 }
 
-/// 同 [`layout`],但标签由调用方给 —— 宽度按这个字符串估算,
-/// 所以它必须是**渲染时显示的那个字符串**,否则框和字会对不上。
+/// 同 [`layout`]。保留这个入口是为了兼容既有调用方 —— 标签**不再参与布局**,
+/// 传什么都一样。
 pub fn layout_with<NodeId, Kind>(
     graph: &mut NodeGraph<NodeId, Kind>,
     label: impl Fn(&NodeKind<NodeId, Kind>) -> String,
 ) {
+    let _ = label;
+    layout_impl(graph);
+}
+
+fn layout_impl<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>) {
     // 展平成布局模型(slab 迭代序 = 下标序)。渲染方若按自己的下标序读回
     // 坐标,两边是同一套顺序 —— viewer 的展平就是这么对齐的。
     let mut w: Vec<f32> = Vec::new();
@@ -235,8 +249,11 @@ pub fn layout_with<NodeId, Kind>(
             node.kind.values_out_types.len(),
         );
         let rows = l.rows.max(r.rows);
-        let mut width = node_width(&label(&node.kind));
-        // 注释贴在节点上方:宽度参与列宽(不然长注释会压到邻居身上),
+        // **宽度用固定值,不按标签估算** —— 布局只需要知道"一列多宽",
+        // 节点真实宽度由渲染方测量后自己撑开(`min_w` + 自然尺寸)。
+        // 按字符数估宽会估得比实际宽,节点内部左右就空出一大截。
+        let mut width = NODE_W;
+        // 注释例外:它是多行文本块,长了会压到邻居身上,仍按最长一行估。
         // 高度在列内打包时单独留出来(见 `pack`)。
         let mut reserve = 0.0;
         if let Some(comment) = &node.comment {
@@ -1272,9 +1289,13 @@ mod tests {
         g.link_control(Link::node(tail, 0), Link::export(0));
         layout_with(&mut g, |_| "x".repeat(60));
         let (a, b) = (g.get_node(entry).position, g.get_node(tail).position);
-        assert!(
-            b.0 - a.0 > NODE_W + LAYER_GAP,
-            "长标签必须把后面的列推右:{a:?} → {b:?}"
+        // **标签不再影响布局**:列宽固定按 `NODE_W` 排,节点真实宽度由
+        // 渲染层按内容撑开。所以即便标签有 60 个字符,层间距也还是
+        // `NODE_W + LAYER_GAP`。
+        assert_eq!(
+            b.0 - a.0,
+            NODE_W + LAYER_GAP,
+            "标签不该再把列推右:{a:?} → {b:?}"
         );
     }
 }

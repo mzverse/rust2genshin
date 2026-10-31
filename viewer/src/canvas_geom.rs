@@ -96,6 +96,26 @@ pub const PIN_D: f32 = 7.0;
 /// 文字长度不确定,固定右缘才能和引脚严丝合缝。
 pub const DEF_W: f32 = 48.0;
 
+/// 节点标签两侧的留白合计(世界坐标),和渲染层 `node_box_el` 的
+/// `.px_1()`(左右各 4px)+ `.border_1()`(左右各 1px)对齐,再留一点余量。
+///
+/// **调这个值就能调"节点有多松"**:调大 → 字和边框之间更空;调小 → 更紧。
+/// 现在取 18(左右各 9px),比原来的 `.px_1()` 只宽一点点 —— 用户报的是
+/// "空白很大",所以偏向紧凑。
+pub const NODE_TEXT_PAD: f32 = 18.0;
+
+/// 节点渲染宽度的**下限**(世界坐标)。
+///
+/// 只保证"再短的名字也有个像样的盒子",不是布局用的宽度:
+///
+/// - **布局**(`core::node::layout`)按 [`NODE_W`](rust2genshin::node::layout::NODE_W)
+///   这个名义列宽排位置;
+/// - **渲染**按"实测文字宽 + padding"决定盒子,下限是这个值。
+///
+/// 两者故意不同:名义列宽比典型节点宽,所以节点之间自然留出空隙;
+/// 而盒子贴着文字,不再有"左右各空一大截"的观感(用户报的问题)。
+pub const NODE_MIN_W: f32 = 56.0;
+
 /// 引脚 / 边的命中半径(容器局部坐标,**不随缩放变**)。
 ///
 /// 圆点本身只有 `PIN_D * scale` —— 缩到 0.2 倍时直径不到 1.5px,真按图形
@@ -782,6 +802,31 @@ mod tests {
                 height: NODE_H,
             },
         }
+    }
+
+    /// 节点宽度由「实测文字宽 + `NODE_TEXT_PAD`」决定,渲染盒子用 `.min_w()`。
+    ///
+    /// ⚠️ **这两个值必须对得上**,否则右侧引脚会错位:盒子的真实宽度是
+    /// "文字宽 + `.px_1()` 的左右 8px + 边框 2px",而几何按
+    /// `实测宽 + NODE_TEXT_PAD` 算右边缘。只要 `NODE_TEXT_PAD` **不小于**
+    /// 8 + 2,盒子就由文字撑开、宽度正好等于几何用的值;小于的话盒子会比
+    /// 几何算的宽,右侧引脚就跑到盒子里面去了。
+    ///
+    /// 这条测试锁的就是"不许把 padding 调到比 `.px_1()` + 边框还小"。
+    #[test]
+    fn the_width_padding_covers_the_box_padding_and_border() {
+        // `.px_1()` = 左右各 4px;`.border_1()` = 左右各 1px。
+        let box_padding_and_border = 4.0 * 2.0 + 1.0 * 2.0;
+        assert!(
+            NODE_TEXT_PAD >= box_padding_and_border,
+            "NODE_TEXT_PAD({NODE_TEXT_PAD}) 不能小于盒子的 padding + 边框\
+             ({box_padding_and_border}),否则右侧引脚会跑进盒子内部"
+        );
+        // 同时别太松 —— 用户报的是"空白很大"。
+        assert!(
+            NODE_TEXT_PAD <= 28.0,
+            "NODE_TEXT_PAD({NODE_TEXT_PAD}) 太大,节点内部又会空出一大截"
+        );
     }
 
     /// 注释要跟着节点进 `NodeView`,并带上 core 那套尺寸估算 ——

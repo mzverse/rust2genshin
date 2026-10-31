@@ -609,6 +609,23 @@ impl Doc {
         self.graphs.get(i).map(|s| &s.view)
     }
 
+    /// 把第 `i` 张图里每个节点的**实测宽度**写回展平快照。
+    ///
+    /// `widths` 与 `g.nodes` 同序;比节点数短时只写前面那些(渲染期宁可
+    /// 保持旧值也不 panic)。
+    ///
+    /// 为什么要回填:布局不再按标签估宽(宽度在布局里是常量),而引脚、
+    /// 连线、Export 桩这些几何都从**节点右边缘**推导。渲染层用
+    /// `TextSystem` 实测出真宽度后,必须写回这里,几何才不会和画面对不上。
+    pub fn set_node_widths(&mut self, i: usize, widths: &[f32]) {
+        let Some(slot) = self.graphs.get_mut(i) else {
+            return;
+        };
+        for (n, w) in slot.view.nodes.iter_mut().zip(widths) {
+            n.size.width = *w;
+        }
+    }
+
     /// 全部图的展平快照,按加载顺序(main 第一,其余按函数名)。
     pub fn entries(&self) -> impl ExactSizeIterator<Item = &GraphEntry> {
         self.graphs.iter().map(|s| &s.view)
@@ -987,9 +1004,10 @@ fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames, decl: Option<&FnD
     for (key, node) in g.nodes.iter() {
         index_of.insert(NodeRef::from(key), nodes.len());
         let node_type = node_type_label(&node.kind);
-        // 宽度按**显示出来的**标签估算 —— 和渲染用的是同一个 `label_named`。
+        // 标签只用于**显示**,不再参与任何宽度估算 —— 节点盒子由渲染层
+        // 按内容撑开(`min_w` + 自然尺寸)。这里保留 `display` 是因为
+        // `NodeEntry.display` 是渲染要用的文本。
         let display = label_named(&node.kind.id, &node_type, names);
-        let width = node_width(&display);
         // 连到图外的 pin。节点侧的 `links` 里存着 `LinkTarget::Export` 的反向
         // 记录(`node/mod.rs:405`:Export 那侧才是 `externals`),所以按 pin
         // 逐个查即可 —— 边界号就在 `Link::index` 里,不用去翻 `g.externals`。
@@ -1046,7 +1064,12 @@ fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames, decl: Option<&FnD
                 .collect(),
             comment: node.comment.clone(),
             size: Size {
-                width,
+                // 初值只是**兜底**:渲染层每帧用排版引擎实测文字宽度后
+                // 覆盖它(`Viewer::measure_node_widths` → `Doc::set_node_widths`)。
+                // 这里给渲染下限,不是布局用的名义列宽 —— 后者比典型节点
+                // 宽,拿它当宽度会让短标签节点左右各空一大截。
+                width: crate::canvas_geom::NODE_MIN_W,
+                // 高度必须精确:引脚位置按行数算,高度不对引脚就跑出框外。
                 height: node_height(pins),
             },
         });
@@ -2164,7 +2187,12 @@ mod tests {
     /// 展平时算宽度用的必须是**显示出来的**那个标签 —— `Fn` 节点的标签是
     /// 整个函数名,最容易撑破 140px。
     #[test]
-    fn flatten_widens_nodes_with_long_fn_names() {
+    /// 展平层给节点的宽度是**下限**(`NODE_W`),不再按标签估宽。
+    ///
+    /// 宽度改成渲染时按内容撑开(`min_w` + 自然尺寸)之后,这里只保证下限;
+    /// 标签再长也不影响这个字段 —— 它只决定盒子的最小体型。
+    #[test]
+    fn flatten_gives_every_node_the_same_width_floor() {
         use rust2genshin::node::NodeKind;
 
         let long = "rust2genshin_demo::MyStruct::new";
@@ -2181,11 +2209,12 @@ mod tests {
         t.functions.insert("f".into(), fn_info(g));
         let doc = flatten(t);
         let n = &doc.graphs[0].nodes[0];
+        // 标签本身仍然完整保留(渲染要用它)。
         assert_eq!(crate::doc::label(&n.kind, &n.type_label), long);
-        assert!(
-            n.size.width > NODE_W,
-            "Fn 名字长,节点应被拉宽,实际 {}",
-            n.size.width
+        assert_eq!(
+            n.size.width,
+            crate::canvas_geom::NODE_MIN_W,
+            "宽度初值只是渲染下限,长标签不再撑宽它(由渲染层实测后覆盖)"
         );
     }
 

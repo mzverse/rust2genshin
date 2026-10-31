@@ -57,15 +57,15 @@ use gpui::{
     Bounds, Context, ExternalPaths, InteractiveElement, IntoElement, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
     ParentElement, PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, Window, canvas, div, hsla, point, px,
+    StatefulInteractiveElement, Styled, TextRun, Window, canvas, div, hsla, point, px,
 };
 use rust2genshin::compile::ir::IrNodeId;
 use rust2genshin::compile::link::Target;
 use rust2genshin::node::NodeRef;
 
 use crate::canvas_geom::{
-    DEF_W, Hover, PIN_D, build_boundaries, build_ctrl_labels, build_defaults, build_edges,
-    build_nodes, build_pins, hit_test, node_box, pin_triangle, tag_box,
+    DEF_W, Hover, NODE_MIN_W, NODE_TEXT_PAD, PIN_D, build_boundaries, build_ctrl_labels,
+    build_defaults, build_edges, build_nodes, build_pins, hit_test, node_box, pin_triangle, tag_box,
 };
 use crate::conv;
 use crate::doc::{
@@ -147,6 +147,14 @@ fn add_px(offset: Point<Pixels>, p: Point<f32>) -> Point<Pixels> {
 /// 尺寸约定:调用方给的是**节点自己的**盒子(不含任何额外内边距)——
 /// 引脚位置来自 core 的 `pin_row_y`,它假定引脚从节点顶部的 `PIN_TOP`
 /// 开始。谁在这里偷偷加 `PAD`,引脚就会跑到盒子外面去。
+///
+/// # 宽度:`min_w` + 自然撑开,不是精确宽度
+///
+/// `w` 在这里是**下限**(`min_w`),实际宽度由文字 + 左右 padding 自己撑开。
+/// 以前的 `.w(w)` 是精确宽度,而 `w` 来自按字符数的估算 —— 估得比实际宽,
+/// 短标签节点内部左右就空出一大截。
+///
+/// 高度仍然是精确的:引脚位置按行数算,高度不对引脚就跑出框外。
 fn node_box_el(
     x: f32,
     y: f32,
@@ -160,7 +168,9 @@ fn node_box_el(
         .absolute()
         .left(px(x))
         .top(px(y))
-        .w(px(w))
+        // 下限而不是定死 —— 文字长了盒子自己变宽。`px_1` 的左右 padding
+        // (各 4px)由 `.px_1()` 提供,文字靠它和边框隔开。
+        .min_w(px(w))
         .h(px(h))
         .flex()
         .items_center()
@@ -174,7 +184,8 @@ fn node_box_el(
         // 字号**跟随缩放**:`text_xs()` 是固定 rem(≈12px),缩放时节点框
         // 会跟着变大变小而字不变 —— 放大后字挤成一撮、缩小后溢出被裁。
         .text_size(px((BASE_FONT_PX * scale).max(6.0)))
-        .overflow_hidden()
+        // 不再 `overflow_hidden`:盒子现在按内容长,裁不到东西;
+        // 真裁了反而说明宽度算出错了,宁可让它显形。
         .child(label.to_string())
 }
 
@@ -1797,7 +1808,14 @@ impl Viewer {
     /// 抽出来是因为 `render()` 原来一个函数 1000 多行,画布这一块又占了
     /// 一多半。这里只搬代码,不改行为 —— 绘制顺序(边 → 节点 → 引脚 →
     /// 标签 → 气泡 → 菜单)和所有事件分工都逐字保留。
-    fn render_canvas(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn render_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        // ---- 先把每个节点的**实测宽度**写回几何 ----
+        //
+        // 布局层不按标签估宽(宽度在那里是常量),而引脚 / 连线 / Export 桩
+        // 都从节点**右边缘**推导 —— 所以必须在画之前用排版引擎量出真宽度,
+        // 否则盒子被文字撑开、引脚却还画在旧位置。
+        self.measure_node_widths(window, cx);
+
         // `render()` 已经保证图存在(`placeholder()` 拦掉了没有图的情况),
         // 这里还是用 `get`:渲染期不做任何未检查的下标访问。
         let Some(g) = self.doc.entry(self.current) else {
@@ -2345,6 +2363,54 @@ impl Viewer {
             .child(edges_el)
             .child(layer);
         canvas_el
+    }
+
+    /// 用排版引擎实测当前图每个节点的标签宽度,写回 `Doc`。
+    ///
+    /// # 为什么必须实测
+    ///
+    /// 节点盒子是 `.min_w(w)` + 自然撑开 —— 文字多宽盒子就多宽。而引脚、
+    /// 连线、Export 桩、默认值、分支名**全部**从节点右边缘推导
+    /// (`canvas_geom.rs` 里 8 处 `p.x + s.width`)。宽度不实测的话,盒子长
+    /// 了、引脚还画在旧位置,右侧引脚会跑进盒子内部。
+    ///
+    /// # 量的是「世界坐标」宽度
+    ///
+    /// 画布上的宽度都按 `世界宽度 * scale` 渲染,所以这里传入 1 倍字号的
+    /// `BASE_FONT_PX` 去量,得到的就是世界坐标宽度 —— 和 `node_box()` 里
+    /// `s.width * scale` 那套一致。字号下限(`.max(6.0)`)在缩小时会生效,
+    /// 那种情况下实测值偏小一点,但缩放很小时本来也读不清字,不值得为它
+    /// 反解。
+    fn measure_node_widths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(g) = self.doc.entry(self.current) else {
+            return;
+        };
+        let labels: Vec<String> = g.nodes.iter().map(|n| n.display.clone()).collect();
+        // 表格里拿不到 `cx`(它被借走了),所以先把 TextSystem 拿出来。
+        let text_system = window.text_system().clone();
+        // 量宽用的样式:字号用 1 倍基准,字体取默认。
+        let style = window.text_style();
+        let font_size = px(BASE_FONT_PX);
+        let widths: Vec<f32> = labels
+            .iter()
+            .map(|label| {
+                let run = TextRun {
+                    len: label.len(),
+                    font: style.font(),
+                    color: style.color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let layout = text_system.layout_line(label, font_size, &[run], None);
+                // 文字宽度 + 左右 padding / 边框,和 `node_box_el` 里的
+                // `.px_1()` + `.border_1()` 对上。
+                let text_w = f32::from(layout.width);
+                (text_w + NODE_TEXT_PAD).max(NODE_MIN_W)
+            })
+            .collect();
+        let _ = cx;
+        self.doc.set_node_widths(self.current, &widths);
     }
 
     /// 右栏:「调用约定」面板 + 优化按钮。
