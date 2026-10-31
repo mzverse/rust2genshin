@@ -3482,11 +3482,10 @@ impl Viewer {
         // 它就是一个**普通节点** —— 盒子和引脚都走主画布同一份实现
         // (`node_box_el` / `pin_els`),尺寸也走 core 的 `node_height`。
         // 自己另写一套的话,盒子高度和引脚位置迟早对不上(引脚会跑出框)。
-        let inner_label = if inner.params.is_empty() && inner.rets.is_empty() {
-            "空"
-        } else {
-            "当前"
-        };
+        //
+        // 标题恒为「当前」:没有数据流引脚也照样是"当前状态",写「空」会让人
+        // 以为这个函数没内容(用户报过)。
+        let inner_label = "当前";
         // 按下时内层节点的位置 —— 闭包是 `'static'` 的,得先把值拷出来。
         let inner_start = (l.inner.x, l.inner.y);
         let inner_box = node_box_el(
