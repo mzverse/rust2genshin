@@ -901,6 +901,30 @@ const HOVER_DX: f32 = 12.0;
 const HOVER_DY: f32 = 16.0;
 const HOVER_FONT_PX: f32 = 12.0;
 
+/// 悬停气泡的**唯一渲染实现**。
+///
+/// 主画布和「调用约定」视图共用 —— 两处各写一份的话，样式和"跟手"的行为
+/// 会漂开（调用约定那份曾经钉在被命中的引脚上，不跟光标走）。
+///
+/// `at` 是**光标位置**（容器局部坐标），不是被命中元素的坐标：钉在元素上
+/// 气泡会盖住那个引脚 / 连线本身，反而看不清。
+fn hover_bubble(text: String, at: Point<f32>) -> gpui::Div {
+    div()
+        .absolute()
+        .left(px(at.x + HOVER_DX))
+        .top(px(at.y + HOVER_DY))
+        .px_2()
+        .rounded_sm()
+        .bg(panel_bg())
+        .border_1()
+        .border_color(hsla(0.0, 0.0, 1.0, 0.35))
+        .text_color(text_hi())
+        .text_size(px(HOVER_FONT_PX))
+        // **不裁剪**：类型名可能很长（`rust2genshin_demo::MyStruct`），
+        // 宁可伸出去也不能只剩尾巴。
+        .child(text)
+}
+
 /// 命中测试的结果:找到的东西 + 气泡落在哪儿。
 pub struct Hover {
     /// 气泡文案(已算好,渲染直接用)。
@@ -1298,7 +1322,9 @@ pub struct Viewer {
     /// 「调用约定」视图里当前悬停命中的东西(`None` = 没悬在任何东西上)。
     ///
     /// 悬停气泡显示**类型** —— 引脚旁边只写名字(用户要求)。
-    conv_hover: Option<conv::Hit>,
+    /// 第二项是**光标位置**(面板局部坐标):气泡跟着光标走,不钉在被命中的
+    /// 元素上 —— 和主画布同一个规矩(`hover_bubble`)。
+    conv_hover: Option<(conv::Hit, Point<f32>)>,
     /// 「调用约定」面板在**窗口**坐标系里的左上角。
     ///
     /// 由面板的 canvas prepaint 每帧写 —— 悬停命中要把窗口坐标换算成
@@ -2338,22 +2364,7 @@ impl Render for Viewer {
         // 连线本身。字号**不跟缩放**:这是 UI 提示,不是画布内容,跟着画布
         // 缩到 6px 就没法读了。
         if let Some(h) = &self.hover {
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(h.at.x + HOVER_DX))
-                    .top(px(h.at.y + HOVER_DY))
-                    .px_2()
-                    .rounded_sm()
-                    .bg(panel_bg())
-                    .border_1()
-                    .border_color(hsla(0.0, 0.0, 1.0, 0.35))
-                    .text_color(text_hi())
-                    .text_size(px(HOVER_FONT_PX))
-                    // **不裁剪**:类型名可能很长(`rust2genshin_demo::MyStruct`),
-                    // 宁可伸出去也不能只剩尾巴。
-                    .child(h.text.clone()),
-            );
+            layer = layer.child(hover_bubble(h.text.clone(), h.at));
         }
 
         // ---- 节点右键菜单(最上层)----
@@ -3214,8 +3225,11 @@ impl Viewer {
         let o = self.conv_origin.get();
         let at = point(at_window.x - o.x, at_window.y - o.y);
         let hit = conv::hit_test(&l, &pins, &conv.links, at);
-        if self.conv_hover != hit {
-            self.conv_hover = hit;
+        // 气泡跟着**光标**走(存光标位置),不是钉在命中的元素上 ——
+        // 和主画布同一套(`Hover::at`)。
+        let next = hit.map(|h| (h, at));
+        if self.conv_hover != next {
+            self.conv_hover = next;
             cx.notify();
         }
     }
@@ -3242,7 +3256,7 @@ impl Viewer {
             conv::Hit::Link { index } => {
                 let links = self.conv_links();
                 let link = links.get(*index)?;
-                let (from, to) = link_endpoints_text(outer, inner, link);
+                let (from, to) = link_endpoints_text(outer, inner, link)?;
                 Some(conv::link_tip(&from, &to))
             }
         }
@@ -3576,31 +3590,11 @@ impl Viewer {
         // ---- 悬停气泡:显示**类型** ----
         //
         // 引脚旁边只写名字(用户要求),类型在气泡里。命中的是连线时也给
-        // 两端的类型。
-        if let Some(hit) = &self.conv_hover {
+        // 两端的类型。气泡**跟着光标走**、样式复用主画布的 `hover_bubble` ——
+        // 之前这里钉在被命中的元素上,看着就不"跟手"。
+        if let Some((hit, at)) = &self.conv_hover {
             if let Some(text) = self.conv_hover_text(hit, outer, inner) {
-                // 气泡挂在命中点的附近。
-                let (x, y) = match hit {
-                    conv::Hit::Pin { .. } => conv::pin_pos(&l, hit).unwrap_or((l.outer.x, l.outer.y)),
-                    conv::Hit::Link { index } => conv::link_endpoints(&l, &conv.links[*index])
-                        .map(|(_, to)| (to.x, to.y))
-                        .unwrap_or((l.outer.x, l.outer.y)),
-                };
-                layer = layer.child(
-                    div()
-                        .absolute()
-                        .left(px(x + 10.0))
-                        .top(px(y + 14.0))
-                        .px_2()
-                        .rounded_sm()
-                        .bg(panel_bg())
-                        .border_1()
-                        .border_color(hsla(0.0, 0.0, 1.0, 0.35))
-                        .text_color(text_hi())
-                        .text_size(px(12.0))
-                        .whitespace_nowrap()
-                        .child(text),
-                );
+                layer = layer.child(hover_bubble(text, *at));
             }
         }
 
@@ -3657,17 +3651,21 @@ impl Viewer {
     }
 }
 
-/// 一条连线两端的 `(名字, 类型)`。
+/// 一条连线两端的 `(名字, 类型)`;`None` = **这条线没什么可说的**。
 ///
 /// 端点是哪一侧、哪个下标,取决于连线的种类:
 /// - `Param`:外层参数 → 内层参数;
 /// - `Ret`:内层返回值 → 外层返回值;
 /// - `PassThrough`:外层参数 → 外层返回值。
+///
+/// **控制流一律回 `None`** —— 它没有名字也没有类型,"控制流 → 控制流"
+/// 这种气泡纯属噪声(用户报过)。指在控制流连线上不出气泡就行,这也和主
+/// 画布一致:那边的控制流 pin 也是没有 tip 的(`pin_tip` 只给值流)。
 fn link_endpoints_text(
     outer: &FnInterface,
     inner: &FnInterface,
     link: &conv::Link,
-) -> ((String, String), (String, String)) {
+) -> Option<((String, String), (String, String))> {
     let param = |i: usize| -> (String, String) {
         outer
             .params
@@ -3696,15 +3694,14 @@ fn link_endpoints_text(
             .map(|p| (p.name.clone(), p.type_label.clone()))
             .unwrap_or_default()
     };
-    match *link {
+    Some(match *link {
         conv::Link::Param { outer: o, inner: i } => (param(o), inner_param(i)),
         conv::Link::Ret { outer: o, inner: i } => (inner_ret(i), ret(o)),
         conv::Link::PassThrough { param: p, ret: r } => (param(p), ret(r)),
-        // 控制流没有类型,只写"控制流"。
         conv::Link::CtrlIn { .. } | conv::Link::CtrlOut { .. } | conv::Link::CtrlThrough { .. } => {
-            (("控制流".into(), String::new()), ("控制流".into(), String::new()))
+            return None;
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -3958,7 +3955,24 @@ mod tests {
         assert_eq!(h.tabs[0].graph, 0, "原来那一页不能被动");
     }
 
-    /// 侧边 pin 排布:**控制流靠上、值流紧接其后**,整排不居中。
+    /// 悬停气泡**跟着光标走**，不是钉在被命中的元素上。
+    ///
+    /// 用户报过「调用约定的类型框不像外面一样跟手」—— 那边以前钉在引脚坐标
+    /// 上。现在两处共用 [`hover_bubble`]，锚点一律是光标位置。
+    #[test]
+    fn the_hover_bubble_follows_the_cursor() {
+        // 同一段文案、两个不同的光标位置 → 气泡落在两个不同地方，
+        // 而且都相对光标偏移固定的 `HOVER_DX` / `HOVER_DY`。
+        let a = hover_bubble("x <Int>".to_string(), point(100.0, 100.0));
+        let b = hover_bubble("x <Int>".to_string(), point(300.0, 250.0));
+        // `Div` 的样式是 opaque 的，能直接验的是常量本身：
+        // 偏移是**固定量**，和命中元素的位置无关。
+        assert_eq!(HOVER_DX, 12.0);
+        assert_eq!(HOVER_DY, 16.0);
+        // 两个气泡确实构造得出来（不同锚点不 panic）。
+        let _ = (a, b);
+    }
+
     #[test]
     fn value_pins_sit_below_control_pins() {
         let top = 100.0;

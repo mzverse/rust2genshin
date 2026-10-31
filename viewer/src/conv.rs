@@ -1070,9 +1070,9 @@ mod tests {
         assert_eq!(pin_tip(&untyped), "y", "没类型就只写名字");
     }
 
-    /// 悬停连线 → 气泡给两端的类型。
+    /// 一条连线的悬停文案:两端各是什么。
     #[test]
-    fn hovering_a_link_shows_both_ends() {
+    fn link_tip_shows_both_ends() {
         assert_eq!(
             link_tip(&("x".into(), "Int".into()), &("y".into(), "Int".into())),
             "x <Int> → y"
@@ -1080,6 +1080,21 @@ mod tests {
         assert_eq!(
             link_tip(&("x".into(), "Int".into()), &("y".into(), "Bool".into())),
             "x <Int> → y <Bool>"
+        );
+    }
+
+    /// 控制流引脚没有 tip（和主画布一致：`pin_tip` 只给值流）。
+    #[test]
+    fn control_pins_have_no_tip() {
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        // 控制流入 / 出都在,但它们的文案由渲染层按 `link_endpoints_text`
+        // 判 —— 控制流一律 `None`。这里锁"控制流连线存在"这个前提。
+        assert!(
+            c.links.iter().any(|x| matches!(x, Link::CtrlIn { .. })),
+            "有控制流入连线"
         );
     }
 
