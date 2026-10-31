@@ -428,17 +428,21 @@ pub fn layout(
         outer.rets.len(),
         outer_right_rows,
     );
-    // 内层的引脚也从它自己顶部那行开始(靠上,不居中)。
+    // 内层的引脚直接贴在节点顶部 —— **不加 `PAD`**。
+    //
+    // 内层节点的高度是用画布那套 `node_height(rows)` 算的,那套公式假定
+    // 引脚从节点顶部的 `PIN_TOP` 开始。再加 `PAD` 会整排下移,末行跑到
+    // 节点底部**之外**。外层盒子是自绘的容器,它有自己的 `PAD`。
     let inner_left = pins_on_side(
         inner_rect.x,
-        inner_rect.y + PAD,
+        inner_rect.y,
         inner.ctrl_in_num,
         inner.params.len(),
         inner_left_rows,
     );
     let inner_right = pins_on_side(
         inner_rect.x + inner_rect.w,
-        inner_rect.y + PAD,
+        inner_rect.y,
         inner.ctrl_out_num,
         inner.rets.len(),
         inner_right_rows,
@@ -1189,7 +1193,41 @@ mod tests {
         );
     }
 
-    /// 内层节点的引脚在它自己的边上,横向贴着节点的两端。
+    /// **内层的每个引脚都必须落在内层节点框里** —— 用户报"数据流引脚总有
+    /// 超出节点范围的"。
+    ///
+    /// 根因是内层用了画布的 `node_height(rows)`(它假定引脚从节点顶部
+    /// `PIN_TOP` 开始),却又给引脚额外加了 `PAD` 偏移 —— 整排下移,末行
+    /// 就跑出框外。内层节点的高度和引脚位置**必须来自同一套几何**。
+    #[test]
+    fn every_inner_pin_stays_inside_the_inner_node() {
+        // 参数多、返回值也多 —— 行数拉满,最容易露馅。
+        let outer = iface(&["a", "b", "c"], &["r1", "r2"], vec![], 1, 1);
+        let inner = iface(
+            &["a", "b", "c"],
+            &["r1", "r2"],
+            vec![RetOrigin::Body, RetOrigin::Const("0".into())],
+            1,
+            1,
+        );
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+
+        let top = l.inner.y;
+        let bottom = l.inner.y + l.inner.h;
+        for (side, pins) in [
+            ("左", &l.inner_left),
+            ("右", &l.inner_right),
+        ] {
+            for &(_, y) in pins.ctrl.iter().chain(pins.value.iter()) {
+                assert!(
+                    y > top && y < bottom,
+                    "{side}侧引脚 y={y} 超出内层节点 [{top}, {bottom}]"
+                );
+            }
+        }
+    }
+
     ///
     /// 内层节点是不透明的,引脚必须画在它**之后**才不会被遮住 ——
     /// 那是渲染层的层级问题(见 `render_conv_panel`),这里锁的是几何:

@@ -397,6 +397,97 @@ fn build_nodes(
         .collect()
 }
 
+/// 一个节点盒子的**唯一渲染实现**。
+///
+/// 主画布和「调用约定」视图的内层节点都走这里。返回 `Div`(不是
+/// `AnyElement`)—— 调用方要往上挂交互 / 选中描边,必须还是 `Div`。
+///
+/// 尺寸约定:调用方给的是**节点自己的**盒子(不含任何额外内边距)——
+/// 引脚位置来自 core 的 `pin_row_y`,它假定引脚从节点顶部的 `PIN_TOP`
+/// 开始。谁在这里偷偷加 `PAD`,引脚就会跑到盒子外面去。
+fn node_box_el(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    scale: f32,
+    label: &str,
+    border: gpui::Rgba,
+) -> gpui::Div {
+    div()
+        .absolute()
+        .left(px(x))
+        .top(px(y))
+        .w(px(w))
+        .h(px(h))
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_1()
+        .rounded_md()
+        .bg(node_bg())
+        .border_1()
+        .border_color(border)
+        .text_color(text_hi())
+        // 字号**跟随缩放**:`text_xs()` 是固定 rem(≈12px),缩放时节点框
+        // 会跟着变大变小而字不变 —— 放大后字挤成一撮、缩小后溢出被裁。
+        .text_size(px((BASE_FONT_PX * scale).max(6.0)))
+        .overflow_hidden()
+        .child(label.to_string())
+}
+
+/// 一组引脚的**唯一渲染实现**:值流画圆点、控制流画右指的三角形。
+///
+/// 主画布和「调用约定」视图共用。引脚位置由调用方按 core 的 `pin_row_y`
+/// 算好 —— 这里只负责画。
+///
+/// 每一项是 `(x, y, 是否控制流)`。
+fn pin_els(pins: &[(f32, f32, bool)], scale: f32) -> Vec<gpui::AnyElement> {
+    let mut out = Vec::new();
+    let d = PIN_D * scale;
+    // 值流圆点(div 白拿圆角)。
+    for &(x, y, _) in pins.iter().filter(|p| !p.2) {
+        out.push(
+            div()
+                .absolute()
+                .left(px(x - d / 2.0))
+                .top(px(y - d / 2.0))
+                .w(px(d))
+                .h(px(d))
+                .rounded_full()
+                .bg(edge_value())
+                .into_any_element(),
+        );
+    }
+    // 控制流三角形:div 画不出三角形,用 canvas 填色。
+    let tri: Vec<(f32, f32)> = pins.iter().filter(|p| p.2).map(|p| (p.0, p.1)).collect();
+    if !tri.is_empty() {
+        out.push(
+            canvas(
+                move |_bounds, _window, _cx| (),
+                move |bounds, (), window, _cx| {
+                    let o = bounds.origin;
+                    for &(cx, cy) in tri.iter() {
+                        let t = pin_triangle(cx, cy, d);
+                        let mut pb = PathBuilder::fill();
+                        pb.move_to(add_px(o, t[0]));
+                        pb.line_to(add_px(o, t[1]));
+                        pb.line_to(add_px(o, t[2]));
+                        pb.close();
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, pin_ctrl());
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0()
+            .into_any_element(),
+        );
+    }
+    out
+}
+
 /// 拍出这一帧要画的所有边(三次贝塞尔控制点)。
 ///
 /// 控制流和值流**同一条排法**:都从来源右侧的 pin 位出、进目标左侧的 pin 位,
@@ -2090,38 +2181,20 @@ impl Render for Viewer {
                 }
                 layer = layer.child(lines);
             }
-            let mut d = div()
-                .absolute()
-                .left(px(nv.x))
-                .top(px(nv.y))
-                .w(px(nv.w))
-                .h(px(nv.h))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px_1()
-                .rounded_md()
-                .bg(node_bg())
-                // 选中的节点描边换成亮色,一眼看得出选中了哪些。
-                .border_color(if nv.selected {
-                    selected_border()
-                } else if nv.is_fn && ctrl_held && hover_node == Some(nv.index) {
-                    // 按住 Ctrl 悬停复合节点:提示"点一下能跳进定义"。
-                    link_hint_border()
-                } else {
-                    nv.border
-                })
-                .text_color(text_hi())
-                // 字号**跟随缩放**:`text_xs()` 是固定 rem(≈12px),缩放时节点框
-                // 会跟着变大变小而字不变 —— 放大后字挤成一小撮、缩小后又溢出被裁。
-                // 下限 6px:再小就是糊点,不如让布局自己裁。
-                .text_size(px((BASE_FONT_PX * nv.scale).max(6.0)))
-                .overflow_hidden()
-                .cursor_grab();
-            d = if nv.boundary || nv.selected {
-                d.border_2()
+            // 盒子走**唯一的**渲染实现(`node_box_el`);选中 / 图边界只把
+            // 描边加粗一档。引脚由下面那段统一画(在盒子之后,才不会被盖住)。
+            let border = if nv.selected {
+                selected_border()
+            } else if nv.is_fn && ctrl_held && hover_node == Some(nv.index) {
+                // 按住 Ctrl 悬停复合节点:提示"点一下能跳进定义"。
+                link_hint_border()
             } else {
-                d.border_1()
+                nv.border
+            };
+            let d = if nv.boundary || nv.selected {
+                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border).border_2()
+            } else {
+                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border)
             };
             layer = layer.child(
                 // 节点拖拽用**左键**;画布平移才用中键。
@@ -2165,59 +2238,18 @@ impl Render for Viewer {
                         // 不拦住的话同一次右键会冒到容器,把刚弹的菜单又关掉。
                         cx.stop_propagation();
                     }),
-                )
-                .child(nv.label),
+                ),
             );
         }
 
         // ---- 引脚:每个连接点都画,有没有连线都画 ----
-        // 画在节点之后:引脚压在节点边缘上,一半在内一半在外。
-        // 值流 = 圆点(div 白拿圆角)。
-        for pin in pins.iter().filter(|p| !p.ctrl) {
-            let d = PIN_D * scale;
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(pin.x - d / 2.0))
-                    .top(px(pin.y - d / 2.0))
-                    .w(px(d))
-                    .h(px(d))
-                    .rounded_full()
-                    .bg(edge_value()),
-            );
+        //
+        // 画在节点之后:引脚压在节点边缘上,一半在内一半在外。走**唯一的**
+        // 渲染实现(`pin_els`),位置来自 `build_pins`(即 core 的 `pin_row_y`)。
+        let flat: Vec<(f32, f32, bool)> = pins.iter().map(|p| (p.x, p.y, p.ctrl)).collect();
+        for el in pin_els(&flat, scale) {
+            layer = layer.child(el);
         }
-        // 控制流 = **向右的三角形**(形状即方向,见 `pin_triangle`)。
-        // div 画不出三角形,用 canvas 填色;这层 canvas 加在节点与圆点之后,
-        // 和圆点同一视觉层(盖在节点边缘上)。
-        let ctrl_pins: Vec<(f32, f32)> = pins
-            .iter()
-            .filter(|p| p.ctrl)
-            .map(|p| (p.x, p.y))
-            .collect();
-        layer = layer.child(
-            canvas(
-                move |_bounds, _window, _cx| (),
-                move |bounds, (), window, _cx| {
-                    // 引脚是**容器局部**坐标,canvas 自己的 bounds 是窗口坐标。
-                    let o = bounds.origin;
-                    let d = PIN_D * scale;
-                    for &(x, y) in ctrl_pins.iter() {
-                        let t = pin_triangle(x, y, d);
-                        let mut pb = PathBuilder::fill();
-                        pb.move_to(add_px(o, t[0]));
-                        pb.line_to(add_px(o, t[1]));
-                        pb.line_to(add_px(o, t[2]));
-                        pb.close();
-                        // 失败就跳过 —— 不能因为一个画不出来的引脚把程序带崩。
-                        if let Ok(path) = pb.build() {
-                            window.paint_path(path, pin_ctrl());
-                        }
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        );
 
         // ---- 值入 pin 的默认值:紧贴引脚左侧,文字右对齐 ----
         // 框宽固定、右缘贴引脚 —— 文本长度不确定,只有固定右缘才能和引脚对齐;
@@ -3436,35 +3468,28 @@ impl Viewer {
 
         // ---- 内层节点:当前状态,可以在外层里拖 ----
         //
-        // 标题写"当前" —— 它和画布上那些节点一样是**一个节点**,只是这里
-        // 显示的是这个函数现在的对外接口。
+        // 它就是一个**普通节点** —— 盒子和引脚都走主画布同一份实现
+        // (`node_box_el` / `pin_els`),尺寸也走 core 的 `node_height`。
+        // 自己另写一套的话,盒子高度和引脚位置迟早对不上(引脚会跑出框)。
         let inner_label = if inner.params.is_empty() && inner.rets.is_empty() {
             "空"
         } else {
             "当前"
         };
-        let mut inner_box = div()
-            .id("conv-inner")
-            .absolute()
-            .left(px(l.inner.x))
-            .top(px(l.inner.y))
-            .w(px(l.inner.w))
-            .h(px(l.inner.h))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .bg(node_bg())
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.20))
-            .text_color(text_hi())
-            .text_size(px(11.0))
-            .overflow_hidden()
-            .cursor_grab()
-            .child(inner_label);
-        // 按下时内层节点的位置 —— 闭包是 `'static` 的,得先把值拷出来。
+        // 按下时内层节点的位置 —— 闭包是 `'static'` 的,得先把值拷出来。
         let inner_start = (l.inner.x, l.inner.y);
-        inner_box = inner_box.on_mouse_down(
+        let inner_box = node_box_el(
+            l.inner.x,
+            l.inner.y,
+            l.inner.w,
+            l.inner.h,
+            1.0,
+            inner_label,
+            hsla(0.0, 0.0, 1.0, 0.20).into(),
+        )
+        .id("conv-inner")
+        .cursor_grab()
+        .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |v, e: &MouseDownEvent, _w, cx| {
                 // 记下**按下时**的锚点:鼠标在哪、内层节点在哪。
@@ -3485,71 +3510,21 @@ impl Viewer {
 
         // ---- 引脚:值流圆点 / 控制流三角形 ----
         //
-        // 画在**盒子之后** —— 引脚压在节点边缘上,一半在内一半在外。
-        // 顺序和主画布完全一致(`render` 里的「引脚:每个连接点都画」)。
-        for (pins, ctrl) in [
-            (&outer_left, true),
-            (&outer_left, false),
-            (&outer_right, true),
-            (&outer_right, false),
-            (&inner_left, true),
-            (&inner_left, false),
-            (&inner_right, true),
-            (&inner_right, false),
-        ] {
-            let list = if ctrl {
-                &pins.ctrl
-            } else {
-                &pins.value
-            };
-            for &(x, y) in list {
-                if ctrl {
-                    continue; // 三角形在下面的 canvas 里画
-                }
-                layer = layer.child(
-                    div()
-                        .absolute()
-                        .left(px(x - PIN_D / 2.0))
-                        .top(px(y - PIN_D / 2.0))
-                        .w(px(PIN_D))
-                        .h(px(PIN_D))
-                        .rounded_full()
-                        .bg(edge_value()),
-                );
-            }
+        // 画在**盒子之后**(引脚压在节点边缘上,一半在内一半在外),走主画布
+        // 同一份实现(`pin_els`)。位置由 `conv::pins_on_side` 按 core 的
+        // `pin_row_y` 算好 —— 和外层盒子共用一条规则。
+        let all_pins: Vec<(f32, f32, bool)> = [&outer_left, &outer_right, &inner_left, &inner_right]
+            .into_iter()
+            .flat_map(|p| {
+                p.ctrl
+                    .iter()
+                    .map(|&(x, y)| (x, y, true))
+                    .chain(p.value.iter().map(|&(x, y)| (x, y, false)))
+            })
+            .collect();
+        for el in pin_els(&all_pins, 1.0) {
+            layer = layer.child(el);
         }
-
-        // 控制流引脚的三角形:canvas 填色(div 画不出三角形)。
-        // 这层 canvas 加在圆点之后 —— 同样是"盖在节点边缘上"的那一层。
-        let ctrl_tri: Vec<[Point<f32>; 3]> = [
-            (&outer_left, true),
-            (&outer_right, true),
-            (&inner_left, true),
-            (&inner_right, true),
-        ]
-        .into_iter()
-        .flat_map(|(pins, _)| pins.ctrl.iter().map(|&(x, y)| pin_triangle(x, y, PIN_D)))
-        .collect();
-        layer = layer.child(
-            canvas(
-                move |_b, _w, _c| (),
-                move |bounds, _, window, _cx| {
-                    let o = bounds.origin;
-                    for t in &ctrl_tri {
-                        let mut pb = PathBuilder::fill();
-                        pb.move_to(add_px(o, t[0]));
-                        pb.line_to(add_px(o, t[1]));
-                        pb.line_to(add_px(o, t[2]));
-                        pb.close();
-                        if let Ok(path) = pb.build() {
-                            window.paint_path(path, pin_ctrl());
-                        }
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        );
 
         // ---- 文字:外层引脚名 + 常数 ----
         //
