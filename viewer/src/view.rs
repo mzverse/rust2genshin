@@ -390,10 +390,27 @@ impl Tab {
 }
 
 impl TabHost {
+    /// **一开始一个页签都没有**(用户要求"初始时无需自动打开一页")。
+    ///
+    /// 以前预置一个指向图 0 的页签,于是启动就"已经打开了某张图"。
+    /// 现在进来看左栏列表,双击才开页签。
     fn new() -> Self {
         Self {
-            tabs: vec![Tab::fresh(0)],
+            tabs: Vec::new(),
             active: 0,
+            nav: NavHistory::default(),
+        }
+    }
+
+    /// 测试用:**已经开着 `n` 页**(图 0..n),活动页是最后一页。
+    ///
+    /// `new()` 现在是空的("初始时无需自动打开一页"),但很多标签页规则的测试
+    /// 要的是"已经有几页"这个前提。用这个函数构造,测试读起来更贴近本意。
+    #[cfg(test)]
+    fn with_tabs(n: usize) -> Self {
+        Self {
+            tabs: (0..n).map(Tab::fresh).collect(),
+            active: n.saturating_sub(1),
             nav: NavHistory::default(),
         }
     }
@@ -704,18 +721,25 @@ impl Viewer {
     /// 第一个文件复用那张初始空标签页,之后每个文件各开一张新标签页
     /// —— 和浏览器"新开一个文件就是新开一页"一致。
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
-        let had_graphs = !self.doc.is_empty();
         if let Some(first) = self.doc.push_target(t) {
             // **不在这里读坐标**:加载时还没布局(`Doc::push_target` 只展平,
             // 不算坐标)。`positions` 按图下标惰性补齐 —— 缺的位置是空表,
             // 等 `show()` 里 `ensure_layout` 算完再由 `reload_positions` 填。
             self.positions.resize_with(self.doc.len(), Vec::new);
             self.error = None;
-            if had_graphs {
-                self.open_tab(first, cx);
-            } else {
-                self.select(first, cx);
+            // **加载后不开任何页签**(用户要求"初始时无需自动打开一页")。
+            //
+            // 左栏列出全部图,画布显示"在左栏双击一个函数打开"。这样用户
+            // 进来看到的是文件全貌,而不是被迫先看某一张 —— 和 IDE 打开
+            // 一个项目不自动打开某个文件一样。
+            //
+            // 只在**一张图都没有时**给一个锚点:`toc_selected` 指向第一项,
+            // 免得进来看上去什么都没选中。
+            if self.tabs.tabs.is_empty() {
+                self.toc_selected = Some(first);
+                self.current = first;
             }
+            cx.notify();
         } else {
             cx.notify();
         }
@@ -1490,27 +1514,6 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // ---- 占位分支:错误 / 没有文档 / 当前图是空的 ----
-        if let Some(msg) = self.placeholder() {
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(canvas_bg())
-                .text_color(text_dim())
-                .text_sm()
-                // ⚠️ **这一支也必须收拖放** —— 启动时没有文档,占位界面
-                // ("拖入 .ogia 或 .rlib 文件")恰恰是**最该接住拖放的那一刻**。
-                // 只在正常分支挂的话,启动后往窗口里拖文件会毫无反应、界面
-                // 停在原地(用户实测踩到)。
-                .on_drop::<ExternalPaths>(cx.listener(|v, paths: &ExternalPaths, _w, cx| {
-                    v.handle_drop(paths, cx);
-                }))
-                .child(msg)
-                .into_any_element();
-        }
-
         // ---- 按需布局(渲染期的保险) ----
         //
         // 正常路径是 `show()` 里算过,但渲染可能先于任何 `show()` 发生
@@ -1526,8 +1529,36 @@ impl Render for Viewer {
             return div().size_full().into_any_element();
         }
 
-        // ---- 中栏画布(实现在 `render_canvas`)----
-        let canvas_el = self.render_canvas(window, cx);
+        // ---- 中栏画布:有图才画,没图就显示占位 ----
+        //
+        // ⚠️ **占位只占画布那一格**,不是整窗。以前这里在 `render` 开头
+        // 直接 `return` 一整块占位,于是"关掉最后一个标签页"时连左栏、右栏
+        // 一起消失(用户报过)—— 左栏是文件列表,和"画布有没有内容"无关,
+        // 任何时候都该在。
+        let canvas_el = if let Some(msg) = self.placeholder() {
+            div()
+                .id("canvas-placeholder")
+                .flex_1()
+                .h_full()
+                .relative()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(canvas_bg())
+                .text_color(text_dim())
+                .text_sm()
+                // ⚠️ **这一支也必须收拖放** —— 启动时没有文档,占位界面
+                // ("拖入 .ogia 或 .rlib 文件")恰恰是**最该接住拖放的那一刻**。
+                // 只在正常分支挂的话,启动后往窗口里拖文件会毫无反应、界面
+                // 停在原地(用户实测踩到)。
+                .on_drop::<ExternalPaths>(cx.listener(|v, paths: &ExternalPaths, _w, cx| {
+                    v.handle_drop(paths, cx);
+                }))
+                .child(msg)
+        } else {
+            // 存在性由 `placeholder()` 保证;几何交给 `render_canvas`。
+            self.render_canvas(window, cx)
+        };
 
         // ---- 左栏:图列表(实现在 `render_toc`)----
         let (toc, divider) = self.render_toc(window, cx);
@@ -3321,7 +3352,7 @@ mod tests {
     /// 标签页:新开一个 → 数量 +1 且切过去;关掉 → 回到原来的。
     #[test]
     fn opening_and_closing_tabs() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         assert_eq!(h.tabs.len(), 1);
         assert_eq!(h.active, 0);
 
@@ -3386,7 +3417,7 @@ mod tests {
     /// 它自己不碰 GPUI,所以能在这里直接验。
     #[test]
     fn ctrl_w_closes_the_active_tab() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.open(1);
         h.open(2);
         // 切回中间那页(下标 1),让它成为活动页。
@@ -3409,12 +3440,23 @@ mod tests {
 
     /// **可以关到一页不剩** —— 用户明确要求「仅剩一个标签页时无法关闭」要修。
     ///
+    /// **一开始一个页签都没有**(用户要求"初始时无需自动打开一页")。
+    ///
+    /// 进来看左栏列表,双击才开页签 —— 和 IDE 打开一个项目不自动打开
+    /// 某个文件一样。以前预置了一页指向图 0,于是启动就"已经打开了某张图"。
+    #[test]
+    fn a_fresh_tab_host_has_no_tabs() {
+        let h = TabHost::new();
+        assert!(h.tabs.is_empty(), "启动时不该有任何页签");
+        assert_eq!(h.active, 0, "空列表上活动下标是 0(不会越界)");
+    }
+
     /// 关到空之后 `close` 回 `None`、`active` 归 0,`Viewer` 那边把画布镜像
     /// 清空、显示"没有打开的图"占位。以前这里有"最后一个不真的关"的特例
     /// (只把视野复位),现在去掉了。
     #[test]
     fn the_last_tab_can_be_closed() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.store_view(0, point(50.0, 60.0), 2.0);
         let gone = h.close(0);
         assert!(gone.is_none(), "关掉最后一页之后没有活动页了");
@@ -3425,7 +3467,7 @@ mod tests {
     /// 切标签页可以后退 —— 用户明确要求。后退同时恢复**视野**,不只是图。
     #[test]
     fn switching_tabs_can_be_undone_by_back() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.open(1);
         h.store_view(1, point(120.0, -40.0), 1.5);
 
@@ -3449,7 +3491,7 @@ mod tests {
     /// 后退到底 / 前进到头时返回 `None`(调用方据此给状态提示)。
     #[test]
     fn back_at_the_beginning_is_a_noop() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         assert!(h.back(nav(0, 0.0, 1.0)).is_none());
         assert!(h.forward(nav(0, 0.0, 1.0)).is_none());
     }
@@ -3457,7 +3499,7 @@ mod tests {
     /// 新的导航会清空前进历史(浏览器语义)。
     #[test]
     fn a_new_navigation_clears_forward_history() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.record(nav(0, 0.0, 1.0));
         h.record(nav(1, 10.0, 1.0));
         assert!(h.back(nav(2, 20.0, 1.0)).is_some());
@@ -3473,7 +3515,7 @@ mod tests {
     /// 后退栈塞满同一条,按十次后退还在原地。
     #[test]
     fn recording_the_same_position_twice_is_a_noop() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.record(nav(0, 0.0, 1.0));
         h.record(nav(0, 0.0, 1.0));
         assert_eq!(h.nav.back.len(), 1);
@@ -3485,7 +3527,7 @@ mod tests {
     /// 它先查 `tabs` 里有没有这张图。这里直接测查重本身。
     #[test]
     fn a_graph_is_opened_at_most_once() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.open(1);
         h.open(2);
         assert_eq!(h.tabs.len(), 3);
@@ -3501,7 +3543,7 @@ mod tests {
     /// 目标图已经开在另一页时,应当切到那一页(页数不变)。
     #[test]
     fn back_switches_to_the_existing_tab_instead_of_overwriting() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         // 页签 0 显示图 0;再开一个页签显示图 1。
         h.open(1);
         assert_eq!(h.tabs.len(), 2);
@@ -3529,7 +3571,7 @@ mod tests {
     /// 的实现会在这里失败。
     #[test]
     fn each_tab_remembers_its_own_view() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
 
         // 第 0 页:挪一挪、放大。
         h.store_view(0, point(120.0, -40.0), 2.5);
@@ -3553,7 +3595,7 @@ mod tests {
     /// 历史条目带着视野:切走再后退回来,视野也要一起回来。
     #[test]
     fn nav_entries_carry_the_view() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.open(1);
         // 在页签 1 里调到某个视野,然后记录(模拟"要切走了")。
         h.store_view(1, point(55.0, 66.0), 3.0);
@@ -3575,7 +3617,7 @@ mod tests {
     /// 仍然不改写当前页签。
     #[test]
     fn back_reopens_a_graph_whose_tab_was_closed() {
-        let mut h = TabHost::new();
+        let mut h = TabHost::with_tabs(1);
         h.open(1);
         // 关掉图 1 那一页,再切回图 0 的页。
         h.close(1);
