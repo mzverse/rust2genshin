@@ -1,5 +1,5 @@
 use super::*;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_destructure_partial_mut, node_ir_field_setter, node_ir_list_assemble, node_ir_list_remove, node_ir_modify_struct, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_assemble, node_ir_black_box, node_ir_copy, node_ir_destructure, node_ir_destructure_partial_mut, node_ir_field_setter, node_ir_get_graph_variable, node_ir_list_assemble, node_ir_list_get_length, node_ir_list_insert, node_ir_list_remove, node_ir_modify_struct, node_ir_set_graph_variable, node_ir_switch, node_ir_unreachable, node_ir_unsupported, struct_fields};
 use crate::compile::native::native_const;
 use crate::compile::place::{CompiledLocal, CompiledPlace, LocalRef, can_read_into, copy_until};
 use crate::node::arithmetic::{NODE_AND, NODE_BITWISE_AND, NODE_BITWISE_NOT, NODE_BITWISE_OR, NODE_BITWISE_XOR, NODE_LEFT_SHIFT, NODE_NOT, NODE_OR, NODE_REM, NODE_XOR, ROUNDING_TRUNCATE, node_add, node_cast, node_divide, node_equal, node_greater_equal, node_greater_than, node_less_equal, node_less_than, node_multiply, node_round, node_subtract};
@@ -63,6 +63,15 @@ pub enum RetSource {
     Const(Box<dyn NativeValue>),
     /// 既没接东西、也没有默认值。
     Unset,
+}
+
+/// 把类型串变成能当变量名的形式。
+///
+/// `List<i32>` → `List_i32_`。黑板变量的名字只留字母数字和下划线。
+fn mangle_variable(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 impl FnDecl {
@@ -640,6 +649,73 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
     }
 
+    /// 黑板变量名:按 `Box` 的元素类型拼。
+    ///
+    /// 同一种 `T` 的 `Box` 共用一组变量(`box_i32_heap` / `box_i32_free`),
+    /// 所以名字必须编码 `T`。
+    fn box_variable_name(elem: &IrKind, suffix: &str) -> String {
+        format!("box_{}_{suffix}", mangle_variable(&elem.to_string()))
+    }
+
+    /// `Box<T>` 那个 `T` 的 IR 类型。
+    ///
+    /// `get_heap_mut` 之类的返回值是 `PartialMut<List<T>>` / `List<T>`,
+    /// 元素类型从实例的泛型实参里取。
+    fn box_elem_kind(&mut self, func: Instance<'tcx>, span: Span) -> Result<IrKind> {
+        let Some(ty) = func.args.iter().find_map(|x| x.as_type()) else {
+            return self.helper().span_err(span, "Box 的堆访问缺少元素类型");
+        };
+        self.compiler.compile_ty(span, ty)
+    }
+
+    /// 读一个黑板变量,得到 `kind` 类型的值。
+    fn graph_variable_load(&mut self, name: &str, kind: IrKind) -> ValueIn {
+        let node = self.graph.insert(node_ir_get_graph_variable(name, kind));
+        self.graph.set_default(Link::node(node, 0), Some(name.to_string().into()));
+        ValueIn::link(Link::node(node, 0))
+    }
+
+    /// 写一个黑板变量:有控制流,返回节点和它的块。
+    fn graph_variable_store(&mut self, name: &str, kind: IrKind, value: ValueIn) -> (NodeRef, Block) {
+        let node = self.graph.insert(node_ir_set_graph_variable(name, kind));
+        self.graph.set_default(Link::node(node, 0), Some(name.to_string().into()));
+        self.graph.set_value_in(Link::node(node, 1), value);
+        (node, Block::singleton(node, 0))
+    }
+
+    /// 常量字符串实参的原文;不是字符串常量就给 `None`。
+    ///
+    /// 图变量名这类东西不该变成一条连线 —— 它们必须写进节点的默认值里,
+    /// 而写进去需要「这个字符串是什么」,编译成 `ValueIn` 之后就没有了。
+    fn const_string_operand(&mut self, op: &Operand<'tcx>) -> Option<String> {
+        let Operand::Constant(co) = op else {
+            return None;
+        };
+        let ty = self.mono(co.const_.ty());
+        // `&'static str` / `str`:两种都从 valtree 的裸字节里取。
+        let is_str = match ty.kind() {
+            TyKind::Ref(_, e, _) => e.is_str(),
+            TyKind::Str => true,
+            _ => false,
+        };
+        if !is_str {
+            return None;
+        }
+        let ty = self.mono(co.const_.ty());
+        // `&'static str` / `str`:两种都从 valtree 的裸字节里取。
+        let is_str = match ty.kind() {
+            TyKind::Ref(_, e, _) => e.is_str(),
+            TyKind::Str => true,
+            _ => false,
+        };
+        if !is_str {
+            return None;
+        }
+        let v = self.const_to_value(co.const_, co.span).ok()?;
+        let bytes = v.try_to_raw_bytes(self.tcx)?;
+        std::str::from_utf8(bytes).ok().map(ToString::to_string)
+    }
+
     fn compile_const(&mut self, ty: Ty<'tcx>, kind: &IrKind, v: Value<'tcx>, span: Span) -> Result<ValueIn> {
         let typing_env = TypingEnv::fully_monomorphized();
         // 透明包装(`Guid(NonZero<i64>)` 之类)在 valtree 里是单字段分支,先剥到真正的
@@ -821,16 +897,18 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 result.begin
             },
             TerminatorKind::Call { func, target, args, destination, .. } => {
+                let const_args = args.iter().map(|x| self.const_string_operand(&x.node)).collect::<Vec<_>>();
                 let args = args.iter().map(|x| self.compile_operand(&x.node, x.span)).collect::<Result<_>>()?;
-                let result = self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Some(*destination))?;
+                let result = self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Some(*destination), &const_args)?;
                 if let Some(target) = target {
                     self.graph.link_control(result.end, blocks.get(*target).unwrap().begin);
                 }
                 result.begin
             }
             TerminatorKind::TailCall { func, args, .. } => {
+                let const_args = args.iter().map(|x| self.const_string_operand(&x.node)).collect::<Vec<_>>();
                 let args = args.iter().map(|x| self.compile_operand(&x.node, x.span)).collect::<Result<_>>()?;
-                self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Place::return_place().into())?.pipe(|block| {
+                self.compile_call(terminator.source_info.span, self.find_fn(func)?, args, Place::return_place().into(), &const_args)?.pipe(|block| {
                     self.graph.link_control(block.end, Link::export(0));
                     block.begin
                 })
@@ -862,7 +940,8 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 let result = self.compile_call(terminator.source_info.span,
                                                Instance::resolve_drop_glue(self.tcx, self.mono(place.ty(&self.body.local_decls, self.tcx).ty)),
                                                vec![arg],
-                                               None)?;
+                                               None,
+                                               &[])?;
                 self.graph.link_control(result.end, blocks.get(*target).unwrap().begin);
                 result.begin
             },
@@ -926,7 +1005,10 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         })
     }
 
-    fn compile_call(&mut self, span: Span, mut func: Instance<'tcx>, args: Vec<ValueIn>, destination: Option<Place<'tcx>>) -> Result<Block> {
+    /// `const_args` 是调用点的**常量实参原文**(能取到的才有),图变量名这类
+    /// 「必须写进节点的字面量」从它取 —— `args` 里只剩编译后的值,字符串常量
+    /// 在节点图里是个普通值引脚,看不出原文。
+    fn compile_call(&mut self, span: Span, mut func: Instance<'tcx>, args: Vec<ValueIn>, destination: Option<Place<'tcx>>, const_args: &[Option<String>]) -> Result<Block> {
         panic_context!("Compiling calling: {func:?}");
         panic_context!("args: {args:?}");
         if Some(func.def_id()) == self.tcx.lang_items().get(LangItem::Panic) {
@@ -953,6 +1035,91 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 // `List::from([T; N])` / `List::into_array`:数组在节点图里就是
                 // 列表,两边的类型完全相同,值直接过。
                 "identity" => Some(args[0].clone()),
+                // `Box<T>` 的堆:**黑板变量**按 `T` 分开命名。
+                //
+                // 变量名在编译期由 `T` 拼出来(`box_i32_heap`),后端按它生成
+                // 图变量读节点 —— 所以这里要拿到泛型实参,`compile_native_call`
+                // 那边只有类型形状,不够。
+                "box_heap_get" => {
+                    let elem = self.box_elem_kind(func, span)?;
+                    let name = CompilingFn::box_variable_name(&elem, "heap");
+                    let list = IrKind::list(elem);
+                    let raw = self.graph_variable_load(&name, list.clone());
+                    // 交出去的是可写视图:再标一层 `PartialMut`。
+                    let view = self.graph.insert(ir::node_ir_to_partial_mut(list));
+                    self.graph.set_value_in(Link::node(view, 0), raw);
+                    Some(ValueIn::link(Link::node(view, 0)))
+                }
+                "box_free_get" => {
+                    let elem = self.box_elem_kind(func, span)?;
+                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let list = IrKind::list(IrKind::Native(NativeKind::Int));
+                    let raw = self.graph_variable_load(&name, list.clone());
+                    let view = self.graph.insert(ir::node_ir_to_partial_mut(list));
+                    self.graph.set_value_in(Link::node(view, 0), raw);
+                    Some(ValueIn::link(Link::node(view, 0)))
+                }
+                "box_heap_set" => {
+                    let elem = self.box_elem_kind(func, span)?;
+                    let name = CompilingFn::box_variable_name(&elem, "heap");
+                    let list = IrKind::list(elem);
+                    let (node, block) = self.graph_variable_store(&name, list, args[0].clone());
+                    let _ = node;
+                    return Ok(block);
+                }
+                "box_free_set" => {
+                    let elem = self.box_elem_kind(func, span)?;
+                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let list = IrKind::list(IrKind::Native(NativeKind::Int));
+                    let (node, block) = self.graph_variable_store(&name, list, args[0].clone());
+                    let _ = node;
+                    return Ok(block);
+                }
+                "box_free" => {
+                    // 把槽号追加到空闲表末尾 —— 读、插、写三步。
+                    let elem = self.box_elem_kind(func, span)?;
+                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let list = IrKind::list(IrKind::Native(NativeKind::Int));
+                    let raw = self.graph_variable_load(&name, list.clone());
+                    let len = self.graph.insert(node_ir_list_get_length(IrKind::Native(NativeKind::Int)));
+                    self.graph.set_value_in(Link::node(len, 0), raw.clone());
+                    let ins = self.graph.insert(node_ir_list_insert(IrKind::partial_mut(list.clone()), IrKind::Native(NativeKind::Int)));
+                    self.graph.set_value_in(Link::node(ins, 0), raw.clone());
+                    self.graph.set_value_in(Link::node(ins, 1), ValueIn::link(Link::node(len, 0)));
+                    // 槽号本来就是 `i32`(见 `Box::free` 的 `slot as i32`)。
+                    self.graph.set_value_in(Link::node(ins, 2), args[0].clone());
+                    let (set, block) = self.graph_variable_store(&name, list, raw);
+                    self.graph.link_control(Link::node(ins, 0), Link::node(set, 0));
+                    // 插入那条流先走,写回在后。
+                    let mut result = Block::singleton(ins, 0);
+                    result.extend(self.graph, block);
+                    return Ok(result);
+                }
+                // 图变量读写:变量名必须从**常量实参**里取出来写进节点。
+                "graph_variable_get" => {
+                    let Some(Some(name)) = const_args.first() else {
+                        return self.helper().span_err(span, "graph_variable_get 的变量名必须是字符串常量");
+                    };
+                    let name = name.clone();
+                    let kind = self.compiler.compile_ty(span, sig.output())?;
+                    let node = self.graph.insert(node_ir_get_graph_variable(name.clone(), kind));
+                    self.graph.set_default(Link::node(node, 0), Some(name.into()));
+                    Some(ValueIn::link(Link::node(node, 0)))
+                },
+                "graph_variable_set" => {
+                    let Some(Some(name)) = const_args.first() else {
+                        return self.helper().span_err(span, "graph_variable_set 的变量名必须是字符串常量");
+                    };
+                    let name = name.clone();
+                    let Some(kind) = params.get(1).cloned() else {
+                        return self.helper().span_err(span, "graph_variable_set 缺少值参数");
+                    };
+                    let node = self.graph.insert(node_ir_set_graph_variable(name.clone(), kind));
+                    self.graph.set_default(Link::node(node, 0), Some(name.into()));
+                    self.graph.set_value_in(Link::node(node, 1), args[1].clone());
+                    // 写图变量有控制流,要接进调用点的流。
+                    return Ok(Block::singleton(node, 0));
+                },
                 // `List::remove(&mut self, index)`:和 `partial_mut_from` 一样,
                 // 先把 `&mut List<T>` 的两槽元组拆开取读槽(第 1 个字段),
                 // 再接「移除元素」节点。节点图里写列表就是写原处。

@@ -62,10 +62,8 @@ pub static NODE_SET_STATUS: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::procedure(66, vec![Entity, Int, Int])
 });
 
-/// 写图变量(ID 323)
-pub static NODE_SET_GRAPH_VARIABLE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::procedure(323, vec![String, Int, Bool])
-});
+/// 写图变量(ID 323,泛型 Variant):见 `query::node_set_graph_variable`。
+pub use crate::node::query::node_set_graph_variable;
 
 // ========================================================================
 // 实体创建 / 销毁

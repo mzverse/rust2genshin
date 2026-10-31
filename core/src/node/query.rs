@@ -309,14 +309,113 @@ pub fn node_local(kind: &NativeKind) -> Option<NodeKind> {
     result.into()
 }
 
+/// 图变量(ID 337,泛型 Variant):变量名 → 值。
+///
+/// 变体按值类型分:shell 固定 337,`kernel` 与类型选择器随 `T` 变。
+/// 选择器顺序(参考项目 `data.json` 的 `Variants`)是
+/// Ety→0、Gid→1、Int→2、Bol→3、Flt→4、Str→5、L<Gid>→6、L<Int>→7、
+/// L<Bol>→8、L<Flt>→9、L<Str>→10、Vec→11、L<Ety>→12、L<Vec>→13、
+/// Cfg→14、Pfb→15、L<Cfg>→16、L<Pfb>→17、Fct→18、L<Fct>→19,
+/// 字典从 20 起(本条只覆盖到列表)。
+///
+/// 写节点的变体顺序和它**不一样**(ID 323 从 Int 开始),所以两边各自查表。
+pub fn node_get_graph_variable(kind: &NativeKind) -> Option<NodeKind> {
+    let mut result = NodeKind::expr(337, vec![String], kind.clone());
+    let selector = graph_variable_selector_get(kind)?;
+    result.id.kernel = graph_variable_kernel(337, selector)?;
+    result.id.selectors_out[0] = selector.into();
+    result.into()
+}
+
+/// 写图变量(ID 323,泛型 Variant):变量名 + 值 + 是否触发事件。
+pub fn node_set_graph_variable(kind: &NativeKind) -> Option<NodeKind> {
+    let mut result = NodeKind::procedure(323, vec![String, kind.clone(), Bool]);
+    let selector = graph_variable_selector_set(kind)?;
+    result.id.kernel = graph_variable_kernel(323, selector)?;
+    result.id.selectors_in[1] = selector.into();
+    result.into()
+}
+
+/// 图变量的选择器档位(`T` → `TypeSelectorIndex`)。
+///
+/// 取值节点(ID 337)和写节点(ID 323)共用同一套类型顺序，只是 kernel 表不同。
+fn graph_variable_selector_get(kind: &NativeKind) -> Option<i32> {
+    use NativeKind::*;
+    Some(match kind {
+        Entity => 0,
+        Guid => 1,
+        Int => 2,
+        Bool => 3,
+        Float => 4,
+        String => 5,
+        Vec3 => 11,
+        Config => 14,
+        Prefab => 15,
+        Faction => 18,
+        List(ele) => match ele.as_ref() {
+            Guid => 6,
+            Int => 7,
+            Bool => 8,
+            Float => 9,
+            String => 10,
+            Entity => 12,
+            Vec3 => 13,
+            Config => 16,
+            Prefab => 17,
+            Faction => 19,
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// 写节点的档位。顺序与取值节点**不同**：Int→0、Flt→1、Bol→2、Str→3、
+/// Gid→4、Ety→5，列表从 6 起。
+fn graph_variable_selector_set(kind: &NativeKind) -> Option<i32> {
+    use NativeKind::*;
+    Some(match kind {
+        Int => 0,
+        Float => 1,
+        Bool => 2,
+        String => 3,
+        Guid => 4,
+        Entity => 5,
+        Vec3 => 11,
+        Config => 14,
+        Prefab => 15,
+        Faction => 18,
+        List(ele) => match ele.as_ref() {
+            Guid => 6,
+            Int => 7,
+            Bool => 8,
+            Float => 9,
+            String => 10,
+            Entity => 12,
+            Vec3 => 13,
+            Config => 16,
+            Prefab => 17,
+            Faction => 19,
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// 图变量节点的 kernel：`shell` 是该节点 shell ID，`selector` 是档位。
+///
+/// 两个节点的 kernel 表不同(337 系列 / 323 系列)，按 shell 分表。
+fn graph_variable_kernel(shell: i64, selector: i32) -> Option<i64> {
+    let table: &[i64] = match shell {
+        337 => &[337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 538, 539, 540, 541, 626, 2998],
+        323 => &[323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 534, 535, 536, 537, 625, 2857],
+        _ => return None,
+    };
+    table.get(selector as usize).copied()
+}
+
 /// 自定义变量(ID 50):entity + 变量名 → 值
 pub static NODE_GET_VARIABLE: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::expr(50, vec![Entity, String], Int)
-});
-
-/// 图变量(ID 337)
-pub static NODE_GET_GRAPH_VARIABLE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::expr(337, vec![String], Int)
 });
 
 /// 获取变量快照(ID 3360)

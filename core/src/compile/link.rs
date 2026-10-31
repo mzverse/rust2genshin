@@ -112,12 +112,34 @@ impl Linker {
     ///
     /// 同名变量指的是同一个变量,类型必须一致 —— 不一致说明两个函数对同名
     /// 变量的用法对不上,主图的变量表没法同时满足它们。
+    ///
+    /// 变量直接从**图里现扫** `GetGraphVariable` / `SetGraphVariable` 节点,
+    /// 不看 `FnDecl::variables` —— 那个字段要等 `lower_ir` 才填,而这里必须
+    /// 在任何函数 lower 之前跑完(见 `link` 里的注释)。
     fn collect_variables(
         &self,
         graph: &NodeGraphIr,
         out: &mut HashMap<String, IrKind>,
         visited: &mut HashSet<String>,
     ) -> Result<(), String> {
+        // 图自己直接用的变量。
+        for node in graph.get_nodes() {
+            let kind = &graph.get_node(node).kind;
+            match &kind.id {
+                IrNodeId::GetGraphVariable(name) => {
+                    if let Some(k) = kind.values_out_types.first() {
+                        merge_variable(out, name, k)?;
+                    }
+                }
+                IrNodeId::SetGraphVariable(name) => {
+                    if let Some(Some(k)) = kind.values_in_types.get(1) {
+                        merge_variable(out, name, k)?;
+                    }
+                }
+                _ => (),
+            }
+        }
+        // 再用到它调用的函数。
         for node in graph.get_nodes() {
             let IrNodeId::Fn(key) = &graph.get_node(node).kind.id else {
                 continue;

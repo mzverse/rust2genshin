@@ -1,60 +1,55 @@
-use core::marker::PhantomData;
+//! 引用计数指针 `Sc<T>`。
+//!
+//! 底层是 [`Box`]:`Box<ScInner<T>>` 提供槽位,计数字段和值存在同一格里。
+//! 计数归零时 `Box` 的析构会把槽还给这条类型链的空闲表。
+//!
+//! 没有真指针 —— 读写都经由 `Box` 的 `Deref` / `DerefMut`(假引用),
+//! 所以 `*sc = v` 这种整体赋值不支持,字段级修改可以。
+
+use crate::boxed::{Box, BoxRaw};
 use core::ops::Deref;
-use core::ptr::NonNull;
-use crate::boxed::Box;
 
-pub struct Sc<T> {
-    ptr: NonNull<ScInner<T>>,
-    _marker: PhantomData<ScInner<T>>,
-}
-
+/// 引用计数的一格:计数 + 值。
+///
+/// 普通结构体(不能 `#[repr(transparent)]`)—— 它要作为整体存进
+/// `Box<ScInner<T>>` 的堆里。
 struct ScInner<T> {
-    count: usize,
+    count: i32,
     value: T,
 }
 
-impl<T> Drop for Sc<T> {
+pub struct Sc<T: 'static>(BoxRaw<ScInner<T>>);
+
+impl<T: 'static> Drop for Sc<T> {
     fn drop(&mut self) {
-        unsafe {
-            let inner = self.ptr.as_ptr();
-            (*inner).count -= 1;
-            if (*inner).count == 0 {
-                drop(Box::from_non_null(self.ptr));
-            }
-        }
+        // 计数减一;归零时 `Box` 自己那一侧的析构会把槽还掉。
+        self.0.count -= 1;
     }
 }
 
-impl<T> Clone for Sc<T> {
+impl<T: 'static> Clone for Sc<T> {
     fn clone(&self) -> Self {
-        unsafe {
-            (*self.ptr.as_ptr()).count += 1;
-        }
-        Self {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
+        let count = self.0.count;
+        let mut copy = unsafe { Sc::from_raw(self.0) };
+        copy.0.count = count + 1;
+        copy
     }
 }
 
-impl<T> Deref for Sc<T> {
+impl<T: 'static> Deref for Sc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe {
-            &self.ptr.as_ref().value
-        }
+        &self.0.value
     }
 }
 
-impl<T> Sc<T> {
+impl<T: 'static> Sc<T> {
     pub fn new(value: T) -> Self {
-        Self {
-            ptr: Box::into_non_null(ScInner {
-                count: 1,
-                value,
-            }.into()),
-            _marker: PhantomData,
-        }
+        Self(Box::into_raw(Box::new(ScInner { count: 1, value })))
+    }
+
+    unsafe fn from_raw(raw: BoxRaw<ScInner<T>>) -> Self {
+        Self(raw)
     }
 }

@@ -2,7 +2,7 @@ use panic_context::panic_context;
 use super::{Compiler, Result};
 use crate::compile::func::node_ir_native;
 use crate::compile::get_expn_macro_attr;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_list_get, node_ir_list_get_length, node_ir_list_insert, node_ir_list_set};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_get_graph_variable, node_ir_list_get, node_ir_list_get_length, node_ir_list_insert, node_ir_list_set, node_ir_set_graph_variable};
 use crate::node::NodeKind;
 use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
 use crate::value::{NativeKind, NativeValue};
@@ -244,6 +244,14 @@ impl<'tcx> Compiler<'tcx> {
                                 let (list, _) = self.expect_list(expn, "list_len", &params[0])?;
                                 node_ir_list_get_length(list)
                             },
+                            // 图变量读写。名字由调用点在 `compile_call` 里从
+                            // 常量参数取出来填进 IR 节点,这里只给形状。
+                            // 图变量读写要**变量名的字面量**,那个只有调用点的
+                            // 常量实参里才有,这里拿不到 —— 交给 `compile_call`
+                            // 特判。
+                            | "graph_variable_get"
+                            | "graph_variable_set"
+                            => return Ok(None),
                             // 有些内建要拆 `&mut` 的元组、要拿到参数**值**,
                             // 这里只拿得到类型 —— 它们在 `compile_call` 里特判
                             // (`partial_mut_*` 系、`list_remove`),这里认出来
@@ -255,6 +263,13 @@ impl<'tcx> Compiler<'tcx> {
                             | "partial_mut_deref_mut"
                             | "list_remove"
                             | "identity"
+                            // `Box` 的堆访问:变量名要按 `T` 拼,还得拿到
+                            // 泛型实参,`compile_native_call` 都没有。
+                            | "box_heap_get"
+                            | "box_heap_set"
+                            | "box_free_get"
+                            | "box_free_set"
+                            | "box_free"
                             => return Ok(None),
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),
                         }.into()

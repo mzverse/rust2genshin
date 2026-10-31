@@ -9,7 +9,7 @@ use crate::node::control::{node_switch, NODE_IF};
 use crate::node::execution::node_set_local;
 use crate::node::hidden::node_on_native_custom_value_change;
 use crate::node::list::{node_list_assemble, node_list_get_at_index, node_list_get_length, node_list_insert, node_list_modify_index, node_list_remove};
-use crate::node::query::node_local;
+use crate::node::query::{node_get_graph_variable, node_local, node_set_graph_variable};
 use crate::node::{Link, LinkTarget, Lower, NativeNodeId, NodeGraph, NodeKind, NodeRef, ValueIn};
 use crate::structure::{node_assemble_struct, node_destructure_struct, node_modify_struct};
 use crate::value::NativeKind;
@@ -277,6 +277,21 @@ impl Optimizer {
         self.graph.remove(x);
     }
 
+    /// 把图变量登记进 `FnDecl::variables`：链接期并进主图的黑板表。
+    ///
+    /// 同名变量指的是同一个变量，类型必须一致 —— 不一致在链接期
+    /// (`link.rs::merge_variable`)会报出来。
+    fn record_variable(&mut self, name: String, kind: IrKind) {
+        match self.decl.variables.get(&name) {
+            Some(old) if *old != kind => {
+                panic!("图变量 {name} 的类型不一致: {old} 与 {kind}");
+            },
+            _ => {
+                self.decl.variables.insert(name, kind);
+            },
+        }
+    }
+
     /// 降级的 **IR 段**:展开 Fn 调用 → 优化到不动点 → 改写循环 → 再优化 →
     /// 把列表类节点展开成真正的列表节点 → 把每个节点的类型降到 wire 层 →
     /// 收尾引脚。
@@ -289,6 +304,28 @@ impl Optimizer {
     /// 拆出这一步是为了 viewer 的「lower」按钮:它要跑完整条流程,又必须把
     /// 结果留在 viewer 能渲染的 `NodeGraphIr` 形态里。
     pub fn lower_ir(&mut self, linker: &mut Linker) {
+        // 图变量先登记进 `FnDecl::variables`:链接期要并进主图的黑板表,
+        // 而 lower 会把图变量节点换成 native 节点,之后就认不出名字了。
+        let mut variables: Vec<(String, IrKind)> = vec![];
+        for x in self.graph.get_nodes() {
+            let kind = &self.graph.get_node(x).kind;
+            match &kind.id {
+                IrNodeId::GetGraphVariable(name) => {
+                    if let Some(k) = kind.values_out_types.first().cloned() {
+                        variables.push((name.clone(), k));
+                    }
+                }
+                IrNodeId::SetGraphVariable(name) => {
+                    if let Some(Some(k)) = kind.values_in_types.get(1) {
+                        variables.push((name.clone(), k.clone()));
+                    }
+                }
+                _ => (),
+            }
+        }
+        for (name, kind) in variables {
+            self.record_variable(name, kind);
+        }
         // link
         for x in self.graph.get_nodes() {
             self.link_node(linker, x);
@@ -511,6 +548,19 @@ impl Optimizer {
                 IrNodeId::Modify => {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
+                }
+                // 图变量:按值的类型挑变体。变量名的登记放在这一轮循环
+                // **外面** —— 这里持有 `self.graph` 的可变借用,
+                // `record_variable` 要改 `self.decl`。
+                IrNodeId::GetGraphVariable(name) => {
+                    let k = kind.values_out_types[0].lower(linker);
+                    node_get_graph_variable(&k)
+                        .unwrap_or_else(|| panic!("图变量 {name} 的类型 {k} 没有对应的节点变体"))
+                }
+                IrNodeId::SetGraphVariable(name) => {
+                    let k = kind.values_in_types[1].as_ref().unwrap().lower(linker);
+                    node_set_graph_variable(&k)
+                        .unwrap_or_else(|| panic!("图变量 {name} 的类型 {k} 没有对应的节点变体"))
                 }
                 IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
                 IrNodeId::FieldSetter { idx, .. } => panic!("{idx}"),

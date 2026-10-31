@@ -282,6 +282,13 @@ pub enum IrNodeId {
     ListInsert,
     /// 按下标移除元素,对应 `List::remove`。
     ListRemove,
+    /// 读节点图变量(黑板变量):变量名进,值出。
+    ///
+    /// 变量在 `FnDecl::variables` 里登记(名字 → 类型),链接期并进主图的
+    /// 黑板表。同一个名字在各函数里指的是同一个变量。
+    GetGraphVariable(String),
+    /// 写节点图变量:变量名 + 值进,控制流走一遍。
+    SetGraphVariable(String),
     /// 取列表长度,对应 `List::len`。
     ListGetLength,
 }
@@ -525,6 +532,31 @@ pub fn node_ir_list_remove(list: IrKind) -> NodeKindIr {
         vec![
             Some(list),
             Some(IrKind::Native(NativeKind::Int)),
+        ],
+        vec![],
+    )
+}
+
+/// 读节点图变量:没有控制流,变量名是常量(调用点用 `set_default` 填)。
+pub fn node_ir_get_graph_variable(name: impl Into<String>, kind: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::GetGraphVariable(name.into()),
+        0,
+        0,
+        vec![Some(IrKind::Native(NativeKind::String))],
+        vec![kind],
+    )
+}
+
+/// 写节点图变量:有控制流,变量名是常量。
+pub fn node_ir_set_graph_variable(name: impl Into<String>, kind: IrKind) -> NodeKindIr {
+    NodeKind::new(
+        IrNodeId::SetGraphVariable(name.into()),
+        1,
+        1,
+        vec![
+            Some(IrKind::Native(NativeKind::String)),
+            Some(kind),
         ],
         vec![],
     )

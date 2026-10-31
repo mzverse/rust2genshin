@@ -268,6 +268,29 @@ pub fn test_index_mut() {
     log(v);
 }
 
+/// 图变量(黑板变量)读写:变量名是常量,类型由 `T` 决定。
+/// `Box`:分配、读、析构(先不写,隔离 `DerefMut`)。
+#[unsafe(no_mangle)]
+pub fn test_box() {
+    use rust2genshin_lib::boxed::Box;
+    let b = Box::new(114);
+    let v = *b;
+    log(v);
+    let y = Box::into_inner(b);
+    log(y);
+}
+
+/// `Box` 用完即弃:析构把槽还给空闲表。
+#[unsafe(no_mangle)]
+pub fn test_box_drop() {
+    use rust2genshin_lib::boxed::Box;
+    {
+        let _b = Box::new(7);
+    }
+    let c = Box::new(8);
+    log(*c);
+}
+
 /// `List::remove`:移除下标处的元素。
 #[unsafe(no_mangle)]
 pub fn test_list_remove() {
@@ -494,6 +517,8 @@ pub fn test_itrunc(f: f32) -> i32 {
 pub fn on_entity_created(event: EntityCreatedEvent) {
     let count = pair_sum((1, 2.5));
     log(count);
+    test_box();
+    test_box_drop();
 }
 
 struct TestDrop(String);

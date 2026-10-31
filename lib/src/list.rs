@@ -100,14 +100,18 @@ impl<T> List<T> {
         get_mut_(PartialMut::from_mut(self), index)
     }
 
+    #[native("list_set")]
+    pub unsafe fn set_via_move(list: PartialMut<Self>, index: usize, value: T);
+
+    #[native("list_get")]
+    pub unsafe fn get_via_move(list: &Self, index: usize) -> T;
+
     #[inline(always)]
     pub fn set(&mut self, index: usize, value: T) {
-        #[native("list_get")]
-        fn get_<T>(s: &List<T>, index: usize) -> T;
-        #[native("list_set")]
-        fn set_<T>(s: PartialMut<List<T>>, index: usize, value: T);
-        drop(get_(self, index));
-        set_(PartialMut::from_mut(self), index, value);
+        unsafe {
+            drop(Self::get_via_move(self, index));
+            Self::set_via_move(PartialMut::from_mut(self), index, value);
+        }
     }
 
     #[native("list_len")]
