@@ -605,7 +605,7 @@ pub fn undo(
         return (pos.to_vec(), format!("撤销失败:{e}"));
     }
     doc.reflatten(i);
-    let Some(g) = doc.graphs.get(i) else {
+    let Some(g) = doc.entry(i) else {
         return (Vec::new(), "撤销失败:图不见了".to_string());
     };
     let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
@@ -634,7 +634,7 @@ pub fn redo(
         return (pos.to_vec(), format!("重做失败:{e}"));
     }
     doc.reflatten(i);
-    let Some(g) = doc.graphs.get(i) else {
+    let Some(g) = doc.entry(i) else {
         return (Vec::new(), "重做失败:图不见了".to_string());
     };
     let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
@@ -649,7 +649,7 @@ fn reposition(
     pos: &[Point<f32>],
     anchor: Option<Point<f32>>,
 ) -> Vec<Point<f32>> {
-    let Some(g) = doc.graphs.get(i) else {
+    let Some(g) = doc.entry(i) else {
         return Vec::new();
     };
     let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
@@ -911,7 +911,7 @@ mod tests {
             Ok(t) => crate::doc::flatten(t)
                 .graphs
                 .into_iter()
-                .map(|g| g.name)
+                .map(|g| g.view.name)
                 .collect(),
             Err(e) => {
                 println!("解析失败: {e}");

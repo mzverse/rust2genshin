@@ -65,8 +65,8 @@ fn main() {
                     t.adts.len()
                 );
                 let d = doc::flatten(t);
-                println!("展平出 {} 张图", d.graphs.len());
-                for g in &d.graphs {
+                println!("展平出 {} 张图", d.len());
+                for g in d.entries() {
                     println!(
                         "  {:<24} 节点 {:>4}  边 {:>4}(控制 {:>3} 值 {:>3})  入口 {:?}  返回 {:?}",
                         g.name,

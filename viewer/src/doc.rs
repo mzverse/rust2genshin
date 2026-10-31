@@ -514,95 +514,142 @@ enum GraphSource {
     Fn(String),
 }
 
-/// `graphs[i]` 归属于谁:哪个 `Target`、那张 `Target` 里的哪张图。
-#[derive(Clone)]
-struct GraphOwner {
-    target: usize,
-    source: GraphSource,
-}
-
-/// 展平结果 + 它背后的原始数据。
+/// 加载进来的**一个 `Target`** 和它配套的 `Linker`。
 ///
 /// 右栏的优化按钮要**直接改** `Target` 里的 `NodeGraphIr`(`Optimizer` 的消除
 /// 规则全在它上面),所以 `Target` 必须活着 —— 不能像以前那样 flatten 完就丢。
 ///
-/// # `targets` 与 `linkers` 为什么要分开存
+/// # 为什么带一个 `Linker`
 ///
 /// `Linker::touch_fn` / `Optimizer::link_node` 会从 `Linker.target` 里
 /// `remove` 函数,`Linker::link` 还会 `take` 走 main —— 它会**搬空**自己
-/// 那个 `target` 字段。viewer 真正要的图数据(展平、encode/decode、
-/// take/put)必须**走 `targets`**,**绝不**从 `linkers[i].target` 读。
-/// `linkers` 只在 `Optimizer::link_node` 需要它的时候摸一下,之后那一份
-/// 缓存就搁着不动(`AssetBundle`、已展开函数的 `CompiledFn` 都住里面,
-/// 重复 link 命中缓存)。`Linker::link()` / `save()` viewer 从不调,
-/// 所以 `Linker::output` 用空路径占位。
+/// 那个 `target` 字段。所以真正要的图数据(展平、encode/decode、take/put)
+/// 必须**走 `target`**,**绝不**从 `linker.target` 读。`linker` 只在
+/// `Optimizer::link_node` 需要它的时候摸一下,之后那一份缓存就搁着不动
+/// (`AssetBundle`、已展开函数的 `CompiledFn` 都住里面,重复 link 命中缓存)。
+/// `Linker::link()` / `save()` viewer 从不调,所以 `Linker::output` 用空路径占位。
+///
+/// 两者原来在 `Doc` 上是**两条平行 Vec**,靠"同长、同下标"的不成文约定维系;
+/// 收进一个结构体之后,那个约定变成了类型事实。
+struct LoadedTarget {
+    /// 图的**唯一真值**。
+    target: Target,
+    /// 配套的 `Linker`。**别**用它读图数据 —— 那份与 `target` 已经分叉。
+    linker: Linker,
+}
+
+impl LoadedTarget {
+    fn new(target: Target) -> Self {
+        // `Linker::new` 会把传进去的 `Target` 抢走,所以先 clone 一份给它。
+        let linker = Linker::new(GameMode::Beyond, target.clone(), PathBuf::new());
+        Self { target, linker }
+    }
+}
+
+/// 一张展平好的图 —— 展示快照 + 它在哪个 `Target` 里、是哪一个。
+///
+/// 这几个字段原来都是 `Doc` 上的平行 Vec(`graphs` / `owners` / `frozen` /
+/// `laid_out`),同样靠下标对齐维系。打包之后"加一个字段忘了同步另一个"
+/// 这类错误在新代码里写不出来,但旧方法的**行为**完全保留。
+pub struct GraphSlot {
+    /// 当前的展平快照(优化 / lower / 撤销后重算)。
+    ///
+    /// 叫 `view` 而不是 `entry`:`GraphEntry` 自己有个 `entry` 字段(入口块
+    /// 下标),同名会让 `slot.entry` 到底指哪个变得读不出来。
+    pub view: GraphEntry,
+    /// **加载时**的对外接口(「调用约定」的外层),永不改变。
+    ///
+    /// 它和 `view.interface`(内层)不是一回事:那个会随优化改变。
+    /// 分开存是因为加载之后没人再保留原始 `exports` 表 —— 优化会压缩引脚、
+    /// 撤销会换图,唯一稳定的锚点是**加载那一刻**。
+    frozen: FnInterface,
+    /// 在 `Doc::targets` 里的下标。
+    target: usize,
+    /// 这张 `Target` 里的哪张图。
+    source: GraphSource,
+    /// 布局过没有。布局是加载里最贵的一步(57 张图 3.1s),所以推迟到
+    /// 第一次打开这张图(见 [`Doc::ensure_layout`])。
+    laid_out: bool,
+}
+
+/// `GraphSlot` 按它的**展示快照**用:`slot.nodes` / `slot.name` 就是
+/// `slot.view.nodes` / `slot.view.name`。
+///
+/// 只解引用到 `view`,**不**到 `frozen` —— 两者是同一张图的两个时刻
+/// (当前 / 加载时),混用会让「调用约定」读错层。要 `frozen` 必须写明。
+impl std::ops::Deref for GraphSlot {
+    type Target = GraphEntry;
+    fn deref(&self) -> &GraphEntry {
+        &self.view
+    }
+}
+
+/// 展平结果 + 它背后的原始数据。
 pub struct Doc {
-    /// main 第一,其余按函数名排序
-    pub graphs: Vec<GraphEntry>,
-    /// 与 `graphs` 同长。
-    owners: Vec<GraphOwner>,
-    /// **唯一的图真值** —— 展平、encode、take/put、decode_into、relayout
-    /// 全部走这里。与 `linkers` 同长,下标对齐。
-    targets: Vec<Target>,
-    /// 每个 Target 配套的 Linker(创建时从 `targets` clone 一份过去,
-    /// 之后与 `targets` 状态分叉)。只供 `Optimizer::link_node` 摸 —
-    /// **不要从这里读图数据**。
-    linkers: Vec<Linker>,
-    /// **加载时**的对外接口,与 `graphs` 同长、同下标。
+    /// 全部图,main 第一,其余按函数名排序。
     ///
-    /// 「调用约定」视图的**外层**就是它 —— 永远不变,代表"调用方看到的
-    /// 那个复合节点长什么样"。优化 / lower 会改 `graphs[i].interface`
-    /// (那是**内层**),但外层不动。
-    ///
-    /// 为什么要单独存一份:加载之后没人再保留"原始的 exports 表"了 ——
-    /// 优化会压缩引脚、撤销会换图,唯一稳定的锚点是**加载那一刻**。
-    frozen: Vec<FnInterface>,
-    /// 与 `graphs` 同长:第 `i` 张图**布局过没有**。
-    ///
-    /// 布局是加载里最贵的一步(57 张图 3.1s),所以推迟到第一次打开那张图
-    /// (见 [`Doc::ensure_layout`])。这个表是那个"看过了"的标记。
-    laid_out: Vec<bool>,
+    /// `pub(crate)` 是为了测试能直接按图下标取 —— 正式代码请走
+    /// [`Doc::entry`] / [`Doc::entries`],不要在别处散着索引。
+    pub(crate) graphs: Vec<GraphSlot>,
+    /// 加载进来的 `Target`(每个自带 `Linker`)。
+    targets: Vec<LoadedTarget>,
 }
 
 impl Doc {
     pub fn new() -> Self {
         Self {
             graphs: Vec::new(),
-            owners: Vec::new(),
             targets: Vec::new(),
-            linkers: Vec::new(),
-            frozen: Vec::new(),
-            laid_out: Vec::new(),
         }
+    }
+
+    /// 第 `i` 张图的展平快照(渲染读的东西)。越界回 `None` ——
+    /// 调用方是交互驱动的,下标可能已过期。
+    pub fn entry(&self, i: usize) -> Option<&GraphEntry> {
+        self.graphs.get(i).map(|s| &s.view)
+    }
+
+    /// 全部图的展平快照,按加载顺序(main 第一,其余按函数名)。
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &GraphEntry> {
+        self.graphs.iter().map(|s| &s.view)
+    }
+
+    /// 图的数量。
+    pub fn len(&self) -> usize {
+        self.graphs.len()
+    }
+
+    /// 一张图都没有?
+    pub fn is_empty(&self) -> bool {
+        self.graphs.is_empty()
     }
 
     /// 把一个 `Target` 的全部图展平追进来,返回第一张新图的下标。
     /// 一个图都没有(没有 main、也没有函数)时返回 `None`。
     ///
     /// ⚠️ **这里不做布局**。布局是加载里最贵的一步(实测 57 张图 3.1s,
-    /// 占整个加载的 97%;展平只要 6.9ms),一次性给所有图算坐标会让窗口
+    /// 占整个加载的 97%;展平只要 7.9ms),一次性给所有图算坐标会让窗口
     /// 卡在启动上。坐标改成**第一次打开那张图**时才算 —— 见
-    /// [`Doc::ensure_layout`]。没布局过的图坐标全为 `(0,0)`,渲染前一定会
-    /// 先过一遍 `ensure_layout`。
-    pub fn push_target(&mut self, mut t: Target) -> Option<usize> {
+    /// [`Doc::ensure_layout`]。
+    pub fn push_target(&mut self, t: Target) -> Option<usize> {
         let target = self.targets.len();
         let first = self.graphs.len();
         // 链接键 → 可读名。展平要用它给 `Fn` 节点取名(便宜,不是布局)。
         let names = fn_names(&t);
-        // 喂给 Linker 的是 **clone** —— `Linker::new` 会把传进去的 `Target`
-        // 抢走,`targets[k]` 必须留着,后面 `take` / `put` / `reflatten` 全
-        // 走它。Linker 那一份之后会随 `link_node` 状态分叉,与我们无关。
-        let linker_t = t.clone();
-        self.targets.push(t);
-        self.linkers
-            .push(Linker::new(GameMode::Beyond, linker_t, PathBuf::new()));
-        // 展平读 `targets[k]`,**不读** `linkers[k].target`(后者的状态不可信)。
-        let t = &self.targets[target];
+        self.targets.push(LoadedTarget::new(t));
+        // 展平读 `targets[k].target`,**不读** `.linker.target`(那个会被搬空)。
+        let t = &self.targets[target].target;
         if let Some(main) = &t.main {
-            self.graphs.push(flatten_one("main".to_string(), main, &names, None));
-            self.owners.push(GraphOwner {
+            let view = flatten_one("main".to_string(), main, &names, None);
+            self.graphs.push(GraphSlot {
+                // 主图没有对外接口(`link.rs:79` 给它的 decl 是
+                // `Default::default()`),冻结一份空的 —— 「调用约定」只对
+                // 复合节点图显示。
+                frozen: FnInterface::default(),
+                view,
                 target,
                 source: GraphSource::Main,
+                laid_out: false,
             });
         }
         let mut keys: Vec<&String> = t.functions.keys().collect();
@@ -611,35 +658,16 @@ impl Doc {
             // 显示名用图自己记的可读名,不用 `functions` 的键 —— 那是 rustc
             // 的 mangled 符号(链接键),给人看没法读。
             let f = &t.functions[key];
-            self.graphs.push(flatten_one(
-                f.graph.name.clone(),
-                &f.graph,
-                &names,
-                Some(&f.decl),
-            ));
-            self.owners.push(GraphOwner {
+            let view = flatten_one(f.graph.name.clone(), &f.graph, &names, Some(&f.decl));
+            self.graphs.push(GraphSlot {
+                // 冻结加载时的接口 —— 「调用约定」视图的**外层**。
+                frozen: view.interface.clone(),
+                view,
                 target,
                 source: GraphSource::Fn(key.clone()),
+                laid_out: false,
             });
         }
-        // 冻结加载时的接口 —— 「调用约定」视图的**外层**。
-        // 主图没有这套接口(它的 decl 是 `Default::default()`),冻结一份空的。
-        //
-        // `truncate(first)` 而不是 `clear()`:多次加载文件时 `graphs` 只增不减,
-        // `frozen` 必须和它**同下标** —— 清空的话先前那些图的冻结接口就丢了。
-        self.frozen.truncate(first);
-        self.frozen.reserve(self.graphs.len() - first);
-        for i in first..self.graphs.len() {
-            let src = &self.owners[i].source;
-            let iface = match src {
-                GraphSource::Main => FnInterface::default(),
-                GraphSource::Fn(_) => self.graphs[i].interface.clone(),
-            };
-            self.frozen.push(iface);
-        }
-        // 新追加的图都还没布局过。
-        self.laid_out.resize(self.graphs.len(), false);
-        self.laid_out[first..].fill(false);
         (self.graphs.len() > first).then_some(first)
     }
 
@@ -647,7 +675,7 @@ impl Doc {
     ///
     /// 加载时不算坐标(见 [`Doc::push_target`]),所以渲染第一帧前必须问一句。
     pub fn layout_pending(&self, i: usize) -> bool {
-        !self.laid_out.get(i).copied().unwrap_or(true)
+        !self.graphs.get(i).is_some_and(|s| s.laid_out)
     }
 
     /// 确保第 `i` 张图有坐标 —— 没算过就跑一次 core 的布局(只跑一次)。
@@ -659,25 +687,20 @@ impl Doc {
         if !self.layout_pending(i) {
             return false;
         }
-        let Some(owner) = self.owners.get(i).cloned() else {
+        let Some((target, source)) = self.pos(i) else {
+            return false;
+        };
+        let Some(loaded) = self.targets.get_mut(target) else {
             return false;
         };
         // 函数表在优化(展开 `Fn`)后会变,名字映射每次重新算。
-        let names = {
-            let Some(t) = self.targets.get(owner.target) else {
-                return false;
-            };
-            fn_names(t)
-        };
-        let Some(t) = self.targets.get_mut(owner.target) else {
-            return false;
-        };
-        let g = match &owner.source {
-            GraphSource::Main => match t.main.as_mut() {
+        let names = fn_names(&loaded.target);
+        let g = match &source {
+            GraphSource::Main => match loaded.target.main.as_mut() {
                 Some(g) => g,
                 None => return false,
             },
-            GraphSource::Fn(name) => match t.functions.get_mut(name) {
+            GraphSource::Fn(name) => match loaded.target.functions.get_mut(name) {
                 Some(f) => &mut f.graph,
                 None => return false,
             },
@@ -685,8 +708,8 @@ impl Doc {
         layout_graph(g, &names);
         // 坐标写回了 IR 节点,展平快照里的 `position` 还是旧的 —— 重展平一次。
         self.reflatten(i);
-        if let Some(flag) = self.laid_out.get_mut(i) {
-            *flag = true;
+        if let Some(slot) = self.graphs.get_mut(i) {
+            slot.laid_out = true;
         }
         true
     }
@@ -695,7 +718,7 @@ impl Doc {
     ///
     /// 越界回 `None` —— 调用方是交互驱动的,下标可能已过期。
     pub fn frozen_interface(&self, i: usize) -> Option<&FnInterface> {
-        self.frozen.get(i)
+        self.graphs.get(i).map(|s| &s.frozen)
     }
 
     /// 第 `i` 张图是不是**复合节点图**(一个函数)。
@@ -704,7 +727,7 @@ impl Doc {
     /// `Default::default()` 的 decl),所以「调用约定」视图只对函数图显示。
     pub fn is_fn_graph(&self, i: usize) -> bool {
         matches!(
-            self.owners.get(i).map(|o| &o.source),
+            self.graphs.get(i).map(|s| &s.source),
             Some(GraphSource::Fn(_))
         )
     }
@@ -714,8 +737,8 @@ impl Doc {
     /// 和 [`Doc::ensure_layout`] 的区别:那个"没算过才算",这个是"不管算没算过,
     /// 现在重算"(用户点了「自动整理」)。返回 `false` 表示图或它背后的数据没了。
     pub fn relayout(&mut self, i: usize) -> bool {
-        if let Some(flag) = self.laid_out.get_mut(i) {
-            *flag = false;
+        if let Some(slot) = self.graphs.get_mut(i) {
+            slot.laid_out = false;
         }
         self.ensure_layout(i)
     }
@@ -723,28 +746,29 @@ impl Doc {
     /// 重新展平第 `i` 张图。优化 / 撤销改完 `Target` 里的图之后**必须**调用,
     /// 否则渲染的还是旧快照。返回 `false` 表示图或它背后的数据没了。
     pub fn reflatten(&mut self, i: usize) -> bool {
-        let Some(owner) = self.owners.get(i).cloned() else {
+        let Some((target, source)) = self.pos(i) else {
             return false;
         };
-        let Some(t) = self.targets.get(owner.target) else {
+        let Some(name) = self.graphs.get(i).map(|s| s.view.name.clone()) else {
             return false;
         };
-        let (g, decl) = match &owner.source {
+        let Some(loaded) = self.targets.get(target) else {
+            return false;
+        };
+        let t = &loaded.target;
+        let (g, decl) = match &source {
             GraphSource::Main => match &t.main {
                 Some(g) => (g, None),
                 None => return false,
             },
-            GraphSource::Fn(name) => match t.functions.get(name) {
+            GraphSource::Fn(key) => match t.functions.get(key) {
                 Some(f) => (&f.graph, Some(&f.decl)),
                 None => return false,
             },
         };
-        self.graphs[i] = flatten_one(
-            self.graphs[i].name.clone(),
-            g,
-            &fn_names(t),
-            decl,
-        );
+        let view = flatten_one(name, g, &fn_names(t), decl);
+        // 只换**当前**快照;`frozen` 是加载时那份,不动。
+        self.graphs[i].view = view;
         true
     }
 
@@ -753,9 +777,9 @@ impl Doc {
     /// 链接键是 rustc 的 mangled 符号,和 `functions` 的键一致 ——
     /// 所以能直接对上。找不到(函数在别的 Target 里 / 已被优化展开)返回 `None`。
     pub fn graph_of_fn(&self, key: &str) -> Option<usize> {
-        self.owners
+        self.graphs
             .iter()
-            .position(|o| matches!(&o.source, GraphSource::Fn(k) if k == key))
+            .position(|s| matches!(&s.source, GraphSource::Fn(k) if k == key))
     }
 
     /// 第 `i` 张图的当前状态编码成字节(撤销 / panic 回滚共用)。
@@ -776,16 +800,13 @@ impl Doc {
     /// 解码成功之前不改任何东西(原子):解码失败时原来的图原样留着。
     /// `Slab` 的 serde 保留 key(空洞保留),所以换回来 `NodeRef` 完全一致。
     pub fn decode_into(&mut self, i: usize, bytes: &[u8]) -> Result<(), String> {
-        let owner = self.owners.get(i).cloned().ok_or("图下标越界")?;
-        let t = self
-            .targets
-            .get_mut(owner.target)
-            .ok_or("Target 不存在")?;
-        match owner.source {
-            GraphSource::Main => t.main = Some(decode_bytes(bytes)?),
+        let (target, source) = self.pos(i).ok_or("图下标越界")?;
+        let t = self.targets.get_mut(target).ok_or("Target 不存在")?;
+        match source {
+            GraphSource::Main => t.target.main = Some(decode_bytes(bytes)?),
             GraphSource::Fn(name) => {
                 let info: FnInfo = decode_bytes(bytes)?;
-                t.functions.insert(name, info);
+                t.target.functions.insert(name, info);
             }
         }
         Ok(())
@@ -796,9 +817,9 @@ impl Doc {
     /// 跑完必须用 [`Doc::put`] 或 [`Doc::decode_into`] 放回去 ——
     /// 搬出来期间 `Target` 里那张图是空的。
     pub fn take(&mut self, i: usize) -> Option<Optimizer> {
-        let owner = self.owners.get(i).cloned()?;
-        let t = self.targets.get_mut(owner.target)?;
-        match owner.source {
+        let (target, source) = self.pos(i)?;
+        let t = &mut self.targets.get_mut(target)?.target;
+        match source {
             GraphSource::Main => {
                 let graph = t.main.take()?;
                 // 主图的 decl 在 core 里也是 `Default::default()`(`link.rs:79`)。
@@ -820,16 +841,16 @@ impl Doc {
 
     /// 把 [`Doc::take`] 搬出来的图放回去(不重展平 —— 那是 [`Doc::reflatten`])。
     pub fn put(&mut self, i: usize, opt: Optimizer) {
-        let Some(owner) = self.owners.get(i).cloned() else {
+        let Some((target, source)) = self.pos(i) else {
             return;
         };
-        let Some(t) = self.targets.get_mut(owner.target) else {
+        let Some(t) = self.targets.get_mut(target) else {
             return;
         };
-        match owner.source {
-            GraphSource::Main => t.main = Some(opt.graph),
+        match source {
+            GraphSource::Main => t.target.main = Some(opt.graph),
             GraphSource::Fn(name) => {
-                if let Some(f) = t.functions.get_mut(&name) {
+                if let Some(f) = t.target.functions.get_mut(&name) {
                     f.graph = opt.graph;
                     f.decl = opt.decl;
                 }
@@ -837,18 +858,23 @@ impl Doc {
         }
     }
 
+    /// 第 `i` 张图在原始数据里的坐标 `(Target 下标, 哪张图)`。
+    fn pos(&self, i: usize) -> Option<(usize, GraphSource)> {
+        self.graphs.get(i).map(|s| (s.target, s.source.clone()))
+    }
+
     fn target_and_source(&self, i: usize) -> Option<(&Target, &GraphSource)> {
-        let owner = self.owners.get(i)?;
-        let t = self.targets.get(owner.target)?;
-        Some((t, &owner.source))
+        let slot = self.graphs.get(i)?;
+        let t = self.targets.get(slot.target)?;
+        Some((&t.target, &slot.source))
     }
 
     /// 第 `i` 张图所属的 `Linker` —— `Optimizer::link_node` 展开函数节点时要它
     /// (已展开函数的缓存、结构体资产都在里面)。**别**用它来读图数据,
-    /// 那份与 `targets[i]` 已经分叉了。
+    /// 那一份与 `targets[..].target` 已经分叉了。
     pub fn linker_mut(&mut self, i: usize) -> Option<&mut Linker> {
-        let owner = self.owners.get(i)?;
-        self.linkers.get_mut(owner.target)
+        let target = self.graphs.get(i)?.target;
+        self.targets.get_mut(target).map(|t| &mut t.linker)
     }
 }
 

@@ -1391,12 +1391,12 @@ impl Viewer {
     /// 第一个文件复用那张初始空标签页,之后每个文件各开一张新标签页
     /// —— 和浏览器"新开一个文件就是新开一页"一致。
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
-        let had_graphs = !self.doc.graphs.is_empty();
+        let had_graphs = !self.doc.is_empty();
         if let Some(first) = self.doc.push_target(t) {
             // **不在这里读坐标**:加载时还没布局(`Doc::push_target` 只展平,
             // 不算坐标)。`positions` 按图下标惰性补齐 —— 缺的位置是空表,
             // 等 `show()` 里 `ensure_layout` 算完再由 `reload_positions` 填。
-            self.positions.resize_with(self.doc.graphs.len(), Vec::new);
+            self.positions.resize_with(self.doc.len(), Vec::new);
             self.error = None;
             if had_graphs {
                 self.open_tab(first, cx);
@@ -1425,7 +1425,7 @@ impl Viewer {
     fn select_graph(&mut self, i: usize) -> bool {
         // 越界直接返回:**不索引**。切图是交互驱动的,双击列表/拖入文件
         // 交叠时给一个越界下标是完全可能的。
-        if self.doc.graphs.get(i).is_none() {
+        if self.doc.entry(i).is_none() {
             return false;
         }
         if !self.navigating {
@@ -1478,7 +1478,7 @@ impl Viewer {
 
     /// 重新读第 `i` 张图的节点坐标(布局刚算过 / 外部改过 IR 之后)。
     fn reload_positions(&mut self, i: usize) {
-        let Some(g) = self.doc.graphs.get(i) else {
+        let Some(g) = self.doc.entry(i) else {
             return;
         };
         let pos: Vec<Point<f32>> = g.nodes.iter().map(|n| n.position).collect();
@@ -1542,7 +1542,7 @@ impl Viewer {
     /// 否则新开一页。历史记的页签可能早就被关掉了,所以这里不能按页签找,
     /// 只能按**图**找。
     fn apply_nav(&mut self, entry: NavEntry) -> bool {
-        if self.doc.graphs.get(entry.graph).is_none() {
+        if self.doc.entry(entry.graph).is_none() {
             self.status = Some("那个位置已经不在了".to_string());
             return false;
         }
@@ -1587,7 +1587,7 @@ impl Viewer {
 
     /// [`Viewer::open_tab`] 的纯逻辑部分。
     fn open_tab_step(&mut self, i: usize) -> bool {
-        if self.doc.graphs.get(i).is_none() {
+        if self.doc.entry(i).is_none() {
             return false;
         }
         self.record_nav();
@@ -1611,7 +1611,7 @@ impl Viewer {
 
     /// [`Viewer::open_graph_in_tab`] 的纯逻辑部分。
     fn open_graph_step(&mut self, i: usize) -> bool {
-        if self.doc.graphs.get(i).is_none() {
+        if self.doc.entry(i).is_none() {
             return false;
         }
         self.record_nav();
@@ -1658,8 +1658,7 @@ impl Viewer {
     /// 当前标签页的标题(图名)。没有图时给个占位。
     fn tab_title(&self, tab: &Tab) -> String {
         self.doc
-            .graphs
-            .get(tab.graph)
+            .entry(tab.graph)
             .map(|g| g.name.clone())
             .unwrap_or_else(|| "?".to_string())
     }
@@ -1669,8 +1668,7 @@ impl Viewer {
     fn open_menu(&mut self, node_index: usize, at_window: Point<f32>, cx: &mut Context<Self>) {
         let is_fn = self
             .doc
-            .graphs
-            .get(self.current)
+            .entry(self.current)
             .and_then(|g| g.nodes.get(node_index))
             .is_some_and(|n| matches!(n.kind, IrNodeId::Fn(_)));
         self.menu = is_fn.then(|| {
@@ -1783,7 +1781,7 @@ impl Viewer {
     /// 右栏「自动整理」:重算当前图的坐标。拖动结果会丢,Ctrl+Z 能撤回。
     pub fn arrange(&mut self, cx: &mut Context<Self>) {
         let i = self.current;
-        let Some(g) = self.doc.graphs.get(i) else {
+        let Some(g) = self.doc.entry(i) else {
             return;
         };
         let refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
@@ -1808,11 +1806,10 @@ impl Viewer {
         // 布局在 core(`Doc::relayout`):对 IR 图跑自动整理 + 重展平,
         // 再把新坐标读进视图状态。
         self.doc.relayout(i);
-        let new_pos: Vec<Point<f32>> = self.doc.graphs[i]
-            .nodes
-            .iter()
-            .map(|n| n.position)
-            .collect();
+        let new_pos: Vec<Point<f32>> = self.doc
+            .entry(i)
+            .map(|g| g.nodes.iter().map(|n| n.position).collect())
+            .unwrap_or_default();
         self.set_pos(new_pos);
         self.status = Some("已自动整理(Ctrl+Z 可撤销)".to_string());
         cx.notify();
@@ -1888,8 +1885,7 @@ impl Viewer {
     /// 当前图的展平顺序(`NodeRef` 序列),与 `positions[current]` 同序。
     fn current_refs(&self) -> Vec<NodeRef> {
         self.doc
-            .graphs
-            .get(self.current)
+            .entry(self.current)
             .map(|g| g.nodes.iter().map(|n| n.node_ref).collect())
             .unwrap_or_default()
     }
@@ -2024,7 +2020,7 @@ impl Viewer {
     /// 命中多个时取**最后一个**(后画的在上层)。节点框用和渲染一样的
     /// [`node_box`],所以"看到的"和"命中的"是同一套几何。
     fn node_at(&self, at: Point<f32>) -> Option<usize> {
-        let g = self.doc.graphs.get(self.current)?;
+        let g = self.doc.entry(self.current)?;
         let pos = self
             .positions
             .get(self.current)
@@ -2045,7 +2041,7 @@ impl Viewer {
     /// 在容器局部坐标 `at` 上做一次命中测试。悬停和渲染共用这一条路径,
     /// 免得"看到的"和"命中的"是两套几何。
     fn pick(&self, at: Point<f32>) -> Option<Hover> {
-        let g = self.doc.graphs.get(self.current)?;
+        let g = self.doc.entry(self.current)?;
         let pos = self
             .positions
             .get(self.current)
@@ -2061,11 +2057,11 @@ impl Viewer {
         if let Some(e) = &self.error {
             return Some(format!("解析失败:{e}"));
         }
-        if self.doc.graphs.is_empty() {
+        if self.doc.is_empty() {
             return Some("拖入 .ogia 或 .rlib 文件".to_string());
         }
         // `current` 越界(切图瞬间)按"没有可显示的图"处理,不索引、不 panic。
-        let Some(g) = self.doc.graphs.get(self.current) else {
+        let Some(g) = self.doc.entry(self.current) else {
             return Some("没有可显示的图".to_string());
         };
         // 注意:**节点为 0 的图是正常数据,不是错误**。真实 Target 里完全可能有
@@ -2110,7 +2106,7 @@ impl Render for Viewer {
 
         // `placeholder()` 已经保证图存在且非空,这里还是用 `get`:
         // 渲染期不做任何未检查的下标访问。
-        let Some(g) = self.doc.graphs.get(self.current) else {
+        let Some(g) = self.doc.entry(self.current) else {
             return div().size_full().into_any_element();
         };
 
@@ -2751,8 +2747,7 @@ impl Render for Viewer {
                     .overflow_y_scroll()
                     .children(
                         self.doc
-                            .graphs
-                            .iter()
+                            .entries()
                             .enumerate()
                             .filter(|(_, entry)| Self::matches_search(&entry.name, &query))
                             .map(|(i, entry)| {
@@ -3157,7 +3152,7 @@ impl Viewer {
     fn marquee_select(&mut self, a: Point<f32>, b: Point<f32>) {
         let (x0, x1) = if a.x <= b.x { (a.x, b.x) } else { (b.x, a.x) };
         let (y0, y1) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
-        let Some(g) = self.doc.graphs.get(self.current) else {
+        let Some(g) = self.doc.entry(self.current) else {
             return;
         };
         let pos = self
@@ -3186,7 +3181,7 @@ impl Viewer {
     /// `IrNodeId::Fn` 里带的是链接键(和 `functions` 的键一致),
     /// 所以能直接对上。
     fn fn_target_graph(&self, node_index: usize) -> Option<usize> {
-        let g = self.doc.graphs.get(self.current)?;
+        let g = self.doc.entry(self.current)?;
         let n = g.nodes.get(node_index)?;
         let IrNodeId::Fn(key) = &n.kind else {
             return None;
@@ -3340,7 +3335,7 @@ impl Viewer {
             return None;
         }
         let outer = self.doc.frozen_interface(self.current)?;
-        let inner = &self.doc.graphs.get(self.current)?.interface;
+        let inner = &self.doc.entry(self.current)?.interface;
         Some((outer, inner))
     }
 
