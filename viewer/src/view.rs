@@ -941,6 +941,25 @@ impl TabHost {
     }
 }
 
+/// 拖「调用约定」视图里的内层节点时记的东西。
+///
+/// 按下时记一份**锚点**:鼠标在哪、内层节点在哪。之后的位置一律按
+/// `start + (现在 - anchor)` 算。
+///
+/// ⚠️ **不能累加每次的移动量** —— 指针移出窗口再回来时,补上的那次
+/// `mouse_move` 带着整段位移(win32 的 wparam 在指针离开时不带按键信息,
+/// `mouse_up` 收不到),累加实现会把这一整段一次性甩到位置上。
+/// 相对按下点算就没有这个问题:中间丢多少事件都不影响。
+#[derive(Clone, Copy, Debug)]
+struct ConvDrag {
+    /// 拖的是哪张图。
+    graph: usize,
+    /// 按下时的鼠标位置(窗口坐标)。
+    anchor: Point<f32>,
+    /// 按下时内层节点的位置(面板局部坐标)。
+    start: (f32, f32),
+}
+
 /// 拖拽的种类。
 enum Drag {
     /// 拖动**一组**节点(可能只有一个)。`last` 是上一次鼠标位置(窗口坐标)。
@@ -1053,9 +1072,10 @@ pub struct Viewer {
     conv_pos: HashMap<usize, (f32, f32)>,
     /// 正在拖「调用约定」视图里的内层节点。
     ///
-    /// `last` 是上一次鼠标位置(窗口坐标)。位置本身记在 `conv_pos` 里,
-    /// 拖动只用**增量** —— 和画布平移一个道理,不需要知道面板在窗口里的原点。
-    conv_drag: Option<(usize, Point<f32>)>,
+    /// `anchor` 是**按下时**的鼠标位置(窗口坐标),`start` 是按下时内层节点的
+    /// 位置(面板局部坐标)。位置按 `start + (现在 - anchor)` 算,不是累加
+    /// 每次的移动量 —— 理由见 [`Viewer::drag_conv_inner`]。
+    conv_drag: Option<ConvDrag>,
     /// 「调用约定」视图里当前悬停命中的东西(`None` = 没悬在任何东西上)。
     ///
     /// 悬停气泡显示**类型** —— 引脚旁边只写名字(用户要求)。
@@ -3077,16 +3097,20 @@ impl Viewer {
     }
 
     /// 拖「调用约定」视图里的内层节点。
+    ///
+    /// `at_window` 是事件的**窗口**坐标(`Point<f32>`)。
+    ///
+    /// ⚠️ **位置是相对「按下时」算的,不是累加每次的移动量。**
+    ///
+    /// 累加增量有个致命的坑:指针移出窗口再回来时,win32 的 wparam 不带按键
+    /// 信息(`mouse_up` 收不到),而补上的那次 `mouse_move` 带着**整段**位移 ——
+    /// 累加实现会把这一整段一次性加到位置上,节点"隔着大老远"被甩出去。
+    /// 相对按下点算就没有这个问题:位置 = 按下时的位置 + (现在 - 按下时),
+    /// 中间丢多少事件都不影响。
     fn drag_conv_inner(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
-        let Some((graph, last)) = self.conv_drag else {
+        let Some(drag) = self.conv_drag else {
             return;
         };
-        let now = at_window;
-        let delta = point(now.x - last.x, now.y - last.y);
-        self.conv_drag = Some((graph, now));
-        if delta.x == 0.0 && delta.y == 0.0 {
-            return;
-        }
         // 先算布局 —— 夹边界要用外层盒子的大小。
         let Some((outer, inner)) = self.conv_data() else {
             return;
@@ -3094,17 +3118,13 @@ impl Viewer {
         let conv = conv::Convention::build(outer, inner);
         let width = RULES_WIDTH - 2.0 * CONV_PAD;
         let probe = conv::layout(outer, inner, &conv, (0.0, 0.0), width);
-        // 位置存的是**面板局部**坐标(相对 `conv-body`),和布局同一坐标系。
-        let cur = self.conv_pos.get(&graph).copied().unwrap_or_else(|| {
-            (
-                probe.outer.x + 16.0,
-                probe.outer.y + (probe.outer.h - probe.inner.h) / 2.0,
-            )
-        });
-        let next = (cur.0 + delta.x, cur.1 + delta.y);
+        // 相对**按下点**的位移,不是累加。
+        let next = conv::drag_pos(drag.start, drag.anchor, at_window);
         let clamped = conv::clamp_inner(next, &probe);
-        self.conv_pos.insert(graph, clamped);
-        cx.notify();
+        if clamped != drag.start {
+            self.conv_pos.insert(drag.graph, clamped);
+            cx.notify();
+        }
     }
 }
 
@@ -3400,10 +3420,22 @@ impl Viewer {
             .overflow_hidden()
             .cursor_grab()
             .child(inner_label);
+        // 按下时内层节点的位置 —— 闭包是 `'static` 的,得先把值拷出来。
+        let inner_start = (l.inner.x, l.inner.y);
         inner_box = inner_box.on_mouse_down(
             MouseButton::Left,
-            cx.listener(|v, e: &MouseDownEvent, _w, cx| {
-                v.conv_drag = Some((v.current, from_px(e.position)));
+            cx.listener(move |v, e: &MouseDownEvent, _w, cx| {
+                // 记下**按下时**的锚点:鼠标在哪、内层节点在哪。
+                // 之后的位置按 `start + (现在 - anchor)` 算,不累加增量 ——
+                // 指针移出窗口再回来时补上的那次 move 带着整段位移,累加
+                // 会把节点甩到大老远(见 `ConvDrag` 的注释)。
+                let at = from_px(e.position);
+                let start = v.conv_pos.get(&v.current).copied().unwrap_or(inner_start);
+                v.conv_drag = Some(ConvDrag {
+                    graph: v.current,
+                    anchor: at,
+                    start,
+                });
                 cx.stop_propagation();
             }),
         );

@@ -452,6 +452,24 @@ pub fn clamp_inner(pos: (f32, f32), layout: &Layout) -> (f32, f32) {
     (x, y)
 }
 
+/// 拖动时的位置:相对**按下点**算,不是累加每次的移动量。
+///
+/// `start` 是按下时内层节点的位置(面板局部坐标),`anchor` 是按下时的鼠标
+/// 位置,`now` 是现在的鼠标位置。
+///
+/// ⚠️ **不能累加增量** —— 指针移出窗口再回来时,win32 的 wparam 不带按键
+/// 信息(`mouse_up` 收不到),补上的那次 `mouse_move` 带着**整段**位移。
+/// 累加实现会把这一整段一次性加到位置上,节点"隔着大老远"被甩出去。
+///
+/// 相对按下点算就没有这个问题:中间丢多少事件都不影响,位置只取决于
+/// "现在鼠标在哪儿"。
+pub fn drag_pos(start: (f32, f32), anchor: Point<f32>, now: Point<f32>) -> (f32, f32) {
+    (
+        start.0 + (now.x - anchor.x),
+        start.1 + (now.y - anchor.y),
+    )
+}
+
 // ------------------------------------------------------------------ 悬停
 
 /// 一个引脚的悬停文案。
@@ -1009,5 +1027,71 @@ mod tests {
         let (px, py) = pin_pos(&l, &pins[0]).expect("引脚在");
         let hit = hit_test(&l, &pins, &c.links, point(px + 1.0, py + 1.0));
         assert_eq!(hit, Some(pins[0].clone()), "内层引脚也要能命中");
+    }
+
+    // --------------------------------------------------------------- 拖动
+
+    /// 拖动位置**相对按下点**算,不累加每次的移动量。
+    ///
+    /// 这条锁的是用户报的那个坑:指针移出窗口再回来时,补上的那次
+    /// `mouse_move` 带着**整段**位移(win32 的 wparam 在指针离开窗口时
+    /// 不带按键信息,`mouse_up` 收不到)。累加的实现会把这一整段一次性
+    /// 加到位置上,节点"隔着大老远"被甩出去。
+    ///
+    /// 相对按下点算就没有这个问题 —— 中间丢多少事件都不影响位置。
+    #[test]
+    fn dragging_is_relative_to_the_press_not_accumulated() {
+        let start = (100.0, 100.0);
+        let anchor = point(500.0, 400.0);
+        // 鼠标先移一小段,再"移出窗口又回来"(中间那次带着整段位移)。
+        let mid = point(510.0, 405.0);
+        let back = point(90.0, 300.0);
+
+        // 第一次:相对按下点 10,5。
+        assert_eq!(
+            drag_pos(start, anchor, mid),
+            (110.0, 105.0),
+            "第一次移动只走 10,5"
+        );
+        // 第二次:相对按下点 -410,-100 —— **不是** 第一次的量再加上这一段。
+        assert_eq!(
+            drag_pos(start, anchor, back),
+            (-310.0, 0.0),
+            "位置只取决于现在鼠标在哪,不累加"
+        );
+    }
+
+    /// 拖动**夹**在外层盒子里面 —— 拖不出去,但也**不会**因为夹紧而
+    /// 在下一次移动时把夹掉的量又加回来。
+    ///
+    /// 这是"相对按下点"与"累加"的第二个区别:累加实现里,节点贴到左墙
+    /// 之后,下一次往右拖会从"墙上的位置"再加增量,等于把之前被夹掉的
+    /// 那段距离还回来 —— 节点会"粘"在墙上,松手才跳回去。
+    #[test]
+    fn a_pinned_inner_node_does_not_drift_when_dragged_back() {
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+
+        // 按下时节点已经在左墙边上。
+        let pinned = conv_clamp(&l);
+        let anchor = point(600.0, 400.0);
+        // 往左拖 50px:被夹住,位置不变。
+        let left = drag_pos(pinned, anchor, point(550.0, 400.0));
+        assert_eq!(clamp_inner(left, &l), pinned, "拖到墙外被夹住");
+        // 往右拖 20px:相对按下点算,应该真的往右挪 20px(而不是纹丝不动)。
+        let right = drag_pos(pinned, anchor, point(620.0, 400.0));
+        assert!(
+            clamp_inner(right, &l).0 > pinned.0,
+            "往回拖要能真的动:{:?} vs {:?}",
+            clamp_inner(right, &l),
+            pinned
+        );
+    }
+
+    /// 把内层节点放到外层盒子的左墙边上(贴着夹紧边界)。
+    fn conv_clamp(l: &Layout) -> (f32, f32) {
+        (l.outer.x + 2.0, l.outer.y + 2.0)
     }
 }
