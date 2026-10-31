@@ -733,11 +733,11 @@ impl Viewer {
             // 进来看到的是文件全貌,而不是被迫先看某一张 —— 和 IDE 打开
             // 一个项目不自动打开某个文件一样。
             //
-            // 只在**一张图都没有时**给一个锚点:`toc_selected` 指向第一项,
-            // 免得进来看上去什么都没选中。
+            // 只把左栏的**选中项**锚到第一项(免得看上去什么都没选),
+            // **不动 `current`** —— 它还指着上次的下标,改它会让别处以为
+            // "画布正在显示那一张"(用户报过左栏显示开着 main)。
             if self.tabs.tabs.is_empty() {
                 self.toc_selected = Some(first);
-                self.current = first;
             }
             cx.notify();
         } else {
@@ -1330,6 +1330,10 @@ impl Viewer {
     /// 坐标、panic 回滚、撤销存档的来龙去脉全在 [`crate::optimize::apply_rule`],
     /// 这里只负责接上视图状态。
     pub fn apply_rule(&mut self, rule_index: usize, cx: &mut Context<Self>) {
+        // 没有打开的图就没有"当前图"可优化。
+        if self.tabs.tabs.is_empty() {
+            return;
+        }
         let Some(rule) = RULES.get(rule_index) else {
             return;
         };
@@ -1351,6 +1355,13 @@ impl Viewer {
     /// **右栏没有撤销按钮** —— 只留快捷键(用户要求)。撤之前先把"当前这一帧"
     /// 压进重做栈,所以撤销随时可以被 Ctrl+Y 反向抵掉。
     pub fn undo_step(&mut self, cx: &mut Context<Self>) {
+        // 没有打开的图就没有"当前图"可撤销 —— 别拿 `current`(它还指着
+        // 上次的下标)去查栈,那会作用到一张没在显示的图上。
+        if self.tabs.tabs.is_empty() {
+            self.status = Some("没有打开的图".to_string());
+            cx.notify();
+            return;
+        }
         let i = self.current;
         let Some(entry) = self.undo_stack.get_mut(&i).and_then(|s| s.pop()) else {
             self.status = Some("没有可撤销的操作".to_string());
@@ -1380,6 +1391,11 @@ impl Viewer {
 
     /// Ctrl+Y:重做刚被撤销的那一步。
     pub fn redo_step(&mut self, cx: &mut Context<Self>) {
+        if self.tabs.tabs.is_empty() {
+            self.status = Some("没有打开的图".to_string());
+            cx.notify();
+            return;
+        }
         let i = self.current;
         let Some(entry) = self.redo_stack.get_mut(&i).and_then(|s| s.pop()) else {
             self.status = Some("没有可重做的操作".to_string());
@@ -1973,6 +1989,11 @@ impl Viewer {
     ///
     /// 主图返回 `None` —— 主图没有对外接口,这个视图不显示。
     fn conv_data(&self) -> Option<(&FnInterface, &FnInterface)> {
+        // 没有打开的标签页 = 画布上没有图,「调用约定」无从谈起。
+        // 不拦的话 `current`(它还指着上次的下标)会让面板显示一个没打开的图。
+        if self.tabs.tabs.is_empty() {
+            return None;
+        }
         if !self.doc.is_fn_graph(self.current) {
             return None;
         }
@@ -2620,8 +2641,13 @@ impl Viewer {
         // 改写类按钮(链接全部 / 一键优化 / 循环改写 / lower)在**图已经 lower
         // 过**时全部禁用:判据是显式记下的 `lowered` 集合(不是从图上推,理由见
         // 那个字段的注释)。撤销回退到"没 lower 过"的那一帧后自动恢复。
+        //
+        // ⚠️ **没有打开的标签页时,整栏都不可点** —— 那些按钮作用在"当前图"
+        // 上,而此刻根本没有当前图。以前只看 `is_lowered()`,于是空状态下按钮
+        // 照样能点、能撤销(用户报过)。
+        let has_graph = !self.tabs.tabs.is_empty();
         let lowered = self.is_lowered();
-        let editable = !lowered;
+        let editable = has_graph && !lowered;
         let rules_body = div()
             .id("rules")
             .w(px(RULES_WIDTH))
@@ -2867,7 +2893,11 @@ impl Viewer {
                                 // 两者可以不同:单击只移动这里的选中,双击才切画布。
                                 let picked = self.toc_selected == Some(i);
                                 // 正在画布上显示的那张另给一个淡标记,免得看丢。
-                                let on_canvas = i == self.current;
+                                //
+                                // ⚠️ **没有打开的标签页时不算"正在显示"** —— 否则
+                                // `current`(它还指着上次那个下标)会让某一项一直带
+                                // 标记,看起来像"main 是开着的"(用户报过)。
+                                let on_canvas = !self.tabs.tabs.is_empty() && i == self.current;
                                 div()
                                     .id(("graph", i))
                                     .px_2()
@@ -3448,6 +3478,38 @@ mod tests {
         let h = TabHost::new();
         assert!(h.tabs.is_empty(), "启动时不该有任何页签");
         assert_eq!(h.active, 0, "空列表上活动下标是 0(不会越界)");
+    }
+
+    /// **没有打开任何图时,左栏不该标"开着",右栏不该可点。**
+    ///
+    /// 用户报过两点:
+    /// - 未打开标签时左栏却显示开着 `main` —— 因为 `current` 还指着某个下标,
+    ///   左栏用它判断"正在显示",于是那一项带了标记;
+    /// - 右栏也能点、也能撤销 —— 因为 `editable` 只看 `is_lowered()`,
+    ///   而空状态下它自然是 `false`(没 lower 过)。
+    ///
+    /// 两处的判据都改成"**有没有打开的标签页**"。这条把那个判据钉住。
+    #[test]
+    fn no_tab_open_means_nothing_is_shown_or_editable() {
+        // 打开一页,再关掉 —— `current` 会停在最后那张图上(它不会被清零),
+        // 这正是出问题的状态。
+        let mut h = TabHost::with_tabs(1);
+        assert!(!h.tabs.is_empty(), "前提:一开始有一页");
+        let gone = h.close(0);
+        assert!(gone.is_none());
+        assert!(h.tabs.is_empty(), "关掉之后一页不剩");
+
+        // 左栏判据:必须是 `!tabs.is_empty() && i == current`。
+        // 只看 `i == current` 就会在空列表时仍标出某一项(用户看到的现象)。
+        let still_marks_something = |i: usize, current: usize| !h.tabs.is_empty() && i == current;
+        assert!(
+            !still_marks_something(0, 0),
+            "空列表时第 0 项(哪怕 current 也是 0)不该被标成'正在显示'"
+        );
+
+        // 右栏判据:`has_graph && !lowered`。空列表时 has_graph 为假。
+        let has_graph = !h.tabs.is_empty();
+        assert!(!has_graph, "空列表时右栏不可编辑、撤销也不该作用到任何图");
     }
 
     /// 关到空之后 `close` 回 `None`、`active` 归 0,`Viewer` 那边把画布镜像
