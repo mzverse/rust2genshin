@@ -287,6 +287,7 @@ fn hover_bubble(text: String, at: Point<f32>) -> gpui::Div {
 
 /// 节点右键菜单(现在只有 `Fn` 节点的「link」一项)。
 /// `x` / `y` 是**容器局部**坐标(和节点几何一个坐标系)。
+#[derive(Clone, Debug, PartialEq)]
 struct NodeMenu {
     /// 右键时那个节点在展平顺序里的下标。
     node_index: usize,
@@ -294,11 +295,22 @@ struct NodeMenu {
     y: f32,
 }
 
-/// 一个标签页:打开着哪张图,以及它自己的视图状态。
+/// 一个标签页:打开着哪张图,以及**它自己那一整套画布状态**。
 ///
 /// 标签页存的是**图下标**而不是图本身 —— `Doc::graphs` 只 append,下标是稳定的,
 /// 同一张图在两个标签页里打开时也天然共享同一份数据(改了都能看见)。
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// # 为什么画布状态住在标签页里
+///
+/// 真正的多标签页应该是"每个页签一套画布",切走再切回来**什么都没变** ——
+/// 包括选中了哪些节点、右键菜单开着没有、正在拖谁、视野在哪。
+///
+/// 以前这些都挂在 `Viewer` 上一份,`show()` 切页签时把它们全清掉
+/// (`self.menu = None` / `clear_selection()` …),于是切回来等于重置。
+/// 用户报过「为什么画布不是每个标签页一个而是切换时重置同一个画布」。
+///
+/// 现在这些字段搬进 `Tab`,`Viewer` 只在 `show()` 里**存取**它们。
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     /// 这张标签页显示 `Doc::graphs` 里的第几张图。
     pub graph: usize,
@@ -307,6 +319,23 @@ pub struct Tab {
     pub origin: Point<f32>,
     /// 缩放。
     pub scale: f32,
+    /// 这个页签里选中了哪些节点(展平后的**下标**,只在这一张图里有意义)。
+    pub selected: Vec<usize>,
+    /// 右键菜单。节点下标属于这张图,所以跟着页签走。
+    pub menu: Option<NodeMenu>,
+    /// 正在进行的拖动。切走的页签如果正拖着,回来接着拖。
+    pub drag: Option<Drag>,
+    /// 框选矩形(正在拖的时候)。
+    pub marquee: Option<(Point<f32>, Point<f32>)>,
+    /// 当前悬停的节点(画布内)。
+    pub hover_node: Option<usize>,
+    /// 「调用约定」内层节点的位置。按**图下标**索引 —— 同一张图在两个
+    /// 页签里打开时看的是同一个函数,内层位置没必要各记一份。
+    pub conv_pos: HashMap<usize, (f32, f32)>,
+    /// 正在拖「调用约定」内层节点。
+    pub conv_drag: Option<ConvDrag>,
+    /// 「调用约定」的悬停命中。
+    pub conv_hover: Option<(conv::Hit, Point<f32>)>,
 }
 
 /// 前进 / 后退历史里的一条记录。
@@ -341,14 +370,29 @@ struct TabHost {
     nav: NavHistory,
 }
 
+impl Tab {
+    /// 一个刚打开、什么都没做的标签页。
+    fn fresh(graph: usize) -> Self {
+        Self {
+            graph,
+            origin: point(0.0, 0.0),
+            scale: 1.0,
+            selected: Vec::new(),
+            menu: None,
+            drag: None,
+            marquee: None,
+            hover_node: None,
+            conv_pos: HashMap::new(),
+            conv_drag: None,
+            conv_hover: None,
+        }
+    }
+}
+
 impl TabHost {
     fn new() -> Self {
         Self {
-            tabs: vec![Tab {
-                graph: 0,
-                origin: point(0.0, 0.0),
-                scale: 1.0,
-            }],
+            tabs: vec![Tab::fresh(0)],
             active: 0,
             nav: NavHistory::default(),
         }
@@ -384,12 +428,8 @@ impl TabHost {
     ///
     /// **不校验图下标** —— 那要问 `Doc`,由调用方(`Viewer`)负责。
     fn open(&mut self, graph: usize) -> Tab {
-        let tab = Tab {
-            graph,
-            origin: point(0.0, 0.0),
-            scale: 1.0,
-        };
-        self.tabs.push(tab);
+        let tab = Tab::fresh(graph);
+        self.tabs.push(tab.clone());
         self.active = self.tabs.len() - 1;
         tab
     }
@@ -401,7 +441,7 @@ impl TabHost {
     fn activate_graph(&mut self, graph: usize) -> Option<Tab> {
         let idx = self.find_graph(graph)?;
         self.active = idx;
-        self.tabs.get(idx).copied()
+        self.tabs.get(idx).cloned()
     }
 
     /// 切到第 `idx` 个标签页。返回它的副本。下标越界或已是当前页时 `None`。
@@ -410,30 +450,29 @@ impl TabHost {
             return None;
         }
         self.active = idx;
-        self.tabs.get(idx).copied()
+        self.tabs.get(idx).cloned()
     }
 
-    /// 关掉第 `idx` 个标签页,返回新的活动标签页。
+    /// 关掉第 `idx` 个标签页,返回新的活动标签页(`None` = 一个都不剩了)。
     ///
-    /// 只剩一个时**不真的关**(窗口总得有东西可看),只把视野复位。
+    /// 允许关掉最后一个 —— 用户明确要求。关到空之后 `active` 归 0、
+    /// 列表为空,画布区由 `Viewer` 显示占位(和启动时那句提示一样)。
     fn close(&mut self, idx: usize) -> Option<Tab> {
         if idx >= self.tabs.len() {
             return None;
         }
-        if self.tabs.len() == 1 {
-            let tab = self.tabs.first_mut()?;
-            tab.origin = point(0.0, 0.0);
-            tab.scale = 1.0;
-            return Some(*tab);
-        }
         self.tabs.remove(idx);
+        if self.tabs.is_empty() {
+            self.active = 0;
+            return None;
+        }
         // 活动标签的落点:关掉的在它左边就左移一位;关掉的正是它就取右邻。
         if idx < self.active {
             self.active -= 1;
         } else if idx == self.active {
             self.active = self.active.min(self.tabs.len() - 1);
         }
-        self.tabs.get(self.active).copied()
+        self.tabs.get(self.active).cloned()
     }
 
     /// 已经开着这张图的页签下标(没有则 `None`)。
@@ -460,7 +499,7 @@ impl TabHost {
 /// `mouse_move` 带着整段位移(win32 的 wparam 在指针离开时不带按键信息,
 /// `mouse_up` 收不到),累加实现会把这一整段一次性甩到位置上。
 /// 相对按下点算就没有这个问题:中间丢多少事件都不影响。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ConvDrag {
     /// 拖的是哪张图。
     graph: usize,
@@ -471,6 +510,7 @@ struct ConvDrag {
 }
 
 /// 拖拽的种类。
+#[derive(Clone, Debug, PartialEq)]
 enum Drag {
     /// 拖动**一组**节点(可能只有一个)。`last` 是上一次鼠标位置(窗口坐标)。
     Nodes {
@@ -597,6 +637,11 @@ pub struct Viewer {
     /// 由面板的 canvas prepaint 每帧写 —— 悬停命中要把窗口坐标换算成
     /// 面板局部坐标,靠它。
     conv_origin: Rc<Cell<Point<f32>>>,
+    /// 左栏里**被点中**的那一项(图下标)。`None` = 没选中任何项。
+    ///
+    /// 这是**浏览位置**,不是画布内容 —— 和 [`Viewer::current`] 是两回事:
+    /// 单击左栏只改它(高亮那一行),双击才真的切图。和 IDE 文件树一致。
+    toc_selected: Option<usize>,
 }
 
 impl Viewer {
@@ -633,6 +678,7 @@ impl Viewer {
             conv_drag: None,
             conv_hover: None,
             conv_origin: Rc::new(Cell::new(point(0.0, 0.0))),
+            toc_selected: None,
         }
     }
 
@@ -720,27 +766,80 @@ impl Viewer {
         self.tabs.record(now);
     }
 
-    /// 把视图切到"第 `graph` 张图 + 这个视野",并同步进当前标签页。
+    /// 把视图切到"第 `graph` 张图 + 这个视野"。
     ///
     /// 所有"换视野"的路径最后都落到这里 —— 标签页切换、历史导航、左栏点图的
     /// 差别只在归一化(视野复位 / 保留)和历史记账上,搬运是同一份。
+    ///
+    /// # 画布状态跟着页签走
+    ///
+    /// `Viewer` 上有一份**镜像**:`current` / `selected` / `menu` / `drag` /
+    /// `marquee` / `hover_node` / `conv_*`。渲染和事件都读这份,省掉到处
+    /// `tabs.active()` 的转发。
+    ///
+    /// 切页签时:`save_canvas_into_active()` 把镜像**存回**旧页签,
+    /// 再 `load_canvas_from_active()` 从新页签**取出**。所以切走再切回来,
+    /// 选中 / 菜单 / 拖动 / 调用约定内层位置**都还在** —— 以前这里把它们
+    /// 全清掉,切回来等于重置(用户报过)。
     fn show(&mut self, graph: usize, origin: Point<f32>, scale: f32) {
+        // 先把当前这套画布状态存回**旧**页签(此时 `tabs.active` 还是旧的)。
+        self.save_canvas_into_active();
         self.current = graph;
         self.origin = origin;
         self.scale = scale;
         self.tabs.store_view(graph, origin, scale);
-        self.drag = None;
-        // 状态行说的是"上一张图的操作",切过来还挂着会误导。
+        // 再从**新**页签取出它自己的那套。
+        self.load_canvas_from_active();
+        // 状态行说的是"上一张图的操作",切过来还挂着会误导。这个不跟页签走 ——
+        // 它是"刚才那个操作的结果",不是画布状态。
         self.status = None;
-        // 菜单记的节点下标属于上一张图,不能留着。
-        self.menu = None;
-        // 选区也是上一张图的下标,换图就得清空。
-        self.clear_selection();
         // **按需布局**:加载时不算坐标(57 张图要 3.1s),第一次打开这张图
         // 才算。所有"换图"的路径都汇到这里,所以这是唯一需要接的地方。
         if self.doc.ensure_layout(graph) {
             self.reload_positions(graph);
         }
+    }
+
+    /// 把 `Viewer` 上的画布镜像存回当前活动页签。
+    fn save_canvas_into_active(&mut self) {
+        let Some(tab) = self.tabs.tabs.get_mut(self.tabs.active) else {
+            return;
+        };
+        tab.selected = std::mem::take(&mut self.selected);
+        tab.menu = self.menu.take();
+        tab.drag = self.drag.take();
+        tab.marquee = self.marquee;
+        tab.hover_node = self.hover_node;
+        tab.conv_pos = std::mem::take(&mut self.conv_pos);
+        tab.conv_drag = self.conv_drag.take();
+        tab.conv_hover = self.conv_hover.take();
+    }
+
+    /// 把当前活动页签的画布状态取进 `Viewer` 的镜像。
+    ///
+    /// 新开的页签是空的(`Tab::fresh`),取出来就是"什么都没选、没菜单"——
+    /// 正是新页签该有的样子。
+    fn load_canvas_from_active(&mut self) {
+        let Some(tab) = self.tabs.tabs.get(self.tabs.active) else {
+            // 一个页签都不剩:镜像全部清空,画布区显示占位。
+            self.selected.clear();
+            self.menu = None;
+            self.drag = None;
+            self.marquee = None;
+            self.hover_node = None;
+            self.conv_pos.clear();
+            self.conv_drag = None;
+            self.conv_hover = None;
+            return;
+        };
+        self.selected = tab.selected.clone();
+        self.menu = tab.menu.clone();
+        self.drag = tab.drag.clone();
+        self.marquee = tab.marquee;
+        self.hover_node = tab.hover_node;
+        self.conv_pos = tab.conv_pos.clone();
+        self.conv_drag = tab.conv_drag;
+        self.conv_hover = tab.conv_hover.clone();
     }
 
     /// 重新读第 `i` 张图的节点坐标(布局刚算过 / 外部改过 IR 之后)。
@@ -888,6 +987,14 @@ impl Viewer {
         }
     }
 
+    /// 左栏里点了一下某项:**只选中,不切图**(双击才切)。
+    ///
+    /// "选中"记在 `toc_selected`:它和"当前正在看的图"(`current`)是两回事 ——
+    /// 前者是左栏的浏览位置,后者是画布内容。
+    fn select_in_toc(&mut self, i: usize) {
+        self.toc_selected = Some(i);
+    }
+
     /// [`Viewer::open_graph_in_tab`] 的纯逻辑部分。
     fn open_graph_step(&mut self, i: usize) -> bool {
         if self.doc.entry(i).is_none() {
@@ -920,17 +1027,42 @@ impl Viewer {
 
     /// [`Viewer::close_tab`] 的纯逻辑部分。
     ///
-    /// 关掉最后一个时**不真的关**(窗口得有东西可看):退回"只剩这一张图"的
-    /// 单标签状态。
+    /// **可以关到一页不剩**(用户要求):关掉之后 `close` 回 `None`,
+    /// 这里把画布镜像清空,渲染走"没有打开的图"占位。
     fn close_tab_step(&mut self, idx: usize) -> bool {
         if idx >= self.tabs.tabs.len() {
             return false;
         }
         self.record_nav();
-        let Some(tab) = self.tabs.close(idx) else {
-            return false;
-        };
-        self.show(tab.graph, tab.origin, tab.scale);
+        // 被关的那页如果正是活动页,它的画布状态先丢掉 —— 页签都没了,
+        // 存回去没有意义(而且会写到一个刚好挪到那个下标的别的页签上)。
+        if idx == self.tabs.active {
+            self.selected.clear();
+            self.menu = None;
+            self.drag = None;
+            self.marquee = None;
+            self.hover_node = None;
+            self.conv_pos.clear();
+            self.conv_drag = None;
+            self.conv_hover = None;
+        }
+        match self.tabs.close(idx) {
+            Some(tab) => {
+                // 还有别的页:切过去,并取出它自己的画布状态。
+                self.current = tab.graph;
+                self.origin = tab.origin;
+                self.scale = tab.scale;
+                self.load_canvas_from_active();
+                if self.doc.ensure_layout(tab.graph) {
+                    self.reload_positions(tab.graph);
+                }
+            }
+            None => {
+                // 一页不剩:清空镜像,`placeholder()` 会显示"拖入文件"提示。
+                self.load_canvas_from_active();
+            }
+        }
+        self.status = None;
         true
     }
 
@@ -1339,6 +1471,11 @@ impl Viewer {
         if self.doc.is_empty() {
             return Some("拖入 .ogia 或 .rlib 文件".to_string());
         }
+        // **标签页全关了**:画布区没有内容可显示,但不能显示"拖入文件"
+        // (文件明明已经加载着)。提示怎么打开。
+        if self.tabs.tabs.is_empty() {
+            return Some("没有打开的图(在左栏双击一个函数打开)".to_string());
+        }
         // `current` 越界(切图瞬间)按"没有可显示的图"处理,不索引、不 panic。
         let Some(g) = self.doc.entry(self.current) else {
             return Some("没有可显示的图".to_string());
@@ -1454,7 +1591,11 @@ impl Render for Viewer {
                                 v.close_tab(i, cx);
                             })),
                     )
-                    .on_click(cx.listener(move |v, _e, _w, cx| v.switch_tab(i, cx)))
+                    .on_click(cx.listener(move |v, _e, window, cx| {
+                        v.switch_tab(i, cx);
+                        // 切页签 = 回到那块画布,焦点也还给画布(和双击左栏一致)。
+                        window.focus(&v.canvas_focus);
+                    }))
                     // 中键关闭。中键没有 `on_click` 可依赖(那个只认左键,
                     // 见 `div.rs:2139`),所以在 down 上直接关。
                     //
@@ -2692,7 +2833,11 @@ impl Viewer {
                             .enumerate()
                             .filter(|(_, entry)| Self::matches_search(&entry.name, &query))
                             .map(|(i, entry)| {
-                                let active = i == self.current;
+                                // 高亮 = **左栏选中项**(单击的那个),不是"画布正在看的那张"。
+                                // 两者可以不同:单击只移动这里的选中,双击才切画布。
+                                let picked = self.toc_selected == Some(i);
+                                // 正在画布上显示的那张另给一个淡标记,免得看丢。
+                                let on_canvas = i == self.current;
                                 div()
                                     .id(("graph", i))
                                     .px_2()
@@ -2702,15 +2847,41 @@ impl Viewer {
                                     .cursor_pointer()
                                     .overflow_hidden()
                                     .text_xs()
-                                    .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
+                                    .when(picked, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.18)))
+                                    .when(on_canvas && !picked, |s| {
+                                        s.border_l_2().border_color(selected_border())
+                                    })
                                     .child(format!("{} ({})", entry.name, entry.nodes.len()))
-                                    // 点左栏 = **在标签页里打开这张图**(不是偷偷换掉
-                                    // 当前页签的内容)。这张图已经开在某个页签里就切
-                                    // 过去,否则新开一页 —— 和编辑器 / 浏览器一致,
-                                    // 也不会因为反复点同一项堆出一排重复页签。
-                                    .on_click(cx.listener(move |v, _e, _w, cx| {
-                                        v.open_graph_in_tab(i, cx)
-                                    }))
+                                    // **单击 = 选中,双击 = 在标签页里打开**(用户要求)。
+                                    //
+                                    // 用 `on_mouse_down` 而不是 `on_click`:`on_click`
+                                    // 只认左键、也拿不到点击次数(`div.rs:2139`);
+                                    // `MouseDownEvent::click_count` 才是"第几次点击"
+                                    // (`interactive.rs:102`,平台双击时给 2)。
+                                    //
+                                    // 点一下就把这行标成"当前选中项"(左栏自己的高亮),
+                                    // 双击才真的切图 / 开新页 —— 和 IDE 的文件树一致。
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |v, e: &MouseDownEvent, window, cx| {
+                                            v.select_in_toc(i);
+                                            if e.click_count >= 2 {
+                                                // 双击 = 打开/切换标签页,然后**把焦点交给画布**。
+                                                //
+                                                // 用户报过「打开一个标签页时,标签页没自动
+                                                // 获得焦点」:不交焦点的话 `Ctrl+W`
+                                                // (`Canvas` context)和撤销都按不动,得先
+                                                // 手动点一下画布才行。
+                                                v.open_graph_in_tab(i, cx);
+                                                window.focus(&v.canvas_focus);
+                                            } else {
+                                                // 单击只选中:焦点留在左栏,继续打字搜索。
+                                                window.focus(&v.search_focus);
+                                            }
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }),
+                                    )
                             }),
                     ),
             );
@@ -3176,6 +3347,39 @@ mod tests {
         assert_eq!(active.graph, h.tabs[0].graph);
     }
 
+    /// 每个标签页各记一套画布状态:切走再切回来,**选中 / 菜单 / 拖动 /
+    /// 调用约定内层位置都还在**。
+    ///
+    /// 以前这些挂在 `Viewer` 上一份、`show()` 时全清掉,切回来等于重置
+    /// (用户报过「为什么画布不是每个标签页一个而是切换标签页时重置同一个画布」)。
+    /// 现在它们住在 `Tab` 里,`show()` 只做"存回旧页签 / 取出新页签"。
+    ///
+    /// 这条测的是**数据归属**:两个页签的字段互不影响。存取那一层
+    /// (`save_canvas_into_active` / `load_canvas_from_active`)要 `Viewer`,
+    /// 构造不出来(`FocusHandle` 没有 `Default`),所以在这里验数据结构。
+    #[test]
+    fn each_tab_keeps_its_own_canvas_state() {
+        let mut a = Tab::fresh(0);
+        let mut b = Tab::fresh(1);
+
+        a.selected = vec![3, 7];
+        a.hover_node = Some(3);
+        a.marquee = Some((point(1.0, 2.0), point(9.0, 8.0)));
+        a.conv_pos.insert(0, (12.0, 34.0));
+
+        // 两个页签互不干扰。
+        assert!(b.selected.is_empty(), "新页签没有选中");
+        assert_eq!(b.hover_node, None);
+        assert_eq!(b.marquee, None);
+        assert!(b.conv_pos.is_empty());
+
+        // 同一张图在两个页签里打开时,`conv_pos` 按**图下标**索引 ——
+        // 所以两边各存各的 `(f32, f32)` 也互不影响。
+        b.conv_pos.insert(0, (99.0, 99.0));
+        assert_eq!(a.conv_pos.get(&0), Some(&(12.0, 34.0)), "a 的位置没被 b 改掉");
+        assert_eq!(b.conv_pos.get(&0), Some(&(99.0, 99.0)));
+    }
+
     /// `Ctrl+W` 关的是**当前活动**那一页,不是第 0 页、也不是最后页。
     ///
     /// 这是 `close_active_tab` 的全部逻辑(`tabs.active` → `close`)——
@@ -3203,15 +3407,19 @@ mod tests {
         assert_eq!(tab.graph, h.tabs[h.active.min(h.tabs.len() - 1)].graph);
     }
 
-    /// 只剩一个标签页时点关闭**不真的关**:窗口总得有东西可看。
+    /// **可以关到一页不剩** —— 用户明确要求「仅剩一个标签页时无法关闭」要修。
+    ///
+    /// 关到空之后 `close` 回 `None`、`active` 归 0,`Viewer` 那边把画布镜像
+    /// 清空、显示"没有打开的图"占位。以前这里有"最后一个不真的关"的特例
+    /// (只把视野复位),现在去掉了。
     #[test]
-    fn closing_the_last_tab_keeps_a_tab() {
+    fn the_last_tab_can_be_closed() {
         let mut h = TabHost::new();
         h.store_view(0, point(50.0, 60.0), 2.0);
-        let tab = h.close(0).expect("关最后一个也要给回一个标签页");
-        assert_eq!(h.tabs.len(), 1, "最后一个标签页不能真的关掉");
-        assert_eq!(tab.scale, 1.0, "关最后一个 = 回到刚打开的样子");
-        assert_eq!(tab.origin, point(0.0, 0.0));
+        let gone = h.close(0);
+        assert!(gone.is_none(), "关掉最后一页之后没有活动页了");
+        assert!(h.tabs.is_empty(), "标签页列表应当真的空了");
+        assert_eq!(h.active, 0, "活动下标归 0(空列表上不会越界)");
     }
 
     /// 切标签页可以后退 —— 用户明确要求。后退同时恢复**视野**,不只是图。
