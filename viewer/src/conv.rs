@@ -314,14 +314,24 @@ pub struct Layout {
 pub const PAD: f32 = 12.0;
 /// 内层节点的宽度。
 ///
-/// ⚠️ 这是**布局用的假定宽度**,不是渲染宽度:内层节点用和主画布同一个
-/// `node_box_el`(`min_w` + 自然撑开),真实宽度由标题文字决定 ——
-/// 标题就是「当前」两个字,撑开之后远不到 150。布局留这么宽是为了给
-/// 内层节点在盒子里拖动留余量,不是要画一个 150 宽的框。
-///
-/// 以前渲染直接把 `INNER_W` 当 `.w()` 用,于是「当前」两个字左右各空出
-/// 一大截(用户报过)。
+/// ⚠️ 这是**布局给拖动留的余量**,不是渲染宽度。真实宽度见 [`INNER_RENDER_W`]。
 pub const INNER_W: f32 = 150.0;
+
+/// 内层节点**渲染出来**的宽度 = 标题「当前」的实测宽度 + 内边距。
+///
+/// 为什么是常量而不是实测:内层标题是**固定的**「当前」两个字,永远不变 ——
+/// 为一个固定字符串去调排版引擎不值得,而且 `render_conv_panel` 手上只有
+/// `cx`、没有 `window`(拿不到 `TextSystem`)。
+///
+/// 这个值**必须**和渲染出来的盒子宽度一致:引脚贴在 `inner_rect.x + w` 上,
+/// 盒子却是按文字撑开的 —— 不一致的话右引脚会落在盒子外面的空白里
+/// (用户报过「这个『当前』节点算的宽度完全不对」)。
+///
+/// 计算:`BASE_FONT_PX`(11px)字号下两个 CJK 字符 ≈ 11px/字 = 22px,
+/// 加 `node_box_el` 的 `.px_1()`(左右 8px)、`.border_1()`(左右 2px)
+/// 和 `NODE_TEXT_PAD` 的余量。取 56 —— 和 `NODE_MIN_W` 一致,即渲染下限
+/// 正好容得下「当前」两个字。
+pub const INNER_RENDER_W: f32 = crate::canvas_geom::NODE_MIN_W;
 /// 内层节点的最小高度(和画布的 `node_height` 取大的那个)。
 pub const INNER_MIN_H: f32 = 32.0;
 /// 外层盒子的最小高度。
@@ -437,6 +447,25 @@ pub fn layout(
     inner_pos: (f32, f32),
     width: f32,
 ) -> Layout {
+    layout_sized(outer, inner, conv, inner_pos, width, INNER_RENDER_W)
+}
+
+/// 同 [`layout`],但内层节点的宽度由调用方给。
+///
+/// ⚠️ **内层宽度必须和渲染出来的盒子一致**,否则引脚会跑到盒子外面:
+/// 引脚贴在 `inner_rect.x + inner_rect.w` 上,盒子却是按文字自己撑开的。
+/// 用户报过「这个『当前』节点算的宽度完全不对」—— 就是内层按 `INNER_W`
+/// 留了 150、盒子实际只渲染 56,右引脚落在盒子右侧空白里。
+///
+/// 渲染层(`Viewer::render_conv_panel`)量出标题的真实宽度后调用这个。
+pub fn layout_sized(
+    outer: &FnInterface,
+    inner: &FnInterface,
+    conv: &Convention,
+    inner_pos: (f32, f32),
+    width: f32,
+    inner_w: f32,
+) -> Layout {
     use crate::doc::{PIN_GAP, node_height, pin_rows};
 
     // 两侧的引脚行数 —— 和画布同一套(core 的 `pin_rows`)。值流起点跨
@@ -471,8 +500,9 @@ pub fn layout(
     let right_gutter = label_gutter(outer.rets.iter().map(|p| p.name.as_str()));
     let outer_x = MARGIN + left_gutter;
     // 盒子宽度 = 面板宽 - 两条槽 - 两条边距。窄的时候不能算成负数。
+    // 下限是"装得下内层节点 + 两边各 8px"。
     let outer_w =
-        (width - (MARGIN + left_gutter) - (MARGIN + right_gutter)).max(INNER_W + 8.0);
+        (width - (MARGIN + left_gutter) - (MARGIN + right_gutter)).max(inner_w + 16.0);
     let outer_rect = Rect {
         x: outer_x,
         y: MARGIN,
@@ -484,7 +514,7 @@ pub fn layout(
     let (mut ix, mut iy) = inner_pos;
     ix = ix.clamp(
         outer_rect.x + 2.0,
-        (outer_rect.x + outer_rect.w - INNER_W - 2.0).max(outer_rect.x + 2.0),
+        (outer_rect.x + outer_rect.w - inner_w - 2.0).max(outer_rect.x + 2.0),
     );
     iy = iy.clamp(
         outer_rect.y + 2.0,
@@ -493,7 +523,7 @@ pub fn layout(
     let inner_rect = Rect {
         x: ix,
         y: iy,
-        w: INNER_W,
+        w: inner_w,
         h: inner_h,
     };
 
@@ -1172,29 +1202,45 @@ mod tests {
         );
     }
 
-    /// 内层节点**不该**按 `INNER_W`(150)画 —— 那会把「当前」两个字撑成
-    /// 150 宽、左右各空一大截(用户报过)。
+    /// 内层节点按**渲染宽度**(`INNER_RENDER_W`)布局,不是按拖动余量 150。
     ///
-    /// 渲染走的是主画布同一个 `node_box_el`(`min_w` + 自然撑开),所以这里
-    /// 只需要保证:`INNER_W` 是**布局给拖动留的余量**,大于渲染下限
-    /// (`NODE_MIN_W`),否则内层节点会被夹得动不了。
+    /// 用户报过「这个『当前』节点算的宽度完全不对」:盒子渲染成 56 宽,
+    /// 引脚却按 150 算 —— 右引脚落在盒子外面的空白里(截图里看得很清楚)。
+    ///
+    /// 修法是把"布局用的宽度"和"渲染用的宽度"统一成同一个值 ——
+    /// 引脚贴在 `inner_rect.x + inner_rect.w` 上,盒子也按这个宽度画。
     #[test]
-    fn the_inner_box_reserves_room_but_renders_narrower() {
-        assert!(
-            INNER_W > crate::canvas_geom::NODE_MIN_W,
-            "布局余量必须大于渲染下限,内层才拖得动"
-        );
-        // 布局里内层确实按 `INNER_W` 留了位置。
+    fn the_inner_box_uses_the_width_it_is_drawn_with() {
         let outer = iface(&["x"], &["r"], vec![], 1, 1);
         let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
         let c = Convention::build(&outer, &inner);
         let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
-        assert_eq!(l.inner.w, INNER_W, "布局按 INNER_W 留位");
+
+        // ✅ 布局给内层的宽度 == 渲染宽度(引脚才对得上盒子)。
+        assert_eq!(
+            l.inner.w, INNER_RENDER_W,
+            "内层宽度必须是渲染宽度,否则右引脚会落在盒子外面"
+        );
+        // 右引脚正好贴在盒子右边缘。
+        if let Some(&(px_right, _)) = l.inner_right.value.first() {
+            assert_eq!(
+                px_right,
+                l.inner.x + l.inner.w,
+                "内层右引脚必须贴在盒子右边缘"
+            );
+        }
+        // 外层盒子仍然要装得下内层。
         assert!(
             l.outer.w > l.inner.w,
             "外层盒子要装得下内层:外层 {} vs 内层 {}",
             l.outer.w,
             l.inner.w
+        );
+        // `INNER_W` 只剩"给拖动留的余量"这一个身份,必须大于渲染宽度,
+        // 这样内层在夹取范围内还有活动空间。
+        assert!(
+            INNER_W > INNER_RENDER_W,
+            "拖动余量必须大于渲染宽度,内层才拖得动"
         );
     }
 
