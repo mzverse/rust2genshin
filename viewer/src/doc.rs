@@ -557,6 +557,11 @@ pub struct Doc {
     /// 为什么要单独存一份:加载之后没人再保留"原始的 exports 表"了 ——
     /// 优化会压缩引脚、撤销会换图,唯一稳定的锚点是**加载那一刻**。
     frozen: Vec<FnInterface>,
+    /// 与 `graphs` 同长:第 `i` 张图**布局过没有**。
+    ///
+    /// 布局是加载里最贵的一步(57 张图 3.1s),所以推迟到第一次打开那张图
+    /// (见 [`Doc::ensure_layout`])。这个表是那个"看过了"的标记。
+    laid_out: Vec<bool>,
 }
 
 impl Doc {
@@ -567,25 +572,23 @@ impl Doc {
             targets: Vec::new(),
             linkers: Vec::new(),
             frozen: Vec::new(),
+            laid_out: Vec::new(),
         }
     }
 
     /// 把一个 `Target` 的全部图展平追进来,返回第一张新图的下标。
     /// 一个图都没有(没有 main、也没有函数)时返回 `None`。
     ///
-    /// 布局只在这里(加载时)算一次,之后切图不重算 —— 拖过的位置能留住,
-    /// 想重排得走 [`Doc::relayout`](「自动整理」按钮)。
+    /// ⚠️ **这里不做布局**。布局是加载里最贵的一步(实测 57 张图 3.1s,
+    /// 占整个加载的 97%;展平只要 6.9ms),一次性给所有图算坐标会让窗口
+    /// 卡在启动上。坐标改成**第一次打开那张图**时才算 —— 见
+    /// [`Doc::ensure_layout`]。没布局过的图坐标全为 `(0,0)`,渲染前一定会
+    /// 先过一遍 `ensure_layout`。
     pub fn push_target(&mut self, mut t: Target) -> Option<usize> {
         let target = self.targets.len();
         let first = self.graphs.len();
-        // 链接键 → 可读名。**先**算出来:布局和展平都要用它给 `Fn` 节点取名。
+        // 链接键 → 可读名。展平要用它给 `Fn` 节点取名(便宜,不是布局)。
         let names = fn_names(&t);
-        if let Some(main) = &mut t.main {
-            layout_graph(main, &names);
-        }
-        for f in t.functions.values_mut() {
-            layout_graph(&mut f.graph, &names);
-        }
         // 喂给 Linker 的是 **clone** —— `Linker::new` 会把传进去的 `Target`
         // 抢走,`targets[k]` 必须留着,后面 `take` / `put` / `reflatten` 全
         // 走它。Linker 那一份之后会随 `link_node` 状态分叉,与我们无关。
@@ -594,19 +597,20 @@ impl Doc {
         self.linkers
             .push(Linker::new(GameMode::Beyond, linker_t, PathBuf::new()));
         // 展平读 `targets[k]`,**不读** `linkers[k].target`(后者的状态不可信)。
-        if let Some(main) = &self.targets[target].main {
+        let t = &self.targets[target];
+        if let Some(main) = &t.main {
             self.graphs.push(flatten_one("main".to_string(), main, &names, None));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Main,
             });
         }
-        let mut keys: Vec<&String> = self.targets[target].functions.keys().collect();
+        let mut keys: Vec<&String> = t.functions.keys().collect();
         keys.sort();
         for key in keys {
             // 显示名用图自己记的可读名,不用 `functions` 的键 —— 那是 rustc
             // 的 mangled 符号(链接键),给人看没法读。
-            let f = &self.targets[target].functions[key];
+            let f = &t.functions[key];
             self.graphs.push(flatten_one(
                 f.graph.name.clone(),
                 &f.graph,
@@ -633,34 +637,28 @@ impl Doc {
             };
             self.frozen.push(iface);
         }
+        // 新追加的图都还没布局过。
+        self.laid_out.resize(self.graphs.len(), false);
+        self.laid_out[first..].fill(false);
         (self.graphs.len() > first).then_some(first)
     }
 
-    /// 第 `i` 张图**加载时**的对外接口(调用约定的外层,永远不变)。
+    /// 第 `i` 张图是否**还没**布局过。
     ///
-    /// 越界回 `None` —— 调用方是交互驱动的,下标可能已过期。
-    pub fn frozen_interface(&self, i: usize) -> Option<&FnInterface> {
-        self.frozen.get(i)
+    /// 加载时不算坐标(见 [`Doc::push_target`]),所以渲染第一帧前必须问一句。
+    pub fn layout_pending(&self, i: usize) -> bool {
+        !self.laid_out.get(i).copied().unwrap_or(true)
     }
 
-    /// 第 `i` 张图是不是**复合节点图**(一个函数)。
+    /// 确保第 `i` 张图有坐标 —— 没算过就跑一次 core 的布局(只跑一次)。
     ///
-    /// 主图不是 —— 主图没有对外接口(`link.rs:79` 给它的是
-    /// `Default::default()` 的 decl),所以「调用约定」视图只对函数图显示。
-    pub fn is_fn_graph(&self, i: usize) -> bool {
-        matches!(
-            self.owners.get(i).map(|o| &o.source),
-            Some(GraphSource::Fn(_))
-        )
-    }
-
-    /// 对第 `i` 张图跑一次自动整理(core 的布局把坐标写回 IR 节点),然后
-    /// 重新展平(渲染读的是展平快照,不重展平看不见新坐标)。
-    /// 返回 `false` 表示图或它背后的数据没了。
-    ///
+    /// 返回 `true` 表示**这次真的算了**(调用方要据此重建视图坐标缓存)。
     /// 布局的**唯一实现**在 core(`rust2genshin::node::layout`):`.gia` 编码前
     /// 走的是同一套,viewer 与产物不会各排各的。
-    pub fn relayout(&mut self, i: usize) -> bool {
+    pub fn ensure_layout(&mut self, i: usize) -> bool {
+        if !self.layout_pending(i) {
+            return false;
+        }
         let Some(owner) = self.owners.get(i).cloned() else {
             return false;
         };
@@ -685,7 +683,41 @@ impl Doc {
             },
         };
         layout_graph(g, &names);
-        self.reflatten(i)
+        // 坐标写回了 IR 节点,展平快照里的 `position` 还是旧的 —— 重展平一次。
+        self.reflatten(i);
+        if let Some(flag) = self.laid_out.get_mut(i) {
+            *flag = true;
+        }
+        true
+    }
+
+    /// 第 `i` 张图**加载时**的对外接口(调用约定的外层,永远不变)。
+    ///
+    /// 越界回 `None` —— 调用方是交互驱动的,下标可能已过期。
+    pub fn frozen_interface(&self, i: usize) -> Option<&FnInterface> {
+        self.frozen.get(i)
+    }
+
+    /// 第 `i` 张图是不是**复合节点图**(一个函数)。
+    ///
+    /// 主图不是 —— 主图没有对外接口(`link.rs:79` 给它的是
+    /// `Default::default()` 的 decl),所以「调用约定」视图只对函数图显示。
+    pub fn is_fn_graph(&self, i: usize) -> bool {
+        matches!(
+            self.owners.get(i).map(|o| &o.source),
+            Some(GraphSource::Fn(_))
+        )
+    }
+
+    /// 对第 `i` 张图**强制**重跑一次自动整理(core 的布局把坐标写回 IR 节点)。
+    ///
+    /// 和 [`Doc::ensure_layout`] 的区别:那个"没算过才算",这个是"不管算没算过,
+    /// 现在重算"(用户点了「自动整理」)。返回 `false` 表示图或它背后的数据没了。
+    pub fn relayout(&mut self, i: usize) -> bool {
+        if let Some(flag) = self.laid_out.get_mut(i) {
+            *flag = false;
+        }
+        self.ensure_layout(i)
     }
 
     /// 重新展平第 `i` 张图。优化 / 撤销改完 `Target` 里的图之后**必须**调用,
@@ -1221,6 +1253,81 @@ mod tests {
         if std::env::var_os("R2G_KEEP_FIXTURE").is_none() {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// 加载耗时诊断:`R2G_CHECK=<路径>` 时打印各阶段耗时。
+    ///
+    /// 锁住一件事:**`flatten` 不布局** —— 布局占加载的 97%,必须延迟到
+    /// 打开那张图的时候(见 [`Doc::ensure_layout`])。
+    #[test]
+    fn tmp_time_the_load() {
+        let Ok(path) = std::env::var("R2G_CHECK") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let t0 = std::time::Instant::now();
+        let t = super::load(&path).expect("解析");
+        println!("解析+解包             {:>8.1?}", t0.elapsed());
+
+        let a = std::time::Instant::now();
+        let mut doc = super::flatten(t);
+        println!(
+            "flatten(展平全部图)    {:>8.1?}  ({} 张图)",
+            a.elapsed(),
+            doc.graphs.len()
+        );
+        assert!(
+            (0..doc.graphs.len()).all(|i| doc.layout_pending(i)),
+            "flatten 不该布局任何图"
+        );
+
+        // 打开一张大图(bubble_sort,206 节点)要多久?
+        let biggest = (0..doc.graphs.len())
+            .max_by_key(|&i| doc.graphs[i].nodes.len())
+            .expect("有图");
+        let b = std::time::Instant::now();
+        doc.ensure_layout(biggest);
+        println!(
+            "首次打开最大的一张图   {:>8.1?}  ({} 节点: {})",
+            b.elapsed(),
+            doc.graphs[biggest].nodes.len(),
+            doc.graphs[biggest].name
+        );
+        let c = std::time::Instant::now();
+        assert!(!doc.ensure_layout(biggest), "第二次不该重算");
+        println!("再次打开同一张图       {:>8.1?}", c.elapsed());
+        println!("总耗时(含打开一张)    {:>8.1?}", t0.elapsed());
+    }
+
+    /// 按需布局:打开之前没有坐标,打开之后有,而且**只算一次**。
+    ///
+    /// 布局是加载里最贵的一步(实测 57 张图 3.1s,占整个加载的 97%,
+    /// 展平只要 7.9ms)—— 所以它必须延迟到"用户真的要看这张图"的那一刻。
+    #[test]
+    fn layout_is_deferred_until_a_graph_is_opened() {
+        let mut doc = super::flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+
+        // 刚加载:一张图都没布局过。
+        assert!(
+            (0..doc.graphs.len()).all(|x| doc.layout_pending(x)),
+            "加载后不该有任何图被布局"
+        );
+
+        // 第一次打开:真的算了,而且给出非零坐标。
+        assert!(doc.ensure_layout(i), "第一次应当真的算布局");
+        assert!(!doc.layout_pending(i), "算过之后不再是 pending");
+        assert!(
+            doc.graphs[i].nodes.iter().any(|n| n.position.x != 0.0
+                || n.position.y != 0.0),
+            "布局之后应当有节点不在原点"
+        );
+
+        // 第二次:不再重算(否则每次切图都要等一遍布局)。
+        assert!(!doc.ensure_layout(i), "第二次不该重算");
+
+        // 「自动整理」是**强制**重算,不受这个标记影响。
+        assert!(doc.relayout(i), "自动整理必须重算");
     }
 
     /// 诊断:把 `R2G_CHECK=<路径>` 指向的文件解析一遍并打印结果。

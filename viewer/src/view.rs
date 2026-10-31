@@ -1393,13 +1393,10 @@ impl Viewer {
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
         let had_graphs = !self.doc.graphs.is_empty();
         if let Some(first) = self.doc.push_target(t) {
-            // 布局只在**加载时**算一次(`push_target` 里由 core 的
-            // `node::layout` 写进 IR 节点),这里只是把坐标读进视图状态。
-            // 之后切图不重算 —— 拖过的位置能留住,想重排得点「自动整理」。
-            for g in &self.doc.graphs[first..] {
-                self.positions
-                    .push(g.nodes.iter().map(|n| n.position).collect());
-            }
+            // **不在这里读坐标**:加载时还没布局(`Doc::push_target` 只展平,
+            // 不算坐标)。`positions` 按图下标惰性补齐 —— 缺的位置是空表,
+            // 等 `show()` 里 `ensure_layout` 算完再由 `reload_positions` 填。
+            self.positions.resize_with(self.doc.graphs.len(), Vec::new);
             self.error = None;
             if had_graphs {
                 self.open_tab(first, cx);
@@ -1472,6 +1469,24 @@ impl Viewer {
         self.menu = None;
         // 选区也是上一张图的下标,换图就得清空。
         self.clear_selection();
+        // **按需布局**:加载时不算坐标(57 张图要 3.1s),第一次打开这张图
+        // 才算。所有"换图"的路径都汇到这里,所以这是唯一需要接的地方。
+        if self.doc.ensure_layout(graph) {
+            self.reload_positions(graph);
+        }
+    }
+
+    /// 重新读第 `i` 张图的节点坐标(布局刚算过 / 外部改过 IR 之后)。
+    fn reload_positions(&mut self, i: usize) {
+        let Some(g) = self.doc.graphs.get(i) else {
+            return;
+        };
+        let pos: Vec<Point<f32>> = g.nodes.iter().map(|n| n.position).collect();
+        if let Some(slot) = self.positions.get_mut(i) {
+            *slot = pos;
+        } else if i == self.positions.len() {
+            self.positions.push(pos);
+        }
     }
 
     /// 后退:回到上一个"看过的位置"(图 + 视野)。
@@ -2082,6 +2097,15 @@ impl Render for Viewer {
                 }))
                 .child(msg)
                 .into_any_element();
+        }
+
+        // ---- 按需布局(渲染期的保险) ----
+        //
+        // 正常路径是 `show()` 里算过,但渲染可能先于任何 `show()` 发生
+        // (首次加载、撤销把 `laid_out` 弄丢)。这里兜一次底:
+        // `ensure_layout` 没算过才跑,算过就是一次 `bool` 检查。
+        if self.doc.ensure_layout(self.current) {
+            self.reload_positions(self.current);
         }
 
         // `placeholder()` 已经保证图存在且非空,这里还是用 `get`:
@@ -3320,11 +3344,14 @@ impl Viewer {
         Some((outer, inner))
     }
 
-    /// 内层节点在面板里的当前位置(没拖过就在外层盒子中间偏左)。
+    /// 内层节点在面板里的当前位置(没拖过就**居中**在外层盒子里)。
+    ///
+    /// 居中时外层左右两侧的引脚都露得出来:靠左坐会把右侧的返回值引脚
+    /// 全压在内层底下(用户报过"为什么内层默认不是居中而是偏左")。
     fn conv_inner_pos(&self, layout: &conv::Layout) -> (f32, f32) {
         let stored = self.conv_pos.get(&self.current).copied();
         let default = (
-            layout.outer.x + 16.0,
+            layout.outer.x + (layout.outer.w - layout.inner.w) / 2.0,
             layout.outer.y + (layout.outer.h - layout.inner.h) / 2.0,
         );
         conv::clamp_inner(stored.unwrap_or(default), layout)

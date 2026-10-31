@@ -629,30 +629,36 @@ pub fn drag_pos(start: (f32, f32), anchor: Point<f32>, now: Point<f32>) -> (f32,
 ///
 /// 类型**只在这里出现** —— 引脚旁边只写名字(用户要求)。悬停时给的是
 /// `名字 <类型>`,类型为空时只写名字。
+/// 值流引脚的悬停文案:**只有类型**。
+///
+/// 名字已经写在盒子外侧了(用户要求),气泡里再重复一遍是纯噪声 ——
+/// 用户明确说过"鼠标移到数据引脚/线上时不要显示名称,应只显示类型"。
+///
+/// 拿不到类型时回 `"None"`(和主画布的 `pin_tip` 一个规矩):悬停是纯交互
+/// 增强,不能因为某个畸形 `.ogia` 就 panic 或显示空串。
 pub fn pin_tip(port: &PortInfo) -> String {
     if port.type_label.is_empty() {
-        port.name.clone()
+        "None".to_string()
     } else {
-        format!("{} <{}>", port.name, port.type_label)
+        port.type_label.clone()
     }
 }
 
-/// 一条连线的悬停文案:两端各是什么。
+/// 一条连线的悬停文案:两端**只有类型**。
 ///
-/// `from` / `to` 是 `(名字, 类型)` —— 两端**一致**就只显示一个类型,不一致
-/// 就显示 `A → B`(和主画布的边气泡一个规矩)。
+/// 两端类型一致就只显示一个,不一致就 `A → B`(和主画布的边气泡一个规矩)。
+/// 同样**不带名字** —— 名字在外侧标签里已经有了。
 pub fn link_tip(from: &(String, String), to: &(String, String)) -> String {
-    let (fn_, ft) = (&from.0, &from.1);
-    let (tn, tt) = (&to.0, &to.1);
+    let (ft, tt) = (&from.1, &to.1);
     match (ft.is_empty(), tt.is_empty()) {
-        (true, true) => format!("{fn_} → {tn}"),
-        (true, false) => format!("{fn_} → {tn} <{tt}>"),
-        (false, true) => format!("{fn_} <{ft}> → {tn}"),
+        (true, true) => "None".to_string(),
+        (true, false) => tt.clone(),
+        (false, true) => ft.clone(),
         (false, false) => {
             if ft == tt {
-                format!("{fn_} <{ft}> → {tn}")
+                ft.clone()
             } else {
-                format!("{fn_} <{ft}> → {tn} <{tt}>")
+                format!("{ft} → {tt}")
             }
         }
     }
@@ -1115,28 +1121,32 @@ mod tests {
 
     // --------------------------------------------------------------- 悬停
 
-    /// 悬停引脚 → 气泡给 `名字 <类型>`。
+    /// 悬停引脚 → 气泡**只给类型**。
+    ///
+    /// 名字已经写在盒子外侧了,气泡里再写一遍是噪声(用户明确要求过)。
     #[test]
-    fn hovering_a_pin_shows_its_type() {
+    fn hovering_a_pin_shows_only_the_type() {
         let p = port("x");
-        assert_eq!(pin_tip(&p), "x <Int>");
+        assert_eq!(pin_tip(&p), "Int", "只给类型,不带名字");
         let untyped = PortInfo {
             name: "y".into(),
             type_label: String::new(),
         };
-        assert_eq!(pin_tip(&untyped), "y", "没类型就只写名字");
+        assert_eq!(pin_tip(&untyped), "None", "没类型回 None,不回名字");
     }
 
-    /// 一条连线的悬停文案:两端各是什么。
+    /// 一条连线的悬停文案:两端**只有类型**,一致时合并成一个。
     #[test]
-    fn link_tip_shows_both_ends() {
+    fn link_tip_shows_only_types() {
         assert_eq!(
             link_tip(&("x".into(), "Int".into()), &("y".into(), "Int".into())),
-            "x <Int> → y"
+            "Int",
+            "两端类型一致就只显示一个,且不带名字"
         );
         assert_eq!(
             link_tip(&("x".into(), "Int".into()), &("y".into(), "Bool".into())),
-            "x <Int> → y <Bool>"
+            "Int → Bool",
+            "类型不同显示两边,也不带名字"
         );
     }
 
