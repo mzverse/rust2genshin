@@ -11,7 +11,7 @@ use gpui::{Point, Size, point};
 use either::Either;
 use rust2genshin::asset::generated::identifier;
 use rust2genshin::asset::GameMode;
-use rust2genshin::compile::func::{FnDecl, NodeGraphIr};
+use rust2genshin::compile::func::{FnDecl, NodeGraphIr, RetSource};
 use rust2genshin::compile::ir::{FnInfo, IrKind, IrNodeId, Optimizer};
 use rust2genshin::compile::link::{Linker, Target};
 use rust2genshin::node::layout::layout_with;
@@ -1152,25 +1152,35 @@ fn fn_interface(g: &NodeGraphIr, decl: Option<&FnDecl>) -> FnInterface {
     };
     let params = ports(rust2genshin::node::PinType::InValue);
     let rets = ports(rust2genshin::node::PinType::OutValue);
-    // 返回值的来源:`externals.values_in[i]` 是第 i 个值出口的来源。
+    // 返回值的来源交给 core 的 `FnDecl::ret_source` —— 那是**唯一**实现,
+    // 优化器的 `compact_value_exports` 用的是同一份(见
+    // `compile/optimize.rs:617`)。viewer 不再自己判"接节点 / 接参数 / 常数",
+    // 否则 core 加了第四种来源时这里会静默漏显示(这个 bug 已经发生过一次:
+    // 直接返回常数的函数在 lower 之后整个消失)。
+    //
+    // ⚠️ 下标要分清两套:
+    // - **存活**的出口被压缩前移了,`ret_source(graph, i)` 对它们读图上的
+    //   `values_in`,下标是**压缩后**的;
+    // - 被摘掉的出口只剩 `proxies_out`,下标是**原始**的。
+    //
+    // 外层(冻结)是加载时那份 = 原始顺序,所以 `orphan_rets` 用原始下标,
+    // `ret_origins` 用压缩后的。
     let ret_origins: Vec<RetOrigin> = g
         .externals
         .values_in
         .iter()
-        .map(|slot| match slot.link {
-            Some(l) if l.target.is_node() => RetOrigin::Body,
-            // 指向 `Export` = 指向某个值入口(= 参数)。按**名字**记,不用下标 ——
-            // 优化会压缩引脚,下标会移位,名字不会。
-            Some(l) => RetOrigin::Param(
+        .enumerate()
+        .map(|(i, _)| match decl.and_then(|d| d.ret_source(g, i)) {
+            Some(RetSource::Body) => RetOrigin::Body,
+            // 按**名字**记,不用下标 —— 优化会压缩引脚,下标会移位,名字不会。
+            Some(RetSource::Param(idx)) => RetOrigin::Param(
                 params
-                    .get(l.index)
+                    .get(idx)
                     .map(|p| p.name.clone())
-                    .unwrap_or_else(|| format!("#{}", l.index)),
+                    .unwrap_or_else(|| format!("#{idx}")),
             ),
-            None => match &slot.default {
-                Some(v) => RetOrigin::Const(format!("{v:?}")),
-                None => RetOrigin::Unset,
-            },
+            Some(RetSource::Const(v)) => RetOrigin::Const(format!("{v:?}")),
+            Some(RetSource::Unset) | None => RetOrigin::Unset,
         })
         .collect();
     // `decl.proxies_out` 与**压缩之前**的出引脚表同序(`optimize.rs:621`),
@@ -1183,11 +1193,6 @@ fn fn_interface(g: &NodeGraphIr, decl: Option<&FnDecl>) -> FnInterface {
     //
     // 直接返回常数的函数全靠这条:它的出口没人读,`compact_value_exports`
     // 整根摘掉,`externals.values_in` 里一点痕迹都不剩。
-    //
-    // 下标还要**换算**:存活下来的出口会被压缩前移,`proxies_out` 的下标是
-    // 原始的,而调用方(conv)要的是**冻结外层**的序号 —— 两者同序(外层就是
-    // 加载时那份),但这一份 `ret_origins` 是压缩后的。中间那些"死了"的出口
-    // 一个都不在 `ret_origins` 里,所以这里只按 `proxies_out` 的原始序号走。
     let mut orphan_rets = Vec::new();
     if let Some(decl) = decl {
         for (i, proxy) in decl.proxies_out.iter().enumerate() {

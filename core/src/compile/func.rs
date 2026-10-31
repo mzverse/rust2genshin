@@ -47,8 +47,65 @@ pub struct FnDecl {
     pub variables: HashMap<String, IrKind>,
 }
 
-pub fn node_ir_native(kind: NodeKind) -> NodeKindIr {
-    struct Enhancer;
+/// 一个返回值**现在**的值从哪来。
+///
+/// 这是「函数返回值」这件事的**唯一**分类实现 —— 优化器的
+/// `compact_value_exports`(`compile/optimize.rs:617`)靠它决定哪些出口还有用,
+/// viewer 的「调用约定」视图靠它决定每个返回值画成连线还是常数。
+/// 两边各写一份的话,某天 core 加了第四种来源,viewer 会静默漏显示。
+#[derive(Clone, Debug, PartialEq)]
+pub enum RetSource {
+    /// 由函数体里的**节点**算出来。
+    Body,
+    /// 原样透传第 `index` 个**值入口**(参数)。
+    Param(usize),
+    /// 一个常数(带它的值)。
+    Const(Box<dyn NativeValue>),
+    /// 既没接东西、也没有默认值。
+    Unset,
+}
+
+impl FnDecl {
+    /// 第 `i` 个返回值**当前的**来源。
+    ///
+    /// 优先看 `proxies_out` —— 那是 `compact_value_exports` 在压缩**之前**
+    /// 按原始出口表建好的快照(`optimize.rs:621`),**已经经过 lower 的图**
+    /// 只有它还记得"这个返回值本来是什么"。出口没被压缩掉时直接读图上的
+    /// `values_in`(更精确:它反映后续优化又改接的结果)。
+    ///
+    /// 越界回 `None`。
+    pub fn ret_source(&self, graph: &NodeGraphIr, i: usize) -> Option<RetSource> {
+        // 出口还在图里 —— 图上的现状最准。
+        if let Some(slot) = graph.externals.values_in.get(i) {
+            return Some(match slot.link {
+                Some(link) if link.target.is_node() => RetSource::Body,
+                Some(link) => RetSource::Param(link.index),
+                None => match &slot.default {
+                    Some(v) => RetSource::Const(v.clone()),
+                    None => RetSource::Unset,
+                },
+            });
+        }
+        // 出口已经被 `compact_value_exports` 摘掉了(没人读),值只剩在
+        // `proxies_out` 里。下标是**原始**出口序号。
+        match self.proxies_out.get(i)? {
+            Some(Either::Left(param)) => Some(RetSource::Param(*param)),
+            Some(Either::Right(Some(v))) => Some(RetSource::Const(v.clone())),
+            Some(Either::Right(None)) | None => Some(RetSource::Unset),
+        }
+    }
+
+    /// 全部返回值的来源,按原始出口顺序。
+    pub fn ret_sources(&self, graph: &NodeGraphIr) -> Vec<RetSource> {
+        // 长度取两者较大:压缩后的图出口少、`proxies_out` 还是全的。
+        let n = graph.externals.values_in.len().max(self.proxies_out.len());
+        (0..n)
+            .map(|i| self.ret_source(graph, i).unwrap_or(RetSource::Unset))
+            .collect()
+    }
+}
+
+pub fn node_ir_native(kind: NodeKind) -> NodeKindIr {    struct Enhancer;
     impl Lower for Enhancer {
         type NodeId0 = NativeNodeId;
         type Kind0 = NativeKind;

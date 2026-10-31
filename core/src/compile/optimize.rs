@@ -1,5 +1,5 @@
 use crate::asset::generated::pin_signature::Kind as PinType;
-use crate::compile::func::{FnDecl, node_ir_native};
+use crate::compile::func::{FnDecl, RetSource, node_ir_native};
 use crate::compile::helper::Helper;
 use crate::compile::ir;
 use crate::compile::ir::{IrKind, IrNodeId, Optimizer};
@@ -618,17 +618,19 @@ impl Optimizer {
         // ⚠️ `proxies_out` 必须在压缩**之前**按原始出口表建立。它的长度要和
         // callee 的 `decl.ret` 叶子数对齐 —— `link_node` 用它逐项喂
         // `assemble_all`，多出来的项会被忽略，少了就直接 unwrap 炸掉。
-        self.decl.proxies_out = self
-            .graph
-            .externals
-            .values_in
-            .iter()
-            .map(|slot| match slot.link {
-                Some(Link { target: LinkTarget::Node(..), .. }) => None,
-                Some(Link { target: LinkTarget::Export, index }) => {
-                    Some(Either::Left(index))
-                }
-                None => Some(Either::Right(slot.default.clone())),
+        //
+        // 分类走 `FnDecl::ret_source`(那是唯一实现),而不是在这里再写一份
+        // "接节点 / 接参数 / 常数"的判定 —— viewer 的「调用约定」也用同一份。
+        let n = self.graph.externals.values_in.len();
+        self.decl.proxies_out = (0..n)
+            .map(|i| match self.decl.ret_source(&self.graph, i) {
+                // 出口接节点 → 它还活着,压缩后会重算。
+                Some(RetSource::Body) | None => None,
+                // 原样透传第 index 个参数。
+                Some(RetSource::Param(index)) => Some(Either::Left(index)),
+                // 常数 / 啥都没有。
+                Some(RetSource::Const(v)) => Some(Either::Right(Some(v))),
+                Some(RetSource::Unset) => Some(Either::Right(None)),
             })
             .collect();
 
@@ -1705,6 +1707,83 @@ mod tests {
 
     fn int() -> IrKind {
         IrKind::Native(NativeKind::Int)
+    }
+
+    /// `FnDecl::ret_source` 是"返回值从哪来"的**唯一**实现 ——
+    /// 优化器(`compact_value_exports`)和 viewer 的「调用约定」都用它。
+    ///
+    /// 这三条锁住它的分类:
+    /// - 接节点 → `Body`;
+    /// - 接值入口(= 参数)→ `Param`;
+    /// - 什么都没接、只带默认值 → `Const`。
+    #[test]
+    fn a_return_value_is_classified_by_where_it_comes_from() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "three_returns");
+        g.push_export_value_in(ExportDecl::new("x".into(), Some(int())));
+        g.push_export_value_out(ExportDecl::new("from_body".into(), Some(int())));
+        g.push_export_value_out(ExportDecl::new("from_param".into(), Some(int())));
+        g.push_export_value_out(ExportDecl::new("constant".into(), Some(int())));
+
+        // 返回值 0:接函数体里的一个节点。
+        let n = g.insert(node_ir_local(int()));
+        g.link_value(Link::node(n, 1), Link::export(0));
+        // 返回值 1:原样透传参数 0。
+        g.link_value(Link::export(0), Link::export(1));
+        // 返回值 2:什么都不接,只带一个默认值。
+        g.set_default(Link::export(2), Some(7i32.into()));
+
+        let decl = FnDecl::default();
+        let sources = decl.ret_sources(&g);
+        assert_eq!(sources.len(), 3, "三个返回值");
+        assert!(
+            matches!(sources[0], RetSource::Body),
+            "接节点的 → Body,实际 {:?}",
+            sources[0]
+        );
+        assert!(
+            matches!(sources[1], RetSource::Param(0)),
+            "接参数出口的 → Param(0),实际 {:?}",
+            sources[1]
+        );
+        match &sources[2] {
+            RetSource::Const(v) => {
+                assert_eq!(format!("{v:?}"), "7", "常数值");
+            }
+            other => panic!("带默认值的 → Const,实际 {other:?}"),
+        }
+    }
+
+    /// 出口被 `compact_value_exports` 摘掉之后,**值仍然查得到** ——
+    /// 它留在 `proxies_out` 里(那份表在压缩**之前**建好)。
+    ///
+    /// 「直接返回常数」的函数正是这个形态:出口没人读 → 被摘掉 → 图上一点
+    /// 痕迹都不剩。viewer 靠 `ret_source` 还能把它读出来(用户报过"直接返回
+    /// 常数的没有显示")。
+    #[test]
+    fn a_dropped_return_value_is_still_readable_from_proxies_out() {
+        let mut g = NodeGraphIr::new(NodeGraphKind::ServerEntity, "returns_a_constant");
+        g.push_export_value_out(ExportDecl::new("r".into(), Some(int())));
+        g.set_default(Link::export(0), Some(42i32.into()));
+
+        // 先按 lower 的做法把 proxies_out 建好。
+        let mut opt = Optimizer {
+            graph: g,
+            decl: FnDecl::default(),
+        };
+        opt.compact_value_exports();
+
+        // 出口被摘掉了:图上已经没有这个出口。
+        assert!(
+            opt.graph.externals.values_in.is_empty(),
+            "没人读的出口应当被摘掉"
+        );
+        // 但值还在 —— `proxies_out` 记着。
+        assert_eq!(opt.decl.proxies_out.len(), 1);
+        // `ret_source` 仍然答得出它是常数 42。
+        match opt.decl.ret_source(&opt.graph, 0) {
+            Some(RetSource::Const(v)) => assert_eq!(format!("{v:?}"), "42"),
+            other => panic!("应当读出常数 42,实际 {other:?}"),
+        }
     }
 
     /// `i += 1`：`add` 读的是 `i` 的旧值，而 `i` 的新值又是 `add` 的输出。
