@@ -283,22 +283,56 @@ pub const LABEL_GUTTER: f32 = 74.0;
 /// 面板左右各留的边距。
 pub const MARGIN: f32 = 4.0;
 
-/// 把 `n` 个引脚均分在 `[lo, lo+len]` 上,首尾各留一格。
-fn spread(lo: f32, len: f32, n: usize) -> Vec<f32> {
-    if n == 0 {
-        return Vec::new();
-    }
-    (0..n)
-        .map(|i| lo + len * (i as f32 + 1.0) / (n as f32 + 1.0))
-        .collect()
+/// 一层要画的东西。
+///
+/// 顺序就是**绘制顺序**(后面的盖在前面的上面)。
+///
+/// ⚠️ **引脚必须在盒子之后** —— 内层节点是不透明的,引脚先画就会被它盖住,
+/// 表现就是"引脚被自己遮挡了"。这和主画布的顺序一致(那边也是
+/// 「节点 → 引脚」)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// 边(画在最底下)。
+    Edges,
+    /// 外层盒子(冻结的调用节点)。
+    OuterBox,
+    /// 内层节点(当前状态)。
+    InnerBox,
+    /// 引脚(值流圆点 + 控制流三角形)。
+    Pins,
+    /// 文本(引脚名、常数)。
+    Labels,
+    /// 悬停气泡(最上面)。
+    Hover,
 }
 
+/// 这个视图的绘制顺序。
+///
+/// 抽成数据是为了能直接测 —— 渲染层只负责照这个顺序往 `layer` 上挂东西。
+pub const LAYER_ORDER: &[Layer] = &[
+    Layer::Edges,
+    Layer::OuterBox,
+    Layer::InnerBox,
+    Layer::Pins,
+    Layer::Labels,
+    Layer::Hover,
+];
+
 /// 一侧引脚的排布:控制流在上、值流在下,两者在整条边上均分。
+///
+/// ⚠️ **必须用画布那套 [`crate::view::pin_y`]**,不要自己写一份 —— 两边
+/// 各写一份的话,画布上的引脚和调用约定里的引脚就会对不上(同一条边的
+/// 档位算得不一样)。
+///
+/// 控制流 pin 在前、值流在后,值流依次排在控制流下方 —— 和画布一致。
 fn pins_on_side(x: f32, lo: f32, len: f32, ctrl_n: usize, value_n: usize) -> Pins {
-    let ys = spread(lo, len, ctrl_n + value_n);
     Pins {
-        ctrl: ys[..ctrl_n].iter().map(|&y| (x, y)).collect(),
-        value: ys[ctrl_n..].iter().map(|&y| (x, y)).collect(),
+        ctrl: (0..ctrl_n)
+            .map(|i| (x, crate::view::pin_y(lo, len, ctrl_n, value_n, true, i)))
+            .collect(),
+        value: (0..value_n)
+            .map(|i| (x, crate::view::pin_y(lo, len, ctrl_n, value_n, false, i)))
+            .collect(),
     }
 }
 
@@ -1093,5 +1127,78 @@ mod tests {
     /// 把内层节点放到外层盒子的左墙边上(贴着夹紧边界)。
     fn conv_clamp(l: &Layout) -> (f32, f32) {
         (l.outer.x + 2.0, l.outer.y + 2.0)
+    }
+
+    /// **引脚的排布必须和画布那套一样** —— 用户报"层级不对,引脚被自己
+    /// 遮挡了",根源之一是 `conv.rs` 自己算了一份档位。
+    ///
+    /// 这里逐个比对:同一条边、同样的控制流/值流数量,画布的
+    /// `view::pin_y` 和调用约定的引脚位置必须**逐一相等**。
+    #[test]
+    fn the_pin_positions_match_the_canvas() {
+        // 外层左边:1 个控制流入 + 2 个值流入。
+        let outer = iface(&["a", "b"], &["c", "d"], vec![], 1, 1);
+        let inner = iface(&["a", "b"], &["c"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+
+        let (lo, len) = (l.outer.y, l.outer.h);
+        assert_eq!(l.outer_left.ctrl.len(), 1, "一个控制流入");
+        assert_eq!(l.outer_left.value.len(), 2, "两个值流入");
+        for i in 0..1 {
+            assert_eq!(
+                l.outer_left.ctrl[i].1,
+                crate::view::pin_y(lo, len, 1, 2, true, i),
+                "控制流引脚 {i} 的档位要和画布一致"
+            );
+        }
+        for i in 0..2 {
+            assert_eq!(
+                l.outer_left.value[i].1,
+                crate::view::pin_y(lo, len, 1, 2, false, i),
+                "值流引脚 {i} 的档位要和画布一致"
+            );
+        }
+        // 值流排在控制流**下方** —— 和画布、和游戏内编辑器一个规矩。
+        assert!(l.outer_left.value[0].1 > l.outer_left.ctrl[0].1);
+    }
+
+    /// 内层节点的引脚在它自己的边上,横向贴着节点的两端。
+    ///
+    /// 内层节点是不透明的,引脚必须画在它**之后**才不会被遮住 ——
+    /// 那是渲染层的层级问题(见 `render_conv_panel`),这里锁的是几何:
+    /// 引脚的 x 必须正好落在节点盒子的左右边缘上。
+    #[test]
+    fn the_inner_pins_sit_on_the_node_edges() {
+        let outer = iface(&["a"], &["c"], vec![], 1, 1);
+        let inner = iface(&["a"], &["c"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        assert_eq!(l.inner_left.value[0].0, l.inner.x, "内层左引脚贴在左边");
+        assert_eq!(
+            l.inner_right.value[0].0,
+            l.inner.x + l.inner.w,
+            "内层右引脚贴在右边"
+        );
+    }
+
+    /// **引脚必须画在盒子之后** —— 用户报"层级不对,引脚被自己遮挡了"。
+    ///
+    /// 内层节点是不透明的(`node_bg()`),引脚先画就被它盖住。
+    /// 这条锁住绘制顺序:引脚排在两个盒子**之后**。
+    #[test]
+    fn the_pins_are_drawn_after_the_boxes() {
+        let idx = |l: Layer| LAYER_ORDER.iter().position(|x| *x == l).expect("在顺序表里");
+        assert!(
+            idx(Layer::Pins) > idx(Layer::InnerBox),
+            "引脚必须画在内层节点之后,不然被它盖住"
+        );
+        assert!(
+            idx(Layer::Pins) > idx(Layer::OuterBox),
+            "引脚必须画在外层盒子之后"
+        );
+        assert!(idx(Layer::Edges) < idx(Layer::OuterBox), "边在最底下");
+        assert!(idx(Layer::Hover) > idx(Layer::Pins), "悬停气泡在最上面");
+        assert!(idx(Layer::Labels) > idx(Layer::Pins), "文字盖在引脚上");
     }
 }

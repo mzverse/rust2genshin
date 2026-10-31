@@ -290,7 +290,10 @@ fn add_px(offset: Point<Pixels>, p: Point<f32>) -> Point<Pixels> {
 /// 把第 `pin` 个 pin 均分在 `[lo, lo + len]` 上,首尾各留一格。
 ///
 /// 用 `N+1` 段而不是 `N-1` 段:`N == 1` 时后者要除零,`N == 0` 时没有意义。
-fn spread(lo: f32, len: f32, pin: usize, total: usize) -> f32 {
+///
+/// **公用的**:「调用约定」视图的引脚排布也用它(`conv::pins_on_side`)——
+/// 两边各写一份的话,画布上的引脚和调用约定里的引脚就会对不上。
+pub fn spread(lo: f32, len: f32, pin: usize, total: usize) -> f32 {
     if total == 0 {
         return lo + len / 2.0;
     }
@@ -302,7 +305,9 @@ fn spread(lo: f32, len: f32, pin: usize, total: usize) -> f32 {
 /// 一条侧边上,控制流 pin 在前、值流 pin 在后 —— **值流的连接点依次排在
 /// 控制流下方**(和游戏内节点编辑器的排法一致)。`ctrl_num` / `value_num`
 /// 是这条侧边上两类 pin 的总数,`pin` 是 `is_ctrl` 那一类里的序号。
-fn pin_y(lo: f32, len: f32, ctrl_num: usize, value_num: usize, is_ctrl: bool, pin: usize) -> f32 {
+///
+/// **公用的**:「调用约定」视图的引脚排布也用它 —— 见 [`spread`]。
+pub fn pin_y(lo: f32, len: f32, ctrl_num: usize, value_num: usize, is_ctrl: bool, pin: usize) -> f32 {
     let k = if is_ctrl { pin } else { ctrl_num + pin };
     spread(lo, len, k, ctrl_num + value_num)
 }
@@ -3278,73 +3283,19 @@ impl Viewer {
         .absolute()
         .inset_0();
 
-        // ---- 引脚:值流圆点 / 控制流三角形 ----
+        // ---- 层级顺序:盒子 → 引脚 → 标签 ----
+        //
+        // ⚠️ **引脚必须画在盒子之后**(和主画布一样,见 `render` 里的
+        // 「引脚:每个连接点都画」那段)。内层节点是不透明的
+        // (`node_bg()`),引脚先画就会被它盖住 —— 表现就是"引脚被自己
+        // 遮挡了"。
+        //
+        // 顺序照 [`conv::LAYER_ORDER`] 走(那边有测试盯着):
+        // 边 → 外层盒子 → 内层节点 → 引脚 → 文字 → 悬停气泡。
         let mut layer = div().absolute().inset_0();
-        for (pins, ctrl) in [
-            (&outer_left, true),
-            (&outer_left, false),
-            (&outer_right, true),
-            (&outer_right, false),
-            (&inner_left, true),
-            (&inner_left, false),
-            (&inner_right, true),
-            (&inner_right, false),
-        ] {
-            let list = if ctrl {
-                &pins.ctrl
-            } else {
-                &pins.value
-            };
-            for &(x, y) in list {
-                if ctrl {
-                    continue; // 三角形在下面的 canvas 里画
-                }
-                layer = layer.child(
-                    div()
-                        .absolute()
-                        .left(px(x - PIN_D / 2.0))
-                        .top(px(y - PIN_D / 2.0))
-                        .w(px(PIN_D))
-                        .h(px(PIN_D))
-                        .rounded_full()
-                        .bg(edge_value()),
-                );
-            }
-        }
-
-        // 控制流引脚的三角形:canvas 填色(div 画不出三角形)。
-        let ctrl_tri: Vec<[Point<f32>; 3]> = [
-            (&outer_left, true),
-            (&outer_right, true),
-            (&inner_left, true),
-            (&inner_right, true),
-        ]
-        .into_iter()
-        .flat_map(|(pins, _)| pins.ctrl.iter().map(|&(x, y)| pin_triangle(x, y, PIN_D)))
-        .collect();
-        layer = layer.child(
-            canvas(
-                move |_b, _w, _c| (),
-                move |bounds, _, window, _cx| {
-                    let o = bounds.origin;
-                    for t in &ctrl_tri {
-                        let mut pb = PathBuilder::fill();
-                        pb.move_to(add_px(o, t[0]));
-                        pb.line_to(add_px(o, t[1]));
-                        pb.line_to(add_px(o, t[2]));
-                        pb.close();
-                        if let Ok(path) = pb.build() {
-                            window.paint_path(path, pin_ctrl());
-                        }
-                    }
-                },
-            )
-            .absolute()
-            .inset_0(),
-        );
 
         // ---- 外层盒子:冻结的调用节点 ----
-        let mut outer_box = div()
+        let outer_box = div()
             .id("conv-outer")
             .absolute()
             .left(px(l.outer.x))
@@ -3356,41 +3307,6 @@ impl Viewer {
             .border_color(hsla(0.0, 0.0, 1.0, 0.28))
             .bg(hsla(0.0, 0.0, 1.0, 0.03));
         layer = layer.child(outer_box);
-
-        // ---- 外层引脚名:画在盒子**外侧** ----
-        //
-        // 左边(参数)右对齐贴盒子左边,右边(返回值)左对齐贴盒子右边。
-        // **只写名字** —— 类型在悬停气泡里(用户要求)。
-        for (right, y, name) in &l.outer_left_labels {
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(*right - conv::LABEL_GUTTER))
-                    .top(px(*y - 8.0))
-                    .w(px(conv::LABEL_GUTTER - 4.0))
-                    .flex()
-                    .justify_end()
-                    .text_size(px(11.0))
-                    .text_color(text_dim())
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .child(name.clone()),
-            );
-        }
-        for (left, y, name) in &l.outer_right_labels {
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(*left))
-                    .top(px(*y - 8.0))
-                    .w(px(conv::LABEL_GUTTER - 4.0))
-                    .text_size(px(11.0))
-                    .text_color(text_dim())
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .child(name.clone()),
-            );
-        }
 
         // ---- 内层节点:当前状态,可以在外层里拖 ----
         //
@@ -3441,7 +3357,111 @@ impl Viewer {
         );
         layer = layer.child(inner_box);
 
-        // ---- 常数:写在内侧(内层节点右侧)----
+        // ---- 引脚:值流圆点 / 控制流三角形 ----
+        //
+        // 画在**盒子之后** —— 引脚压在节点边缘上,一半在内一半在外。
+        // 顺序和主画布完全一致(`render` 里的「引脚:每个连接点都画」)。
+        for (pins, ctrl) in [
+            (&outer_left, true),
+            (&outer_left, false),
+            (&outer_right, true),
+            (&outer_right, false),
+            (&inner_left, true),
+            (&inner_left, false),
+            (&inner_right, true),
+            (&inner_right, false),
+        ] {
+            let list = if ctrl {
+                &pins.ctrl
+            } else {
+                &pins.value
+            };
+            for &(x, y) in list {
+                if ctrl {
+                    continue; // 三角形在下面的 canvas 里画
+                }
+                layer = layer.child(
+                    div()
+                        .absolute()
+                        .left(px(x - PIN_D / 2.0))
+                        .top(px(y - PIN_D / 2.0))
+                        .w(px(PIN_D))
+                        .h(px(PIN_D))
+                        .rounded_full()
+                        .bg(edge_value()),
+                );
+            }
+        }
+
+        // 控制流引脚的三角形:canvas 填色(div 画不出三角形)。
+        // 这层 canvas 加在圆点之后 —— 同样是"盖在节点边缘上"的那一层。
+        let ctrl_tri: Vec<[Point<f32>; 3]> = [
+            (&outer_left, true),
+            (&outer_right, true),
+            (&inner_left, true),
+            (&inner_right, true),
+        ]
+        .into_iter()
+        .flat_map(|(pins, _)| pins.ctrl.iter().map(|&(x, y)| pin_triangle(x, y, PIN_D)))
+        .collect();
+        layer = layer.child(
+            canvas(
+                move |_b, _w, _c| (),
+                move |bounds, _, window, _cx| {
+                    let o = bounds.origin;
+                    for t in &ctrl_tri {
+                        let mut pb = PathBuilder::fill();
+                        pb.move_to(add_px(o, t[0]));
+                        pb.line_to(add_px(o, t[1]));
+                        pb.line_to(add_px(o, t[2]));
+                        pb.close();
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, pin_ctrl());
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0(),
+        );
+
+        // ---- 文字:外层引脚名 + 常数 ----
+        //
+        // 排在引脚**之后** —— 名字和引脚挨着,名字压在上面才读得出来。
+        //
+        // 外层引脚名画在盒子**外侧**:左边(参数)右对齐贴盒子左边,右边
+        // (返回值)左对齐贴盒子右边。**只写名字** —— 类型在悬停气泡里。
+        for (right, y, name) in &l.outer_left_labels {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(*right - conv::LABEL_GUTTER))
+                    .top(px(*y - 8.0))
+                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .flex()
+                    .justify_end()
+                    .text_size(px(11.0))
+                    .text_color(text_dim())
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(name.clone()),
+            );
+        }
+        for (left, y, name) in &l.outer_right_labels {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(*left))
+                    .top(px(*y - 8.0))
+                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .text_size(px(11.0))
+                    .text_color(text_dim())
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(name.clone()),
+            );
+        }
+        // 常数:写在内侧(内层节点右侧)。
         for (x, y, text) in &l.constants {
             layer = layer.child(
                 div()
