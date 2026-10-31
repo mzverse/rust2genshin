@@ -2867,13 +2867,18 @@ impl Viewer {
         //
         // 标题恒为「当前」:没有数据流引脚也照样是"当前状态",写「空」会让人
         // 以为这个函数没内容(用户报过)。
+        //
+        // ⚠️ **宽度用渲染下限,不是 `l.inner.w`**。`l.inner.w` 是布局给内层
+        // 留的拖动余量(150),拿它当 `.min_w()` 会把「当前」两个字撑成
+        // 150 宽、左右各空一大截(用户报过)。盒子靠 `min_w` + 文字撑开,
+        // 和主画布的节点完全一套逻辑。
         let inner_label = "当前";
         // 按下时内层节点的位置 —— 闭包是 `'static'` 的,得先把值拷出来。
         let inner_start = (l.inner.x, l.inner.y);
         let inner_box = node_box_el(
             l.inner.x,
             l.inner.y,
-            l.inner.w,
+            NODE_MIN_W,
             l.inner.h,
             1.0,
             inner_label,

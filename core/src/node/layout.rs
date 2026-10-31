@@ -127,15 +127,26 @@ pub fn side_pin_ys(
 ///
 /// 是估算不是测量 —— 精确测量要 `TextSystem`(得在拿得到 `cx` / 窗口的地方做),
 /// 而宽度参与布局(层与层的横向步进按层内最宽节点累加),必须是纯数据、可单测。
-/// 因此**往宽了估**:ASCII 按 6.6px/字符(11px 字号下界于大写/数字的偏高值),
-/// 非 ASCII(比如中文)按 1em 记。估宽的代价只是节点多留点边距;估窄了文字会被
-/// 裁掉,那正是这个函数要修的毛病。
+///
+/// # 宁可估宽
+///
+/// 布局只用这个值决定**列间距**,渲染盒子的真实宽度由排版引擎实测后自己撑开
+/// (`min_w` + 自然尺寸),两者各管各的。所以:
+///
+/// - 估**窄**了 —— 宽标签节点压到下一列上,是硬伤;
+/// - 估**宽**了 —— 列间距松一点,只是美观问题。
+///
+/// 因此这里刻意往宽了估:ASCII 按 7.2px/字符(11px 字号下,**非等宽**字体里
+/// `m`/`w`/`W` 这类宽字的实测值在 6.6~7.5 之间),非 ASCII 按 1.1em 记
+/// (中文是满宽,且注释里实测 10px 字号下 `7px/字` 估窄过,见 `comment_width`)。
 pub fn node_width(text: &str) -> f32 {
-    /// 文字两侧的留白:左右 padding(px_1)+ 描边 + 一点余量。
-    const PAD: f32 = 16.0;
+    /// 文字两侧的留白:左右 padding + 描边 + 一点余量。
+    ///
+    /// 和渲染层 `NODE_TEXT_PAD` 同源,但这里再宽 4px —— 留作"估算误差"的缓冲。
+    const PAD: f32 = 22.0;
     let text_w: f32 = text
         .chars()
-        .map(|c| if c.is_ascii() { 6.6 } else { BASE_FONT_PX })
+        .map(|c| if c.is_ascii() { 7.2 } else { BASE_FONT_PX * 1.1 })
         .sum();
     NODE_W.max(text_w + PAD)
 }
@@ -207,31 +218,35 @@ impl NodeLabel for IrNodeId {
 
 /// 对整张图跑一遍自动整理,把坐标写进每个节点的 [`position`](crate::node::Node)。
 ///
-/// # 宽度是**固定值**,不按标签估算
+/// # 宽度按标签**估算**,且宁可估宽
 ///
-/// 布局只负责"谁在哪一列、列内怎么排",它**不需要**知道节点渲染出来多宽。
-/// 宽度在这里退化成 [`NODE_W`] 这个常量(注释框例外:它是多行文本块,长了
-/// 会压到邻居身上,仍按最长一行估)。
+/// 布局要决定"列之间留多远",所以必须知道节点大概多宽 —— 全按一个常量排
+/// 会让宽标签的节点压到下一列上(实测:全部按 `NODE_W` 排时,`Assemble<...>`
+/// 这种长标签节点直接和右边那列叠在一起)。
 ///
-/// 为什么不再按标签估宽:文字宽度只能靠排版引擎测量,而布局是**纯函数**、
-/// 还要在 `.gia` 编码前跑(那时没有渲染上下文)。以前按字符数估宽,估出来
-/// 比实际宽,节点内部左右空出一大截;现在布局不管标签宽度,渲染按内容撑开
-/// (`min_w` + 自然尺寸)。
+/// 但布局是**纯函数**,还要在 `.gia` 编码前跑(那时没有排版引擎),所以只能
+/// 按字符数估。估宽的原则是**宁宽勿窄**:估窄了节点会互相压盖(硬伤),
+/// 估宽了只是列间距松一点(美观)。渲染那边用实测宽度撑开盒子,和这里的
+/// 估算**各管各的** —— 布局只要"别压盖",渲染要"贴紧文字"。
+///
+/// 注释框同样按最长一行估(它是多行文本块,长了会压到邻居身上)。
 pub fn layout<NodeId: NodeLabel, Kind>(graph: &mut NodeGraph<NodeId, Kind>) {
-    layout_impl(graph);
+    layout_with(graph, |kind| kind.id.node_label());
 }
 
-/// 同 [`layout`]。保留这个入口是为了兼容既有调用方 —— 标签**不再参与布局**,
-/// 传什么都一样。
+/// 同 [`layout`],但标签由调用方给 —— 宽度按这个字符串估算,
+/// 所以它应当是**渲染时显示的那个字符串**。
 pub fn layout_with<NodeId, Kind>(
     graph: &mut NodeGraph<NodeId, Kind>,
     label: impl Fn(&NodeKind<NodeId, Kind>) -> String,
 ) {
-    let _ = label;
-    layout_impl(graph);
+    layout_impl(graph, label);
 }
 
-fn layout_impl<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>) {
+fn layout_impl<NodeId, Kind>(
+    graph: &mut NodeGraph<NodeId, Kind>,
+    label: impl Fn(&NodeKind<NodeId, Kind>) -> String,
+) {
     // 展平成布局模型(slab 迭代序 = 下标序)。渲染方若按自己的下标序读回
     // 坐标,两边是同一套顺序 —— viewer 的展平就是这么对齐的。
     let mut w: Vec<f32> = Vec::new();
@@ -249,10 +264,9 @@ fn layout_impl<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>) {
             node.kind.values_out_types.len(),
         );
         let rows = l.rows.max(r.rows);
-        // **宽度用固定值,不按标签估算** —— 布局只需要知道"一列多宽",
-        // 节点真实宽度由渲染方测量后自己撑开(`min_w` + 自然尺寸)。
-        // 按字符数估宽会估得比实际宽,节点内部左右就空出一大截。
-        let mut width = NODE_W;
+        // 列宽按标签估算(宁可估宽,否则节点会压到下一列上)。渲染盒子的
+        // 真实宽度由排版引擎实测后自己撑开,和这里的估算各管各的。
+        let mut width = node_width(&label(&node.kind));
         // 注释例外:它是多行文本块,长了会压到邻居身上,仍按最长一行估。
         // 高度在列内打包时单独留出来(见 `pack`)。
         let mut reserve = 0.0;
@@ -1289,13 +1303,12 @@ mod tests {
         g.link_control(Link::node(tail, 0), Link::export(0));
         layout_with(&mut g, |_| "x".repeat(60));
         let (a, b) = (g.get_node(entry).position, g.get_node(tail).position);
-        // **标签不再影响布局**:列宽固定按 `NODE_W` 排,节点真实宽度由
-        // 渲染层按内容撑开。所以即便标签有 60 个字符,层间距也还是
-        // `NODE_W + LAYER_GAP`。
-        assert_eq!(
-            b.0 - a.0,
-            NODE_W + LAYER_GAP,
-            "标签不该再把列推右:{a:?} → {b:?}"
+        // 长标签必须把后面的列推右 —— 否则宽节点会压到下一列上。
+        // (渲染盒子的真实宽度由排版引擎实测撑开,但**布局**要靠估算值
+        //  留出间距,这两件事各管各的。)
+        assert!(
+            b.0 - a.0 > NODE_W + LAYER_GAP,
+            "长标签必须把后面的列推右:{a:?} → {b:?}"
         );
     }
 }

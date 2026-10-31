@@ -313,6 +313,14 @@ pub struct Layout {
 /// 外层盒子左右各留的边距(盒**内**的留白)。引脚从这之后开始排。
 pub const PAD: f32 = 12.0;
 /// 内层节点的宽度。
+///
+/// ⚠️ 这是**布局用的假定宽度**,不是渲染宽度:内层节点用和主画布同一个
+/// `node_box_el`(`min_w` + 自然撑开),真实宽度由标题文字决定 ——
+/// 标题就是「当前」两个字,撑开之后远不到 150。布局留这么宽是为了给
+/// 内层节点在盒子里拖动留余量,不是要画一个 150 宽的框。
+///
+/// 以前渲染直接把 `INNER_W` 当 `.w()` 用,于是「当前」两个字左右各空出
+/// 一大截(用户报过)。
 pub const INNER_W: f32 = 150.0;
 /// 内层节点的最小高度(和画布的 `node_height` 取大的那个)。
 pub const INNER_MIN_H: f32 = 32.0;
@@ -1161,6 +1169,32 @@ mod tests {
         assert!(
             c.links.iter().any(|x| matches!(x, Link::CtrlIn { .. })),
             "有控制流入连线"
+        );
+    }
+
+    /// 内层节点**不该**按 `INNER_W`(150)画 —— 那会把「当前」两个字撑成
+    /// 150 宽、左右各空一大截(用户报过)。
+    ///
+    /// 渲染走的是主画布同一个 `node_box_el`(`min_w` + 自然撑开),所以这里
+    /// 只需要保证:`INNER_W` 是**布局给拖动留的余量**,大于渲染下限
+    /// (`NODE_MIN_W`),否则内层节点会被夹得动不了。
+    #[test]
+    fn the_inner_box_reserves_room_but_renders_narrower() {
+        assert!(
+            INNER_W > crate::canvas_geom::NODE_MIN_W,
+            "布局余量必须大于渲染下限,内层才拖得动"
+        );
+        // 布局里内层确实按 `INNER_W` 留了位置。
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        assert_eq!(l.inner.w, INNER_W, "布局按 INNER_W 留位");
+        assert!(
+            l.outer.w > l.inner.w,
+            "外层盒子要装得下内层:外层 {} vs 内层 {}",
+            l.outer.w,
+            l.inner.w
         );
     }
 
