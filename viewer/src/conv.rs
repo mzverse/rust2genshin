@@ -59,18 +59,21 @@ pub enum Link {
 
 /// 一个常数:某个外层返回值的当前取值。
 ///
-/// 常数**写在内侧**(用户要求)—— 它是函数体里的一个事实,不是接口的一部分。
+/// 常数是**外层那个输出引脚的值**,所以画在**外层引脚的左边** ——
+/// 右缘贴引脚,文字往左展开(用户要求)。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constant {
-    /// 外层返回值的下标。
+    /// 外层返回值的下标 —— 常数就贴在这个引脚左边。
     pub ret: usize,
     /// 常数的文本(`Debug` 格式)。
     pub text: String,
     /// 内层哪个返回值引脚是这个常数(内层下标)。
     ///
     /// `None` = **内层连这个引脚都没有了**:`lower` 摘掉了没人读的值出口
-    /// (`compact_value_exports`),常数只剩在 `decl.proxies_out` 里。这时
-    /// 常数没有"内层那个出引脚"可以对,渲染层把它画在内层节点的右侧空位上。
+    /// (`compact_value_exports`),常数只剩在 `decl.proxies_out` 里。
+    ///
+    /// 这个字段只用来**连线**(有内层引脚时,常数那一条从内层出引脚出发);
+    /// **位置不看它** —— 位置永远跟着**外层**那个引脚走。
     ///
     /// 用户报的"直接返回常数的你没有显示"就是 `None` 这一类 —— 以前只在
     /// 有内层引脚时才画,于是整个常数消失。
@@ -329,6 +332,13 @@ pub const LABEL_GUTTER_MAX: f32 = 96.0;
 /// 面板左右各留的边距。
 pub const MARGIN: f32 = 4.0;
 
+/// 估一段文字的宽度(px)。和 [`label_gutter`] / 画布 `node_width` 同一套规则。
+pub fn text_width(s: &str) -> f32 {
+    s.chars()
+        .map(|c| if c.is_ascii() { 6.6 } else { 11.0 })
+        .sum()
+}
+
 /// 按名字长度估一条引脚名槽要多宽。
 ///
 /// `names` 是**这一侧全部**引脚名。估宽用和画布 `node_width` 同一套规则
@@ -337,14 +347,7 @@ pub const MARGIN: f32 = 4.0;
 /// 名字都短时返回 [`LABEL_GUTTER_MIN`],不会白占地方;名字很长时封顶到
 /// [`LABEL_GUTTER_MAX`]。
 pub fn label_gutter<'a>(names: impl IntoIterator<Item = &'a str>) -> f32 {
-    let widest = names
-        .into_iter()
-        .map(|s| {
-            s.chars()
-                .map(|c| if c.is_ascii() { 6.6 } else { 11.0 })
-                .sum::<f32>()
-        })
-        .fold(0.0f32, f32::max);
+    let widest = names.into_iter().map(text_width).fold(0.0f32, f32::max);
     // 文字两侧各留 6px(贴盒子那侧 6px + 边距 4px 取整)。
     (widest + 10.0).clamp(LABEL_GUTTER_MIN, LABEL_GUTTER_MAX)
 }
@@ -520,34 +523,31 @@ pub fn layout(
         inner_right_rows,
     );
 
-    // 常数文本:画在**内层节点右侧** —— 常数是函数体里的事实,位置跟着内层走。
+    // 常数文本:画在**外层那个输出引脚的左边** —— 常数是那个引脚的**值**,
+    // 就该贴着它(用户要求)。
     //
-    // - 有内层出引脚(`inner: Some`)→ 纵向对准那个引脚,一眼对应得上;
-    // - 没有内层引脚(`inner: None`,即 `lower` 摘掉了没人读的出口)→ 从内层
-    //   顶上一路往下排。**这种情况必须画**,不能因为"没有引脚"就丢掉:它正是
-    //   用户报的"直接返回常数的你没有显示"。
+    // 位置只看**外层**引脚,和内层有没有那个引脚无关:
+    // - **右缘**贴外层右缘的引脚(往左 6px),文字往左展开;
+    // - 纵向对准那个外层引脚。
     //
-    // 先取有引脚的那些,再把没引脚的按顺序往下摆 —— 后者不会和前者抢同一行
-    // (有引脚的都贴着内层盒子右缘的引脚行)。
-    let const_x = inner_rect.x + inner_rect.w + 8.0;
-    let mut constants: Vec<(f32, f32, String)> = conv
+    // 以前它写在内层节点右边 —— 那是把"函数体里的事实"和"接口上的值"搞混了:
+    // 常数说的是**这个返回值是什么**,归外层那个引脚管。
+    //
+    // 有内层引脚(`inner: Some`)时,从内层出引脚到外层出引脚还画一条连线
+    // —— 那条线由渲染层按 `Constant::inner` 决定,这里只管文字的位置。
+    //
+    // 返回的 `x` 是**左缘**(渲染层从左上角摆一个 div);宽度用 `text_width`
+    // 估,和画布/引脚名同一套,所以右缘落在 `outer_right` 引脚左边。
+    let constants: Vec<(f32, f32, String)> = conv
         .constants
         .iter()
         .filter_map(|c| {
-            let y = inner_right.value.get(c.inner?).map(|p| p.1)?;
-            Some((const_x, y, c.text.clone()))
+            let y = outer_right.value.get(c.ret).map(|p| p.1)?;
+            let pin_x = outer_rect.x + outer_rect.w;
+            let left = pin_x - 6.0 - text_width(&c.text);
+            Some((left, y, c.text.clone()))
         })
         .collect();
-    // 没有内层引脚的:从内层顶端开始,按 `PIN_GAP` 往下排,避开上面已占的行。
-    let mut taken: Vec<f32> = constants.iter().map(|(_, y, _)| *y).collect();
-    for c in conv.constants.iter().filter(|c| c.inner.is_none()) {
-        let mut y = inner_rect.y + crate::doc::PIN_TOP;
-        while taken.iter().any(|t| (t - y).abs() < PIN_GAP / 2.0) {
-            y += PIN_GAP;
-        }
-        taken.push(y);
-        constants.push((const_x, y, c.text.clone()));
-    }
 
     // 引脚名:画在盒子**外侧**。
     // - 左边(参数):右缘贴盒子左边,文字往左展开;
@@ -1146,13 +1146,42 @@ mod tests {
         let outer = iface(&["x"], &["r"], vec![], 1, 1);
         let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
         let c = Convention::build(&outer, &inner);
-        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
         // 控制流入 / 出都在,但它们的文案由渲染层按 `link_endpoints_text`
         // 判 —— 控制流一律 `None`。这里锁"控制流连线存在"这个前提。
         assert!(
             c.links.iter().any(|x| matches!(x, Link::CtrlIn { .. })),
             "有控制流入连线"
         );
+    }
+
+    /// 常数贴**外层**那个返回引脚的左边,和内层有没有这个引脚无关。
+    ///
+    /// 用户报过两次:先是"直接返回常数的没显示"(内层引脚被 `lower` 摘掉),
+    /// 然后是"这个常量怎么粘在内层上了,它应该在外层引脚的左侧"。
+    #[test]
+    fn the_constant_sits_left_of_the_outer_pin() {
+        // 内层**有**这个出引脚,常数照样贴外层引脚左边。
+        let outer = iface(&[], &["r"], vec![], 1, 1);
+        let inner = iface(&[], &["r"], vec![RetOrigin::Const("42".into())], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        assert_eq!(l.constants.len(), 1);
+        let (x, y, text) = &l.constants[0];
+        assert_eq!(text, "42");
+        let pin = l.outer_right.value[0];
+        assert_eq!(*y, pin.1, "纵向对准外层引脚");
+        let right = x + text_width(text);
+        assert!(right < pin.0, "常数右缘在外层引脚左边: {right} < {}", pin.0);
+        assert!(pin.0 - right <= 8.0, "贴得够近:差 {}", pin.0 - right);
+
+        // 内层**没有**这个出引脚(lower 摘掉了),位置一模一样。
+        let mut inner2 = iface(&[], &[], vec![], 1, 1);
+        inner2.orphan_rets = vec![(0, crate::doc::OrphanRet::Const("42".into()))];
+        let c2 = Convention::build(&outer, &inner2);
+        let l2 = layout(&outer, &inner2, &c2, (0.0, 0.0), 344.0);
+        assert_eq!(l2.constants.len(), 1, "内层没引脚也得画");
+        assert_eq!(l2.constants[0].0, *x, "位置只看外层引脚,与内层无关");
+        assert_eq!(l2.constants[0].1, *y);
     }
 
     /// 命中测试:指着引脚就命中那个引脚(不是压在它上面的线)。

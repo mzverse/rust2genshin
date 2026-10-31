@@ -63,9 +63,9 @@ cargo run -p rust2genshin-viewer -- <路径>
 
 - 连到*内层*的出引脚 —— 这个返回值是函数体算出来的；
 - 连到*外层*的入引脚 —— 函数原样把某个参数还回去（没做任何计算）；
-- 写成*一个常数*，画在内层节点旁边 —— 返回值就是个字面量。
+- 写成*一个常数*，贴在**外层那个返回引脚的左边**（盒子内侧，右缘贴引脚、文字往左展开）—— 返回值就是个字面量。常数是*那个引脚的值*，所以位置只跟外层引脚走，和内层有没有这个引脚无关。
 
-第三种有个坑：`lower` 里的 `compact_value_exports`（`core/src/compile/optimize.rs:617`）会把*没人读*的值出口整根摘掉 —— 一个「直接返回常数」的函数正是这样，出口没有节点读，值只留在 `decl.proxies_out` 里。于是内层连那个出引脚都不剩，常数一度跟着整个消失。现在 `FnInterface::orphan_rets`（`viewer/src/doc.rs`）把那张表读出来，这种常数照样画在内层节点右侧，只是没有内层引脚可以对齐（`conv::Constant::inner` 为 `None`）。
+第三种有个坑：`lower` 里的 `compact_value_exports`（`core/src/compile/optimize.rs:617`）会把*没人读*的值出口整根摘掉 —— 一个「直接返回常数」的函数正是这样，出口没有节点读，值只留在 `decl.proxies_out` 里。于是内层连那个出引脚都不剩，常数一度跟着整个消失。现在 `FnInterface::orphan_rets`（`viewer/src/doc.rs`）把那张表读出来，这种常数照样画，只是 `conv::Constant::inner` 为 `None`（只影响有没有连线，不影响位置）。
 
 控制流引脚同理：当前函数体*有*控制流就连到内层，*没有*就直接从外层控制入横穿到控制出。
 

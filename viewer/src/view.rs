@@ -3572,7 +3572,7 @@ impl Viewer {
                     .child(name.clone()),
             );
         }
-        // 常数:写在内侧(内层节点右侧)。
+        // 常数:贴在外层那个输出引脚的**左边**(常数就是那个引脚的值)。
         for (x, y, text) in &l.constants {
             layer = layer.child(
                 div()

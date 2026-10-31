@@ -2226,10 +2226,22 @@ mod tests {
         assert_eq!(l.constants.len(), 1, "常数必须有坐标才会被渲染: {:?}", l.constants);
         let (x, y, text) = &l.constants[0];
         assert_eq!(text, "5");
-        assert!(*x > l.inner.x + l.inner.w, "常数写在内层节点右侧");
+        // **常数贴外层那个输出引脚的左边**,不是粘在内层节点上(用户要求)。
+        let pin = l.outer_right.value[c.constants[0].ret];
+        assert_eq!(*y, pin.1, "常数纵向对准外层那个返回引脚");
+        let right = x + crate::conv::text_width(text);
         assert!(
-            *y >= l.inner.y && *y <= l.inner.y + l.inner.h,
-            "常数纵向落在内层节点的范围里"
+            right < pin.0 && pin.0 - right <= 8.0,
+            "常数右缘应当贴在外层引脚左边(右缘 {right},引脚 {})",
+            pin.0
+        );
+        assert!(
+            *x > l.outer.x + l.outer.w / 2.0,
+            "常数在外层盒子右半边,不是内层节点那边"
+        );
+        assert!(
+            *x < l.inner.x || *x > l.inner.x + l.inner.w,
+            "常数不该压在内层节点上"
         );
 
         // 顺带锁住:它**不该**同时被算成线(常数不是连线)。
