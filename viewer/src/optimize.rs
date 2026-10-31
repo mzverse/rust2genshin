@@ -138,18 +138,6 @@ pub fn sweep(opt: &mut Optimizer, run: fn(&mut Optimizer, NodeRef) -> Option<()>
     }
 }
 
-/// [`sweep`] 的 panic 护栏。
-///
-/// 规则里有大量 `unwrap`(如 `eliminate_if` 撞上没有条件、也没有默认值的 IF
-/// 节点)。viewer 的输入是用户随手拖进来的任意 `.ogia`,不能让一次点击把
-/// 整个窗口带走 —— 拦成 `Err(消息)`,由调用方回滚。
-pub fn sweep_guarded(
-    opt: &mut Optimizer,
-    run: fn(&mut Optimizer, NodeRef) -> Option<()>,
-) -> Result<SweepResult, String> {
-    catch_unwind(AssertUnwindSafe(|| sweep(opt, run))).map_err(|p| panic_message(p.as_ref()))
-}
-
 /// `catch_unwind` 的负载 → 一行文案。
 pub fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<String>() {
@@ -249,8 +237,128 @@ pub struct ApplyResult {
     pub status: String,
 }
 
-/// 点一次规则的完整数据流:
-/// 存档 → 取图 → 过一遍 → 放回或回滚 → 重展平 → 按 `NodeRef` 重建坐标。
+/// 一次"改图"操作的**上下文** —— 除图本体之外,所有操作都需要的那些。
+///
+/// 打成一包是因为它们**永远一起出现**:`(i, refs, pos)` 就是"当前这一帧是
+/// 哪张图、节点按什么顺序、各自在哪",任何改图的操作都缺一不可。以前它们是
+/// 三个独立参数,在 `guarded_op` / `rollback` / 四个公开入口之间原样传递六遍。
+pub struct OpCtx<'a> {
+    /// 图下标。
+    pub i: usize,
+    /// 操作**之前**的展平顺序(`pos` 与它同序)。
+    pub refs: &'a [NodeRef],
+    /// 操作**之前**的坐标。
+    pub pos: &'a [Point<f32>],
+    /// 状态文案前缀("一键优化" / "lower" …)。
+    pub label: &'a str,
+    /// 重建坐标时"新节点落在哪"(见 [`rebuild_pos`])。
+    pub anchor: Option<Point<f32>>,
+    /// 图**没开变化**时的状态文案。`Some(..)` = 无变化要如实报出来
+    /// (批量操作用:第二次点击通常就是这种情形),`None` = 照闭包给的文案说
+    /// (单条规则要报命中次数,lower / link 本来就不会无变化)。
+    pub unchanged: Option<String>,
+}
+
+impl<'a> OpCtx<'a> {
+    /// 一个普通操作的上下文:没锚点、无变化不特殊处理。
+    pub fn new(i: usize, refs: &'a [NodeRef], pos: &'a [Point<f32>], label: &'a str) -> Self {
+        Self {
+            i,
+            refs,
+            pos,
+            label,
+            anchor: None,
+            unchanged: None,
+        }
+    }
+
+    /// 失败时这一帧该有的结果(坐标原样退回)。
+    fn noop(&self, status: String) -> ApplyResult {
+        ApplyResult {
+            undo: None,
+            pos: self.pos.to_vec(),
+            status,
+        }
+    }
+}
+
+/// 一次"改图"操作的**完整外壳**:存档 → 取图 → 护栏内跑 → 放回 / 回滚 →
+/// 重展平 → 按 `NodeRef` 重建坐标。
+///
+/// 四种操作(单条规则 / link / 批量 / lower)原来各抄一遍这段,连 `catch_unwind`
+/// 的错误文案都靠复制粘贴保持一致 —— 四条路径里改一条、忘三条的风险是真的
+/// (回滚文案的冒号后面有没有空格都不一样过)。现在只有这一份,差异走
+/// [`OpCtx`] 和闭包。
+pub fn guarded_op(
+    doc: &mut Doc,
+    ctx: OpCtx<'_>,
+    f: impl FnOnce(&mut Optimizer, Option<&mut Linker>) -> Result<String, String>,
+) -> ApplyResult {
+    let bytes = match doc.encode(ctx.i) {
+        Ok(b) => b,
+        Err(e) => return ctx.noop(e),
+    };
+    let Some(mut opt) = doc.take(ctx.i) else {
+        return ctx.noop("这张图取不出来(它背后的 Target 里没有)".to_string());
+    };
+    // 闭包整段都在护栏里 —— 规则里有大量 `unwrap`(`optimize()` 尾部对
+    // `controls_in[0]` 的索引也是可能 panic 的点之一),viewer 的输入是用户
+    // 随手拖进来的任意 `.ogia`,不能让一次点击把整个窗口带走。
+    let result = {
+        let linker = doc.linker_mut(ctx.i);
+        catch_unwind(AssertUnwindSafe(|| f(&mut opt, linker)))
+    };
+    match result {
+        Ok(Ok(status)) => {
+            doc.put(ctx.i, opt);
+            doc.reflatten(ctx.i);
+            // 没变化就别骗用户"改了",也别给撤销栈塞一条空动作。
+            let changed = matches!(doc.encode(ctx.i), Ok(b) if b != bytes);
+            let status = match &ctx.unchanged {
+                Some(msg) if !changed => msg.clone(),
+                _ => status,
+            };
+            ApplyResult {
+                undo: changed.then_some(bytes),
+                pos: reposition(doc, ctx.i, ctx.refs, ctx.pos, ctx.anchor),
+                status,
+            }
+        }
+        // 失败 / panic:图可能停在半改状态 —— 用点击前的字节整体换回来。
+        // 两种失败共用这一份回滚,只有文案前缀不同。
+        Ok(Err(why)) => rollback(doc, &ctx, &bytes, &format!("失败,已回滚 —— {why}")),
+        Err(p) => {
+            // `opt` 在这里被丢掉:图已经由存档整体换回来,留着会被 `put` 覆盖。
+            drop(opt);
+            let why = panic_message(p.as_ref());
+            rollback(doc, &ctx, &bytes, &format!("panic 已拦截,已回滚 —— {why}"))
+        }
+    }
+}
+
+/// 用存档字节把图整体换回来,返回"这一跳没成功"的结果。
+///
+/// `why` 是回滚**成功**时该补的那半句话("失败,已回滚 —— …" / "panic 已拦截…");
+/// `ctx.label` 只用在回滚自己也失败时的文案里。
+fn rollback(doc: &mut Doc, ctx: &OpCtx<'_>, bytes: &[u8], why: &str) -> ApplyResult {
+    match doc.decode_into(ctx.i, bytes) {
+        Ok(()) => {
+            doc.reflatten(ctx.i);
+            ApplyResult {
+                undo: None,
+                pos: reposition(doc, ctx.i, ctx.refs, ctx.pos, ctx.anchor),
+                status: format!("{}:{why}", ctx.label),
+            }
+        }
+        Err(e) => ApplyResult {
+            undo: None,
+            pos: ctx.pos.to_vec(),
+            status: format!("{}:回滚也失败了:{e}", ctx.label),
+        },
+    }
+}
+
+/// 点一次规则的完整数据流 —— 外壳在 [`guarded_op`],这里只给闭包。
 ///
 /// `refs` / `pos` 是点击前这一帧的展平顺序与坐标(`pos` 与 `refs` 同序)。
 pub fn apply_rule(
@@ -260,45 +368,13 @@ pub fn apply_rule(
     pos: &[Point<f32>],
     rule: &Rule,
 ) -> ApplyResult {
-    let noop = |status: String| ApplyResult {
-        undo: None,
-        pos: pos.to_vec(),
-        status,
-    };
-    let bytes = match doc.encode(i) {
-        Ok(b) => b,
-        Err(e) => return noop(e),
-    };
-    let Some(mut opt) = doc.take(i) else {
-        return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
-    };
-    match sweep_guarded(&mut opt, rule.run) {
-        Ok(r) => {
-            doc.put(i, opt);
-            doc.reflatten(i);
-            ApplyResult {
-                undo: Some(bytes),
-                pos: reposition(doc, i, refs, pos, None),
-                status: format!("{}: {}", rule.name, r.describe()),
-            }
-        }
-        Err(p) => {
-            // 图可能停在半改状态 —— 用点击前的字节整体换回来。
-            drop(opt);
-            let status = match doc.decode_into(i, &bytes) {
-                Ok(()) => {
-                    doc.reflatten(i);
-                    format!("{}: panic 已拦截,已回滚 —— {p}", rule.name)
-                }
-                Err(e) => format!("{}: panic 后回滚也失败了:{e}", rule.name),
-            };
-            ApplyResult {
-                undo: None,
-                pos: reposition(doc, i, refs, pos, None),
-                status,
-            }
-        }
-    }
+    let name = rule.name;
+    guarded_op(doc, OpCtx::new(i, refs, pos, name), |opt, _linker| {
+        // `guarded_op` 已经包了 `catch_unwind`,这里直接跑(不再套
+        // `sweep_guarded` —— 嵌套护栏会让回滚路径多一份实现)。
+        let r = sweep(opt, rule.run);
+        Ok(format!("{name}: {}", r.describe()))
+    })
 }
 
 /// 对一个 `IrNodeId::Fn` 节点执行 `Optimizer::link_node`:把它展开成
@@ -318,75 +394,42 @@ pub fn link_fn_node(
     pos: &[Point<f32>],
     node: NodeRef,
 ) -> ApplyResult {
-    let noop = |status: String| ApplyResult {
-        undo: None,
-        pos: pos.to_vec(),
-        status,
+    // 被 link 的节点若已经不在,就没东西可展开 —— 先看一眼图,免得白存档。
+    let ctx = OpCtx::new(i, refs, pos, "link");
+    let Some(g) = doc.entry(i) else {
+        return ctx.noop("这张图取不出来(它背后的 Target 里没有)".to_string());
     };
-    let bytes = match doc.encode(i) {
-        Ok(b) => b,
-        Err(e) => return noop(e),
+    let Some(n) = g.nodes.iter().find(|n| n.node_ref == node) else {
+        return ctx.noop("这个节点已经不在了".to_string());
     };
-    let Some(mut opt) = doc.take(i) else {
-        return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
+    let IrNodeId::Fn(key) = &n.kind else {
+        return ctx.noop("只有 Fn 节点能 link".to_string());
     };
-    // 从这里起,任何提前返回都必须先把图放回去。
-    if !opt.graph.nodes.contains(node.into()) {
-        doc.put(i, opt);
-        return noop("这个节点已经不在了".to_string());
-    }
-    let key = match &opt.graph.get_node(node).kind.id {
-        IrNodeId::Fn(key) => key.clone(),
-        _ => {
-            doc.put(i, opt);
-            return noop("只有 Fn 节点能 link".to_string());
-        }
+    let key = key.clone();
+    // 展开出来的节点落在**被 link 那个节点原来的位置**。
+    let ctx = OpCtx {
+        anchor: refs
+            .iter()
+            .position(|r| *r == node)
+            .and_then(|k| pos.get(k).copied()),
+        ..ctx
     };
-    let anchor = refs
-        .iter()
-        .position(|r| *r == node)
-        .and_then(|k| pos.get(k).copied());
-    let Some(linker) = doc.linker_mut(i) else {
-        doc.put(i, opt);
-        return noop("这张图背后的 Linker 不见了".to_string());
-    };
-    match catch_unwind(AssertUnwindSafe(|| opt.link_node(linker, node))) {
-        Ok(()) => {
-            doc.put(i, opt);
-            doc.reflatten(i);
-            ApplyResult {
-                undo: Some(bytes),
-                pos: reposition(doc, i, refs, pos, anchor),
-                status: format!("link:{key} 已展开"),
-            }
-        }
-        Err(p) => {
-            drop(opt);
-            let status = match doc.decode_into(i, &bytes) {
-                Ok(()) => {
-                    doc.reflatten(i);
-                    format!("link:panic 已拦截,已回滚 —— {}", panic_message(p.as_ref()))
-                }
-                Err(e) => format!("link:panic 后回滚也失败了:{e}"),
-            };
-            ApplyResult {
-                undo: None,
-                pos: reposition(doc, i, refs, pos, None),
-                status,
-            }
-        }
-    }
+    guarded_op(doc, ctx, |opt, linker| {
+        let Some(linker) = linker else {
+            return Err("这张图背后的 Linker 不见了".to_string());
+        };
+        opt.link_node(linker, node);
+        Ok(format!("link:{key} 已展开"))
+    })
 }
 
-/// 批量操作的公共外壳:存档 → 取图 → 跑一段会改图的闭包 → 放回 / 回滚 →
-/// 重展平 → 重建坐标。
+/// 批量操作的公共入口 —— 只是 [`guarded_op`] 加上"无变化要如实报"这条策略。
 ///
 /// 闭包拿到当前图和它背后的 `Linker`(可能是 `None` —— 有些操作不用 linker)。
 /// 闭包返回 `Ok(文案)` = 成功、`Err(原因)` = 失败(失败时图已回滚)。
 /// **整次点击只留一个存档**(一次 Ctrl+Z 全撤);没有任何变化时不压栈。
 ///
-/// 三种批量操作(优化 / 链接全部 / 循环改写)共用这一个外壳,保证护栏、
-/// 存档、回滚的行为完全一致 —— 差异只在闭包里。
+/// 三种批量操作(优化 / 链接全部 / 循环改写)共用它,差异只在闭包里。
 fn batch_apply(
     doc: &mut Doc,
     i: usize,
@@ -395,74 +438,13 @@ fn batch_apply(
     label: &str,
     f: impl FnOnce(&mut Optimizer, Option<&mut Linker>) -> Result<String, String>,
 ) -> ApplyResult {
-    let noop = |status: String| ApplyResult {
-        undo: None,
-        pos: pos.to_vec(),
-        status,
+    // 第二次点击通常就是"没变化"(规则已到不动点、没有 Fn 可展开),
+    // 不能骗用户说改了。
+    let ctx = OpCtx {
+        unchanged: Some(format!("{label}:无变化(已是这个形态)")),
+        ..OpCtx::new(i, refs, pos, label)
     };
-    let bytes = match doc.encode(i) {
-        Ok(b) => b,
-        Err(e) => return noop(e),
-    };
-    let Some(mut opt) = doc.take(i) else {
-        return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
-    };
-    // 闭包整段都在护栏里 —— 中途任何一步 panic 都用点击前的字节整体回滚
-    // (`optimize()` 尾部对 `controls_in[0]` 的索引是可能 panic 的点之一,
-    // 见 core 里的注释)。
-    let result = {
-        let linker = doc.linker_mut(i);
-        catch_unwind(AssertUnwindSafe(|| f(&mut opt, linker)))
-    };
-    match result {
-        Ok(Ok(status)) => {
-            doc.put(i, opt);
-            doc.reflatten(i);
-            // 没变化就别骗用户"改了" —— 第二次点击通常就是这种情形
-            // (规则已到不动点、没有 Fn 可展开)。
-            let changed = matches!(doc.encode(i), Ok(b) if b != bytes);
-            ApplyResult {
-                undo: if changed { Some(bytes) } else { None },
-                pos: reposition(doc, i, refs, pos, None),
-                status: if changed {
-                    status
-                } else {
-                    format!("{label}:无变化(已是这个形态)")
-                },
-            }
-        }
-        Ok(Err(e)) => {
-            // 图可能停在半改状态 —— 用点击前的字节整体换回来。
-            drop(opt);
-            let status = match doc.decode_into(i, &bytes) {
-                Ok(()) => {
-                    doc.reflatten(i);
-                    format!("{label}:失败,已回滚 —— {e}")
-                }
-                Err(e) => format!("{label}:失败后回滚也失败了:{e}"),
-            };
-            ApplyResult {
-                undo: None,
-                pos: reposition(doc, i, refs, pos, None),
-                status,
-            }
-        }
-        Err(p) => {
-            drop(opt);
-            let status = match doc.decode_into(i, &bytes) {
-                Ok(()) => {
-                    doc.reflatten(i);
-                    format!("{label}:panic 已拦截,已回滚 —— {}", panic_message(p.as_ref()))
-                }
-                Err(e) => format!("{label}:panic 后回滚也失败了:{e}"),
-            };
-            ApplyResult {
-                undo: None,
-                pos: reposition(doc, i, refs, pos, None),
-                status,
-            }
-        }
-    }
+    guarded_op(doc, ctx, f)
 }
 
 /// 一键优化:消除规则跑到**不动点**(`Optimizer::optimize()`)。
@@ -549,48 +531,48 @@ pub fn lower_full(
     refs: &[NodeRef],
     pos: &[Point<f32>],
 ) -> ApplyResult {
-    let noop = |status: String| ApplyResult {
-        undo: None,
-        pos: pos.to_vec(),
-        status,
-    };
-    let bytes = match doc.encode(i) {
-        Ok(b) => b,
-        Err(e) => return noop(e),
-    };
-    let Some(mut opt) = doc.take(i) else {
-        return noop("这张图取不出来(它背后的 Target 里没有)".to_string());
-    };
-    let Some(linker) = doc.linker_mut(i) else {
-        doc.put(i, opt);
-        return noop("这张图背后的 Linker 不见了".to_string());
-    };
-    match catch_unwind(AssertUnwindSafe(|| opt.lower_ir(linker))) {
-        Ok(()) => {
-            doc.put(i, opt);
-            doc.reflatten(i);
-            ApplyResult {
-                undo: Some(bytes),
-                pos: reposition(doc, i, refs, pos, None),
-                status: "lower:已跑完整条降级流程".to_string(),
-            }
-        }
-        Err(p) => {
-            drop(opt);
-            let status = match doc.decode_into(i, &bytes) {
-                Ok(()) => {
-                    doc.reflatten(i);
-                    format!("lower:panic 已拦截,图已回滚 —— {}", panic_message(p.as_ref()))
-                }
-                Err(e) => format!("lower:panic 后回滚也失败了:{e}"),
-            };
-            ApplyResult {
-                undo: None,
-                pos: reposition(doc, i, refs, pos, None),
-                status,
-            }
-        }
+    guarded_op(doc, OpCtx::new(i, refs, pos, "lower"), |opt, linker| {
+        let Some(linker) = linker else {
+            return Err("这张图背后的 Linker 不见了".to_string());
+        };
+        opt.lower_ir(linker);
+        Ok("lower:已跑完整条降级流程".to_string())
+    })
+}
+
+/// 撤销 / 重做共用的恢复逻辑:把存档的字节换回去,再按存档的 `kind`
+/// 决定坐标以哪边为准。
+///
+/// 两者原来各写一遍,只有"哪张表优先"和状态文案不同 —— 差异就收进参数:
+///
+/// - `saved_first`:**存档**里的坐标优先(重做:回到那一帧);否则**当前**
+///   坐标优先(撤销优化:保住用户优化之后拖过的位置);
+/// - `verb`:状态文案("已撤销" / "已重做")。
+fn restore(
+    doc: &mut Doc,
+    i: usize,
+    refs: &[NodeRef],
+    pos: &[Point<f32>],
+    entry: &Snapshot,
+    saved_first: bool,
+    verb: &str,
+) -> (Vec<Point<f32>>, String) {
+    if let Err(e) = doc.decode_into(i, &entry.bytes) {
+        return (pos.to_vec(), format!("{verb}失败:{e}"));
     }
+    doc.reflatten(i);
+    let Some(g) = doc.entry(i) else {
+        return (Vec::new(), format!("{verb}失败:图不见了"));
+    };
+    let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
+    let current = (refs, pos);
+    let saved = (entry.refs.as_slice(), entry.pos.as_slice());
+    let sources = if saved_first {
+        [saved, current]
+    } else {
+        [current, saved]
+    };
+    (rebuild_pos(&new_refs, &sources, None), verb.to_string())
 }
 
 /// 撤销一步:把存档换回去,再看 [`SnapshotKind`] 决定坐标以哪边为准。
@@ -601,22 +583,7 @@ pub fn undo(
     pos: &[Point<f32>],
     entry: &Snapshot,
 ) -> (Vec<Point<f32>>, String) {
-    if let Err(e) = doc.decode_into(i, &entry.bytes) {
-        return (pos.to_vec(), format!("撤销失败:{e}"));
-    }
-    doc.reflatten(i);
-    let Some(g) = doc.entry(i) else {
-        return (Vec::new(), "撤销失败:图不见了".to_string());
-    };
-    let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
-    let current = (refs, pos);
-    let saved = (entry.refs.as_slice(), entry.pos.as_slice());
-    let sources = if entry.kind.saved_coords_win() {
-        [saved, current]
-    } else {
-        [current, saved]
-    };
-    (rebuild_pos(&new_refs, &sources, None), "已撤销".to_string())
+    restore(doc, i, refs, pos, entry, entry.kind.saved_coords_win(), "已撤销")
 }
 
 /// 重做一步:把一次撤销换回来的那份状态**再撤回去**。
@@ -630,16 +597,7 @@ pub fn redo(
     pos: &[Point<f32>],
     entry: &Snapshot,
 ) -> (Vec<Point<f32>>, String) {
-    if let Err(e) = doc.decode_into(i, &entry.bytes) {
-        return (pos.to_vec(), format!("重做失败:{e}"));
-    }
-    doc.reflatten(i);
-    let Some(g) = doc.entry(i) else {
-        return (Vec::new(), "重做失败:图不见了".to_string());
-    };
-    let new_refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
-    let sources = [(entry.refs.as_slice(), entry.pos.as_slice()), (refs, pos)];
-    (rebuild_pos(&new_refs, &sources, None), "已重做".to_string())
+    restore(doc, i, refs, pos, entry, true, "已重做")
 }
 
 fn reposition(

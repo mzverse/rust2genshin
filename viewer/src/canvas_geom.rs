@@ -132,16 +132,11 @@ pub const NONE_TIP: &str = "None";
 /// 入边一侧(左)的桩往左伸、出边一侧(右)的桩往右伸;纵向位置用和连线
 /// 完全一样的 [`pin_y`],所以桩和线的端点严丝合缝 —— 就是把「连到图外」
 /// 的那半条线画出来,再由标签框说明连到**哪一号**边界。
-pub fn build_boundaries(
-    g: &GraphEntry,
-    pos: &[Point<f32>],
-    origin: Point<f32>,
-    scale: f32,
-) -> Vec<BoundaryView> {
+pub fn build_boundaries(g: &GraphEntry, origin: Point<f32>, scale: f32) -> Vec<BoundaryView> {
     let len = STUB_LEN * scale;
     let mut out = Vec::new();
     for (i, n) in g.nodes.iter().enumerate() {
-        let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
+        let Some((p, s)) = node_box(&g.nodes, origin, scale, i) else {
             continue;
         };
         let (left_rows, right_rows) = pin_rows(
@@ -269,17 +264,18 @@ pub fn pin_y(
 }
 
 /// 节点 `i` 的左上角(容器局部坐标)与尺寸。
+///
+/// 坐标直接读节点的 `position` —— 它是**唯一**的一份(见 `doc::NodeEntry`
+/// 的字段注释),这里不再另收一个 `pos` 参数。以前那个平行数组是同一份
+/// 数据的两份拷贝,靠"同序同长"的不成文约定维系,拖动时要手工同步。
 pub fn node_box(
-    pos: &[Point<f32>],
     nodes: &[NodeEntry],
     origin: Point<f32>,
     scale: f32,
     i: usize,
 ) -> Option<(Point<f32>, Size<f32>)> {
     let n = nodes.get(i)?;
-    // 一律 `get` + `unwrap_or_default`,不索引 —— `pos` 与 `nodes` 长度
-    // 短暂不等长时(优化删完节点、坐标还没跟着重排)直接索引就是 panic。
-    let p = pos.get(i).copied().unwrap_or_default();
+    let p = n.position;
     Some((
         point(
             origin.x + p.x * scale,
@@ -301,7 +297,6 @@ fn size_scaled(s: Size<f32>, scale: f32) -> Size<f32> {
 /// 拍出这一帧要画的所有节点。
 pub fn build_nodes(
     g: &GraphEntry,
-    pos: &[Point<f32>],
     origin: Point<f32>,
     scale: f32,
     selected: &[usize],
@@ -312,7 +307,7 @@ pub fn build_nodes(
         .map(|(i, n)| {
             // 标签就是节点本身,不再拼 `[in]` / `[out]` 后缀 —— 图边界由侧边的
             // 桩线标,比后缀多一层信息:是**哪一个引脚**。
-            let (p, s) = node_box(pos, &g.nodes, origin, scale, i).unwrap_or_default();
+            let (p, s) = node_box(&g.nodes, origin, scale, i).unwrap_or_default();
             NodeView {
                 index: i,
                 label: n.display.clone(),
@@ -338,18 +333,13 @@ pub fn build_nodes(
 }
 
 /// 拍出这一帧要画的边(三次贝塞尔)。
-pub fn build_edges(
-    g: &GraphEntry,
-    pos: &[Point<f32>],
-    origin: Point<f32>,
-    scale: f32,
-) -> Vec<EdgeView> {
+pub fn build_edges(g: &GraphEntry, origin: Point<f32>, scale: f32) -> Vec<EdgeView> {
     g.edges
         .iter()
         .enumerate()
         .filter_map(|(index, e): (usize, &Edge)| {
-            let (from, fs) = node_box(pos, &g.nodes, origin, scale, e.from.0)?;
-            let (to, _ts) = node_box(pos, &g.nodes, origin, scale, e.to.0)?;
+            let (from, fs) = node_box(&g.nodes, origin, scale, e.from.0)?;
+            let (to, _ts) = node_box(&g.nodes, origin, scale, e.to.0)?;
             // 两侧各自的 pin 行数(值流起点跨两侧取最大 —— 见 core 的
             // `pin_rows`)。拿不到节点时按"没有引脚"兜底,不 unwrap。
             let (from_rows, to_rows) = match (g.nodes.get(e.from.0), g.nodes.get(e.to.0)) {
@@ -426,15 +416,10 @@ pub fn build_edges(
 
 /// 节点侧边上的**全部**引脚标记 —— 无论有没有连线都画,
 /// 「这个节点有几个脚、哪个脚空着」才一眼可见。
-pub fn build_pins(
-    g: &GraphEntry,
-    pos: &[Point<f32>],
-    origin: Point<f32>,
-    scale: f32,
-) -> Vec<PinView> {
+pub fn build_pins(g: &GraphEntry, origin: Point<f32>, scale: f32) -> Vec<PinView> {
     let mut out = Vec::new();
     for (i, n) in g.nodes.iter().enumerate() {
-        let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
+        let Some((p, s)) = node_box(&g.nodes, origin, scale, i) else {
             continue;
         };
         // 入边一侧在左边缘、出边一侧在右边缘。纵向位置由 core 的
@@ -487,15 +472,10 @@ pub fn build_pins(
 }
 
 /// 拍出这一帧要显示的默认值。位置:紧贴值入引脚圆点左侧、纵向居中对齐。
-pub fn build_defaults(
-    g: &GraphEntry,
-    pos: &[Point<f32>],
-    origin: Point<f32>,
-    scale: f32,
-) -> Vec<DefaultView> {
+pub fn build_defaults(g: &GraphEntry, origin: Point<f32>, scale: f32) -> Vec<DefaultView> {
     let mut out = Vec::new();
     for (i, n) in g.nodes.iter().enumerate() {
-        let Some((p, _)) = node_box(pos, &g.nodes, origin, scale, i) else {
+        let Some((p, _)) = node_box(&g.nodes, origin, scale, i) else {
             continue;
         };
         let (left_rows, _) = pin_rows(
@@ -531,15 +511,10 @@ pub fn build_defaults(
 /// 画在盒内而不是盒外 —— 盒子外面就是连线,名字压在线上两边都看不清。
 /// 宽度固定(`DEF_W`)且**不裁剪**:分支名长度不定(`default` 短、`"MyStruct"`
 /// 长),宁可伸出去也别只剩尾巴。
-pub fn build_ctrl_labels(
-    g: &GraphEntry,
-    pos: &[Point<f32>],
-    origin: Point<f32>,
-    scale: f32,
-) -> Vec<CtrlLabelView> {
+pub fn build_ctrl_labels(g: &GraphEntry, origin: Point<f32>, scale: f32) -> Vec<CtrlLabelView> {
     let mut out = Vec::new();
     for (i, n) in g.nodes.iter().enumerate() {
-        let Some((p, s)) = node_box(pos, &g.nodes, origin, scale, i) else {
+        let Some((p, s)) = node_box(&g.nodes, origin, scale, i) else {
             continue;
         };
         let (_, right_rows) = pin_rows(
@@ -768,6 +743,14 @@ mod tests {
         node_with_types(controls_in, controls_out, values_in, values_out, &[], &[])
     }
 
+    /// 给 `g` 里的节点**按序**设定坐标(坐标只存在节点上,没有平行的数组了)。
+    fn placed(mut g: GraphEntry, pos: &[(f32, f32)]) -> GraphEntry {
+        for (n, (x, y)) in g.nodes.iter_mut().zip(pos.iter()) {
+            n.position = point(*x, *y);
+        }
+        g
+    }
+
     /// [`node`] 加上逐 pin 类型(悬停气泡用)。类型表给**空串**当"无类型"。
     fn node_with_types(
         controls_in: usize,
@@ -836,17 +819,19 @@ mod tests {
         let mut n = node(1, 1, 0, 0);
         n.comment = Some("第一行
 第二行".into());
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![n],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(40.0, 80.0)];
-        let ns = build_nodes(&g, &pos, point(0.0, 0.0), 2.0, &[]);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![n],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(40.0, 80.0)],
+        );
+        let ns = build_nodes(&g, point(0.0, 0.0), 2.0, &[]);
         let (text, w, h) = ns[0].comment.as_ref().expect("注释没进 NodeView");
         assert_eq!(text, "第一行
 第二行");
@@ -858,31 +843,33 @@ mod tests {
     /// 纵向位置必须落在值流那一档,而不是节点中心(`NODE_H / 2`)。
     #[test]
     fn value_edges_leave_from_the_side_pins() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![0],
-            exit: vec![],
-            // 0:1 控制出 + 2 值出;1:1 控制入 + 2 值入
-            nodes: vec![node(0, 1, 0, 2), node(1, 0, 2, 0)],
-            interface: Default::default(),
-            edges: vec![
-                // 控制边:0 控制出 0 -> 1 控制入 0
-                Edge {
-                    from: (0, 0),
-                    to: (1, 0),
-                    ctrl: true,
-                },
-                // 值边:0 值出 1 -> 1 值入 1
-                Edge {
-                    from: (0, 1),
-                    to: (1, 1),
-                    ctrl: false,
-                },
-            ],
-        };
-        let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
-        let es = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![0],
+                exit: vec![],
+                // 0:1 控制出 + 2 值出;1:1 控制入 + 2 值入
+                nodes: vec![node(0, 1, 0, 2), node(1, 0, 2, 0)],
+                interface: Default::default(),
+                edges: vec![
+                    // 控制边:0 控制出 0 -> 1 控制入 0
+                    Edge {
+                        from: (0, 0),
+                        to: (1, 0),
+                        ctrl: true,
+                    },
+                    // 值边:0 值出 1 -> 1 值入 1
+                    Edge {
+                        from: (0, 1),
+                        to: (1, 1),
+                        ctrl: false,
+                    },
+                ],
+            },
+            &[(0.0, 0.0), (300.0, 0.0)],
+        );
+        let es = build_edges(&g, point(0.0, 0.0), 1.0);
         assert_eq!(es.len(), 2);
 
         let ctrl = &es[0];
@@ -914,17 +901,19 @@ mod tests {
         let mut n0 = node(1, 1, 2, 2);
         n0.ctrl_in_exports = vec![ExportPin { pin: 0, export: 0 }];
         n0.value_out_exports = vec![ExportPin { pin: 1, export: 7 }];
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![0],
-            exit: vec![],
-            nodes: vec![n0],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(10.0, 20.0)];
-        let bs = build_boundaries(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![0],
+                exit: vec![],
+                nodes: vec![n0],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(10.0, 20.0)],
+        );
+        let bs = build_boundaries(&g, point(0.0, 0.0), 1.0);
         assert_eq!(bs.len(), 2, "只有一个控制入桩和一个值出桩,别的 pin 不给桩");
 
         let ctrl = bs.iter().find(|b| b.ctrl).expect("有控制流桩");
@@ -964,17 +953,19 @@ mod tests {
     /// 每个连接点都有标记,**零连线也画**:1 控制 + 2 值 → 一侧 3 个。
     #[test]
     fn every_pin_gets_a_dot_even_without_edges() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![0],
-            exit: vec![],
-            nodes: vec![node(1, 1, 2, 2)],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(10.0, 20.0)];
-        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![0],
+                exit: vec![],
+                nodes: vec![node(1, 1, 2, 2)],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(10.0, 20.0)],
+        );
+        let pins = build_pins(&g, point(0.0, 0.0), 1.0);
         assert_eq!(pins.len(), 6, "入 3 + 出 3,哪怕一条边都没有");
 
         let in_side: Vec<_> = pins.iter().filter(|p| p.x == 10.0).collect();
@@ -998,17 +989,19 @@ mod tests {
     fn defaults_hang_left_of_their_pin() {
         let mut n0 = node(1, 0, 2, 0);
         n0.value_in_defaults = vec![None, Some("5".to_string())];
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![0],
-            exit: vec![],
-            nodes: vec![n0],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(10.0, 20.0)];
-        let ds = build_defaults(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![0],
+                exit: vec![],
+                nodes: vec![n0],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(10.0, 20.0)],
+        );
+        let ds = build_defaults(&g, point(0.0, 0.0), 1.0);
         assert_eq!(ds.len(), 1, "只有 pin 1 有默认值");
         assert_eq!(ds[0].text, "5");
         assert_eq!(ds[0].right, 10.0 - (PIN_D / 2.0 + 3.0), "右缘贴引脚左侧");
@@ -1107,17 +1100,19 @@ mod tests {
     /// 光标压在引脚圆点上 → 命中那个引脚的气泡。偏 2px(仍在半径内)也要中。
     #[test]
     fn hovering_a_pin_hits_that_pin() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![node_with_types(1, 0, 1, 0, &["Int"], &[])],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(0.0, 0.0)];
-        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![node_with_types(1, 0, 1, 0, &["Int"], &[])],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(0.0, 0.0)],
+        );
+        let pins = build_pins(&g, point(0.0, 0.0), 1.0);
         let value_pin = pins
             .iter()
             .find(|p| p.tip.is_some())
@@ -1145,25 +1140,27 @@ mod tests {
     /// 返回边的文案。
     #[test]
     fn a_pin_wins_over_an_edge_at_the_same_spot() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![
-                node_with_types(0, 0, 0, 1, &[], &["Int"]),
-                node_with_types(0, 0, 1, 0, &["Float"], &[]),
-            ],
-            edges: vec![Edge {
-                from: (0, 0),
-                to: (1, 0),
-                ctrl: false,
-            }],
-            interface: Default::default(),
-        };
-        let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
-        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
-        let edges = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![
+                    node_with_types(0, 0, 0, 1, &[], &["Int"]),
+                    node_with_types(0, 0, 1, 0, &["Float"], &[]),
+                ],
+                edges: vec![Edge {
+                    from: (0, 0),
+                    to: (1, 0),
+                    ctrl: false,
+                }],
+                interface: Default::default(),
+            },
+            &[(0.0, 0.0), (300.0, 0.0)],
+        );
+        let pins = build_pins(&g, point(0.0, 0.0), 1.0);
+        let edges = build_edges(&g, point(0.0, 0.0), 1.0);
         // 边的**起点**正好是源节点的出 pin —— 两边都在命中半径内。
         let start = edges[0].from;
         let hit = hit_test(&pins, &edges, start).expect("起点上应当命中");
@@ -1175,24 +1172,26 @@ mod tests {
     /// 的实现会在弧度大的边上完全测不到中段。
     #[test]
     fn hovering_the_middle_of_an_edge_hits_the_edge() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![
-                node_with_types(0, 0, 0, 1, &[], &["Int"]),
-                node_with_types(0, 0, 1, 0, &["Float"], &[]),
-            ],
-            edges: vec![Edge {
-                from: (0, 0),
-                to: (1, 0),
-                ctrl: false,
-            }],
-            interface: Default::default(),
-        };
-        let pos = vec![point(0.0, 0.0), point(300.0, 0.0)];
-        let edges = build_edges(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![
+                    node_with_types(0, 0, 0, 1, &[], &["Int"]),
+                    node_with_types(0, 0, 1, 0, &["Float"], &[]),
+                ],
+                edges: vec![Edge {
+                    from: (0, 0),
+                    to: (1, 0),
+                    ctrl: false,
+                }],
+                interface: Default::default(),
+            },
+            &[(0.0, 0.0), (300.0, 0.0)],
+        );
+        let edges = build_edges(&g, point(0.0, 0.0), 1.0);
         // 端点上下 40px,弧度最大处;离两端引脚都远。
         let mid = bezier_at(&edges[0], 0.5);
         assert!(
@@ -1206,17 +1205,19 @@ mod tests {
     /// 空白处不该命中任何东西(不给气泡)。
     #[test]
     fn empty_space_hits_nothing() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![node_with_types(0, 0, 0, 1, &[], &["Int"])],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(0.0, 0.0)];
-        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![node_with_types(0, 0, 0, 1, &[], &["Int"])],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(0.0, 0.0)],
+        );
+        let pins = build_pins(&g, point(0.0, 0.0), 1.0);
         assert!(hit_test(&pins, &[], point(5000.0, 5000.0)).is_none());
     }
 
@@ -1224,17 +1225,19 @@ mod tests {
     /// (读起来像"这个引脚没连上")。
     #[test]
     fn control_pins_have_no_tooltip() {
-        let g = GraphEntry {
-            name: "t".to_string(),
-            index_of: HashMap::new(),
-            entry: vec![],
-            exit: vec![],
-            nodes: vec![node(1, 1, 0, 0)],
-            edges: vec![],
-            interface: Default::default(),
-        };
-        let pos = vec![point(0.0, 0.0)];
-        let pins = build_pins(&g, &pos, point(0.0, 0.0), 1.0);
+        let g = placed(
+            GraphEntry {
+                name: "t".to_string(),
+                index_of: HashMap::new(),
+                entry: vec![],
+                exit: vec![],
+                nodes: vec![node(1, 1, 0, 0)],
+                edges: vec![],
+                interface: Default::default(),
+            },
+            &[(0.0, 0.0)],
+        );
+        let pins = build_pins(&g, point(0.0, 0.0), 1.0);
         assert!(pins.iter().all(|p| p.tip.is_none()), "控制流 pin 不带 tip");
         for p in &pins {
             assert!(

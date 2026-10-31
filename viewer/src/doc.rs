@@ -376,9 +376,15 @@ pub struct NodeEntry {
     pub ctrl_out_exports: Vec<ExportPin>,
     pub value_in_exports: Vec<ExportPin>,
     pub value_out_exports: Vec<ExportPin>,
-    /// 自动整理算出的坐标(左上角),直接来自 IR 节点的 `Node::position`。
-    /// 布局发生在 `Doc::push_target`(加载)与 `Doc::relayout`(自动整理按钮),
-    /// 都由 core 的 `node::layout` 写进节点 —— viewer 自己不发明坐标。
+    /// 节点左上角的坐标。
+    ///
+    /// **这是坐标的唯一一份**。加载 / 自动整理时由 core 的 `node::layout`
+    /// 写进 IR、展平时照抄;用户拖动时**就地改这里**(`Doc::move_nodes`)。
+    ///
+    /// 以前 `Viewer` 上另有一个平行的 `positions: Vec<Vec<Point<f32>>>`,
+    /// 同一份数据存两遍,靠"下标同序同长"的不成文约定维系,拖动 / 撤销 /
+    /// 布局各要记得同步一次 —— 漏一处就是"节点在动、连线没动"。合并之后
+    /// 这类错误在类型层面就写不出来了。
     pub position: Point<f32>,
     /// 值入 pin 的**默认值**(与值入 pin 逐位对应,`None` = 没默认值)。
     /// 常量输入在 IR 里就是 `ValueIn::default`(如 IF 的条件默认 `true`、
@@ -626,6 +632,48 @@ impl Doc {
         }
     }
 
+    /// 把第 `i` 张图里 `indices` 这些节点**就地平移** `(dx, dy)`(世界坐标)。
+    ///
+    /// 拖动时每个鼠标事件调一次。越界下标直接跳过 —— 拖拽途中图可能被换掉
+    /// (`Optimizer` 删节点),那时旧的展平下标不再有效。
+    pub fn move_nodes(&mut self, i: usize, indices: &[usize], dx: f32, dy: f32) {
+        let Some(slot) = self.graphs.get_mut(i) else {
+            return;
+        };
+        for &k in indices {
+            if let Some(n) = slot.view.nodes.get_mut(k) {
+                n.position.x += dx;
+                n.position.y += dy;
+            }
+        }
+    }
+
+    /// 第 `i` 张图里 `indices` 这些节点的坐标,按给定顺序。
+    ///
+    /// 撤销存档要的就是这个(与当时的 `NodeRef` 序列同序);越界下标给原点。
+    pub fn node_positions(&self, i: usize, indices: impl Iterator<Item = usize>) -> Vec<Point<f32>> {
+        let Some(slot) = self.graphs.get(i) else {
+            return Vec::new();
+        };
+        indices
+            .map(|k| slot.view.nodes.get(k).map(|n| n.position).unwrap_or_default())
+            .collect()
+    }
+
+    /// 用一组坐标**按展平顺序**覆盖第 `i` 张图的节点位置。
+    ///
+    /// 优化 / 撤销 / 整理之后,`optimize.rs` 的 `rebuild_pos` / `reposition`
+    /// 已经按**新的**展平顺序算好了坐标 —— 这里照那个顺序写回。
+    /// `pos` 比节点少时只写前面那些(渲染期宁可保持旧值也不 panic)。
+    pub fn set_node_positions(&mut self, i: usize, pos: &[Point<f32>]) {
+        let Some(slot) = self.graphs.get_mut(i) else {
+            return;
+        };
+        for (n, p) in slot.view.nodes.iter_mut().zip(pos) {
+            n.position = *p;
+        }
+    }
+
     /// 全部图的展平快照,按加载顺序(main 第一,其余按函数名)。
     pub fn entries(&self) -> impl ExactSizeIterator<Item = &GraphEntry> {
         self.graphs.iter().map(|s| &s.view)
@@ -762,6 +810,14 @@ impl Doc {
 
     /// 重新展平第 `i` 张图。优化 / 撤销改完 `Target` 里的图之后**必须**调用,
     /// 否则渲染的还是旧快照。返回 `false` 表示图或它背后的数据没了。
+    ///
+    /// # ⚠️ 它会**丢掉用户拖出来的位置**
+    ///
+    /// 坐标现在住在展平快照的 `NodeEntry::position` 上,而这里是从 IR 重新
+    /// 展平的 —— IR 里的 `Node::position` 还是**上一次布局**的结果,不含
+    /// 拖动。所以调用方必须紧接着用 `optimize::reposition` /
+    /// `Doc::set_node_positions` 把坐标按 `NodeRef` 重建回去(优化 / 撤销的
+    /// 那条路已经这么做了)。只想重算坐标时用 [`Doc::relayout`]。
     pub fn reflatten(&mut self, i: usize) -> bool {
         let Some((target, source)) = self.pos(i) else {
             return false;
@@ -1382,6 +1438,37 @@ mod tests {
 
         // 「自动整理」是**强制**重算,不受这个标记影响。
         assert!(doc.relayout(i), "自动整理必须重算");
+    }
+
+    /// 节点坐标只有**一份**(住在 `NodeEntry::position`),拖动就地改。
+    ///
+    /// 以前 `Viewer` 上还有一个平行的 `positions` 数组,同一份数据存两遍、
+    /// 靠手工同步。这条测试锁的是"改坐标就真的改在那个字段上",以及
+    /// `set_node_positions` 能整份覆盖(优化 / 撤销走的那条路)。
+    #[test]
+    fn node_positions_live_on_the_node_entries() {
+        let mut doc = super::flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+        doc.ensure_layout(i);
+
+        // 拖动:就地平移前两个节点。
+        let before: Vec<Point<f32>> = doc.graphs[i].nodes.iter().map(|n| n.position).collect();
+        doc.move_nodes(i, &[0, 1], 10.0, -5.0);
+        let after: Vec<Point<f32>> = doc.graphs[i].nodes.iter().map(|n| n.position).collect();
+        assert_eq!(after[0], point(before[0].x + 10.0, before[0].y - 5.0), "节点 0 应当平移");
+        assert_eq!(after[1], point(before[1].x + 10.0, before[1].y - 5.0), "节点 1 应当平移");
+        assert_eq!(after[2], before[2], "没点名的节点不该动");
+
+        // 越界下标跳过,不 panic(拖拽途中图可能被换掉)。
+        doc.move_nodes(i, &[9999], 1.0, 1.0);
+
+        // 整份覆盖:`set_node_positions` 按展平顺序写回(撤销 / 优化用)。
+        let overwrite: Vec<Point<f32>> = (0..after.len())
+            .map(|k| point(k as f32, k as f32 * 2.0))
+            .collect();
+        doc.set_node_positions(i, &overwrite);
+        let got: Vec<Point<f32>> = doc.graphs[i].nodes.iter().map(|n| n.position).collect();
+        assert_eq!(got, overwrite, "整份覆盖应当逐位对上");
     }
 
     /// 诊断:把 `R2G_CHECK=<路径>` 指向的文件解析一遍并打印结果。

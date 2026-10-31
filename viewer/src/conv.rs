@@ -805,21 +805,12 @@ pub fn link_endpoints(layout: &Layout, link: &Link) -> Option<(Point<f32>, Point
     })
 }
 
-/// 两点距离。
-fn dist(a: Point<f32>, b: Point<f32>) -> f32 {
-    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
-}
-
-/// 点到线段的最短距离。
-fn seg_dist(p: Point<f32>, a: Point<f32>, b: Point<f32>) -> f32 {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let len2 = dx * dx + dy * dy;
-    if len2 <= f32::EPSILON {
-        return dist(p, a);
-    }
-    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0);
-    dist(p, point(a.x + dx * t, a.y + dy * t))
-}
+/// 点到线段的最短距离 —— 直接用主画布那一份。
+///
+/// `dist` / `seg_dist` 原来在本文件里又抄了一遍(和 `canvas_geom` 逐字相同)。
+/// 两个视图用的是同一套点几何,不该有第二份实现:改了其中一份、另一份忘了,
+/// 命中半径就会在两个面板里表现不一致。
+use crate::canvas_geom::{dist, seg_dist};
 
 #[cfg(test)]
 mod tests {

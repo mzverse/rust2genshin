@@ -33,19 +33,20 @@
 //!
 //! # 坐标
 //!
-//! `positions[图下标]` 是那张图的节点坐标,与 `doc.graphs[图下标].nodes`
-//! **同序同长**(来源:`Doc::push_target` / `Doc::relayout` 里 core 布局写进
-//! IR 的 `Node::position`,展平时照抄),所以渲染和拖动里到处是
-//! `nodes[i]` ↔ `pos[i]` 的直接配对。**不要**用 `HashMap<NodeRef, Point<f32>>`
-//! 当单张图内的坐标系:那需要反查 `NodeRef`,而 `NodeRef` 与 Vec 下标不恒等
-//! (Slab 删过节点后 key 有空洞)。
+//! 节点坐标**只有一份**:`Doc` 里每张图的 `NodeEntry::position`,与
+//! `doc.graphs[i].nodes` 同序。来源是 core 布局写进 IR 的 `Node::position`,
+//! 展平时照抄;用户拖动时就地改(`Doc::move_nodes`)。
 //!
-//! 布局只在**加载时**算一次(`Viewer::add_target`),之后靠拖动累积;
-//! **切图不重算**,拖过的位置切走再切回来还在。要重算只有一条路:
-//! 点右栏的「自动整理」(`Viewer::arrange`)。
+//! 以前 `Viewer` 上另有一个平行的 `positions: Vec<Vec<Point<f32>>>`,同一份
+//! 数据存两遍,靠"下标同序同长"的不成文约定维系 —— 拖动 / 撤销 / 布局各要
+//! 记得同步一次,漏一处就是"节点在动、连线没动"。现在那个字段没了。
 //!
-//! 渲染期一律 `pos.get(i).copied().unwrap_or_default()`,**从不直接索引** ——
-//! 长度短暂不齐(优化删完节点、坐标还没跟着重排)是可能的。
+//! 布局是**按需**的(`Doc::ensure_layout`):加载时只展平,不算坐标 ——
+//! 一次性给 57 张图算坐标要 3.1s。**切图不重算**,拖过的位置切走再切回来还在。
+//! 要重算只有一条路:右栏的「自动整理」(`Viewer::arrange`)。
+//!
+//! 渲染期一律走 `node_box(..)` / `NodeEntry::position`,**从不直接索引** ——
+//! 取不到时按原点兜底,不 panic。
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -556,11 +557,6 @@ pub struct Viewer {
     pub current: usize,
     /// 解析错误。`Some` 时居中盖住画布显示它。
     pub error: Option<String>,
-    /// 每张图的节点坐标,与 `doc.graphs` 平行(下标即图下标,只增不改)。
-    ///
-    /// 加载时算一次([`Viewer::add_target`]),拖动就地改;切图**不**重算,
-    /// 只有点「自动整理」才用 core 的布局重来(`Doc::relayout`)。
-    pub positions: Vec<Vec<Point<f32>>>,
     /// 画布平移量(**容器局部**坐标):世界原点在画布里的落点。
     pub origin: Point<f32>,
     pub scale: f32,
@@ -680,7 +676,6 @@ impl Viewer {
             doc: Doc::new(),
             current: 0,
             error: None,
-            positions: Vec::new(),
             origin: point(0.0, 0.0),
             scale: 1.0,
             drag: None,
@@ -736,9 +731,8 @@ impl Viewer {
     pub fn add_target(&mut self, t: Target, cx: &mut Context<Self>) {
         if self.doc.push_target(t).is_some() {
             // **不在这里读坐标**:加载时还没布局(`Doc::push_target` 只展平,
-            // 不算坐标)。`positions` 按图下标惰性补齐 —— 缺的位置是空表,
-            // 等 `show()` 里 `ensure_layout` 算完再由 `reload_positions` 填。
-            self.positions.resize_with(self.doc.len(), Vec::new);
+            // 不算坐标)。坐标在第一次打开那张图时才由 `show()` →
+            // `Doc::ensure_layout` 算出来,直接住进 `NodeEntry::position`。
             self.error = None;
             // **加载后不开任何页签**(用户要求"初始时无需自动打开一页")。
             //
@@ -829,9 +823,9 @@ impl Viewer {
         self.status = None;
         // **按需布局**:加载时不算坐标(57 张图要 3.1s),第一次打开这张图
         // 才算。所有"换图"的路径都汇到这里,所以这是唯一需要接的地方。
-        if self.doc.ensure_layout(graph) {
-            self.reload_positions(graph);
-        }
+        // 坐标由 `Doc::ensure_layout` 直接写进 `NodeEntry::position`,
+        // 所以算完**不需要**再搬运一次。
+        self.doc.ensure_layout(graph);
     }
 
     /// 把 `Viewer` 上的画布镜像存回当前活动页签。
@@ -874,19 +868,6 @@ impl Viewer {
         self.conv_pos = tab.conv_pos.clone();
         self.conv_drag = tab.conv_drag;
         self.conv_hover = tab.conv_hover.clone();
-    }
-
-    /// 重新读第 `i` 张图的节点坐标(布局刚算过 / 外部改过 IR 之后)。
-    fn reload_positions(&mut self, i: usize) {
-        let Some(g) = self.doc.entry(i) else {
-            return;
-        };
-        let pos: Vec<Point<f32>> = g.nodes.iter().map(|n| n.position).collect();
-        if let Some(slot) = self.positions.get_mut(i) {
-            *slot = pos;
-        } else if i == self.positions.len() {
-            self.positions.push(pos);
-        }
     }
 
     /// 后退:回到上一个"看过的位置"(图 + 视野)。
@@ -1087,9 +1068,7 @@ impl Viewer {
                 self.origin = tab.origin;
                 self.scale = tab.scale;
                 self.load_canvas_from_active();
-                if self.doc.ensure_layout(tab.graph) {
-                    self.reload_positions(tab.graph);
-                }
+                self.doc.ensure_layout(tab.graph);
             }
             None => {
                 // 一页不剩:清空镜像,`placeholder()` 会显示"拖入文件"提示。
@@ -1134,7 +1113,7 @@ impl Viewer {
             return;
         };
         let refs = self.current_refs();
-        let pos = self.positions.get(self.current).cloned().unwrap_or_default();
+        let pos = self.doc.node_positions(self.current, 0..refs.len());
         let Some(node) = refs.get(menu.node_index).copied() else {
             self.status = Some("这个节点已经不在了".to_string());
             cx.notify();
@@ -1145,7 +1124,7 @@ impl Viewer {
             let snap = self.snapshot(self.current, bytes, refs, pos, optimize::SnapshotKind::Optimize);
             self.push_undo(self.current, snap);
         }
-        self.set_pos(r.pos);
+        self.apply_new_positions(r.pos);
         self.clear_selection();
         self.status = Some(r.status);
         cx.notify();
@@ -1167,12 +1146,12 @@ impl Viewer {
         }
     }
 
-    /// 换掉当前图的坐标(下标与 `doc.graphs` 平行,图在 ⇒ 下标一定在;
-    /// 还是 `get_mut` 兜底,渲染期的越界访问一律不 panic)。
-    fn set_pos(&mut self, pos: Vec<Point<f32>>) {
-        if let Some(slot) = self.positions.get_mut(self.current) {
-            *slot = pos;
-        }
+    /// 把 `rebuild_pos` 算出来的一列坐标写回当前图的节点。
+    ///
+    /// 优化 / 撤销 / 整理之后都走这里:那时展平顺序已经是新的,`pos` 就是
+    /// 按新顺序排的 —— 直接照序写回 `Doc`(坐标只有那一份)。
+    fn apply_new_positions(&mut self, pos: Vec<Point<f32>>) {
+        self.doc.set_node_positions(self.current, &pos);
     }
 
     /// 压一条新的撤销存档,并**清空当前图的重做栈**。
@@ -1230,7 +1209,7 @@ impl Viewer {
             return;
         };
         let refs: Vec<NodeRef> = g.nodes.iter().map(|n| n.node_ref).collect();
-        let old_pos = self.positions.get(i).cloned().unwrap_or_default();
+        let old_pos = self.doc.node_positions(i, 0..refs.len());
         // 存档里带上图本体:撤销走的是和优化同一条 `optimize::undo`
         // (解码 + 重展平 + 按 kind 选坐标来源)。存档必须在重新布局**之前**。
         let bytes = match self.doc.encode(i) {
@@ -1248,14 +1227,9 @@ impl Viewer {
             kind: optimize::SnapshotKind::Arrange,
             lowered: self.lowered.contains(&i),
         });
-        // 布局在 core(`Doc::relayout`):对 IR 图跑自动整理 + 重展平,
-        // 再把新坐标读进视图状态。
+        // 布局在 core(`Doc::relayout`):对 IR 图跑自动整理 + 重展平。
+        // 新坐标直接住进 `NodeEntry::position`,不需要再搬运。
         self.doc.relayout(i);
-        let new_pos: Vec<Point<f32>> = self.doc
-            .entry(i)
-            .map(|g| g.nodes.iter().map(|n| n.position).collect())
-            .unwrap_or_default();
-        self.set_pos(new_pos);
         self.status = Some("已自动整理(Ctrl+Z 可撤销)".to_string());
         cx.notify();
     }
@@ -1301,7 +1275,7 @@ impl Viewer {
     ) {
         let i = self.current;
         let refs = self.current_refs();
-        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        let pos = self.doc.node_positions(i, 0..refs.len());
         let r = f(&mut self.doc, i, &refs, &pos);
         // 先看有没有变化 —— `r.undo` 下面要移进存档里。
         let changed = r.undo.is_some();
@@ -1313,7 +1287,7 @@ impl Viewer {
         if marks_lowered && changed {
             self.lowered.insert(i);
         }
-        self.set_pos(r.pos);
+        self.apply_new_positions(r.pos);
         // 优化会删 / 换节点,展平下标跟着变 —— 旧选区不能再留着指别人。
         self.clear_selection();
         self.status = Some(r.status);
@@ -1327,7 +1301,7 @@ impl Viewer {
         self.marquee = None;
     }
 
-    /// 当前图的展平顺序(`NodeRef` 序列),与 `positions[current]` 同序。
+    /// 当前图的展平顺序(`NodeRef` 序列),与 `NodeEntry::position` 同序。
     fn current_refs(&self) -> Vec<NodeRef> {
         self.doc
             .entry(self.current)
@@ -1348,13 +1322,13 @@ impl Viewer {
             return;
         };
         let refs = self.current_refs();
-        let pos = self.positions.get(self.current).cloned().unwrap_or_default();
+        let pos = self.doc.node_positions(self.current, 0..refs.len());
         let r = optimize::apply_rule(&mut self.doc, self.current, &refs, &pos, rule);
         if let Some(bytes) = r.undo {
             let snap = self.snapshot(self.current, bytes, refs, pos, optimize::SnapshotKind::Optimize);
             self.push_undo(self.current, snap);
         }
-        self.set_pos(r.pos);
+        self.apply_new_positions(r.pos);
         self.clear_selection();
         self.status = Some(r.status);
         cx.notify();
@@ -1379,7 +1353,7 @@ impl Viewer {
             return;
         };
         let refs = self.current_refs();
-        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        let pos = self.doc.node_positions(i, 0..refs.len());
         // 先给"撤之前"这一帧拍个快照 —— 它就是重做要回到的状态。
         let current = self
             .doc
@@ -1392,7 +1366,7 @@ impl Viewer {
         }
         // 存档里记着那一帧的 lower 状态 —— 恢复图的同时也把按钮恢复回来。
         self.set_lowered(i, entry.lowered);
-        self.set_pos(new_pos);
+        self.apply_new_positions(new_pos);
         // 撤销会把节点列表换回旧版本,下标对应关系跟着变。
         self.clear_selection();
         self.status = Some(status);
@@ -1413,7 +1387,7 @@ impl Viewer {
             return;
         };
         let refs = self.current_refs();
-        let pos = self.positions.get(i).cloned().unwrap_or_default();
+        let pos = self.doc.node_positions(i, 0..refs.len());
         // 这一帧的反向存档:重做之后还能再撤销回来,且要**整份**回到这一帧
         // (所以 kind 用 `Redo` = 坐标也照存档,而不是优化那种"当前优先")。
         // 走 `push_undo` 会清空重做栈 —— 所以这里**直接**压,不能经过那个入口。
@@ -1427,7 +1401,7 @@ impl Viewer {
             self.undo_stack.entry(i).or_default().push(s);
         }
         self.set_lowered(i, entry.lowered);
-        self.set_pos(new_pos);
+        self.apply_new_positions(new_pos);
         self.clear_selection();
         self.status = Some(status);
         cx.notify();
@@ -1482,14 +1456,9 @@ impl Viewer {
     /// [`node_box`],所以"看到的"和"命中的"是同一套几何。
     fn node_at(&self, at: Point<f32>) -> Option<usize> {
         let g = self.doc.entry(self.current)?;
-        let pos = self
-            .positions
-            .get(self.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
         let mut hit = None;
         for i in 0..g.nodes.len() {
-            let Some((p, s)) = node_box(pos, &g.nodes, self.origin, self.scale, i) else {
+            let Some((p, s)) = node_box(&g.nodes, self.origin, self.scale, i) else {
                 continue;
             };
             if at.x >= p.x && at.x <= p.x + s.width && at.y >= p.y && at.y <= p.y + s.height {
@@ -1503,13 +1472,8 @@ impl Viewer {
     /// 免得"看到的"和"命中的"是两套几何。
     fn pick(&self, at: Point<f32>) -> Option<Hover> {
         let g = self.doc.entry(self.current)?;
-        let pos = self
-            .positions
-            .get(self.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let pins = build_pins(g, pos, self.origin, self.scale);
-        let edges = build_edges(g, pos, self.origin, self.scale);
+        let pins = build_pins(g, self.origin, self.scale);
+        let edges = build_edges(g, self.origin, self.scale);
         hit_test(&pins, &edges, at)
     }
 
@@ -1545,9 +1509,8 @@ impl Render for Viewer {
         // 正常路径是 `show()` 里算过,但渲染可能先于任何 `show()` 发生
         // (首次加载、撤销把 `laid_out` 弄丢)。这里兜一次底:
         // `ensure_layout` 没算过才跑,算过就是一次 `bool` 检查。
-        if self.doc.ensure_layout(self.current) {
-            self.reload_positions(self.current);
-        }
+        // 坐标由 `ensure_layout` 直接写进 `NodeEntry::position`,不需要搬。
+        self.doc.ensure_layout(self.current);
 
         // ---- 中栏画布:有图才画,没图就显示占位 ----
         //
@@ -1852,14 +1815,9 @@ impl Viewer {
         let Some(g) = self.doc.entry(self.current) else {
             return;
         };
-        let pos = self
-            .positions
-            .get(self.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
         let mut hit = Vec::new();
         for i in 0..g.nodes.len() {
-            let Some((p, s)) = node_box(pos, &g.nodes, self.origin, self.scale, i) else {
+            let Some((p, s)) = node_box(&g.nodes, self.origin, self.scale, i) else {
                 continue;
             };
             let nx0 = p.x;
@@ -2054,7 +2012,6 @@ impl Viewer {
         conv::clamp_inner(stored.unwrap_or(default), layout)
     }
 
-
     /// 中栏画布:边 + 节点 + 引脚 + 图边界 + 框选 + 右键菜单 + 平移/缩放。
     ///
     /// 抽出来是因为 `render()` 原来一个函数 1000 多行,画布这一块又占了
@@ -2083,19 +2040,12 @@ impl Viewer {
         // Ctrl 悬停复合节点 → 换青色描边(提示"点一下能跳进定义")。
         let ctrl_held = self.ctrl_held;
         let hover_node = self.hover_node;
-        // 当前图的坐标。缺(理论上只有坐标还没跟上时)按空切片处理 ——
-        // `build_nodes` / `build_edges` 对每个节点都是 `get` + 默认值。
-        let pos = self
-            .positions
-            .get(self.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let nodes = build_nodes(g, pos, origin, scale, &self.selected);
-        let edges = build_edges(g, pos, origin, scale);
-        let boundaries = build_boundaries(g, pos, origin, scale);
-        let pins = build_pins(g, pos, origin, scale);
-        let defaults = build_defaults(g, pos, origin, scale);
-        let ctrl_labels = build_ctrl_labels(g, pos, origin, scale);
+        let nodes = build_nodes(g, origin, scale, &self.selected);
+        let edges = build_edges(g, origin, scale);
+        let boundaries = build_boundaries(g, origin, scale);
+        let pins = build_pins(g, origin, scale);
+        let defaults = build_defaults(g, origin, scale);
+        let ctrl_labels = build_ctrl_labels(g, origin, scale);
 
         // ---- 边和图边界桩:canvas 画在最下面 ----
         let record_origin = canvas_origin.clone();
@@ -2496,15 +2446,13 @@ impl Viewer {
                         }
                         // 位移要除以 `scale`,否则缩放越大节点跑得越快。
                         // `scale` 被夹在 [MIN_SCALE, MAX_SCALE],恒 > 0。
-                        // 坐标按图存:改的是当前图里那几个节点。
-                        if let Some(ps) = v.positions.get_mut(v.current) {
-                            for i in indices.iter() {
-                                if let Some(p) = ps.get_mut(*i) {
-                                    p.x += delta.x / v.scale;
-                                    p.y += delta.y / v.scale;
-                                }
-                            }
-                        }
+                        // 坐标只有一份(节点的 `position`),就地平移。
+                        v.doc.move_nodes(
+                            v.current,
+                            indices,
+                            delta.x / v.scale,
+                            delta.y / v.scale,
+                        );
                     }
                     Drag::Pan { last } => {
                         let delta = point(now.x - last.x, now.y - last.y);
