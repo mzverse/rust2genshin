@@ -18,6 +18,7 @@
 //! `cargo test` 里直接验证(渲染层只是这些数据的搬运工)。
 
 use crate::doc::{FnInterface, PortInfo, RetOrigin};
+use gpui::{Point, point};
 
 // ------------------------------------------------------------------ 连线
 
@@ -252,20 +253,35 @@ pub struct Layout {
     pub outer_right: Pins,
     pub inner_left: Pins,
     pub inner_right: Pins,
-    /// 常数文本:右对齐到外层出引脚左侧的 `(right_x, y)` + 文本。
+    /// 常数文本:画在**内层节点右侧**的 `(x, y)` + 文本。
     pub constants: Vec<(f32, f32, String)>,
+    /// 外层左侧引脚的标签(参数名),画在盒子**外侧**。
+    ///
+    /// `(右对齐的右缘 x, y, 文本)` —— 右缘贴盒子左边,文字往左展开。
+    pub outer_left_labels: Vec<(f32, f32, String)>,
+    /// 外层右侧引脚的标签(返回值名),画在盒子**外侧**。
+    ///
+    /// `(左对齐的左缘 x, y, 文本)` —— 左缘贴盒子右边,文字往右展开。
+    pub outer_right_labels: Vec<(f32, f32, String)>,
 }
 
-/// 外层盒子左右各留的边距。
-pub const PAD: f32 = 10.0;
+/// 外层盒子左右各留的边距(盒**内**的留白)。
+pub const PAD: f32 = 12.0;
 /// 一行引脚占的高度。
-pub const PIN_ROW: f32 = 14.0;
+pub const PIN_ROW: f32 = 16.0;
 /// 内层节点的宽度。
-pub const INNER_W: f32 = 120.0;
+pub const INNER_W: f32 = 150.0;
 /// 内层节点的最小高度。
-pub const INNER_MIN_H: f32 = 28.0;
+pub const INNER_MIN_H: f32 = 32.0;
 /// 外层盒子的最小高度。
-pub const OUTER_MIN_H: f32 = 84.0;
+pub const OUTER_MIN_H: f32 = 96.0;
+/// 盒**外**留给引脚名的横向空间(左右各一份)。
+///
+/// 引脚名画在盒子外侧(用户要求),所以盒子不能占满整个面板宽度 ——
+/// 名字得有地方放,不然就被裁掉了。
+pub const LABEL_GUTTER: f32 = 74.0;
+/// 面板左右各留的边距。
+pub const MARGIN: f32 = 4.0;
 
 /// 把 `n` 个引脚均分在 `[lo, lo+len]` 上,首尾各留一格。
 fn spread(lo: f32, len: f32, n: usize) -> Vec<f32> {
@@ -290,6 +306,9 @@ fn pins_on_side(x: f32, lo: f32, len: f32, ctrl_n: usize, value_n: usize) -> Pin
 ///
 /// `inner_pos` 是内层节点的左上角(面板局部坐标)—— 用户拖出来的位置。
 /// 它会被**夹**在外层盒子里面:拖不出外层。
+///
+/// `width` 是**面板**的总宽度。盒子只占中间那段,左右各留
+/// [`LABEL_GUTTER`] 给引脚名(引脚名画在盒子外侧)。
 pub fn layout(
     outer: &FnInterface,
     inner: &FnInterface,
@@ -311,17 +330,27 @@ pub fn layout(
         .max(OUTER_MIN_H)
         .max(inner_h + 2.0 * PAD);
 
+    // 盒子在面板里的横向位置:左右各留一条给引脚名的槽。
+    let outer_x = MARGIN + LABEL_GUTTER;
+    // 盒子宽度 = 面板宽 - 两条槽 - 两条边距。窄的时候不能算成负数。
+    let outer_w = (width - 2.0 * (MARGIN + LABEL_GUTTER)).max(INNER_W + 8.0);
     let outer_rect = Rect {
-        x: 0.0,
-        y: 0.0,
-        w: width,
+        x: outer_x,
+        y: MARGIN,
+        w: outer_w,
         h: outer_h,
     };
 
     // 内层节点的左上角:夹在外层里面(留 2px 余量)。
     let (mut ix, mut iy) = inner_pos;
-    ix = ix.clamp(outer_rect.x + 2.0, (outer_rect.x + outer_rect.w - INNER_W - 2.0).max(outer_rect.x + 2.0));
-    iy = iy.clamp(outer_rect.y + 2.0, (outer_rect.y + outer_rect.h - inner_h - 2.0).max(outer_rect.y + 2.0));
+    ix = ix.clamp(
+        outer_rect.x + 2.0,
+        (outer_rect.x + outer_rect.w - INNER_W - 2.0).max(outer_rect.x + 2.0),
+    );
+    iy = iy.clamp(
+        outer_rect.y + 2.0,
+        (outer_rect.y + outer_rect.h - inner_h - 2.0).max(outer_rect.y + 2.0),
+    );
     let inner_rect = Rect {
         x: ix,
         y: iy,
@@ -365,9 +394,39 @@ pub fn layout(
         .iter()
         .filter_map(|c| {
             let y = inner_right.value.get(c.inner).map(|p| p.1)?;
-            Some((inner_rect.x + inner_rect.w + 6.0, y, c.text.clone()))
+            Some((inner_rect.x + inner_rect.w + 8.0, y, c.text.clone()))
         })
         .collect();
+
+    // 引脚名:画在盒子**外侧**。
+    // - 左边(参数):右缘贴盒子左边,文字往左展开;
+    // - 右边(返回值):左缘贴盒子右边,文字往右展开。
+    //
+    // **只写名字,不写类型** —— 类型在悬停气泡里(用户要求)。
+    let outer_left_labels = outer
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let y = outer_left.value.get(i).map(|q| q.1)?;
+            Some((outer_rect.x - 6.0, y, p.name.clone()))
+        })
+        .collect();
+    let outer_right_labels = outer
+        .rets
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let y = outer_right.value.get(i).map(|q| q.1)?;
+            Some((outer_rect.x + outer_rect.w + 6.0, y, p.name.clone()))
+        })
+        .collect();
+
+    // 内层引脚名:**不画**。
+    //
+    // 内层是"一个普通节点"(用户原话)—— 普通节点上不写引脚名,类型也是
+    // 悬停才看。写出来会和外层的标签打架:两层挨得近,名字叠在一起反而
+    // 读不出来。外层的名字已经足够定位每个引脚了。
 
     Layout {
         outer: outer_rect,
@@ -377,6 +436,8 @@ pub fn layout(
         inner_left,
         inner_right,
         constants,
+        outer_left_labels,
+        outer_right_labels,
     }
 }
 
@@ -389,6 +450,160 @@ pub fn clamp_inner(pos: (f32, f32), layout: &Layout) -> (f32, f32) {
     let x = pos.0.clamp(o.x + 2.0, (o.x + o.w - i.w - 2.0).max(o.x + 2.0));
     let y = pos.1.clamp(o.y + 2.0, (o.y + o.h - i.h - 2.0).max(o.y + 2.0));
     (x, y)
+}
+
+// ------------------------------------------------------------------ 悬停
+
+/// 一个引脚的悬停文案。
+///
+/// 类型**只在这里出现** —— 引脚旁边只写名字(用户要求)。悬停时给的是
+/// `名字 <类型>`,类型为空时只写名字。
+pub fn pin_tip(port: &PortInfo) -> String {
+    if port.type_label.is_empty() {
+        port.name.clone()
+    } else {
+        format!("{} <{}>", port.name, port.type_label)
+    }
+}
+
+/// 一条连线的悬停文案:两端各是什么。
+///
+/// `from` / `to` 是 `(名字, 类型)` —— 两端**一致**就只显示一个类型,不一致
+/// 就显示 `A → B`(和主画布的边气泡一个规矩)。
+pub fn link_tip(from: &(String, String), to: &(String, String)) -> String {
+    let (fn_, ft) = (&from.0, &from.1);
+    let (tn, tt) = (&to.0, &to.1);
+    match (ft.is_empty(), tt.is_empty()) {
+        (true, true) => format!("{fn_} → {tn}"),
+        (true, false) => format!("{fn_} → {tn} <{tt}>"),
+        (false, true) => format!("{fn_} <{ft}> → {tn}"),
+        (false, false) => {
+            if ft == tt {
+                format!("{fn_} <{ft}> → {tn}")
+            } else {
+                format!("{fn_} <{ft}> → {tn} <{tt}>")
+            }
+        }
+    }
+}
+
+/// 命中半径(面板局部坐标)。这个视图固定 1 倍缩放,不随缩放变。
+pub const PIN_HIT_R: f32 = 8.0;
+pub const LINK_HIT_R: f32 = 6.0;
+
+/// 一个可悬停的东西。
+#[derive(Clone, Debug, PartialEq)]
+pub enum Hit {
+    /// 一个引脚。
+    Pin { side: Side, index: usize },
+    /// 一条连线。
+    Link { index: usize },
+}
+
+/// 引脚在哪一侧。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// 外层左边(参数)。
+    OuterLeft,
+    /// 外层右边(返回值)。
+    OuterRight,
+    /// 内层左边(当前参数)。
+    InnerLeft,
+    /// 内层右边(当前返回值)。
+    InnerRight,
+}
+
+/// 命中测试:离光标最近的引脚 / 连线。
+///
+/// 引脚优先于连线 —— 引脚是小目标、又压在连线上面(用户要的是"这个引脚
+/// 是什么",不是"那条线是什么")。
+///
+/// 连线用**两端连线**近似贝塞尔:命中测试够用,画的时候仍然是贝塞尔
+/// (和主画布的 `view::bezier_dist` 同一种"够用就够"的取舍)。
+pub fn hit_test(
+    layout: &Layout,
+    pins: &[Hit],
+    links: &[Link],
+    at: Point<f32>,
+) -> Option<Hit> {
+    // 引脚优先。
+    let mut best: Option<(f32, Hit)> = None;
+    for h in pins {
+        let (x, y) = match pin_pos(layout, h) {
+            Some(p) => p,
+            None => continue,
+        };
+        let d = dist(point(x, y), at);
+        if d <= PIN_HIT_R && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, h.clone()));
+        }
+    }
+    if let Some((_, h)) = best {
+        return Some(h);
+    }
+    // 再找连线。
+    let mut best: Option<(f32, Hit)> = None;
+    for (i, link) in links.iter().enumerate() {
+        let (from, to) = match link_endpoints(layout, link) {
+            Some(p) => p,
+            None => continue,
+        };
+        let d = seg_dist(at, from, to);
+        if d <= LINK_HIT_R && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, Hit::Link { index: i }));
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
+/// 一个引脚的位置。
+pub fn pin_pos(layout: &Layout, hit: &Hit) -> Option<(f32, f32)> {
+    let Hit::Pin { side, index } = hit else {
+        return None;
+    };
+    let pins = match side {
+        Side::OuterLeft => &layout.outer_left,
+        Side::OuterRight => &layout.outer_right,
+        Side::InnerLeft => &layout.inner_left,
+        Side::InnerRight => &layout.inner_right,
+    };
+    pins.value.get(*index).copied()
+}
+
+/// 一条连线的两端(直线近似 —— 命中测试够用)。
+pub fn link_endpoints(layout: &Layout, link: &Link) -> Option<(Point<f32>, Point<f32>)> {
+    // `Pins` 里存的是 `(x, y)` 元组,不是 `Point` —— 统一在这里转。
+    let p = |side: Side, i: usize| {
+        pin_pos(layout, &Hit::Pin { side, index: i }).map(|(x, y)| point(x, y))
+    };
+    Some(match *link {
+        Link::Param { outer, inner } => (p(Side::OuterLeft, outer)?, p(Side::InnerLeft, inner)?),
+        Link::Ret { outer, inner } => (p(Side::InnerRight, inner)?, p(Side::OuterRight, outer)?),
+        Link::PassThrough { param, ret } => {
+            (p(Side::OuterLeft, param)?, p(Side::OuterRight, ret)?)
+        }
+        Link::CtrlIn { outer, inner } => (p(Side::OuterLeft, outer)?, p(Side::InnerLeft, inner)?),
+        Link::CtrlOut { outer, inner } => {
+            (p(Side::InnerRight, inner)?, p(Side::OuterRight, outer)?)
+        }
+        Link::CtrlThrough { from, to } => (p(Side::OuterLeft, from)?, p(Side::OuterRight, to)?),
+    })
+}
+
+/// 两点距离。
+fn dist(a: Point<f32>, b: Point<f32>) -> f32 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+}
+
+/// 点到线段的最短距离。
+fn seg_dist(p: Point<f32>, a: Point<f32>, b: Point<f32>) -> f32 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    if len2 <= f32::EPSILON {
+        return dist(p, a);
+    }
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0);
+    dist(p, point(a.x + dx * t, a.y + dy * t))
 }
 
 #[cfg(test)]
@@ -639,5 +854,160 @@ mod tests {
             "内层没有控制流了,外层应当直接贯穿:{:?}",
             c.links
         );
+    }
+
+    // ------------------------------------------------------- 引脚名在外侧
+
+    /// 引脚名画在盒子**外侧**(用户要求):左边贴盒子左边、右边贴盒子右边。
+    ///
+    /// 名字**只写名字** —— 类型在悬停气泡里。
+    #[test]
+    fn pin_names_sit_outside_the_outer_box() {
+        let outer = iface(&["alpha", "beta"], &["gamma"], vec![], 1, 1);
+        let inner = iface(&["alpha", "beta"], &["gamma"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+
+        assert_eq!(l.outer_left_labels.len(), 2, "两个参数名");
+        assert_eq!(l.outer_right_labels.len(), 1, "一个返回值名");
+
+        // 左边:右缘在盒子左边**之外**。
+        let (right, _, name) = &l.outer_left_labels[0];
+        assert_eq!(name, "alpha");
+        assert!(
+            *right < l.outer.x,
+            "左边的名字应当贴在盒子左边之外:{right} vs {}",
+            l.outer.x
+        );
+        // 右边:左缘在盒子右边**之外**。
+        let (left, _, name) = &l.outer_right_labels[0];
+        assert_eq!(name, "gamma");
+        assert!(
+            *left > l.outer.x + l.outer.w,
+            "右边的名字应当贴在盒子右边之外:{left}"
+        );
+    }
+
+    /// 引脚名**不写类型** —— 类型只在悬停气泡里(用户要求)。
+    #[test]
+    fn pin_names_do_not_show_the_type() {
+        let outer = iface(&["alpha"], &[], vec![], 1, 1);
+        let inner = iface(&["alpha"], &[], vec![], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        let (_, _, name) = &l.outer_left_labels[0];
+        assert_eq!(name, "alpha", "名字就是名字,不带类型");
+        assert!(!name.contains("Int"), "不该带类型:{name}");
+    }
+
+    /// 盒子左右各留一条给引脚名的槽 —— 盒子不能占满整个面板宽度。
+    #[test]
+    fn the_box_leaves_room_for_the_names() {
+        let outer = iface(&["x"], &[], vec![], 1, 1);
+        let inner = iface(&["x"], &[], vec![], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let width = 344.0;
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), width);
+        assert!(l.outer.x >= LABEL_GUTTER, "左边要有槽");
+        assert!(
+            l.outer.x + l.outer.w <= width - LABEL_GUTTER,
+            "右边也要有槽:{} + {} vs {}",
+            l.outer.x,
+            l.outer.w,
+            width
+        );
+    }
+
+    // --------------------------------------------------------------- 悬停
+
+    /// 悬停引脚 → 气泡给 `名字 <类型>`。
+    #[test]
+    fn hovering_a_pin_shows_its_type() {
+        let p = port("x");
+        assert_eq!(pin_tip(&p), "x <Int>");
+        let untyped = PortInfo {
+            name: "y".into(),
+            type_label: String::new(),
+        };
+        assert_eq!(pin_tip(&untyped), "y", "没类型就只写名字");
+    }
+
+    /// 悬停连线 → 气泡给两端的类型。
+    #[test]
+    fn hovering_a_link_shows_both_ends() {
+        assert_eq!(
+            link_tip(&("x".into(), "Int".into()), &("y".into(), "Int".into())),
+            "x <Int> → y"
+        );
+        assert_eq!(
+            link_tip(&("x".into(), "Int".into()), &("y".into(), "Bool".into())),
+            "x <Int> → y <Bool>"
+        );
+    }
+
+    /// 命中测试:指着引脚就命中那个引脚(不是压在它上面的线)。
+    #[test]
+    fn hovering_near_a_pin_hits_the_pin() {
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        let pins = vec![
+            Hit::Pin {
+                side: Side::OuterLeft,
+                index: 0,
+            },
+            Hit::Pin {
+                side: Side::OuterRight,
+                index: 0,
+            },
+        ];
+        let (px, py) = pin_pos(&l, &pins[0]).expect("引脚在");
+        let hit = hit_test(&l, &pins, &c.links, point(px + 2.0, py + 2.0));
+        assert_eq!(hit, Some(pins[0].clone()), "应当命中那个引脚");
+        // 离得远 → 不命中。
+        assert_eq!(hit_test(&l, &pins, &c.links, point(px + 90.0, py + 90.0)), None);
+    }
+
+    /// 命中测试:指着连线就命中那条线。
+    #[test]
+    fn hovering_a_line_hits_the_line() {
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        let pins: Vec<Hit> = vec![];
+        // 参数连线:外层左 → 内层左。取中点。
+        let link = c.links[0];
+        let (from, to) = link_endpoints(&l, &link).expect("两端都在");
+        let mid = point((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+        let hit = hit_test(&l, &pins, &c.links, mid);
+        assert!(
+            matches!(hit, Some(Hit::Link { .. })),
+            "应当命中连线:{hit:?}"
+        );
+    }
+
+    /// **内层的引脚也要能命中** —— 内层是"一个普通节点",它的引脚同样是
+    /// 引脚,悬停也该给类型。
+    #[test]
+    fn the_inner_pins_are_hit_too() {
+        let outer = iface(&["x"], &["r"], vec![], 1, 1);
+        let inner = iface(&["x"], &["r"], vec![RetOrigin::Body], 1, 1);
+        let c = Convention::build(&outer, &inner);
+        let l = layout(&outer, &inner, &c, (0.0, 0.0), 344.0);
+        let pins = vec![
+            Hit::Pin {
+                side: Side::InnerLeft,
+                index: 0,
+            },
+            Hit::Pin {
+                side: Side::InnerRight,
+                index: 0,
+            },
+        ];
+        let (px, py) = pin_pos(&l, &pins[0]).expect("引脚在");
+        let hit = hit_test(&l, &pins, &c.links, point(px + 1.0, py + 1.0));
+        assert_eq!(hit, Some(pins[0].clone()), "内层引脚也要能命中");
     }
 }

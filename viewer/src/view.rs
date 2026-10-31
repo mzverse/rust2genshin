@@ -71,10 +71,10 @@ use crate::doc::{
 use crate::optimize::{self, RULES, Snapshot};
 
 /// 右栏(优化按钮 + 调用约定)的宽度(px)。
-const RULES_WIDTH: f32 = 280.0;
+const RULES_WIDTH: f32 = 360.0;
 /// 「调用约定」面板的高度**下限**(px)。实际高度由外层盒子的引脚数决定 ——
 /// 真实产物里有 20+ 个参数的函数,固定高度会把盒子裁掉。
-const CONV_HEIGHT: f32 = 240.0;
+const CONV_HEIGHT: f32 = 300.0;
 /// 「调用约定」面板的内边距。
 const CONV_PAD: f32 = 8.0;
 
@@ -1056,6 +1056,15 @@ pub struct Viewer {
     /// `last` 是上一次鼠标位置(窗口坐标)。位置本身记在 `conv_pos` 里,
     /// 拖动只用**增量** —— 和画布平移一个道理,不需要知道面板在窗口里的原点。
     conv_drag: Option<(usize, Point<f32>)>,
+    /// 「调用约定」视图里当前悬停命中的东西(`None` = 没悬在任何东西上)。
+    ///
+    /// 悬停气泡显示**类型** —— 引脚旁边只写名字(用户要求)。
+    conv_hover: Option<conv::Hit>,
+    /// 「调用约定」面板在**窗口**坐标系里的左上角。
+    ///
+    /// 由面板的 canvas prepaint 每帧写 —— 悬停命中要把窗口坐标换算成
+    /// 面板局部坐标,靠它。
+    conv_origin: Rc<Cell<Point<f32>>>,
 }
 
 impl Viewer {
@@ -1090,6 +1099,8 @@ impl Viewer {
             hover_node: None,
             conv_pos: HashMap::new(),
             conv_drag: None,
+            conv_hover: None,
+            conv_origin: Rc::new(Cell::new(point(0.0, 0.0))),
         }
     }
 
@@ -2992,10 +3003,80 @@ impl Viewer {
         self.jump_to_definition(menu.node_index, cx);
     }
 
-    /// 拖「调用约定」视图里的内层节点。
+    /// 「调用约定」视图的悬停命中更新。
     ///
-    /// `at_window` 是事件的**窗口**坐标(`Point<f32>`)—— 位置是**面板局部**
-    /// 坐标,所以增量直接用窗口坐标的差就行(平移与坐标系原点无关)。
+    /// `at_window` 是**窗口**坐标 —— 要减去面板左上角换成面板局部坐标。
+    /// 面板的原点由面板自己的 canvas prepaint 每帧写进
+    /// [`Viewer::conv_origin`]。
+    fn update_conv_hover(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
+        let Some((outer, inner)) = self.conv_data() else {
+            return;
+        };
+        let conv = conv::Convention::build(outer, inner);
+        let width = RULES_WIDTH - 2.0 * CONV_PAD;
+        let probe = conv::layout(outer, inner, &conv, (0.0, 0.0), width);
+        let inner_pos = self.conv_inner_pos(&probe);
+        let l = conv::layout(outer, inner, &conv, inner_pos, width);
+
+        // 所有可命中的引脚。
+        let mut pins = Vec::new();
+        for (side, n) in [
+            (conv::Side::OuterLeft, outer.params.len()),
+            (conv::Side::OuterRight, outer.rets.len()),
+            (conv::Side::InnerLeft, inner.params.len()),
+            (conv::Side::InnerRight, inner.rets.len()),
+        ] {
+            for i in 0..n {
+                pins.push(conv::Hit::Pin { side, index: i });
+            }
+        }
+
+        let o = self.conv_origin.get();
+        let at = point(at_window.x - o.x, at_window.y - o.y);
+        let hit = conv::hit_test(&l, &pins, &conv.links, at);
+        if self.conv_hover != hit {
+            self.conv_hover = hit;
+            cx.notify();
+        }
+    }
+
+    /// 悬停气泡的文案。
+    ///
+    /// 引脚 → `名字 <类型>`;连线 → 两端各是什么。
+    fn conv_hover_text(
+        &self,
+        hit: &conv::Hit,
+        outer: &FnInterface,
+        inner: &FnInterface,
+    ) -> Option<String> {
+        match hit {
+            conv::Hit::Pin { side, index } => {
+                let port = match side {
+                    conv::Side::OuterLeft => outer.params.get(*index),
+                    conv::Side::OuterRight => outer.rets.get(*index),
+                    conv::Side::InnerLeft => inner.params.get(*index),
+                    conv::Side::InnerRight => inner.rets.get(*index),
+                }?;
+                Some(conv::pin_tip(port))
+            }
+            conv::Hit::Link { index } => {
+                let links = self.conv_links();
+                let link = links.get(*index)?;
+                let (from, to) = link_endpoints_text(outer, inner, link);
+                Some(conv::link_tip(&from, &to))
+            }
+        }
+    }
+
+    /// 当前图的连线表(供悬停文案查两端)。
+    fn conv_links(&self) -> Vec<conv::Link> {
+        let Some((outer, inner)) = self.conv_data() else {
+            return Vec::new();
+        };
+        conv::Convention::build(outer, inner).links
+    }
+
+    /// 拖「调用约定」视图里的内层节点。
     fn drag_conv_inner(&mut self, at_window: Point<f32>, cx: &mut Context<Self>) {
         let Some((graph, last)) = self.conv_drag else {
             return;
@@ -3016,7 +3097,7 @@ impl Viewer {
         // 位置存的是**面板局部**坐标(相对 `conv-body`),和布局同一坐标系。
         let cur = self.conv_pos.get(&graph).copied().unwrap_or_else(|| {
             (
-                probe.outer.x + 24.0,
+                probe.outer.x + 16.0,
                 probe.outer.y + (probe.outer.h - probe.inner.h) / 2.0,
             )
         });
@@ -3049,7 +3130,7 @@ impl Viewer {
     fn conv_inner_pos(&self, layout: &conv::Layout) -> (f32, f32) {
         let stored = self.conv_pos.get(&self.current).copied();
         let default = (
-            layout.outer.x + 24.0,
+            layout.outer.x + 16.0,
             layout.outer.y + (layout.outer.h - layout.inner.h) / 2.0,
         );
         conv::clamp_inner(stored.unwrap_or(default), layout)
@@ -3073,6 +3154,7 @@ impl Viewer {
 
         // ---- 连线:canvas 画 ----
         // 线全是**面板局部**坐标;canvas 的 bounds 是窗口坐标,加个偏移。
+        let conv_origin = self.conv_origin.clone();
         let outer_left = l.outer_left.clone();
         let outer_right = l.outer_right.clone();
         let inner_left = l.inner_left.clone();
@@ -3087,7 +3169,13 @@ impl Viewer {
             l.inner_right.clone(),
         );
         let edges_el = canvas(
-            move |_bounds: Bounds<Pixels>, _window, _cx| (),
+            move |bounds: Bounds<Pixels>, _window, _cx| {
+                // 面板容器和它的 `absolute().inset_0()` 子元素同源同大小,
+                // 所以 canvas 的 bounds.origin 就是面板在窗口坐标系里的左上角。
+                // 悬停命中要靠它把窗口坐标换算成面板局部坐标。
+                conv_origin.set(from_px(bounds.origin));
+                ()
+            },
             move |bounds, _, window, _cx| {
                 let (outer_left, outer_right, inner_left, inner_right) = &edge_pins;
                 let o = bounds.origin;
@@ -3247,41 +3335,47 @@ impl Viewer {
             .border_2()
             .border_color(hsla(0.0, 0.0, 1.0, 0.28))
             .bg(hsla(0.0, 0.0, 1.0, 0.03));
-        // 外层每个引脚的名字标在盒子内侧(参数名 / 返回值名)。
-        for (i, p) in outer.params.iter().enumerate() {
-            if let Some(&(_, y)) = outer_left.value.get(i) {
-                outer_box = outer_box.child(
-                    div()
-                        .absolute()
-                        .left(px(l.outer.x + 6.0))
-                        .top(px(y - 7.0))
-                        .text_size(px(10.0))
-                        .text_color(text_dim())
-                        .whitespace_nowrap()
-                        .child(port_label(p)),
-                );
-            }
-        }
-        for (i, p) in outer.rets.iter().enumerate() {
-            if let Some(&(_, y)) = outer_right.value.get(i) {
-                outer_box = outer_box.child(
-                    div()
-                        .absolute()
-                        .left(px(l.outer.x + l.outer.w - 6.0))
-                        .top(px(y - 7.0))
-                        .w(px(110.0))
-                        .flex()
-                        .justify_end()
-                        .text_size(px(10.0))
-                        .text_color(text_dim())
-                        .whitespace_nowrap()
-                        .child(port_label(p)),
-                );
-            }
-        }
         layer = layer.child(outer_box);
 
+        // ---- 外层引脚名:画在盒子**外侧** ----
+        //
+        // 左边(参数)右对齐贴盒子左边,右边(返回值)左对齐贴盒子右边。
+        // **只写名字** —— 类型在悬停气泡里(用户要求)。
+        for (right, y, name) in &l.outer_left_labels {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(*right - conv::LABEL_GUTTER))
+                    .top(px(*y - 8.0))
+                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .flex()
+                    .justify_end()
+                    .text_size(px(11.0))
+                    .text_color(text_dim())
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(name.clone()),
+            );
+        }
+        for (left, y, name) in &l.outer_right_labels {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(*left))
+                    .top(px(*y - 8.0))
+                    .w(px(conv::LABEL_GUTTER - 4.0))
+                    .text_size(px(11.0))
+                    .text_color(text_dim())
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(name.clone()),
+            );
+        }
+
         // ---- 内层节点:当前状态,可以在外层里拖 ----
+        //
+        // 标题写"当前" —— 它和画布上那些节点一样是**一个节点**,只是这里
+        // 显示的是这个函数现在的对外接口。
         let inner_label = if inner.params.is_empty() && inner.rets.is_empty() {
             "空"
         } else {
@@ -3302,7 +3396,7 @@ impl Viewer {
             .border_1()
             .border_color(hsla(0.0, 0.0, 1.0, 0.20))
             .text_color(text_hi())
-            .text_size(px(10.0))
+            .text_size(px(11.0))
             .overflow_hidden()
             .cursor_grab()
             .child(inner_label);
@@ -3327,6 +3421,37 @@ impl Viewer {
                     .whitespace_nowrap()
                     .child(text.clone()),
             );
+        }
+
+        // ---- 悬停气泡:显示**类型** ----
+        //
+        // 引脚旁边只写名字(用户要求),类型在气泡里。命中的是连线时也给
+        // 两端的类型。
+        if let Some(hit) = &self.conv_hover {
+            if let Some(text) = self.conv_hover_text(hit, outer, inner) {
+                // 气泡挂在命中点的附近。
+                let (x, y) = match hit {
+                    conv::Hit::Pin { .. } => conv::pin_pos(&l, hit).unwrap_or((l.outer.x, l.outer.y)),
+                    conv::Hit::Link { index } => conv::link_endpoints(&l, &conv.links[*index])
+                        .map(|(_, to)| (to.x, to.y))
+                        .unwrap_or((l.outer.x, l.outer.y)),
+                };
+                layer = layer.child(
+                    div()
+                        .absolute()
+                        .left(px(x + 10.0))
+                        .top(px(y + 14.0))
+                        .px_2()
+                        .rounded_sm()
+                        .bg(panel_bg())
+                        .border_1()
+                        .border_color(hsla(0.0, 0.0, 1.0, 0.35))
+                        .text_color(text_hi())
+                        .text_size(px(12.0))
+                        .whitespace_nowrap()
+                        .child(text),
+                );
+            }
         }
 
         // ---- 面板外壳 ----
@@ -3355,7 +3480,7 @@ impl Viewer {
                     .text_xs()
                     .text_color(text_dim())
                     .mb_1()
-                    .child("调用约定 —— 外层 = 调用方看到的,内层 = 当前"),
+                    .child("调用约定 —— 外层 = 调用方看到的,内层 = 当前(悬停看类型)"),
             )
             .child(
                 div()
@@ -3366,18 +3491,68 @@ impl Viewer {
                     // 用固定高度会把它裁掉(真实产物里 20 个参数的函数有)。
                     .h(px(l.outer.h.max(CONV_HEIGHT)))
                     .overflow_hidden()
+                    // 悬停命中:鼠标移动时重新算,和主画布同一套规矩。
+                    .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
+                        v.update_conv_hover(from_px(e.position), cx);
+                    }))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(|v, _e, _w, cx| {
+                        if v.conv_hover.take().is_some() {
+                            cx.notify();
+                        }
+                    }))
                     .child(edges_el)
                     .child(layer),
             )
     }
 }
 
-/// 引脚标签:`名字 <类型>`(类型为空就只写名字)。
-fn port_label(p: &crate::doc::PortInfo) -> String {
-    if p.type_label.is_empty() {
-        p.name.clone()
-    } else {
-        format!("{} <{}>", p.name, p.type_label)
+/// 一条连线两端的 `(名字, 类型)`。
+///
+/// 端点是哪一侧、哪个下标,取决于连线的种类:
+/// - `Param`:外层参数 → 内层参数;
+/// - `Ret`:内层返回值 → 外层返回值;
+/// - `PassThrough`:外层参数 → 外层返回值。
+fn link_endpoints_text(
+    outer: &FnInterface,
+    inner: &FnInterface,
+    link: &conv::Link,
+) -> ((String, String), (String, String)) {
+    let param = |i: usize| -> (String, String) {
+        outer
+            .params
+            .get(i)
+            .map(|p| (p.name.clone(), p.type_label.clone()))
+            .unwrap_or_default()
+    };
+    let ret = |i: usize| -> (String, String) {
+        outer
+            .rets
+            .get(i)
+            .map(|p| (p.name.clone(), p.type_label.clone()))
+            .unwrap_or_default()
+    };
+    let inner_param = |i: usize| -> (String, String) {
+        inner
+            .params
+            .get(i)
+            .map(|p| (p.name.clone(), p.type_label.clone()))
+            .unwrap_or_default()
+    };
+    let inner_ret = |i: usize| -> (String, String) {
+        inner
+            .rets
+            .get(i)
+            .map(|p| (p.name.clone(), p.type_label.clone()))
+            .unwrap_or_default()
+    };
+    match *link {
+        conv::Link::Param { outer: o, inner: i } => (param(o), inner_param(i)),
+        conv::Link::Ret { outer: o, inner: i } => (inner_ret(i), ret(o)),
+        conv::Link::PassThrough { param: p, ret: r } => (param(p), ret(r)),
+        // 控制流没有类型,只写"控制流"。
+        conv::Link::CtrlIn { .. } | conv::Link::CtrlOut { .. } | conv::Link::CtrlThrough { .. } => {
+            (("控制流".into(), String::new()), ("控制流".into(), String::new()))
+        }
     }
 }
 

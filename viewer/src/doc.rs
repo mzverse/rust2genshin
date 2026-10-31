@@ -1186,7 +1186,7 @@ mod tests {
                             let c = crate::conv::Convention::build(o, &g.interface);
                             // 几何也要真的算一遍 —— 引脚多 / 名字长时最容易
                             // 在这里出问题(除零、负宽、夹取反)。
-                            let l = crate::conv::layout(o, &g.interface, &c, (0.0, 0.0), 264.0);
+                            let l = crate::conv::layout(o, &g.interface, &c, (0.0, 0.0), 344.0);
                             let sane = l.outer.w > 0.0
                                 && l.outer.h > 0.0
                                 && l.inner.w > 0.0
@@ -1195,8 +1195,19 @@ mod tests {
                                 && l.inner.y >= l.outer.y
                                 && l.inner.x + l.inner.w <= l.outer.x + l.outer.w + 0.01
                                 && l.inner.y + l.inner.h <= l.outer.y + l.outer.h + 0.01;
+                            // 引脚名必须在盒子**外侧**,而且不能被面板裁掉。
+                            let names_fit = l
+                                .outer_left_labels
+                                .iter()
+                                .chain(l.outer_right_labels.iter())
+                                .all(|(x, _, _)| *x >= 0.0 && *x <= 344.0)
+                                && l.outer_left_labels.iter().all(|(x, _, _)| *x < l.outer.x)
+                                && l
+                                    .outer_right_labels
+                                    .iter()
+                                    .all(|(x, _, _)| *x > l.outer.x + l.outer.w);
                             format!(
-                                " | 约定:线 {} 常数 {} 掉参 {:?} 掉ret {:?} 外层 {:.0}x{:.0} 内层 {:.0}x{:.0} {}",
+                                " | 约定:线 {} 常数 {} 掉参 {:?} 掉ret {:?} 外层 {:.0}x{:.0} 内层 {:.0}x{:.0} {} {}",
                                 c.links.len(),
                                 c.constants.len(),
                                 c.dropped_params,
@@ -1205,7 +1216,8 @@ mod tests {
                                 l.outer.h,
                                 l.inner.w,
                                 l.inner.h,
-                                if sane { "几何OK" } else { "几何错!" }
+                                if sane { "几何OK" } else { "几何错!" },
+                                if names_fit { "名字OK" } else { "名字错!" },
                             )
                         }
                         _ => String::new(),
