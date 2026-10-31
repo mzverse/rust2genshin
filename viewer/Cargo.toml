@@ -17,3 +17,4 @@ gpui = "0"
 bincode = { version = "2", features = ["serde"] }
 ar = "0"
 serde = { workspace = true }
+either = { workspace = true }

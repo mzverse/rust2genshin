@@ -17,7 +17,7 @@
 //! 这里不碰 GPUI:输入输出都是 `FnInterface` 和几个结构体,所以能在
 //! `cargo test` 里直接验证(渲染层只是这些数据的搬运工)。
 
-use crate::doc::{FnInterface, PortInfo, RetOrigin};
+use crate::doc::{FnInterface, OrphanRet, PortInfo, RetOrigin};
 use gpui::{Point, point};
 
 // ------------------------------------------------------------------ 连线
@@ -68,9 +68,13 @@ pub struct Constant {
     pub text: String,
     /// 内层哪个返回值引脚是这个常数(内层下标)。
     ///
-    /// 常数画在**内层节点旁边**、对准内层那个出引脚 —— 它是函数体里的
-    /// 一个事实,所以位置跟着内层节点走。
-    pub inner: usize,
+    /// `None` = **内层连这个引脚都没有了**:`lower` 摘掉了没人读的值出口
+    /// (`compact_value_exports`),常数只剩在 `decl.proxies_out` 里。这时
+    /// 常数没有"内层那个出引脚"可以对,渲染层把它画在内层节点的右侧空位上。
+    ///
+    /// 用户报的"直接返回常数的你没有显示"就是 `None` 这一类 —— 以前只在
+    /// 有内层引脚时才画,于是整个常数消失。
+    pub inner: Option<usize>,
 }
 
 // ------------------------------------------------------------------ 配对
@@ -170,10 +174,44 @@ impl Convention {
                 Some(RetOrigin::Const(text)) => constants.push(Constant {
                     ret: outer_idx,
                     text: text.clone(),
-                    inner: i,
+                    inner: Some(i),
                 }),
                 // 没接上 / 来源不明:什么都不画。
                 Some(RetOrigin::Unset) | None => {}
+            }
+        }
+
+        // ---- 出引脚已经没了的返回值 ----
+        //
+        // `lower` 的 `compact_value_exports` 会摘掉「没有节点读」的值出口 ——
+        // **直接返回常数**的函数正是这样:内层连那个出引脚都不剩了,值只留在
+        // `decl.proxies_out` 里(`doc.rs` 的 `orphan_rets`)。
+        //
+        // 以前这里什么都不画,于是常数整个消失(用户报的那条)。现在照样画:
+        // 常数写在内侧(没有内层引脚可对,`inner: None`),透传照旧连到外层
+        // 的入引脚 —— 两种情况在"调用方看到的东西"这件事上完全没变。
+        for (ret_idx, orphan) in &inner.orphan_rets {
+            // 外层没有这个引脚时跳过(理论上不该发生:外层是加载时那份)。
+            if *ret_idx >= outer.rets.len() {
+                continue;
+            }
+            let outer_idx = *ret_idx;
+            match orphan {
+                OrphanRet::Const(text) => constants.push(Constant {
+                    ret: outer_idx,
+                    text: text.clone(),
+                    inner: None,
+                }),
+                // 原样透传某个参数:一样连到外层入引脚。记的是**原始**下标,
+                // 正好是冻结外层的参数序号。
+                OrphanRet::Param(param) => {
+                    if *param < outer.params.len() {
+                        links.push(Link::PassThrough {
+                            param: *param,
+                            ret: outer_idx,
+                        });
+                    }
+                }
             }
         }
 
@@ -482,16 +520,34 @@ pub fn layout(
         inner_right_rows,
     );
 
-    // 常数文本:画在**内层节点右侧**、纵向对准内层那个出引脚 —— 常数是
-    // 函数体里的事实,位置跟着内层走。
-    let constants = conv
+    // 常数文本:画在**内层节点右侧** —— 常数是函数体里的事实,位置跟着内层走。
+    //
+    // - 有内层出引脚(`inner: Some`)→ 纵向对准那个引脚,一眼对应得上;
+    // - 没有内层引脚(`inner: None`,即 `lower` 摘掉了没人读的出口)→ 从内层
+    //   顶上一路往下排。**这种情况必须画**,不能因为"没有引脚"就丢掉:它正是
+    //   用户报的"直接返回常数的你没有显示"。
+    //
+    // 先取有引脚的那些,再把没引脚的按顺序往下摆 —— 后者不会和前者抢同一行
+    // (有引脚的都贴着内层盒子右缘的引脚行)。
+    let const_x = inner_rect.x + inner_rect.w + 8.0;
+    let mut constants: Vec<(f32, f32, String)> = conv
         .constants
         .iter()
         .filter_map(|c| {
-            let y = inner_right.value.get(c.inner).map(|p| p.1)?;
-            Some((inner_rect.x + inner_rect.w + 8.0, y, c.text.clone()))
+            let y = inner_right.value.get(c.inner?).map(|p| p.1)?;
+            Some((const_x, y, c.text.clone()))
         })
         .collect();
+    // 没有内层引脚的:从内层顶端开始,按 `PIN_GAP` 往下排,避开上面已占的行。
+    let mut taken: Vec<f32> = constants.iter().map(|(_, y, _)| *y).collect();
+    for c in conv.constants.iter().filter(|c| c.inner.is_none()) {
+        let mut y = inner_rect.y + crate::doc::PIN_TOP;
+        while taken.iter().any(|t| (t - y).abs() < PIN_GAP / 2.0) {
+            y += PIN_GAP;
+        }
+        taken.push(y);
+        constants.push((const_x, y, c.text.clone()));
+    }
 
     // 引脚名:画在盒子**外侧**。
     // - 左边(参数):右缘贴盒子左边,文字往左展开;
@@ -746,6 +802,7 @@ mod tests {
             ctrl_in_num: ctrl_in,
             ctrl_out_num: ctrl_out,
             ret_origins: origins,
+            orphan_rets: Vec::new(),
         }
     }
 
@@ -810,7 +867,7 @@ mod tests {
             vec![Constant {
                 ret: 0,
                 text: "5".into(),
-                inner: 0
+                inner: Some(0)
             }]
         );
         assert!(

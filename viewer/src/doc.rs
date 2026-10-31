@@ -8,6 +8,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use gpui::{Point, Size, point};
+use either::Either;
 use rust2genshin::asset::generated::identifier;
 use rust2genshin::asset::GameMode;
 use rust2genshin::compile::func::{FnDecl, NodeGraphIr};
@@ -450,6 +451,30 @@ pub struct FnInterface {
     pub ctrl_out_num: usize,
     /// 每个返回值的来源,与 `rets` 同序。
     pub ret_origins: Vec<RetOrigin>,
+    /// **出引脚已经消失、但值仍然已知**的返回值:`(原始出引脚下标, 值)`。
+    ///
+    /// `lower` 里的 `compact_value_exports`(`core/src/compile/optimize.rs:617`)
+    /// 会摘掉「没有节点读」的值出口 —— **直接返回常数**的函数正是这样:出口
+    /// 没人读,值留在 `decl.proxies_out` 里(`optimize.rs:621`,那份表在压缩
+    /// **之前**建,所以下标就是原始出引脚序号)。
+    ///
+    /// 于是内层连那个引脚都没了。但它**仍然是调用方看到的那个返回值**
+    /// (冻结外层里有它),值也确实存在 —— 得照常画出来。用户报的
+    /// "直接返回常数的你没有显示"就是这条。
+    pub orphan_rets: Vec<(usize, OrphanRet)>,
+}
+
+/// 一个**出引脚已消失**的返回值的值。
+///
+/// 为什么参数要记**下标**而不是名字:参数表本身也会被压缩
+/// (`compact_value_imports`,`optimize.rs:584`),那时按名字已经找不到了 ——
+/// 下标是原始序号,由调用方拿冻结外层的参数表去对。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrphanRet {
+    /// 一个常数(`Debug` 文本)。
+    Const(String),
+    /// 原样透传**原始**参数表里第 `idx` 个参数。
+    Param(usize),
 }
 
 impl FnInterface {
@@ -570,7 +595,7 @@ impl Doc {
             .push(Linker::new(GameMode::Beyond, linker_t, PathBuf::new()));
         // 展平读 `targets[k]`,**不读** `linkers[k].target`(后者的状态不可信)。
         if let Some(main) = &self.targets[target].main {
-            self.graphs.push(flatten_one("main".to_string(), main, &names));
+            self.graphs.push(flatten_one("main".to_string(), main, &names, None));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Main,
@@ -582,7 +607,12 @@ impl Doc {
             // 显示名用图自己记的可读名,不用 `functions` 的键 —— 那是 rustc
             // 的 mangled 符号(链接键),给人看没法读。
             let f = &self.targets[target].functions[key];
-            self.graphs.push(flatten_one(f.graph.name.clone(), &f.graph, &names));
+            self.graphs.push(flatten_one(
+                f.graph.name.clone(),
+                &f.graph,
+                &names,
+                Some(&f.decl),
+            ));
             self.owners.push(GraphOwner {
                 target,
                 source: GraphSource::Fn(key.clone()),
@@ -667,13 +697,13 @@ impl Doc {
         let Some(t) = self.targets.get(owner.target) else {
             return false;
         };
-        let g = match &owner.source {
+        let (g, decl) = match &owner.source {
             GraphSource::Main => match &t.main {
-                Some(g) => g,
+                Some(g) => (g, None),
                 None => return false,
             },
             GraphSource::Fn(name) => match t.functions.get(name) {
-                Some(f) => &f.graph,
+                Some(f) => (&f.graph, Some(&f.decl)),
                 None => return false,
             },
         };
@@ -681,6 +711,7 @@ impl Doc {
             self.graphs[i].name.clone(),
             g,
             &fn_names(t),
+            decl,
         );
         true
     }
@@ -892,7 +923,7 @@ fn ctrl_out_labels(kind: &IrNodeId) -> Vec<String> {
     }
 }
 
-fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames) -> GraphEntry {
+fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames, decl: Option<&FnDecl>) -> GraphEntry {
     let mut index_of = HashMap::new();
     let mut nodes = Vec::new();
     for (key, node) in g.nodes.iter() {
@@ -1024,7 +1055,7 @@ fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames) -> GraphEntry {
         exit,
         nodes,
         edges,
-        interface: fn_interface(g),
+        interface: fn_interface(g, decl),
     }
 }
 
@@ -1042,7 +1073,12 @@ fn flatten_one(name: String, g: &NodeGraphIr, names: &FnNames) -> GraphEntry {
 /// - 什么都没有 → `Unset`。
 ///
 /// 类型用 [`type_label`] 格式化(和节点上的类型标注同一套)。
-fn fn_interface(g: &NodeGraphIr) -> FnInterface {
+///
+/// `decl` 用来补一条 `externals` 里已经查不到的信息:`lower` 之后,没人读的
+/// 值出口会被整根摘掉(`compact_value_exports`,`optimize.rs:617`),但它的
+/// **值**还在 `decl.proxies_out` 里。直接返回常数的函数就是这样 —— 不把这份
+/// 表读出来,常数就永远画不出来(用户报的那条)。
+fn fn_interface(g: &NodeGraphIr, decl: Option<&FnDecl>) -> FnInterface {
     let ports = |kind: rust2genshin::node::PinType| -> Vec<PortInfo> {
         g.exports
             .get(&kind)
@@ -1079,6 +1115,36 @@ fn fn_interface(g: &NodeGraphIr) -> FnInterface {
             },
         })
         .collect();
+    // `decl.proxies_out` 与**压缩之前**的出引脚表同序(`optimize.rs:621`),
+    // 而它的 `None` 项正好对应「被保留了」的那些出口 —— 压缩的判据就是
+    // 「这个出口被节点读」(`optimize.rs:635`)。所以:
+    //
+    // - `None`            → 出口还在,上面那一轮已经给出准确来源;
+    // - `Some(Right(v))`  → 出口没了,值是个常数;
+    // - `Some(Left(j))`   → 出口没了,值原样来自第 j 个**原始**参数。
+    //
+    // 直接返回常数的函数全靠这条:它的出口没人读,`compact_value_exports`
+    // 整根摘掉,`externals.values_in` 里一点痕迹都不剩。
+    //
+    // 下标还要**换算**:存活下来的出口会被压缩前移,`proxies_out` 的下标是
+    // 原始的,而调用方(conv)要的是**冻结外层**的序号 —— 两者同序(外层就是
+    // 加载时那份),但这一份 `ret_origins` 是压缩后的。中间那些"死了"的出口
+    // 一个都不在 `ret_origins` 里,所以这里只按 `proxies_out` 的原始序号走。
+    let mut orphan_rets = Vec::new();
+    if let Some(decl) = decl {
+        for (i, proxy) in decl.proxies_out.iter().enumerate() {
+            match proxy {
+                Some(Either::Left(param)) => {
+                    orphan_rets.push((i, OrphanRet::Param(*param)));
+                }
+                Some(Either::Right(Some(v))) => {
+                    orphan_rets.push((i, OrphanRet::Const(format!("{v:?}"))));
+                }
+                // 保留的出口 / 没有默认值 → 没有额外信息可补。
+                Some(Either::Right(None)) | None => {}
+            }
+        }
+    }
     FnInterface {
         params,
         rets,
@@ -1091,6 +1157,7 @@ fn fn_interface(g: &NodeGraphIr) -> FnInterface {
             .get(&rust2genshin::node::PinType::OutControl)
             .map_or(0, Vec::len),
         ret_origins,
+        orphan_rets,
     }
 }
 
@@ -1124,7 +1191,7 @@ mod tests {
         g.set_comment(n, Some("第一行
 第二行".into()));
 
-        let e = flatten_one("t".into(), &g, &FnNames::new());
+        let e = flatten_one("t".into(), &g, &FnNames::new(), None);
         assert_eq!(e.nodes[0].comment.as_deref(), Some("第一行
 第二行"));
     }
@@ -2102,6 +2169,71 @@ mod tests {
             vec![RetOrigin::Param("x".to_string())],
             "返回值透传的是参数 x"
         );
+    }
+
+    /// **直接返回常数的函数,`lower` 之后常数仍然在。**
+    ///
+    /// 用户报的 bug:`lower` 之后这个常数在「调用约定」里整个消失了。
+    ///
+    /// 根因:直接返回常数 = 值出口**没人读**,`compact_value_exports`
+    /// (`core/src/compile/optimize.rs:617`)把它整根摘掉 —— `externals.values_in`
+    /// 里一点痕迹都不剩,只剩 `decl.proxies_out` 里的那份值。以前没人读那张表,
+    /// 于是常数没了。
+    #[test]
+    fn a_constant_return_survives_lowering() {
+        // 造一个"直接返回常数 5"的函数:出口不接任何节点,只带默认值。
+        let mut doc = flatten(fixture::signature_target());
+        let i = doc.graphs.iter().position(|g| g.name == "sig").unwrap();
+        {
+            let mut opt = doc.take(i).expect("取出图");
+            // 先按「lower」的做法把 proxies_out 建好(它才是保命的那份记录)。
+            opt.decl.proxies_out = vec![Some(either::Either::Right(Some(
+                Box::new(5i32) as Box<dyn rust2genshin::value::NativeValue>
+            )))];
+            // 再把出口摘掉 —— 就是 lower 里 `compact_value_exports` 干的事。
+            opt.graph
+                .exports
+                .get_mut(&rust2genshin::node::PinType::OutValue)
+                .unwrap()
+                .clear();
+            opt.graph.externals.values_in.clear();
+            doc.put(i, opt);
+            doc.reflatten(i);
+        }
+
+        let iface = &doc.graphs[i].interface;
+        assert_eq!(iface.rets.len(), 0, "出口引脚已经没了(模拟 lower 之后)");
+        assert_eq!(
+            iface.orphan_rets,
+            vec![(0, OrphanRet::Const("5".to_string()))],
+            "值必须从 decl.proxies_out 里补回来"
+        );
+
+        // 「调用约定」必须把它画成常数 —— 这才是用户看得见的东西。
+        let outer = doc.frozen_interface(i).expect("冻结接口").clone();
+        let c = crate::conv::Convention::build(&outer, iface);
+        assert_eq!(
+            c.constants,
+            vec![crate::conv::Constant {
+                ret: 0,
+                text: "5".to_string(),
+                inner: None,
+            }],
+            "常数必须出现在约定里,不能因为内层没引脚就丢掉"
+        );
+        // 几何也要真的给它一个位置 —— 没位置等于没画。
+        let l = crate::conv::layout(&outer, iface, &c, (0.0, 0.0), 344.0);
+        assert_eq!(l.constants.len(), 1, "常数必须有坐标才会被渲染: {:?}", l.constants);
+        let (x, y, text) = &l.constants[0];
+        assert_eq!(text, "5");
+        assert!(*x > l.inner.x + l.inner.w, "常数写在内层节点右侧");
+        assert!(
+            *y >= l.inner.y && *y <= l.inner.y + l.inner.h,
+            "常数纵向落在内层节点的范围里"
+        );
+
+        // 顺带锁住:它**不该**同时被算成线(常数不是连线)。
+        assert!(!c.links.iter().any(|l| matches!(l, crate::conv::Link::Ret { .. })));
     }
 
     /// 返回值只带一个默认值 → 常数。

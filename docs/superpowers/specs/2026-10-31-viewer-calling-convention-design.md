@@ -50,6 +50,25 @@ viewer 能点「一键优化」「lower」改图,但改的是**这张图内部**
 外层里已经没有对应内层引脚的参数 / 返回值 = **已被优化消掉** —— 它们不再连线,
 但在 `Convention::dropped_params` / `dropped_rets` 里能查到。
 
+### 引脚没了、值还在
+
+`lower` 的 `compact_value_exports`(`core/src/compile/optimize.rs:617`)会摘掉
+**没人读**的值出口。**直接返回常数**的函数正是这样:出口没有节点读,值只留在
+`decl.proxies_out` 里(`optimize.rs:621`,那份表在压缩**之前**建,下标是原始
+出引脚序号)。于是内层连那个引脚都不剩。
+
+但这仍然是**调用方看到的那个返回值**,值也确实存在 —— 必须照样画。所以
+`FnInterface::orphan_rets: Vec<(原始引脚下标, OrphanRet)>` 把 `proxies_out`
+读出来:
+
+- `Some(Right(Some(v)))` → `OrphanRet::Const`,画在内层节点右侧;
+- `Some(Left(j))` → `OrphanRet::Param(j)`,照旧连到外层第 `j` 个入引脚
+  (记原始下标,因为参数表同样会被压缩,那时按名字已经找不到了);
+- `None` → 出口还在,那一轮已经给出准确来源。
+
+`conv::Constant::inner` 因此是 `Option<usize>`:有内层引脚就对齐那个引脚,没有
+(`None`)就从内层顶端往下排。用户报的「直接返回常数的你没有显示」就是漏了这条。
+
 ## 数据来源
 
 | 数据 | 来源 | 为什么 |
@@ -57,6 +76,7 @@ viewer 能点「一键优化」「lower」改图,但改的是**这张图内部**
 | 外层 | `Doc::frozen`(加载时存一份) | 加载之后没人保留原始 `exports` 表;优化会压缩引脚、撤销会换图 |
 | 内层 | `GraphEntry::interface`(每次 `reflatten` 重算) | 优化 / lower / 撤销都会 `reflatten`,这里跟着更新 |
 | 返回值来源 | `externals.values_in[i].link` | 出口的来源槽:接节点 = 函数体、接 `Export` = 参数、只有 default = 常数 |
+| 出口没了的值 | `FnDecl::proxies_out` | `compact_value_exports` 只把值留在这份表里,下标是原始出引脚序号 |
 
 ## 配对必须按名字
 
@@ -124,7 +144,9 @@ viewer 能点「一键优化」「lower」改图,但改的是**这张图内部**
 掉参、内层拖不出外层、外层装得下内层、**优化之后内层跟着变**。
 
 `doc.rs` 的单元测试锁住:接口抽得出来、主图没有冻结接口、`is_fn_graph` 的判据、
-**冻结的外层不随优化改变**、三种 `RetOrigin`。
+**冻结的外层不随优化改变**、三种 `RetOrigin`、**`lower` 之后直接返回的常数
+仍然在**(`a_constant_return_survives_lowering`:出口引脚清零 + `proxies_out`
+留值 → 常数出现在 `Convention::constants` 且**拿到坐标**)。
 
 ## 已知限制
 
@@ -133,3 +155,5 @@ viewer 能点「一键优化」「lower」改图,但改的是**这张图内部**
 - 内层的引脚位置是**自己算的**(按它自己的 pin 数均分),不是从画布那份几何
   搬过来的 —— 这个视图有自己的坐标系,不跟画布的平移缩放走。
 - 常数只显示 `Debug` 文本,不区分类型。
+- 出口已被摘掉的常数没有内层引脚可以对齐,只能从内层顶端依次往下排;多个
+  这种常数挤在同一侧时是**按顺序**放的,不对应任何内层引脚。

@@ -4803,6 +4803,7 @@ version = "0.1.0"
 dependencies = [
  "ar",
  "bincode",
+ "either",
  "gpui",
  "rust2genshin",
  "serde",
