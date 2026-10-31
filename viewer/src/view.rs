@@ -85,17 +85,21 @@ use crate::theme::{
 // `actions!` 展开出一个单元结构体 + `gpui::Action` 实现;键位在 `main.rs` 绑
 // (`AppContext::bind_keys`),处理也挂在 App 级(`AppContext::on_action`)。
 //
-// ⚠️ 这几个里只有 `Ctrl+W` 是**跟焦点**的(见 `CANVAS_CONTEXT`),其余全局生效。
+// ⚠️ 只有 `Alt+←/→`(前进 / 后退)是**全局**的;撤销 / 重做 / 关标签页都
+// 绑在 [`TAB_CONTEXT`] 上,只在标签页区域有焦点时生效。
 gpui::actions!([Undo, Redo, NavBack, NavForward, CloseTab]);
 
-/// 画布元素的 key context。`Ctrl+W` 只在这个 context 下生效 ——
-/// 也就是**画布持有焦点**时(焦点在左栏搜索框里时不关标签页)。
+/// 标签页区域的 key context —— **画布 + 右栏**(它们属于同一个"当前页签")。
 ///
-/// gpui 的机制:`.key_context("Canvas")` 挂在元素上,按键事件的 context 栈
-/// 由"根 → 焦点元素"那条路径上的元素依次贡献(`window.rs:4196` 的
-/// `context_stack`)。所以 `KeyBinding::new("ctrl-w", CloseTab, Some("Canvas"))`
-/// 只在这条路径上有 `Canvas` 时匹配。
-pub const CANVAS_CONTEXT: &str = "Canvas";
+/// `Ctrl+Z` / `Ctrl+Y` / `Ctrl+W` 都只在这个 context 下生效:
+/// - 焦点在标签页区域里 → 撤销 / 重做 / 关页签,针对的是**当前这张图**;
+/// - 焦点在左栏搜索框里 → 不生效,那儿 `Ctrl+Z` 该是文本编辑的撤销。
+///
+/// gpui 的机制:`.key_context(..)` 挂在元素上,按键事件的 context 栈由
+/// "根 → 焦点元素"那条路径上的元素依次贡献(`window.rs:4196` 的
+/// `context_stack`)。所以同一个 context 挂在几个元素上,它们**都**满足条件 ——
+/// 画布和右栏各挂一次,任一持有焦点即可。
+pub const TAB_CONTEXT: &str = "Tab";
 
 // ------------------------------------------------------------------ 配色
 //
@@ -617,6 +621,14 @@ pub struct Viewer {
     /// 上的 `on_modifiers_changed` 收不到 —— 表现就是"按住 Ctrl 不动鼠标时
     /// 节点不变色"。让画布始终持有焦点,根 `div` 就总在路径上。
     canvas_focus: gpui::FocusHandle,
+    /// 右栏的焦点。点右栏(按钮 / 调用约定面板)时落到这里。
+    ///
+    /// 为什么要单独一个句柄:右栏和画布**同属"当前页签"**,撤销 / 重做 /
+    /// 关标签页在两者任一处都该生效(`TAB_CONTEXT`)。但 `FocusHandle` 的
+    /// 一个句柄只能对应**一个** focusable 节点(`window.rs:4294` 的
+    /// `focusable_node_id`),两个元素共用会让其中一边永远拿不到焦点。
+    /// 所以各用各的句柄,靠**同一个 key context** 把两边算成同一区域。
+    rules_focus: gpui::FocusHandle,
     /// 当前选中的节点(展平后的**下标**,不是 `NodeRef`)。
     ///
     /// 跟着当前图走:切图时清空(`select` 里做)。下标只在**这一张图**里
@@ -687,6 +699,7 @@ impl Viewer {
             search: String::new(),
             search_focus: cx.focus_handle(),
             canvas_focus: cx.focus_handle(),
+            rules_focus: cx.focus_handle(),
             selected: Vec::new(),
             marquee: None,
             ctrl_held: false,
@@ -2399,8 +2412,8 @@ impl Viewer {
             // 画布自己持有焦点(见 `Viewer::canvas_focus` 的注释):
             // 这样"根 → 画布"总在键盘 / modifier 事件的分发路径上。
             .track_focus(&canvas_focus)
-            // `Ctrl+W`(关标签页)只在画布持焦点时生效 —— 见 `CANVAS_CONTEXT`。
-            .key_context(CANVAS_CONTEXT)
+            // 撤销 / 重做 / 关标签页只在这个 context 下生效(见 `TAB_CONTEXT`)。
+            .key_context(TAB_CONTEXT)
             .bg(canvas_bg())
             // 中键拖 = 平移画布,和 AutoCAD / Blender 的约定一致,用 move 光标。
             .cursor_move()
@@ -2796,6 +2809,18 @@ impl Viewer {
             .bg(panel_bg())
             .border_l_1()
             .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            // 右栏也是"当前页签"的一部分:点它就该把焦点从搜索框手里接过来,
+            // 这样 `Ctrl+Z` / `Ctrl+Y` / `Ctrl+W` 在右栏上照样生效
+            // (见 [`TAB_CONTEXT`])。
+            //
+            // ⚠️ **不调 `stop_propagation`** —— 右栏里的按钮(`on_click`)要靠
+            // 这个 mouse-down 的 bubble 阶段写 `pending_mouse_down`
+            // (`div.rs:2138`),停掉冒泡按钮就点不动了。
+            .track_focus(&self.rules_focus)
+            .key_context(TAB_CONTEXT)
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, _e, window, _cx| {
+                window.focus(&v.rules_focus);
+            }))
             .child(conv_panel)
             .child(rules_body);
         rules_panel

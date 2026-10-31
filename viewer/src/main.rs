@@ -113,18 +113,16 @@ fn run_window(initial: Option<PathBuf>) {
         // `MouseButton::Navigate(..)`,由 `view.rs` 的根 `div` 接 —— 键位只管
         // 键盘那一半。
         cx.bind_keys([
-            KeyBinding::new("ctrl-z", Undo, None),
-            KeyBinding::new("ctrl-y", Redo, None),
+            // 撤销 / 重做 / 关标签页:只在**标签页区域**(画布 + 右栏)有焦点时
+            // 生效。焦点在左栏搜索框里时不生效 —— 那儿 `Ctrl+Z` 该是文本编辑的
+            // 撤销,而不是撤销图画布上的操作。
+            KeyBinding::new("ctrl-z", Undo, Some(view::TAB_CONTEXT)),
+            KeyBinding::new("ctrl-y", Redo, Some(view::TAB_CONTEXT)),
+            KeyBinding::new("ctrl-w", CloseTab, Some(view::TAB_CONTEXT)),
+            // 后退 / 前进保持**全局**:它们说的是"看过的位置",和焦点无关,
+            // 焦点在左栏时按 Alt+← 也该回上一个位置。
             KeyBinding::new("alt-left", NavBack, None),
             KeyBinding::new("alt-right", NavForward, None),
-            // 只在**画布持焦点**时生效(第三个参数 = key context)。
-            // 焦点在左栏搜索框里时不关标签页 —— 那里 `Ctrl+W` 是"删一个词"
-            // 之类的文本编辑语义。
-            KeyBinding::new(
-                "ctrl-w",
-                CloseTab,
-                Some(view::CANVAS_CONTEXT),
-            ),
         ]);
         open_window(cx, initial);
     });
