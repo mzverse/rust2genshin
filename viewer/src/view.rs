@@ -1351,828 +1351,20 @@ impl Render for Viewer {
             self.reload_positions(self.current);
         }
 
-        // `placeholder()` 已经保证图存在且非空,这里还是用 `get`:
-        // 渲染期不做任何未检查的下标访问。
-        let Some(g) = self.doc.entry(self.current) else {
+        // 图存在性由 `placeholder()` 保证(它拦掉了"没有可显示的图"),
+        // 这里只做一次存在性检查,几何交给 `render_canvas`。
+        if self.doc.entry(self.current).is_none() {
             return div().size_full().into_any_element();
-        };
-
-        // ---- 拍成 owned 值 ----
-        // 下面所有闭包都要求 `'static`,带不走 `&self` 借用。
-        let origin = self.origin;
-        let scale = self.scale;
-        let canvas_origin = self.canvas_origin.clone();
-        let canvas_focus = self.canvas_focus.clone();
-        // Ctrl 悬停复合节点 → 换青色描边(提示"点一下能跳进定义")。
-        let ctrl_held = self.ctrl_held;
-        let hover_node = self.hover_node;
-        // 当前图的坐标。缺(理论上只有坐标还没跟上时)按空切片处理 ——
-        // `build_nodes` / `build_edges` 对每个节点都是 `get` + 默认值。
-        let pos = self
-            .positions
-            .get(self.current)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let nodes = build_nodes(g, pos, origin, scale, &self.selected);
-        let edges = build_edges(g, pos, origin, scale);
-        let boundaries = build_boundaries(g, pos, origin, scale);
-        let pins = build_pins(g, pos, origin, scale);
-        let defaults = build_defaults(g, pos, origin, scale);
-        let ctrl_labels = build_ctrl_labels(g, pos, origin, scale);
-
-        // ---- 边和图边界桩:canvas 画在最下面 ----
-        let record_origin = canvas_origin.clone();
-        let boundaries_for_canvas = boundaries.clone();
-        let edges_el = canvas(
-            move |bounds: Bounds<Pixels>, _window, _cx| {
-                // 画布容器和它的 `absolute().inset_0()` 子元素同源同大小,
-                // 所以 canvas 的 bounds.origin 就是容器在窗口坐标系里的左上角。
-                record_origin.set(from_px(bounds.origin));
-                (edges, boundaries_for_canvas)
-            },
-            move |bounds, (edges, boundaries), window, _cx| {
-                // 边是**容器局部**坐标,canvas 自己的 bounds 是窗口坐标,加个偏移。
-                let o = bounds.origin;
-                let at = |p: Point<f32>| add_px(o, p);
-                for e in &edges {
-                    let mut pb = PathBuilder::stroke(px(if e.ctrl { 2.0 } else { 1.0 }));
-                    if !e.ctrl {
-                        // 值流边虚线。线宽 + 线型 + 颜色三重区分,
-                        // 不靠单一手段 —— 缩放小到 1px 时线型是最后的可读线索。
-                        pb = pb.dash_array(&[px(4.0), px(3.0)]);
-                    }
-                    pb.move_to(at(e.from));
-                    pb.cubic_bezier_to(at(e.to), at(e.a), at(e.b));
-                    // `build()` 失败就跳过这条边 —— 不能因为一条画不出来的
-                    // 边把整个程序带崩,输入是用户拖进来的任意 `.ogia`。
-                    if let Ok(path) = pb.build() {
-                        window.paint_path(path, if e.ctrl { edge_ctrl() } else { edge_value() });
-                    }
-                }
-                // 图边界桩:从 exported pin 往图外引的一小段直线,样式与对应边一致。
-                // 末端的「Export N」标签框是上面那层 div(文字画不进 canvas)。
-                for b in &boundaries {
-                    let mut pb = PathBuilder::stroke(px(if b.ctrl { 2.0 } else { 1.0 }));
-                    if !b.ctrl {
-                        pb = pb.dash_array(&[px(4.0), px(3.0)]);
-                    }
-                    pb.move_to(at(b.from));
-                    pb.line_to(at(b.to));
-                    if let Ok(path) = pb.build() {
-                        window.paint_path(path, if b.ctrl { edge_ctrl() } else { edge_value() });
-                    }
-                }
-            },
-        )
-        .absolute()
-        .inset_0();
-
-        // ---- 节点:一层 `absolute()` 的 div 盖在边上 ----
-        // 用 div 而不是自绘,是为了白拿 GPUI 的命中测试 / hover / 事件系统。
-        let mut layer = div().absolute().inset_0();
-        for nv in nodes {
-            // 注释：贴在节点上方的小文本框,多行。布局已经为它留过位置
-            // (`node::layout` 的 `ch`),这里按同一个估算高度往上顶。
-            if let Some((text, _cw, ch)) = &nv.comment {
-                let font = (COMMENT_FONT_PX * nv.scale).max(5.0);
-                // 不给宽高:让它按内容自然撑开 —— 和 web 里一样由文本决定
-                // 尺寸。`ch` 只用来定位(布局为注释预留的高度,core 估算),
-                // 不用来限制渲染 —— 估窄了会把字折行、裁掉,"sum" 只剩
-                // "su" 就是这么来的。
-                let mut lines = div()
-                    .absolute()
-                    .left(px(nv.x))
-                    .top(px(nv.y - (COMMENT_GAP + *ch) * nv.scale))
-                    .flex()
-                    .flex_col()
-                    .px(px(COMMENT_PAD_X / 2.0 * nv.scale))
-                    .py(px(COMMENT_PAD_Y / 2.0 * nv.scale))
-                    .rounded(px(4.0 * nv.scale))
-                    .bg(comment_bg())
-                    .border_1()
-                    .border_color(comment_border())
-                    .text_color(text_dim())
-                    .text_size(px(font));
-                // 不裁剪 —— 和值默认值的做法一致:宽度是按字宽估的,估窄
-                // 一点点也不该把字截掉半截(宁可让它伸出框外)。
-                for line in text.split('\n') {
-                    // 每一行固定高度 —— 空行也要占位,不然多行注释会塌成一行。
-                    //
-                    // `whitespace_nowrap` 是必须的:默认会按容器宽折行,而
-                    // 宽度是按字宽**估**的 —— 差一两个像素时最后一个字母就被
-                    // 折到第二行,第二行又落在按估算行数给的框高外面(实测
-                    // "sum" 只剩 "su")。换行由注释里的 `\n` 决定,不该再折。
-                    lines = lines.child(
-                        div()
-                            .h(px(COMMENT_LINE_H * nv.scale))
-                            .whitespace_nowrap()
-                            .child(line.to_string()),
-                    );
-                }
-                layer = layer.child(lines);
-            }
-            // 盒子走**唯一的**渲染实现(`node_box_el`);选中 / 图边界只把
-            // 描边加粗一档。引脚由下面那段统一画(在盒子之后,才不会被盖住)。
-            let border = if nv.selected {
-                selected_border()
-            } else if nv.is_fn && ctrl_held && hover_node == Some(nv.index) {
-                // 按住 Ctrl 悬停复合节点:提示"点一下能跳进定义"。
-                link_hint_border()
-            } else {
-                nv.border
-            };
-            let d = if nv.boundary || nv.selected {
-                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border).border_2()
-            } else {
-                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border)
-            };
-            layer = layer.child(
-                // 节点拖拽用**左键**;画布平移才用中键。
-                d.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |v, e: &MouseDownEvent, window, cx| {
-                        // 左键按在节点上顺手关掉已经弹出的菜单。
-                        v.menu = None;
-                        // 焦点从左侧列表挪到画布 —— 之后打字不该再进搜索框。
-                        window.focus(&v.canvas_focus);
-                        // Ctrl+左键:跳到复合节点的定义。
-                        if e.modifiers.control && nv.is_fn {
-                            v.jump_to_definition(nv.index, cx);
-                            cx.stop_propagation();
-                            return;
-                        }
-                        // Shift+左键:加选 / 取消选这一个节点(不动选区其余部分)。
-                        if e.modifiers.shift {
-                            if let Some(p) = v.selected.iter().position(|x| *x == nv.index) {
-                                v.selected.remove(p);
-                            } else {
-                                v.selected.push(nv.index);
-                            }
-                            v.selected.sort_unstable();
-                            cx.notify();
-                            cx.stop_propagation();
-                            return;
-                        }
-                        v.begin_node_drag(nv.index, from_px(e.position));
-                        // 不拦住的话同一次左键按下会**又拖节点又平移画布**:
-                        // 事件继续冒泡到容器的 `on_mouse_down`。容器只监听中键,
-                        // 所以左键本来也不会走到那儿 —— 这个 stop_propagation 是双保险。
-                        cx.stop_propagation();
-                    }),
-                )
-                // 右键弹菜单(只有 Fn 节点有项,见 `open_menu`)。
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |v, e: &MouseDownEvent, _w, cx| {
-                        v.open_menu(nv.index, from_px(e.position), cx);
-                        // 不拦住的话同一次右键会冒到容器,把刚弹的菜单又关掉。
-                        cx.stop_propagation();
-                    }),
-                ),
-            );
         }
 
-        // ---- 引脚:每个连接点都画,有没有连线都画 ----
-        //
-        // 画在节点之后:引脚压在节点边缘上,一半在内一半在外。走**唯一的**
-        // 渲染实现(`pin_els`),位置来自 `build_pins`(即 core 的 `pin_row_y`)。
-        let flat: Vec<(f32, f32, bool)> = pins.iter().map(|p| (p.x, p.y, p.ctrl)).collect();
-        for el in pin_els(&flat, scale) {
-            layer = layer.child(el);
-        }
+        // ---- 中栏画布(实现在 `render_canvas`)----
+        let canvas_el = self.render_canvas(window, cx);
 
-        // ---- 值入 pin 的默认值:紧贴引脚左侧,文字右对齐 ----
-        // 框宽固定、右缘贴引脚 —— 文本长度不确定,只有固定右缘才能和引脚对齐;
-        // **不裁剪**(不给 overflow_hidden):长默认值宁可伸出去,也不能被截得只剩尾巴。
-        for dv in &defaults {
-            let (w, h) = (DEF_W * scale, (BASE_FONT_PX + 4.0) * scale);
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(dv.right - w))
-                    .top(px(dv.y - h / 2.0))
-                    .w(px(w))
-                    .h(px(h))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
-                    .text_color(text_dim())
-                    .child(dv.text.clone()),
-            );
-        }
+        // ---- 左栏:图列表(实现在 `render_toc`)----
+        let (toc, divider) = self.render_toc(window, cx);
 
-        // ---- 框选矩形:半透明蓝框,画在节点之上 ----
-        // 坐标是**容器局部**(和节点框同一套),直接用 left/top。
-        if let Some((a, b)) = self.marquee {
-            let (x0, x1) = if a.x <= b.x { (a.x, b.x) } else { (b.x, a.x) };
-            let (y0, y1) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(x0))
-                    .top(px(y0))
-                    .w(px(x1 - x0))
-                    .h(px(y1 - y0))
-                    .border_1()
-                    .border_color(marquee_border())
-                    .bg(marquee_bg()),
-            );
-        }
-
-        // ---- 控制出 pin 的分支名(Switch):节点盒内、紧贴引脚,文字右对齐 ----
-        // 画在节点 div **之后**:名字要压在自己的盒子上,不是浮在连线中间。
-        for cv in &ctrl_labels {
-            let (w, h) = (DEF_W * scale, (BASE_FONT_PX + 4.0) * scale);
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(cv.right - w))
-                    .top(px(cv.y - h / 2.0))
-                    .w(px(w))
-                    .h(px(h))
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
-                    .text_color(text_dim())
-                    .child(cv.text.clone()),
-            );
-        }
-
-        // ---- 图边界标签:桩末端的小框,写图外边界号 ----
-        // 用 div 画(和节点同一层、同一套缩放):canvas 画不了文字。
-        for b in &boundaries {
-            let (p, sz) = tag_box(b, scale);
-            let color = if b.ctrl { edge_ctrl() } else { edge_value() };
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(p.x))
-                    .top(px(p.y))
-                    .w(px(sz.width))
-                    .h(px(sz.height))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .bg(node_bg())
-                    .border_1()
-                    .border_color(color)
-                    .text_color(color)
-                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
-                    .overflow_hidden()
-                    .child(format!("Export {}", b.export)),
-            );
-        }
-
-        // ---- 悬停气泡(最上层,压在右键菜单之上)----
-        // 跟着光标走、偏右下 —— 偏右下是为了**不挡住**光标底下那个引脚/
-        // 连线本身。字号**不跟缩放**:这是 UI 提示,不是画布内容,跟着画布
-        // 缩到 6px 就没法读了。
-        if let Some(h) = &self.hover {
-            layer = layer.child(hover_bubble(h.text.clone(), h.at));
-        }
-
-        // ---- 节点右键菜单(最上层)----
-        if let Some(menu) = &self.menu {
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left(px(menu.x))
-                    .top(px(menu.y))
-                    .w(px(120.0))
-                    .p_1()
-                    .rounded_md()
-                    .bg(panel_bg())
-                    .border_1()
-                    .border_color(hsla(0.0, 0.0, 1.0, 0.25))
-                    .text_color(text_hi())
-                    // 按在菜单上的左键**绝不能**冒到容器:容器的「左键关菜单」
-                    // 会在按下的一瞬间就把菜单关掉(并标脏重绘),菜单项的
-                    // click —— 需要按下+抬起都落在自己身上 —— 就永远不成立。
-                    // 「点了 link 没反应」的根因就在这。
-                    .on_mouse_down(MouseButton::Left, cx.listener(|_v, _e, _w, cx| {
-                        cx.stop_propagation();
-                    }))
-                    .child(
-                        div()
-                            .id("menu-link")
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .overflow_hidden()
-                            .text_xs()
-                            .child("link")
-                            .on_click(cx.listener(|v, _e, _w, cx| v.link_menu_node(cx))),
-                    )
-                    .child(
-                        // 跳到定义:切到被调用函数的那张图。
-                        div()
-                            .id("menu-goto")
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .overflow_hidden()
-                            .text_xs()
-                            .child("跳转到定义")
-                            .on_click(cx.listener(|v, _e, _w, cx| {
-                                v.goto_menu_node(cx);
-                            })),
-                    ),
-            );
-        }
-
-        // ---- 容器:三个交互里"移动"和"缩放"挂在这里,"按下"也挂在这里 ----
-        let canvas_el = div()
-            .relative()
-            .flex_1()
-            .h_full()
-            .overflow_hidden()
-            // 画布自己持有焦点(见 `Viewer::canvas_focus` 的注释):
-            // 这样"根 → 画布"总在键盘 / modifier 事件的分发路径上。
-            .track_focus(&canvas_focus)
-            .bg(canvas_bg())
-            // 中键拖 = 平移画布,和 AutoCAD / Blender 的约定一致,用 move 光标。
-            .cursor_move()
-            // 拖空白处平移。按在节点上时节点的 handler 已经 stop_propagation,
-            // 所以冒到这里的事件一定是落在空白处的。
-            .on_mouse_down(
-                MouseButton::Middle,
-                cx.listener(|v, e: &MouseDownEvent, _w, _cx| {
-                    v.drag = Some(Drag::Pan {
-                        last: from_px(e.position),
-                    });
-                }),
-            )
-            // 左键落在空白处 = **框选**。节点上的按下已经 stop_propagation,
-            // 冒到这里的一定是空白处。
-            //
-            // 起手点记在**容器局部**坐标里(和节点框同一个坐标系),框选
-            // 判交时不用来回换算。
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|v, e: &MouseDownEvent, window, cx| {
-                    // 点画布空白 = 离开左栏,和 IDEA 里点编辑器一样把焦点交给
-                    // 编辑器(这里就是画布),打字不再进搜索框。
-                    window.focus(&v.canvas_focus);
-                    if v.menu.take().is_some() {
-                        cx.notify();
-                    }
-                    let o = v.canvas_origin.get();
-                    let at = from_px(e.position);
-                    let local = point(at.x - o.x, at.y - o.y);
-                    v.drag = Some(Drag::Marquee {
-                        start: local,
-                        cur: local,
-                    });
-                    v.marquee = Some((local, local));
-                    cx.notify();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|v, _e: &MouseDownEvent, _w, cx| {
-                    if v.menu.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
-            // 拖节点 / 拖空白,都在这里推进。**必须挂在容器上而不是节点上**:
-            // 拖动时指针早离开了起手那个节点,节点的 hitbox 已经不是 hovered。
-            // 详见模块头「拖拽路线」。
-            .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
-                // 悬停命中**先**算:它跟"是不是在拖"无关,静止时也要跟手。
-                v.update_hover(from_px(e.position), e.modifiers.control, cx);
-                // `take` 出来再放回去:下面有一支要把 `drag` 直接清成 None,
-                // 拿着 `&mut Drag` 就没法同时改 `v.drag`。
-                let Some(mut d) = v.drag.take() else {
-                    return;
-                };
-                // 左键=拖节点/框选,中键=平移,两种都在推进,别把一种挡掉。
-                if !matches!(
-                    e.pressed_button,
-                    Some(MouseButton::Left) | Some(MouseButton::Middle)
-                ) {
-                    // 指针移出窗口再回来时已经没有按键了(win32 的 wparam 不带
-                    // MK_LBUTTON),而 `mouse_up` 那时收不到 —— 靠这里兜底,
-                    // 不然画布会一直停在"拖拽中"直到下一次按下。
-                    return;
-                }
-                let now = from_px(e.position);
-                match &mut d {
-                    Drag::Nodes {
-                        indices,
-                        last,
-                        moved,
-                        ..
-                    } => {
-                        let delta = point(now.x - last.x, now.y - last.y);
-                        *last = now;
-                        if delta.x != 0.0 || delta.y != 0.0 {
-                            *moved = true;
-                        }
-                        // 位移要除以 `scale`,否则缩放越大节点跑得越快。
-                        // `scale` 被夹在 [MIN_SCALE, MAX_SCALE],恒 > 0。
-                        // 坐标按图存:改的是当前图里那几个节点。
-                        if let Some(ps) = v.positions.get_mut(v.current) {
-                            for i in indices.iter() {
-                                if let Some(p) = ps.get_mut(*i) {
-                                    p.x += delta.x / v.scale;
-                                    p.y += delta.y / v.scale;
-                                }
-                            }
-                        }
-                    }
-                    Drag::Pan { last } => {
-                        let delta = point(now.x - last.x, now.y - last.y);
-                        *last = now;
-                        // 平移量与坐标系原点无关,所以直接用窗口坐标的增量。
-                        v.origin.x += delta.x;
-                        v.origin.y += delta.y;
-                        // 回写进当前页签:切走再切回来要停在这里。
-                        v.sync_view();
-                    }
-                    Drag::Marquee { start, cur } => {
-                        // 框选的矩形用**容器局部**坐标 —— 和节点框同一坐标系。
-                        let o = v.canvas_origin.get();
-                        *cur = point(now.x - o.x, now.y - o.y);
-                        v.marquee = Some((*start, *cur));
-                    }
-                }
-                v.drag = Some(d);
-                // `pos` / `origin` 变了。边每帧都从 `pos` 重算,所以节点一动,
-                // 连线下一帧自动跟上 —— 这就是"连线实时跟随"。
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Middle,
-                cx.listener(|v, _e: &MouseUpEvent, _w, _cx| {
-                    // 拖拽状态不参与渲染,不用 notify。
-                    v.drag = None;
-                }),
-            )
-            // 左键松开:结束框选(把框里的节点选上),或者结束"拖了没动"的
-            // 单击(把选区收成这一个节点)。
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
-                    let Some(d) = v.drag.take() else {
-                        return;
-                    };
-                    match d {
-                        Drag::Marquee { start, cur } => {
-                            v.marquee_select(start, cur);
-                            v.marquee = None;
-                            cx.notify();
-                        }
-                        Drag::Nodes { primary, moved, .. } => {
-                            // 按下没动 = 单击,选区收成这一个节点。
-                            // (拖动过就不动选区 —— 那是"整组拖动"。)
-                            if !moved {
-                                v.select_only(primary);
-                                cx.notify();
-                            }
-                        }
-                        Drag::Pan { .. } => {}
-                    }
-                }),
-            )
-            // 拖到窗口边缘外再松开时上面那个收不到(capture 阶段,要求容器**没被**
-            // hover,正好补上另一半)。两个 handler 合起来覆盖"松手时指针在/
-            // 不在画布内"两种情况。
-            .on_mouse_up_out(
-                MouseButton::Middle,
-                cx.listener(|v, _e: &MouseUpEvent, _w, _cx| {
-                    v.drag = None;
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
-                    let Some(d) = v.drag.take() else {
-                        return;
-                    };
-                    if let Drag::Marquee { start, cur } = d {
-                        v.marquee_select(start, cur);
-                        v.marquee = None;
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_scroll_wheel(cx.listener(|v, e: &ScrollWheelEvent, _w, cx| {
-                // `ScrollDelta` 是元组变体,没有 `.y` 字段,得按变体解构。
-                let dy = match &e.delta {
-                    ScrollDelta::Pixels(p) => f32::from(p.y),
-                    ScrollDelta::Lines(p) => p.y,
-                };
-                if dy == 0.0 {
-                    return;
-                }
-                // Windows 的 `WM_MOUSEWHEEL` 里 `wparam` 的 HIWORD **向上滚为正**
-                // (`platform/windows/events.rs` 的 `handle_mouse_wheel_msg`),
-                // 所以"向上滚 = 放大"对应 `dy > 0`。
-                let f = if dy > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                let new_scale = (v.scale * f).clamp(MIN_SCALE, MAX_SCALE);
-                let ratio = new_scale / v.scale;
-                // 事件坐标是**窗口**坐标,`origin` 是**容器局部**坐标,两者差一个
-                // 画布原点。整个文件里只有缩放需要这个换算 —— 拖动和平移只用
-                // 增量,与原点无关。
-                let o = v.canvas_origin.get();
-                let cur = point(
-                    f32::from(e.position.x) - f32::from(o.x),
-                    f32::from(e.position.y) - f32::from(o.y),
-                );
-                // 保持光标下的图元不动:图元上的一点 `p` 满足
-                // `p * scale + origin == cur`,换 scale 后让等式仍成立即得下式。
-                v.origin.x = cur.x - (cur.x - v.origin.x) * ratio;
-                v.origin.y = cur.y - (cur.y - v.origin.y) * ratio;
-                v.scale = new_scale;
-                // 回写进当前页签:切走再切回来要停在同样的缩放。
-                v.sync_view();
-                cx.notify();
-            }))
-            .child(edges_el)
-            .child(layer);
-
-        // ---- 左栏:图列表 ----
-        // `overflow_y_scroll` 和 `on_click` 都挂在 `StatefulInteractiveElement` 上
-        // 而不是 `Styled` / `InteractiveElement` 上,所以每一层都得先 `.id(..)`
-        // 变成 stateful 元素。**`.id()` 必须在调用它们之前**,链式调用是从左往右
-        // 推导接收者的,写反了就还是普通 `Div`。
-        let toc_width = self.toc_width;
-        // 左栏(而不是搜索框本身)拿焦点 —— 和 IDEA 的项目栏一样:
-        // 焦点在左栏里时,键盘输入直接进搜索框。
-        let toc_focused = self.search_focus.is_focused(window);
-        let search_hint = self.search.is_empty();
-        let search_text = if search_hint {
-            "搜索节点名…".to_string()
-        } else {
-            self.search.clone()
-        };
-        let query = self.search.clone();
-        let toc = div()
-            .id("toc")
-            // 焦点在**整个左栏**上,不在搜索框上:点在列表项、空白处都能直接打字,
-            // 和 IDEA 的项目栏一样。键盘事件由此处的 `on_key_down` 收。
-            .track_focus(&self.search_focus)
-            .w(px(toc_width))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(panel_bg())
-            .border_r_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
-            .p_2()
-            .text_color(text_hi())
-            .on_mouse_down(MouseButton::Left, cx.listener(|v, _e, window, cx| {
-                window.focus(&v.search_focus);
-                cx.notify();
-            }))
-            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _w, cx| {
-                let ks = &e.keystroke;
-                // Ctrl+V 粘贴:搜索词只取一行,把粘贴进来的多行裁剪/压平。
-                if ks.modifiers.control && ks.key == "v" {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
-                        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        if !flat.is_empty() {
-                            v.search.push_str(&flat);
-                            cx.notify();
-                        }
-                    }
-                    return;
-                }
-                // 其余 Ctrl/Alt/Win 组合留给全局快捷键(Ctrl+Z 等)。
-                if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
-                    return;
-                }
-                match ks.key.as_str() {
-                    "backspace" => {
-                        v.search.pop();
-                    }
-                    "escape" => v.search.clear(),
-                    _ => match &ks.key_char {
-                        Some(ch) => v.search.push_str(ch),
-                        None => return,
-                    },
-                }
-                cx.notify();
-            }))
-            // 搜索框:自绘的最小输入框。gpui 0.2.2 没有现成的 TextInput,
-            // 焦点 + `on_key_down` 就能收字符(`KeyDownEvent::keystroke.key_char`)。
-            // 左栏有焦点时高亮,提示"现在打字的会进这里"。
-            .child(
-                div()
-                    .id("search")
-                    .mb_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_text()
-                    .overflow_hidden()
-                    .text_xs()
-                    .border_1()
-                    .border_color(if toc_focused {
-                        hsla(0.0, 0.0, 1.0, 0.35)
-                    } else {
-                        hsla(0.0, 0.0, 1.0, 0.0)
-                    })
-                    .bg(hsla(0.0, 0.0, 1.0, if toc_focused { 0.14 } else { 0.08 }))
-                    .when(search_hint, |d| d.text_color(text_dim()))
-                    .child(search_text),
-            )
-            .child(
-                div()
-                    .id("toc-list")
-                    .flex_1()
-                    // flex 子项默认 `min-height: auto`,不加这条列表会把左栏撑高,
-                    // 滚动条永远不出现。
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .children(
-                        self.doc
-                            .entries()
-                            .enumerate()
-                            .filter(|(_, entry)| Self::matches_search(&entry.name, &query))
-                            .map(|(i, entry)| {
-                                let active = i == self.current;
-                                div()
-                                    .id(("graph", i))
-                                    .px_2()
-                                    .py_1()
-                                    .mb_1()
-                                    .rounded_sm()
-                                    .cursor_pointer()
-                                    .overflow_hidden()
-                                    .text_xs()
-                                    .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
-                                    .child(format!("{} ({})", entry.name, entry.nodes.len()))
-                                    // 点左栏 = **在标签页里打开这张图**(不是偷偷换掉
-                                    // 当前页签的内容)。这张图已经开在某个页签里就切
-                                    // 过去,否则新开一页 —— 和编辑器 / 浏览器一致,
-                                    // 也不会因为反复点同一项堆出一排重复页签。
-                                    .on_click(cx.listener(move |v, _e, _w, cx| {
-                                        v.open_graph_in_tab(i, cx)
-                                    }))
-                            }),
-                    ),
-            );
-
-        // 分隔条:拖它改左栏宽度。宽度推进挂在**根节点**的 `on_mouse_move` 上,
-        // 因为指针一旦离开这 5px,分隔条自己的移动事件就没有 hitbox 了。
-        let divider = div()
-            .id("toc-divider")
-            .w(px(TOC_DIVIDER_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .bg(divider_bg())
-            .hover(|s| s.bg(divider_hover_bg()))
-            .cursor(gpui::CursorStyle::ResizeColumn)
-            .on_mouse_down(MouseButton::Left, cx.listener(|v, e: &MouseDownEvent, _w, cx| {
-                v.resizing_toc = true;
-                v.toc_drag_x = from_px(e.position).x;
-                // 别让这次按下冒到画布那边当成"点空白处"。
-                cx.stop_propagation();
-                cx.notify();
-            }));
-
-        // ---- 右栏:优化 ----
-        // 按钮 = `eliminate_solo` 调用链上的每条规则,点一次 = 该规则在当前图的
-        // 所有节点上各跑一次(**一遍**,不循环到不动点)。
-        // 标签省掉 `eliminate_` 前缀:栏名已经说了这是优化,240px 宽放不下全名。
-        //
-        // 改写类按钮(链接全部 / 一键优化 / 循环改写 / lower)在**图已经 lower
-        // 过**时全部禁用:判据是显式记下的 `lowered` 集合(不是从图上推,理由见
-        // 那个字段的注释)。撤销回退到"没 lower 过"的那一帧后自动恢复。
-        let lowered = self.is_lowered();
-        let editable = !lowered;
-        let rules_body = div()
-            .id("rules")
-            .w(px(RULES_WIDTH))
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .p_2()
-            .text_color(text_hi())
-            .child(
-                // 自动整理不受 lower 影响:lower 之后的图照样需要排布。
-                div()
-                    .id("arrange")
-                    .px_2()
-                    .py_1()
-                    .mb_3()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child("自动整理")
-                    .on_click(cx.listener(|v, _e, _w, cx| v.arrange(cx))),
-            )
-            .child(
-                // 链接全部:把所有 Fn 节点展开成内联的复合节点
-                // (右键「link」的批量版)。和「一键优化」分开 —— 展开会把
-                // 整张图换掉,混在规则消除里看不出是哪一步改坏的。
-                panel_button("link_all", "链接全部", editable)
-                    .when(editable, |d| {
-                        d.on_click(cx.listener(|v, _e, _w, cx| v.link_all(cx)))
-                    }),
-            )
-            .child(
-                // 一键优化:消除规则跑到不动点(不含展开 Fn)。
-                panel_button("optimize_all", "一键优化", editable)
-                    .when(editable, |d| {
-                        d.on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx)))
-                    }),
-            )
-            .child(
-                // 循环改写:控制流里的环 → native 的「有限循环」节点。
-                panel_button("lower_loops", "循环改写", editable)
-                    .when(editable, |d| {
-                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower_loops(cx)))
-                    }),
-            )
-            .child(
-                // lower:core 的**完整**降级流程(展开 Fn → 优化 → 改写环 →
-                // 展开列表 → 类型降到 wire 层)。跑完之后上面那三个按钮就没有
-                // 对象了,一起变灰 —— 见 `Viewer::is_lowered`。
-                panel_button("lower", "lower", editable)
-                    .mb_3()
-                    .when(editable, |d| {
-                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower(cx)))
-                    }),
-            )
-            .when(lowered, |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(text_dim())
-                        .mb_2()
-                        .child("已 lower —— 改写按钮已停用(Ctrl+Z 可退回)"),
-                )
-            })
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(text_dim())
-                    .mb_2()
-                    .child("优化 —— 点一次 = 该规则过一遍"),
-            )
-            .children(RULES.iter().enumerate().map(|(i, r)| {
-                div()
-                    .id(("rule", i))
-                    .px_2()
-                    .py_1()
-                    .mb_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .overflow_hidden()
-                    .text_xs()
-                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
-                    .child(r.name.strip_prefix("eliminate_").unwrap_or(r.name))
-                    .on_click(cx.listener(move |v, _e, _w, cx| v.apply_rule(i, cx)))
-            }))
-            // 撤销 / 重做**没有按钮**:只留 Ctrl+Z / Ctrl+Y,见 `main.rs` 的绑定。
-            .child(
-                div()
-                    .mt_2()
-                    .text_xs()
-                    .text_color(text_dim())
-                    .child("Ctrl+Z 撤销 · Ctrl+Y 重做"),
-            )
-            .when_some(self.status.clone(), |d, s| {
-                d.child(div().mt_2().text_xs().text_color(text_dim()).child(s))
-            });
-
-        // ---- 「调用约定」面板:只对**复合节点图**显示(主图没有对外接口)----
-        //
-        // 视图的形状是「内外两层」:
-        // - **外层** = 加载时冻结的那个调用节点(调用方看到的样子),永远不变;
-        // - **内层** = 当前状态,画成**一个普通节点**,可以在外层里拖动。
-        //
-        // 连线按用户定的三条规则走(逻辑在 `conv.rs`,那里能直接测)。
-        let conv_panel = self.render_conv_panel(cx);
-
-        // 右栏 = 「调用约定」+ 优化按钮,上下排在一栏里。
-        //
-        // 放一栏而不是两栏:窗口本来就窄(左栏 240 + 右栏 240),再开第三栏
-        // 画布就没剩多少了。调用约定是**当前图的补充说明**,和优化按钮是
-        // 同一层的东西。
-        let rules_panel = div()
-            .id("right")
-            .w(px(RULES_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(panel_bg())
-            .border_l_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
-            .child(conv_panel)
-            .child(rules_body);
+        // ---- 右栏:调用约定 + 优化按钮(实现在 `render_rules_panel`)----
+        let rules_panel = self.render_rules_panel(cx);
 
         // ---- 标签栏:一行横向的页签,每页带关闭按钮 ----
         // 点页签切过去(记一条后退历史,用户要求切标签页可后退);
@@ -2597,6 +1789,861 @@ impl Viewer {
             layout.outer.y + (layout.outer.h - layout.inner.h) / 2.0,
         );
         conv::clamp_inner(stored.unwrap_or(default), layout)
+    }
+
+
+    /// 中栏画布:边 + 节点 + 引脚 + 图边界 + 框选 + 右键菜单 + 平移/缩放。
+    ///
+    /// 抽出来是因为 `render()` 原来一个函数 1000 多行,画布这一块又占了
+    /// 一多半。这里只搬代码,不改行为 —— 绘制顺序(边 → 节点 → 引脚 →
+    /// 标签 → 气泡 → 菜单)和所有事件分工都逐字保留。
+    fn render_canvas(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        // `render()` 已经保证图存在(`placeholder()` 拦掉了没有图的情况),
+        // 这里还是用 `get`:渲染期不做任何未检查的下标访问。
+        let Some(g) = self.doc.entry(self.current) else {
+            return div().id("canvas-empty");
+        };
+
+        // ---- 拍成 owned 值 ----
+        // 下面所有闭包都要求 `'static`,带不走 `&self` 借用。
+        let origin = self.origin;
+        let scale = self.scale;
+        let canvas_origin = self.canvas_origin.clone();
+        let canvas_focus = self.canvas_focus.clone();
+        // Ctrl 悬停复合节点 → 换青色描边(提示"点一下能跳进定义")。
+        let ctrl_held = self.ctrl_held;
+        let hover_node = self.hover_node;
+        // 当前图的坐标。缺(理论上只有坐标还没跟上时)按空切片处理 ——
+        // `build_nodes` / `build_edges` 对每个节点都是 `get` + 默认值。
+        let pos = self
+            .positions
+            .get(self.current)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let nodes = build_nodes(g, pos, origin, scale, &self.selected);
+        let edges = build_edges(g, pos, origin, scale);
+        let boundaries = build_boundaries(g, pos, origin, scale);
+        let pins = build_pins(g, pos, origin, scale);
+        let defaults = build_defaults(g, pos, origin, scale);
+        let ctrl_labels = build_ctrl_labels(g, pos, origin, scale);
+
+        // ---- 边和图边界桩:canvas 画在最下面 ----
+        let record_origin = canvas_origin.clone();
+        let boundaries_for_canvas = boundaries.clone();
+        let edges_el = canvas(
+            move |bounds: Bounds<Pixels>, _window, _cx| {
+                // 画布容器和它的 `absolute().inset_0()` 子元素同源同大小,
+                // 所以 canvas 的 bounds.origin 就是容器在窗口坐标系里的左上角。
+                record_origin.set(from_px(bounds.origin));
+                (edges, boundaries_for_canvas)
+            },
+            move |bounds, (edges, boundaries), window, _cx| {
+                // 边是**容器局部**坐标,canvas 自己的 bounds 是窗口坐标,加个偏移。
+                let o = bounds.origin;
+                let at = |p: Point<f32>| add_px(o, p);
+                for e in &edges {
+                    let mut pb = PathBuilder::stroke(px(if e.ctrl { 2.0 } else { 1.0 }));
+                    if !e.ctrl {
+                        // 值流边虚线。线宽 + 线型 + 颜色三重区分,
+                        // 不靠单一手段 —— 缩放小到 1px 时线型是最后的可读线索。
+                        pb = pb.dash_array(&[px(4.0), px(3.0)]);
+                    }
+                    pb.move_to(at(e.from));
+                    pb.cubic_bezier_to(at(e.to), at(e.a), at(e.b));
+                    // `build()` 失败就跳过这条边 —— 不能因为一条画不出来的
+                    // 边把整个程序带崩,输入是用户拖进来的任意 `.ogia`。
+                    if let Ok(path) = pb.build() {
+                        window.paint_path(path, if e.ctrl { edge_ctrl() } else { edge_value() });
+                    }
+                }
+                // 图边界桩:从 exported pin 往图外引的一小段直线,样式与对应边一致。
+                // 末端的「Export N」标签框是上面那层 div(文字画不进 canvas)。
+                for b in &boundaries {
+                    let mut pb = PathBuilder::stroke(px(if b.ctrl { 2.0 } else { 1.0 }));
+                    if !b.ctrl {
+                        pb = pb.dash_array(&[px(4.0), px(3.0)]);
+                    }
+                    pb.move_to(at(b.from));
+                    pb.line_to(at(b.to));
+                    if let Ok(path) = pb.build() {
+                        window.paint_path(path, if b.ctrl { edge_ctrl() } else { edge_value() });
+                    }
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        // ---- 节点:一层 `absolute()` 的 div 盖在边上 ----
+        // 用 div 而不是自绘,是为了白拿 GPUI 的命中测试 / hover / 事件系统。
+        let mut layer = div().absolute().inset_0();
+        for nv in nodes {
+            // 注释：贴在节点上方的小文本框,多行。布局已经为它留过位置
+            // (`node::layout` 的 `ch`),这里按同一个估算高度往上顶。
+            if let Some((text, _cw, ch)) = &nv.comment {
+                let font = (COMMENT_FONT_PX * nv.scale).max(5.0);
+                // 不给宽高:让它按内容自然撑开 —— 和 web 里一样由文本决定
+                // 尺寸。`ch` 只用来定位(布局为注释预留的高度,core 估算),
+                // 不用来限制渲染 —— 估窄了会把字折行、裁掉,"sum" 只剩
+                // "su" 就是这么来的。
+                let mut lines = div()
+                    .absolute()
+                    .left(px(nv.x))
+                    .top(px(nv.y - (COMMENT_GAP + *ch) * nv.scale))
+                    .flex()
+                    .flex_col()
+                    .px(px(COMMENT_PAD_X / 2.0 * nv.scale))
+                    .py(px(COMMENT_PAD_Y / 2.0 * nv.scale))
+                    .rounded(px(4.0 * nv.scale))
+                    .bg(comment_bg())
+                    .border_1()
+                    .border_color(comment_border())
+                    .text_color(text_dim())
+                    .text_size(px(font));
+                // 不裁剪 —— 和值默认值的做法一致:宽度是按字宽估的,估窄
+                // 一点点也不该把字截掉半截(宁可让它伸出框外)。
+                for line in text.split('\n') {
+                    // 每一行固定高度 —— 空行也要占位,不然多行注释会塌成一行。
+                    //
+                    // `whitespace_nowrap` 是必须的:默认会按容器宽折行,而
+                    // 宽度是按字宽**估**的 —— 差一两个像素时最后一个字母就被
+                    // 折到第二行,第二行又落在按估算行数给的框高外面(实测
+                    // "sum" 只剩 "su")。换行由注释里的 `\n` 决定,不该再折。
+                    lines = lines.child(
+                        div()
+                            .h(px(COMMENT_LINE_H * nv.scale))
+                            .whitespace_nowrap()
+                            .child(line.to_string()),
+                    );
+                }
+                layer = layer.child(lines);
+            }
+            // 盒子走**唯一的**渲染实现(`node_box_el`);选中 / 图边界只把
+            // 描边加粗一档。引脚由下面那段统一画(在盒子之后,才不会被盖住)。
+            let border = if nv.selected {
+                selected_border()
+            } else if nv.is_fn && ctrl_held && hover_node == Some(nv.index) {
+                // 按住 Ctrl 悬停复合节点:提示"点一下能跳进定义"。
+                link_hint_border()
+            } else {
+                nv.border
+            };
+            let d = if nv.boundary || nv.selected {
+                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border).border_2()
+            } else {
+                node_box_el(nv.x, nv.y, nv.w, nv.h, nv.scale, &nv.label, border)
+            };
+            layer = layer.child(
+                // 节点拖拽用**左键**;画布平移才用中键。
+                d.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |v, e: &MouseDownEvent, window, cx| {
+                        // 左键按在节点上顺手关掉已经弹出的菜单。
+                        v.menu = None;
+                        // 焦点从左侧列表挪到画布 —— 之后打字不该再进搜索框。
+                        window.focus(&v.canvas_focus);
+                        // Ctrl+左键:跳到复合节点的定义。
+                        if e.modifiers.control && nv.is_fn {
+                            v.jump_to_definition(nv.index, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                        // Shift+左键:加选 / 取消选这一个节点(不动选区其余部分)。
+                        if e.modifiers.shift {
+                            if let Some(p) = v.selected.iter().position(|x| *x == nv.index) {
+                                v.selected.remove(p);
+                            } else {
+                                v.selected.push(nv.index);
+                            }
+                            v.selected.sort_unstable();
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
+                        v.begin_node_drag(nv.index, from_px(e.position));
+                        // 不拦住的话同一次左键按下会**又拖节点又平移画布**:
+                        // 事件继续冒泡到容器的 `on_mouse_down`。容器只监听中键,
+                        // 所以左键本来也不会走到那儿 —— 这个 stop_propagation 是双保险。
+                        cx.stop_propagation();
+                    }),
+                )
+                // 右键弹菜单(只有 Fn 节点有项,见 `open_menu`)。
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |v, e: &MouseDownEvent, _w, cx| {
+                        v.open_menu(nv.index, from_px(e.position), cx);
+                        // 不拦住的话同一次右键会冒到容器,把刚弹的菜单又关掉。
+                        cx.stop_propagation();
+                    }),
+                ),
+            );
+        }
+
+        // ---- 引脚:每个连接点都画,有没有连线都画 ----
+        //
+        // 画在节点之后:引脚压在节点边缘上,一半在内一半在外。走**唯一的**
+        // 渲染实现(`pin_els`),位置来自 `build_pins`(即 core 的 `pin_row_y`)。
+        let flat: Vec<(f32, f32, bool)> = pins.iter().map(|p| (p.x, p.y, p.ctrl)).collect();
+        for el in pin_els(&flat, scale) {
+            layer = layer.child(el);
+        }
+
+        // ---- 值入 pin 的默认值:紧贴引脚左侧,文字右对齐 ----
+        // 框宽固定、右缘贴引脚 —— 文本长度不确定,只有固定右缘才能和引脚对齐;
+        // **不裁剪**(不给 overflow_hidden):长默认值宁可伸出去,也不能被截得只剩尾巴。
+        for dv in &defaults {
+            let (w, h) = (DEF_W * scale, (BASE_FONT_PX + 4.0) * scale);
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(dv.right - w))
+                    .top(px(dv.y - h / 2.0))
+                    .w(px(w))
+                    .h(px(h))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
+                    .text_color(text_dim())
+                    .child(dv.text.clone()),
+            );
+        }
+
+        // ---- 框选矩形:半透明蓝框,画在节点之上 ----
+        // 坐标是**容器局部**(和节点框同一套),直接用 left/top。
+        if let Some((a, b)) = self.marquee {
+            let (x0, x1) = if a.x <= b.x { (a.x, b.x) } else { (b.x, a.x) };
+            let (y0, y1) = if a.y <= b.y { (a.y, b.y) } else { (b.y, a.y) };
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(x0))
+                    .top(px(y0))
+                    .w(px(x1 - x0))
+                    .h(px(y1 - y0))
+                    .border_1()
+                    .border_color(marquee_border())
+                    .bg(marquee_bg()),
+            );
+        }
+
+        // ---- 控制出 pin 的分支名(Switch):节点盒内、紧贴引脚,文字右对齐 ----
+        // 画在节点 div **之后**:名字要压在自己的盒子上,不是浮在连线中间。
+        for cv in &ctrl_labels {
+            let (w, h) = (DEF_W * scale, (BASE_FONT_PX + 4.0) * scale);
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(cv.right - w))
+                    .top(px(cv.y - h / 2.0))
+                    .w(px(w))
+                    .h(px(h))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
+                    .text_color(text_dim())
+                    .child(cv.text.clone()),
+            );
+        }
+
+        // ---- 图边界标签:桩末端的小框,写图外边界号 ----
+        // 用 div 画(和节点同一层、同一套缩放):canvas 画不了文字。
+        for b in &boundaries {
+            let (p, sz) = tag_box(b, scale);
+            let color = if b.ctrl { edge_ctrl() } else { edge_value() };
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(p.x))
+                    .top(px(p.y))
+                    .w(px(sz.width))
+                    .h(px(sz.height))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .bg(node_bg())
+                    .border_1()
+                    .border_color(color)
+                    .text_color(color)
+                    .text_size(px((BASE_FONT_PX * scale).max(6.0)))
+                    .overflow_hidden()
+                    .child(format!("Export {}", b.export)),
+            );
+        }
+
+        // ---- 悬停气泡(最上层,压在右键菜单之上)----
+        // 跟着光标走、偏右下 —— 偏右下是为了**不挡住**光标底下那个引脚/
+        // 连线本身。字号**不跟缩放**:这是 UI 提示,不是画布内容,跟着画布
+        // 缩到 6px 就没法读了。
+        if let Some(h) = &self.hover {
+            layer = layer.child(hover_bubble(h.text.clone(), h.at));
+        }
+
+        // ---- 节点右键菜单(最上层)----
+        if let Some(menu) = &self.menu {
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(menu.x))
+                    .top(px(menu.y))
+                    .w(px(120.0))
+                    .p_1()
+                    .rounded_md()
+                    .bg(panel_bg())
+                    .border_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.25))
+                    .text_color(text_hi())
+                    // 按在菜单上的左键**绝不能**冒到容器:容器的「左键关菜单」
+                    // 会在按下的一瞬间就把菜单关掉(并标脏重绘),菜单项的
+                    // click —— 需要按下+抬起都落在自己身上 —— 就永远不成立。
+                    // 「点了 link 没反应」的根因就在这。
+                    .on_mouse_down(MouseButton::Left, cx.listener(|_v, _e, _w, cx| {
+                        cx.stop_propagation();
+                    }))
+                    .child(
+                        div()
+                            .id("menu-link")
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .overflow_hidden()
+                            .text_xs()
+                            .child("link")
+                            .on_click(cx.listener(|v, _e, _w, cx| v.link_menu_node(cx))),
+                    )
+                    .child(
+                        // 跳到定义:切到被调用函数的那张图。
+                        div()
+                            .id("menu-goto")
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .overflow_hidden()
+                            .text_xs()
+                            .child("跳转到定义")
+                            .on_click(cx.listener(|v, _e, _w, cx| {
+                                v.goto_menu_node(cx);
+                            })),
+                    ),
+            );
+        }
+
+        // ---- 容器:三个交互里"移动"和"缩放"挂在这里,"按下"也挂在这里 ----
+        let canvas_el = div()
+            .id("canvas")
+            .relative()
+            .flex_1()
+            .h_full()
+            .overflow_hidden()
+            // 画布自己持有焦点(见 `Viewer::canvas_focus` 的注释):
+            // 这样"根 → 画布"总在键盘 / modifier 事件的分发路径上。
+            .track_focus(&canvas_focus)
+            .bg(canvas_bg())
+            // 中键拖 = 平移画布,和 AutoCAD / Blender 的约定一致,用 move 光标。
+            .cursor_move()
+            // 拖空白处平移。按在节点上时节点的 handler 已经 stop_propagation,
+            // 所以冒到这里的事件一定是落在空白处的。
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|v, e: &MouseDownEvent, _w, _cx| {
+                    v.drag = Some(Drag::Pan {
+                        last: from_px(e.position),
+                    });
+                }),
+            )
+            // 左键落在空白处 = **框选**。节点上的按下已经 stop_propagation,
+            // 冒到这里的一定是空白处。
+            //
+            // 起手点记在**容器局部**坐标里(和节点框同一个坐标系),框选
+            // 判交时不用来回换算。
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, e: &MouseDownEvent, window, cx| {
+                    // 点画布空白 = 离开左栏,和 IDEA 里点编辑器一样把焦点交给
+                    // 编辑器(这里就是画布),打字不再进搜索框。
+                    window.focus(&v.canvas_focus);
+                    if v.menu.take().is_some() {
+                        cx.notify();
+                    }
+                    let o = v.canvas_origin.get();
+                    let at = from_px(e.position);
+                    let local = point(at.x - o.x, at.y - o.y);
+                    v.drag = Some(Drag::Marquee {
+                        start: local,
+                        cur: local,
+                    });
+                    v.marquee = Some((local, local));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|v, _e: &MouseDownEvent, _w, cx| {
+                    if v.menu.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            // 拖节点 / 拖空白,都在这里推进。**必须挂在容器上而不是节点上**:
+            // 拖动时指针早离开了起手那个节点,节点的 hitbox 已经不是 hovered。
+            // 详见模块头「拖拽路线」。
+            .on_mouse_move(cx.listener(|v, e: &MouseMoveEvent, _w, cx| {
+                // 悬停命中**先**算:它跟"是不是在拖"无关,静止时也要跟手。
+                v.update_hover(from_px(e.position), e.modifiers.control, cx);
+                // `take` 出来再放回去:下面有一支要把 `drag` 直接清成 None,
+                // 拿着 `&mut Drag` 就没法同时改 `v.drag`。
+                let Some(mut d) = v.drag.take() else {
+                    return;
+                };
+                // 左键=拖节点/框选,中键=平移,两种都在推进,别把一种挡掉。
+                if !matches!(
+                    e.pressed_button,
+                    Some(MouseButton::Left) | Some(MouseButton::Middle)
+                ) {
+                    // 指针移出窗口再回来时已经没有按键了(win32 的 wparam 不带
+                    // MK_LBUTTON),而 `mouse_up` 那时收不到 —— 靠这里兜底,
+                    // 不然画布会一直停在"拖拽中"直到下一次按下。
+                    return;
+                }
+                let now = from_px(e.position);
+                match &mut d {
+                    Drag::Nodes {
+                        indices,
+                        last,
+                        moved,
+                        ..
+                    } => {
+                        let delta = point(now.x - last.x, now.y - last.y);
+                        *last = now;
+                        if delta.x != 0.0 || delta.y != 0.0 {
+                            *moved = true;
+                        }
+                        // 位移要除以 `scale`,否则缩放越大节点跑得越快。
+                        // `scale` 被夹在 [MIN_SCALE, MAX_SCALE],恒 > 0。
+                        // 坐标按图存:改的是当前图里那几个节点。
+                        if let Some(ps) = v.positions.get_mut(v.current) {
+                            for i in indices.iter() {
+                                if let Some(p) = ps.get_mut(*i) {
+                                    p.x += delta.x / v.scale;
+                                    p.y += delta.y / v.scale;
+                                }
+                            }
+                        }
+                    }
+                    Drag::Pan { last } => {
+                        let delta = point(now.x - last.x, now.y - last.y);
+                        *last = now;
+                        // 平移量与坐标系原点无关,所以直接用窗口坐标的增量。
+                        v.origin.x += delta.x;
+                        v.origin.y += delta.y;
+                        // 回写进当前页签:切走再切回来要停在这里。
+                        v.sync_view();
+                    }
+                    Drag::Marquee { start, cur } => {
+                        // 框选的矩形用**容器局部**坐标 —— 和节点框同一坐标系。
+                        let o = v.canvas_origin.get();
+                        *cur = point(now.x - o.x, now.y - o.y);
+                        v.marquee = Some((*start, *cur));
+                    }
+                }
+                v.drag = Some(d);
+                // `pos` / `origin` 变了。边每帧都从 `pos` 重算,所以节点一动,
+                // 连线下一帧自动跟上 —— 这就是"连线实时跟随"。
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|v, _e: &MouseUpEvent, _w, _cx| {
+                    // 拖拽状态不参与渲染,不用 notify。
+                    v.drag = None;
+                }),
+            )
+            // 左键松开:结束框选(把框里的节点选上),或者结束"拖了没动"的
+            // 单击(把选区收成这一个节点)。
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                    let Some(d) = v.drag.take() else {
+                        return;
+                    };
+                    match d {
+                        Drag::Marquee { start, cur } => {
+                            v.marquee_select(start, cur);
+                            v.marquee = None;
+                            cx.notify();
+                        }
+                        Drag::Nodes { primary, moved, .. } => {
+                            // 按下没动 = 单击,选区收成这一个节点。
+                            // (拖动过就不动选区 —— 那是"整组拖动"。)
+                            if !moved {
+                                v.select_only(primary);
+                                cx.notify();
+                            }
+                        }
+                        Drag::Pan { .. } => {}
+                    }
+                }),
+            )
+            // 拖到窗口边缘外再松开时上面那个收不到(capture 阶段,要求容器**没被**
+            // hover,正好补上另一半)。两个 handler 合起来覆盖"松手时指针在/
+            // 不在画布内"两种情况。
+            .on_mouse_up_out(
+                MouseButton::Middle,
+                cx.listener(|v, _e: &MouseUpEvent, _w, _cx| {
+                    v.drag = None;
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|v, _e: &MouseUpEvent, _w, cx| {
+                    let Some(d) = v.drag.take() else {
+                        return;
+                    };
+                    if let Drag::Marquee { start, cur } = d {
+                        v.marquee_select(start, cur);
+                        v.marquee = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_scroll_wheel(cx.listener(|v, e: &ScrollWheelEvent, _w, cx| {
+                // `ScrollDelta` 是元组变体,没有 `.y` 字段,得按变体解构。
+                let dy = match &e.delta {
+                    ScrollDelta::Pixels(p) => f32::from(p.y),
+                    ScrollDelta::Lines(p) => p.y,
+                };
+                if dy == 0.0 {
+                    return;
+                }
+                // Windows 的 `WM_MOUSEWHEEL` 里 `wparam` 的 HIWORD **向上滚为正**
+                // (`platform/windows/events.rs` 的 `handle_mouse_wheel_msg`),
+                // 所以"向上滚 = 放大"对应 `dy > 0`。
+                let f = if dy > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+                let new_scale = (v.scale * f).clamp(MIN_SCALE, MAX_SCALE);
+                let ratio = new_scale / v.scale;
+                // 事件坐标是**窗口**坐标,`origin` 是**容器局部**坐标,两者差一个
+                // 画布原点。整个文件里只有缩放需要这个换算 —— 拖动和平移只用
+                // 增量,与原点无关。
+                let o = v.canvas_origin.get();
+                let cur = point(
+                    f32::from(e.position.x) - f32::from(o.x),
+                    f32::from(e.position.y) - f32::from(o.y),
+                );
+                // 保持光标下的图元不动:图元上的一点 `p` 满足
+                // `p * scale + origin == cur`,换 scale 后让等式仍成立即得下式。
+                v.origin.x = cur.x - (cur.x - v.origin.x) * ratio;
+                v.origin.y = cur.y - (cur.y - v.origin.y) * ratio;
+                v.scale = new_scale;
+                // 回写进当前页签:切走再切回来要停在同样的缩放。
+                v.sync_view();
+                cx.notify();
+            }))
+            .child(edges_el)
+            .child(layer);
+        canvas_el
+    }
+
+    /// 右栏:「调用约定」面板 + 优化按钮。
+    ///
+    /// 抽出来是因为 `render()` 原来一个函数 1000 多行。这里只搬代码,
+    /// 不改行为 —— 按钮顺序、禁用规则、状态文案都逐字保留。
+    fn render_rules_panel(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        // ---- 右栏:优化 ----
+        // 按钮 = `eliminate_solo` 调用链上的每条规则,点一次 = 该规则在当前图的
+        // 所有节点上各跑一次(**一遍**,不循环到不动点)。
+        // 标签省掉 `eliminate_` 前缀:栏名已经说了这是优化,240px 宽放不下全名。
+        //
+        // 改写类按钮(链接全部 / 一键优化 / 循环改写 / lower)在**图已经 lower
+        // 过**时全部禁用:判据是显式记下的 `lowered` 集合(不是从图上推,理由见
+        // 那个字段的注释)。撤销回退到"没 lower 过"的那一帧后自动恢复。
+        let lowered = self.is_lowered();
+        let editable = !lowered;
+        let rules_body = div()
+            .id("rules")
+            .w(px(RULES_WIDTH))
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .p_2()
+            .text_color(text_hi())
+            .child(
+                // 自动整理不受 lower 影响:lower 之后的图照样需要排布。
+                div()
+                    .id("arrange")
+                    .px_2()
+                    .py_1()
+                    .mb_3()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .text_xs()
+                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
+                    .child("自动整理")
+                    .on_click(cx.listener(|v, _e, _w, cx| v.arrange(cx))),
+            )
+            .child(
+                // 链接全部:把所有 Fn 节点展开成内联的复合节点
+                // (右键「link」的批量版)。和「一键优化」分开 —— 展开会把
+                // 整张图换掉,混在规则消除里看不出是哪一步改坏的。
+                panel_button("link_all", "链接全部", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.link_all(cx)))
+                    }),
+            )
+            .child(
+                // 一键优化:消除规则跑到不动点(不含展开 Fn)。
+                panel_button("optimize_all", "一键优化", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.optimize_all(cx)))
+                    }),
+            )
+            .child(
+                // 循环改写:控制流里的环 → native 的「有限循环」节点。
+                panel_button("lower_loops", "循环改写", editable)
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower_loops(cx)))
+                    }),
+            )
+            .child(
+                // lower:core 的**完整**降级流程(展开 Fn → 优化 → 改写环 →
+                // 展开列表 → 类型降到 wire 层)。跑完之后上面那三个按钮就没有
+                // 对象了,一起变灰 —— 见 `Viewer::is_lowered`。
+                panel_button("lower", "lower", editable)
+                    .mb_3()
+                    .when(editable, |d| {
+                        d.on_click(cx.listener(|v, _e, _w, cx| v.lower(cx)))
+                    }),
+            )
+            .when(lowered, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(text_dim())
+                        .mb_2()
+                        .child("已 lower —— 改写按钮已停用(Ctrl+Z 可退回)"),
+                )
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(text_dim())
+                    .mb_2()
+                    .child("优化 —— 点一次 = 该规则过一遍"),
+            )
+            .children(RULES.iter().enumerate().map(|(i, r)| {
+                div()
+                    .id(("rule", i))
+                    .px_2()
+                    .py_1()
+                    .mb_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .overflow_hidden()
+                    .text_xs()
+                    .bg(hsla(0.0, 0.0, 1.0, 0.10))
+                    .child(r.name.strip_prefix("eliminate_").unwrap_or(r.name))
+                    .on_click(cx.listener(move |v, _e, _w, cx| v.apply_rule(i, cx)))
+            }))
+            // 撤销 / 重做**没有按钮**:只留 Ctrl+Z / Ctrl+Y,见 `main.rs` 的绑定。
+            .child(
+                div()
+                    .mt_2()
+                    .text_xs()
+                    .text_color(text_dim())
+                    .child("Ctrl+Z 撤销 · Ctrl+Y 重做"),
+            )
+            .when_some(self.status.clone(), |d, s| {
+                d.child(div().mt_2().text_xs().text_color(text_dim()).child(s))
+            });
+
+        // ---- 「调用约定」面板:只对**复合节点图**显示(主图没有对外接口)----
+        //
+        // 视图的形状是「内外两层」:
+        // - **外层** = 加载时冻结的那个调用节点(调用方看到的样子),永远不变;
+        // - **内层** = 当前状态,画成**一个普通节点**,可以在外层里拖动。
+        //
+        // 连线按用户定的三条规则走(逻辑在 `conv.rs`,那里能直接测)。
+        let conv_panel = self.render_conv_panel(cx);
+
+        // 右栏 = 「调用约定」+ 优化按钮,上下排在一栏里。
+        //
+        // 放一栏而不是两栏:窗口本来就窄(左栏 240 + 右栏 240),再开第三栏
+        // 画布就没剩多少了。调用约定是**当前图的补充说明**,和优化按钮是
+        // 同一层的东西。
+        let rules_panel = div()
+            .id("right")
+            .w(px(RULES_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .bg(panel_bg())
+            .border_l_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .child(conv_panel)
+            .child(rules_body);
+        rules_panel
+    }
+    /// 左栏:搜索框 + 图列表 + 右侧分隔条。
+    ///
+    /// 抽出来是因为 `render()` 一个函数原来有 1000 多行 —— 左栏、右栏、
+    /// 标签栏、画布全挤在里面,改一处要在一大坨里找。这里只搬代码,不改行为。
+    ///
+    /// 返回 (左栏, 分隔条) 两个元素 —— 分隔条要和左栏并排,由调用方拼。
+    ///
+    /// 两者都是 `Stateful<Div>`:它们各挂了 `id` / `track_focus` / 事件
+    /// (`.id()` 之后类型就从 `Div` 变成 `Stateful<Div>` 了)。
+    fn render_toc(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (gpui::Stateful<gpui::Div>, gpui::Stateful<gpui::Div>) {
+        // ---- 左栏:图列表 ----
+        // `overflow_y_scroll` 和 `on_click` 都挂在 `StatefulInteractiveElement` 上
+        // 而不是 `Styled` / `InteractiveElement` 上,所以每一层都得先 `.id(..)`
+        // 变成 stateful 元素。**`.id()` 必须在调用它们之前**,链式调用是从左往右
+        // 推导接收者的,写反了就还是普通 `Div`。
+        let toc_width = self.toc_width;
+        // 左栏(而不是搜索框本身)拿焦点 —— 和 IDEA 的项目栏一样:
+        // 焦点在左栏里时,键盘输入直接进搜索框。
+        let toc_focused = self.search_focus.is_focused(window);
+        let search_hint = self.search.is_empty();
+        let search_text = if search_hint {
+            "搜索节点名…".to_string()
+        } else {
+            self.search.clone()
+        };
+        let query = self.search.clone();
+        let toc = div()
+            .id("toc")
+            // 焦点在**整个左栏**上,不在搜索框上:点在列表项、空白处都能直接打字,
+            // 和 IDEA 的项目栏一样。键盘事件由此处的 `on_key_down` 收。
+            .track_focus(&self.search_focus)
+            .w(px(toc_width))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .bg(panel_bg())
+            .border_r_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .p_2()
+            .text_color(text_hi())
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, _e, window, cx| {
+                window.focus(&v.search_focus);
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _w, cx| {
+                let ks = &e.keystroke;
+                // Ctrl+V 粘贴:搜索词只取一行,把粘贴进来的多行裁剪/压平。
+                if ks.modifiers.control && ks.key == "v" {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
+                        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if !flat.is_empty() {
+                            v.search.push_str(&flat);
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                // 其余 Ctrl/Alt/Win 组合留给全局快捷键(Ctrl+Z 等)。
+                if ks.modifiers.control || ks.modifiers.alt || ks.modifiers.platform {
+                    return;
+                }
+                match ks.key.as_str() {
+                    "backspace" => {
+                        v.search.pop();
+                    }
+                    "escape" => v.search.clear(),
+                    _ => match &ks.key_char {
+                        Some(ch) => v.search.push_str(ch),
+                        None => return,
+                    },
+                }
+                cx.notify();
+            }))
+            // 搜索框:自绘的最小输入框。gpui 0.2.2 没有现成的 TextInput,
+            // 焦点 + `on_key_down` 就能收字符(`KeyDownEvent::keystroke.key_char`)。
+            // 左栏有焦点时高亮,提示"现在打字的会进这里"。
+            .child(
+                div()
+                    .id("search")
+                    .mb_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_text()
+                    .overflow_hidden()
+                    .text_xs()
+                    .border_1()
+                    .border_color(if toc_focused {
+                        hsla(0.0, 0.0, 1.0, 0.35)
+                    } else {
+                        hsla(0.0, 0.0, 1.0, 0.0)
+                    })
+                    .bg(hsla(0.0, 0.0, 1.0, if toc_focused { 0.14 } else { 0.08 }))
+                    .when(search_hint, |d| d.text_color(text_dim()))
+                    .child(search_text),
+            )
+            .child(
+                div()
+                    .id("toc-list")
+                    .flex_1()
+                    // flex 子项默认 `min-height: auto`,不加这条列表会把左栏撑高,
+                    // 滚动条永远不出现。
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .children(
+                        self.doc
+                            .entries()
+                            .enumerate()
+                            .filter(|(_, entry)| Self::matches_search(&entry.name, &query))
+                            .map(|(i, entry)| {
+                                let active = i == self.current;
+                                div()
+                                    .id(("graph", i))
+                                    .px_2()
+                                    .py_1()
+                                    .mb_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .overflow_hidden()
+                                    .text_xs()
+                                    .when(active, |s| s.bg(hsla(0.0, 0.0, 1.0, 0.20)))
+                                    .child(format!("{} ({})", entry.name, entry.nodes.len()))
+                                    // 点左栏 = **在标签页里打开这张图**(不是偷偷换掉
+                                    // 当前页签的内容)。这张图已经开在某个页签里就切
+                                    // 过去,否则新开一页 —— 和编辑器 / 浏览器一致,
+                                    // 也不会因为反复点同一项堆出一排重复页签。
+                                    .on_click(cx.listener(move |v, _e, _w, cx| {
+                                        v.open_graph_in_tab(i, cx)
+                                    }))
+                            }),
+                    ),
+            );
+
+        // 分隔条:拖它改左栏宽度。宽度推进挂在**根节点**的 `on_mouse_move` 上,
+        // 因为指针一旦离开这 5px,分隔条自己的移动事件就没有 hitbox 了。
+        let divider = div()
+            .id("toc-divider")
+            .w(px(TOC_DIVIDER_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .bg(divider_bg())
+            .hover(|s| s.bg(divider_hover_bg()))
+            .cursor(gpui::CursorStyle::ResizeColumn)
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, e: &MouseDownEvent, _w, cx| {
+                v.resizing_toc = true;
+                v.toc_drag_x = from_px(e.position).x;
+                // 别让这次按下冒到画布那边当成"点空白处"。
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        (toc, divider)
     }
 
     /// 渲染「调用约定」面板。
