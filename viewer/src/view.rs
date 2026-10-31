@@ -1523,19 +1523,18 @@ impl Render for Viewer {
             self.reload_positions(self.current);
         }
 
-        // 图存在性由 `placeholder()` 保证(它拦掉了"没有可显示的图"),
-        // 这里只做一次存在性检查,几何交给 `render_canvas`。
-        if self.doc.entry(self.current).is_none() {
-            return div().size_full().into_any_element();
-        }
-
         // ---- 中栏画布:有图才画,没图就显示占位 ----
         //
-        // ⚠️ **占位只占画布那一格**,不是整窗。以前这里在 `render` 开头
-        // 直接 `return` 一整块占位,于是"关掉最后一个标签页"时连左栏、右栏
-        // 一起消失(用户报过)—— 左栏是文件列表,和"画布有没有内容"无关,
-        // 任何时候都该在。
-        let canvas_el = if let Some(msg) = self.placeholder() {
+        // ⚠️ **这里不能提前 return**。以前有两处早退(函数开头一处、这里一处),
+        // 只要 `doc` 为空或没打开标签页就把整窗交出去,于是**左栏、右栏一起
+        // 消失**(用户报过两次:关掉最后一页时、以及不带参数启动时窗口全透明)。
+        //
+        // 左栏是文件列表、右栏是优化按钮 —— 它们和"画布有没有内容"无关,
+        // 任何时候都该在。所以占位只占画布那一格。
+        //
+        // ⚠️ 两个分支必须是**同一个类型**(`Stateful<Div>`),否则 `if/else`
+        // 会退化成 `AnyElement`,布局属性(`flex_1` 之类)在转换里丢失。
+        let canvas_el: gpui::Stateful<gpui::Div> = if let Some(msg) = self.placeholder() {
             div()
                 .id("canvas-placeholder")
                 .flex_1()
