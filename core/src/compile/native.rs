@@ -1,15 +1,95 @@
 use panic_context::panic_context;
 use super::{Compiler, Result};
 use crate::compile::func::node_ir_native;
-use crate::compile::get_expn_macro_attr;
-use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_get_graph_variable, node_ir_list_get, node_ir_list_get_length, node_ir_list_insert, node_ir_list_set, node_ir_set_graph_variable};
+use crate::compile::ir::{IrKind, IrNodeId, NodeKindIr, node_ir_list_get, node_ir_list_get_length, node_ir_list_insert, node_ir_list_set};
 use crate::node::NodeKind;
 use crate::node::arithmetic::{node_cast, node_enum_equal, node_power};
 use crate::value::{NativeKind, NativeValue};
+use rustc_attr_ir::{AttrArgs, Attribute};
 use rustc_middle::query::QueryKey;
-use rustc_middle::ty::{FnSig, GenericArgsRef, Instance, ScalarInt, Ty, TyKind};
+use rustc_middle::ty::{FnSig, GenericArgsRef, Instance, ScalarInt, Ty, TyCtxt, TyKind};
+use rustc_span::def_id::DefId;
 use rustc_span::Span;
-use syn::{LitInt, LitStr, Meta, MetaList};
+
+/// tool attribute 的名字 —— 与 `lib-internal` 的 `TOOL` 一致。
+const TOOL: &str = "rust2genshin";
+
+/// 一条 tool attribute 的内容。
+///
+/// `register_tool` 注册的属性编译器不消耗,原样留在 HIR 里,后端用
+/// `tcx.get_all_attrs()` 直接读 —— 不用回源码里抠 span。
+pub enum ToolMark {
+    /// `#[rust2genshin::call("名字")]`
+    Call(String),
+    /// `#[rust2genshin::calc(N)]`
+    Calc(i64),
+    /// `#[rust2genshin::exec(N)]`
+    Exec(i64),
+    /// `#[rust2genshin::ty("名字")]`
+    Ty(String),
+    /// `#[rust2genshin::enumty(N)]` —— 叫 `enumty` 而不是 `enum`,`enum` 是关键字
+    Enum(i64),
+    /// `#[rust2genshin::event(N)]`
+    Event(i64),
+    /// `#[rust2genshin::listener]` —— 无参数
+    Listener,
+}
+
+/// 在一个定义上找 tool attribute。
+///
+/// 找到第一个 `rust2genshin::*` 的就返回 —— 一个定义上只该有一条。
+///
+/// 解析失败时返回 `(错误说明, 出错的 span)`,由调用方用 `span_err` 报出来 ——
+/// 这里拿不到 `Compiler`(只是个自由函数),没法直接发诊断。
+fn tool_mark(tcx: TyCtxt<'_>, def: DefId) -> Option<std::result::Result<ToolMark, (String, Span)>> {
+    for attr in tcx.get_all_attrs(def).iter() {
+        // tool attribute 是 `Unparsed` 的 —— 编译器不认得它,原样留着。
+        let Attribute::Unparsed(item) = attr else {
+            continue;
+        };
+        let segments = item.path.segments.as_ref();
+        if segments.first().map(|x| x.as_str()) != Some(TOOL) {
+            continue;
+        }
+        let span = item.span;
+        let Some(kind) = segments.last().map(|x| x.as_str()) else {
+            return Some(Err(("tool attribute 缺少名字".to_string(), span)));
+        };
+        // `listener` 没有参数。
+        if kind == "listener" {
+            return Some(Ok(ToolMark::Listener));
+        }
+        // 参数是 `(...)` 括起来的 token 流。参数总是**一个字面量**
+        // (字符串或整数),用 rustc 自己的 AST 解析。
+        let AttrArgs::Delimited(args) = &item.args else {
+            return Some(Err((format!("`{kind}` 需要括号里的字面量参数"), span)));
+        };
+        let Some(lit) = rustc_ast::ast::MetaItemKind::list_from_tokens(args.tokens.clone()).and_then(|list| {
+            list.into_iter().next().and_then(|x| match x {
+                rustc_ast::ast::MetaItemInner::Lit(lit) => Some(lit),
+                rustc_ast::ast::MetaItemInner::MetaItem(_) => None,
+            })
+        }) else {
+            return Some(Err((format!("`{kind}` 的参数应当是一个字面量"), span)));
+        };
+        // `symbol` 是字面量的**原文** —— 字符串不带引号,整数是十进制。
+        let text = lit.symbol.to_string();
+        let num = || match text.parse::<i64>() {
+            Ok(id) => Ok(id),
+            Err(_) => Err((format!("`{kind}` 的参数应当是整数,实际是 {text}"), span)),
+        };
+        return Some(match kind {
+            "call" => Ok(ToolMark::Call(text)),
+            "ty" => Ok(ToolMark::Ty(text)),
+            "calc" => num().map(ToolMark::Calc),
+            "exec" => num().map(ToolMark::Exec),
+            "enumty" => num().map(ToolMark::Enum),
+            "event" => num().map(ToolMark::Event),
+            _ => Err((format!("未知的 tool attribute `{kind}`"), span)),
+        });
+    }
+    None
+}
 
 /// 类型定义上的原生标记。
 enum NativeMark {
@@ -39,6 +119,11 @@ pub fn native_const(kind: &NativeKind, v: ScalarInt) -> Option<Box<dyn NativeVal
 }
 
 impl<'tcx> Compiler<'tcx> {
+    /// 一个定义上的 tool attribute。
+    pub fn tool_mark(&self, def: DefId) -> Option<std::result::Result<ToolMark, (String, Span)>> {
+        tool_mark(self.tcx, def)
+    }
+
     /// 类型定义上的原生标记(不看泛型实参)。
     fn native_mark(&self, ty: Ty<'tcx>) -> Option<Result<NativeMark>> {
         let def = match ty.kind() {
@@ -46,30 +131,20 @@ impl<'tcx> Compiler<'tcx> {
             TyKind::Adt(d, _a) =>
                 d.did(),
             _ => return None,
-        }.default_span(self.tcx);
-        let expn = def.ctxt().outer_expn().expn_data().call_site;
-        match get_expn_macro_attr(self.tcx, def)?.meta {
-            Meta::List(MetaList { path, tokens, .. }) => {
-                match path.get_ident()?.to_string().as_str() {
-                    "native" => {
-                        let id = match syn::parse2::<LitStr>(tokens) {
-                            Ok(id) => id.value(),
-                            Err(e) => return Some(self.helper().span_err(expn, e.to_string())),
-                        };
-                        Some(Ok(NativeMark::Named(id)))
-                    },
-                    "native_enum" => {
-                        let id = match syn::parse2::<LitInt>(tokens).and_then(|x| x.base10_parse::<i32>()) {
-                            Ok(id) => id,
-                            Err(e) => return Some(self.helper().span_err(expn, e.to_string())),
-                        };
-                        Some(Ok(NativeMark::Enum(id)))
-                    },
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
+        };
+        let expn = def.default_span(self.tcx);
+        let mark = match tool_mark(self.tcx, def)? {
+            Ok(mark) => mark,
+            Err((msg, span)) => return Some(self.helper().span_err(span, msg)),
+        };
+        Some(match mark {
+            ToolMark::Ty(id) => Ok(NativeMark::Named(id)),
+            ToolMark::Enum(id) => Ok(NativeMark::Enum(id as i32)),
+            // 别的 tool attribute(`event` / `listener` …)不代表「这是原生类型」,
+            // 它们挂在普通结构体 / 函数上 —— 这里返回「不是原生类型」,
+            // 让 `compile_ty` 走普通 ADT 那条路。
+            _ => return None,
+        })
     }
 
     /// 类型上有没有原生标记(`#[native]` / `#[native_enum]`)。
@@ -167,16 +242,13 @@ impl<'tcx> Compiler<'tcx> {
     }
 
     /// 原生调用的名字(`#[native("名字")]` 里的那个名字)。
+    ///
+    /// 只认 `call` 档 —— `calc` / `exec` 走的是节点 ID 那条路。
     pub fn native_call_id(&self, func: Instance<'tcx>) -> Option<String> {
-        let def = func.default_span(self.tcx);
-        let attr = get_expn_macro_attr(self.tcx, def)?;
-        let Meta::List(MetaList { path, tokens, .. }) = &attr.meta else {
-            return None;
-        };
-        if path.get_ident()?.to_string() != "native" {
-            return None;
+        match tool_mark(self.tcx, func.def_id())? {
+            Ok(ToolMark::Call(id)) => Some(id),
+            _ => None,
         }
-        Some(syn::parse2::<LitStr>(tokens.clone()).ok()?.value())
     }
 
     pub fn compile_native_call(&mut self, span: Span, func: Instance<'tcx>, sig: FnSig<'tcx>, params: &[IrKind]) -> Result<Option<NodeKindIr>> {
@@ -187,17 +259,17 @@ impl<'tcx> Compiler<'tcx> {
         } else {
             vec![ret]
         }.iter().map(|x| self.compile_ty(span, *x)).collect::<Result<Vec<_>>>()?;
-        let def = func.default_span(self.tcx);
-        let expn = def.ctxt().outer_expn().expn_data().call_site;
-        Ok(match if let Some(x) = get_expn_macro_attr(self.tcx, def) { x } else { return Ok(None) }.meta {
-            Meta::List(MetaList { path, tokens, .. }) => {
-                match if let Some(x) = path.get_ident() { x } else { return Ok(None) }.to_string().as_str() {
-                    "native" => {
-                        let id = match syn::parse2::<LitStr>(tokens) {
-                            Ok(id) => id.value(),
-                            Err(e) => return self.helper().span_err(expn, e.to_string()),
-                        };
-                        match id.as_str() {
+        let expn = func.def_id().default_span(self.tcx);
+        let mark = match tool_mark(self.tcx, func.def_id()) {
+            Some(mark) => match mark {
+                Ok(mark) => mark,
+                Err((msg, span)) => return self.helper().span_err(span, msg),
+            },
+            None => return Ok(None),
+        };
+        Ok(match mark {
+            ToolMark::Call(id) => {
+                match id.as_str() {
                             // 这几个要求参数是原生类型;拿到视图说明用法不对,
                             // 交给普通函数那条路(它会报更清楚的错)。
                             "power" => match params[0].as_native() {
@@ -274,12 +346,8 @@ impl<'tcx> Compiler<'tcx> {
                             _ => return self.helper().span_err(expn, format!("Unknown intrinsic {}", id)),
                         }.into()
                     },
-                    ident if ident == "native_calc" || ident == "native_exec" => {
-                        let control = ident == "native_exec";
-                        let id = match syn::parse2::<LitInt>(tokens).and_then(|x| x.base10_parse::<i64>()) {
-                            Ok(id) => id,
-                            Err(e) => return self.helper().span_err(expn, e.to_string()),
-                        };
+            ToolMark::Calc(id) | ToolMark::Exec(id) => {
+                        let control = matches!(mark, ToolMark::Exec(_));
                         // 引脚的标称类型必须是原生类型:有视图 / 结构体混进来
                         // 就说明这个原生调用不该在这里合成。
                         let (Some(params), Some(rets)) = (
@@ -296,9 +364,6 @@ impl<'tcx> Compiler<'tcx> {
                             rets,
                         )).into()
                     },
-                    _ => None
-                }
-            }
             _ => None,
         })
     }

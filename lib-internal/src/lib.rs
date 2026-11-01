@@ -8,8 +8,36 @@ use syn::visit_mut::VisitMut;
 use syn::{parse_macro_input, visit_mut, Block, Expr, ExprAwait, ExprForLoop, ExprLoop, ExprWhile, ExprYield, ForeignItemFn, Item, ItemEnum, ItemFn, ReturnType, Type};
 use zyn::zyn;
 
-#[proc_macro_attribute]
-pub fn native(_args: TokenStream, input: TokenStream) -> TokenStream {
+/// tool attribute 的名字。
+///
+/// 用 `register_tool` 注册的属性编译器**不会消耗**它 —— 它原样留在 HIR 里,
+/// 后端直接用 `tcx.get_all_attrs()` 读,不用回源码里抠 span。
+///
+/// 宏同时也会留下 `#[native(...)]` 这条属性宏 —— 它负责把函数体换成
+/// `unreachable!()`(无体声明在 `impl` 块里不合法),而**信息**由 tool
+/// attribute 携带。
+///
+/// (proc-macro crate 不能导出 `const`,所以这个常量只在本 crate 内用。)
+const TOOL: &str = "rust2genshin";
+
+/// 发一条 tool attribute。
+///
+/// 目标 crate 要有 `#![feature(register_tool)] #![register_tool(rust2genshin)]`
+/// —— 少了它编译器会报「找不到 crate `rust2genshin`」,那个提示看不出要干什么。
+/// proc macro 只能改自己展开的那段,没法把提示挪到 crate 属性上,所以这条
+/// 要求写进站点「加一个原生调用」页。
+fn tool(kind: &str, args: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let path: proc_macro2::TokenStream = format!("{TOOL}::{kind}").parse().unwrap();
+    quote! { #[#path(#args)] }
+}
+
+/// 把函数体换成 `unreachable!()`,并挂上 tool attribute。
+///
+/// `kind` 决定后端怎么理解参数:
+/// - `call` —— 参数是**字符串名字**,后端按名字查(`compile_native_call`)。
+/// - `calc` / `exec` —— 参数是**节点 ID**,后端按 ID 合成节点;两者只差
+///   有没有控制流。
+fn native_fn(kind: &str, args: &proc_macro2::TokenStream, input: TokenStream) -> TokenStream {
     if let Ok(ForeignItemFn { attrs, vis, modifiers, sig, .. }) = syn::parse(input.clone()) {
         let block = TokenStream::from(quote! {
             {
@@ -23,33 +51,53 @@ pub fn native(_args: TokenStream, input: TokenStream) -> TokenStream {
             sig,
             block: Box::new(parse_macro_input!(block as Block)),
         };
+        let mark = tool(kind, args);
         quote! {
+            #mark
             #[allow(unused_variables)]
             #[inline(never)]
             #[rustc_no_mir_inline]
             #item
         }.into()
     } else {
-        tag(input)
+        // 类型上的标记:`#[native("List")]` 标在 `struct` / `extern type` 上。
+        // 这两种都不是函数,宏只发 tool attribute,原样放行。
+        let mark = tool("ty", args);
+        let input: proc_macro2::TokenStream = input.into();
+        quote! {
+            #mark
+            #input
+        }.into()
     }
 }
 
 #[proc_macro_attribute]
+pub fn native(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args: proc_macro2::TokenStream = args.into();
+    native_fn("call", &args, input)
+}
+
+#[proc_macro_attribute]
 pub fn native_calc(args: TokenStream, input: TokenStream) -> TokenStream {
-    native(args, input)
+    let args: proc_macro2::TokenStream = args.into();
+    native_fn("calc", &args, input)
 }
 
 #[proc_macro_attribute]
 pub fn native_exec(args: TokenStream, input: TokenStream) -> TokenStream {
-    native(args, input)
+    let args: proc_macro2::TokenStream = args.into();
+    native_fn("exec", &args, input)
 }
 
 #[proc_macro_attribute]
-pub fn native_enum(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn native_enum(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args: proc_macro2::TokenStream = args.into();
     let input = tag(input);
     let item = parse_macro_input!(input as ItemEnum);
     let ident = item.ident.clone();
+    let mark = tool("enumty", &args);
     quote! {
+        #mark
         #[repr(i32)]
         #[derive(Clone, Copy, Eq)]
         #item
@@ -65,14 +113,24 @@ pub fn native_enum(_args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
-    tag(input)
+pub fn event(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args: proc_macro2::TokenStream = args.into();
+    let mark = tool("event", &args);
+    let input: proc_macro2::TokenStream = tag(input).into();
+    quote! {
+        #mark
+        #input
+    }.into()
 }
 
 #[proc_macro_attribute]
 pub fn event_listener(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item = proc_macro2::TokenStream::from(tag(input));
+    // 函数上加一条 tool attribute,后端据此认出入口 —— 不能靠 `#[no_mangle]`
+    // 判断,普通导出函数也有它。
+    let mark = tool("listener", &proc_macro2::TokenStream::new());
     quote! {
+        #mark
         #[allow(unused_attributes)]
         #[unsafe(no_mangle)]
         #item

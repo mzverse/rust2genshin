@@ -4736,7 +4736,6 @@ dependencies = [
  "prost-build",
  "serde",
  "slab",
- "syn 3.0.4",
  "tap",
  "typetag",
 ]

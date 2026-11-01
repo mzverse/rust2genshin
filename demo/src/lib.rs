@@ -26,6 +26,8 @@
 #![feature(coroutines)]
 #![feature(coroutine_trait)]
 #![feature(stmt_expr_attributes, proc_macro_hygiene)]
+#![feature(register_tool)]
+#![register_tool(rust2genshin)]
 
 #![no_std]
 

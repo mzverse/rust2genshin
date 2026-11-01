@@ -1,5 +1,5 @@
 use panic_context::panic_context;
-use super::{Result, get_expn_macro_attr};
+use super::Result;
 use crate::compile::func::{CompilingFn, NodeGraphIr};
 use crate::compile::ir::{node_ir_assemble, node_ir_copy, node_ir_destructure, node_ir_list_get, node_ir_list_set, node_ir_local, node_ir_modify_struct, node_ir_set_local, node_ir_to_partial_mut, partial_mut_list, struct_fields, AdtKey, FieldInfo, IrKind};
 use crate::compile::link::Target;
@@ -134,25 +134,16 @@ impl<'tcx> CompilingLocals<'_, 'tcx> {
             TyKind::Adt(d, a) if d.repr().transparent() && !self.compiler.is_native_ty(ty) =>
                 self.solve_local(self.compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), d.non_enum_variant().fields[FieldIdx::new(0)].ty(self.compiler.tcx, a)), k, name, span)?,
             TyKind::Adt(d, a) if let Some(r) = {
-                let def = d.did().default_span(self.compiler.tcx);
-                if let Some(attr) = get_expn_macro_attr(self.compiler.tcx, def) {
-                    if let Some(ident) = attr.meta.path().get_ident() {
-                        match ident.to_string().as_str() {
-                            "event" => {
-                                let mut fsk = Vec::new();
-                                let mut fs = Vec::new();
-                                for f in d.non_enum_variant().fields.iter() {
-                                    let (k, r) = self.solve_local(self.compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.compiler.tcx, a)), k, format!("{name}.{}", f.name), span)?;
-                                    fsk.push(k);
-                                    fs.push(r);
-                                }
-                                (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs)).into()
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
+                let def = d.did();
+                if let Some(Ok(crate::compile::native::ToolMark::Event(_))) = self.compiler.tool_mark(def) {
+                    let mut fsk = Vec::new();
+                    let mut fs = Vec::new();
+                    for f in d.non_enum_variant().fields.iter() {
+                        let (k, r) = self.solve_local(self.compiler.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.compiler.tcx, a)), k, format!("{name}.{}", f.name), span)?;
+                        fsk.push(k);
+                        fs.push(r);
                     }
+                    (CompiledLocal::Flat(fsk), CompiledLocal::Flat(fs)).into()
                 } else {
                     None
                 }

@@ -5,7 +5,6 @@ use crate::compile::ir::{FnInfo, IrNodeId, Optimizer, node_ir_assemble, node_ir_
 use crate::compile::link::Target;
 use crate::compile::place::{CompiledLocal, CompilingLocals, LocalKind, LocalRef};
 use crate::node::{ExportDecl, Link, NodeGraph, NodeGraphKind, NodeKind, NodeRef};
-use proc_macro2::{Ident, TokenStream};
 use rustc_attr_ir::{Attribute, AttributeKind};
 use rustc_codegen_ssa::{CompiledModule, ModuleKind};
 use rustc_hir::def::DefKind;
@@ -18,13 +17,12 @@ use rustc_middle::query::QueryKey;
 use rustc_middle::ty::inherent::SliceLike;
 use rustc_middle::ty::{Instance, InstanceKind, Mutability, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_span::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc_span::{DUMMY_SP, ErrorGuaranteed, ExpnKind, MacroKind, Span};
+use rustc_span::{DUMMY_SP, ErrorGuaranteed};
 use rustc_structures::CrateType;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 use panic_context::panic_context;
-use syn::{LitInt, Meta, MetaList};
 
 pub mod func;
 pub mod native;
@@ -38,24 +36,6 @@ pub mod loops;
 mod optimize;
 
 pub type Result<T> = core::result::Result<T, ErrorGuaranteed>;
-
-pub fn get_expn_macro_attr(tcx: TyCtxt, span: Span) -> Option<syn::Attribute> {
-    let ex = span.ctxt().outer_expn().expn_data();
-    if matches!(ex.kind, ExpnKind::Macro(MacroKind::Attr, _)) {
-        let tokens = syn::parse_str::<TokenStream>(
-            &tcx.sess
-                .source_map()
-                .span_to_snippet(ex.call_site.data().span())
-                .unwrap()
-        ).unwrap();
-        use syn::parse::Parser;
-        let result = syn::Attribute::parse_outer.parse2(tokens).unwrap();
-        assert_eq!(result.len(), 1);
-        Some(result.into_iter().next().unwrap())
-    } else {
-        None
-    }
-}
 
 pub fn compile(tcx: TyCtxt<'_>) -> Result<Vec<CompiledModule>> {
     if !tcx
@@ -215,52 +195,32 @@ impl<'tcx> Compiler<'tcx> {
                 continue;
             }
             _ = self.touch_fn(func)?;
-            if let Some(attr) = get_expn_macro_attr(self.tcx, func.default_span(self.tcx)) {
-                #[allow(clippy::single_match)]
-                match attr.meta.path().get_ident().map(Ident::to_string).unwrap_or_default().as_str() {
-                    "event_listener" => {
-                        let event = self.helper().monomorphize(func, self.tcx.instance_mir(func.def).local_decls.get(Local::arg(0)).unwrap().ty);
-                        let TyKind::Adt(d, a) = event.kind() else {
-                            panic!();
-                        };
-                        let def = d.did().default_span(self.tcx);
-                        let expn = def.ctxt().outer_expn().expn_data().call_site;
-                        if let Some(attr) = get_expn_macro_attr(self.tcx, def) {
-                            match attr.meta {
-                                Meta::List(MetaList { path, tokens, .. }) => {
-                                    if let Some(ident) = path.get_ident() {
-                                        match ident.to_string().as_str() {
-                                            "event" => {
-                                                let id = match syn::parse2::<LitInt>(tokens).and_then(|id| id.base10_parse::<i64>()) {
-                                                    Ok(id) => id,
-                                                    Err(e) => return self.helper().span_err(expn, e.to_string()),
-                                                };
-                                                let node = main.insert(node_ir_native(NodeKind::trigger(id, d.non_enum_variant().fields.iter().map(|f| Ok(self.compile_ty(f.did.default_span(self.tcx), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, a)))?.into_native().unwrap())).collect::<Result<Vec<_>>>()?)));
-                                                let event = self.compile_ty(DUMMY_SP, event)?;
-                                                let na = node_ir_assemble(&mut self.target, &event);
-                                                let com = main.insert(NodeKind::new(
-                                                    IrNodeId::Fn(self.touch_fn(func)?),
-                                                    1, 1,
-                                                    vec![event.into()],
-                                                    vec![self.compile_ty(DUMMY_SP, self.tcx.types.unit)?],
-                                                ));
-                                                let fields = na.values_in_types.len();
-                                                let na = main.insert(na);
-                                                for i in 0..fields {
-                                                    main.link_value(Link::node(node, i), Link::node(na, i));
-                                                }
-                                                main.link_value(Link::node(na, 0), Link::node(com, 0));
-                                                main.link_control(Link::node(node, 0), Link::node(com, 0));
-                                            }
-                                            _ => (),
-                                        }
-                                    }
-                                }
-                                _ => (),
-                            }
-                        }
+            // `#[event_listener]` —— 入口函数。宏给它挂了一条无参数的
+            // `#[rust2genshin::listener]`,靠它认入口。
+            if let Some(Ok(crate::compile::native::ToolMark::Listener)) = self.tool_mark(func.def_id()) {
+                let event = self.helper().monomorphize(func, self.tcx.instance_mir(func.def).local_decls.get(Local::arg(0)).unwrap().ty);
+                let TyKind::Adt(d, a) = event.kind() else {
+                    panic!();
+                };
+                let def = d.did();
+                // 事件类型上的 `#[event(N)]`。
+                if let Some(Ok(crate::compile::native::ToolMark::Event(id))) = self.tool_mark(def) {
+                    let node = main.insert(node_ir_native(NodeKind::trigger(id, d.non_enum_variant().fields.iter().map(|f| Ok(self.compile_ty(f.did.default_span(self.tcx), self.tcx.normalize_erasing_regions(TypingEnv::fully_monomorphized(), f.ty(self.tcx, a)))?.into_native().unwrap())).collect::<Result<Vec<_>>>()?)));
+                    let event = self.compile_ty(DUMMY_SP, event)?;
+                    let na = node_ir_assemble(&mut self.target, &event);
+                    let com = main.insert(NodeKind::new(
+                        IrNodeId::Fn(self.touch_fn(func)?),
+                        1, 1,
+                        vec![event.into()],
+                        vec![self.compile_ty(DUMMY_SP, self.tcx.types.unit)?],
+                    ));
+                    let fields = na.values_in_types.len();
+                    let na = main.insert(na);
+                    for i in 0..fields {
+                        main.link_value(Link::node(node, i), Link::node(na, i));
                     }
-                    _ => (),
+                    main.link_value(Link::node(na, 0), Link::node(com, 0));
+                    main.link_control(Link::node(node, 0), Link::node(com, 0));
                 }
             }
         }

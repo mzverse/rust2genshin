@@ -18,6 +18,13 @@ impl Entity {
 }
 ```
 
+用这些属性的 crate 需要两行 crate 属性，详见下面的「编译器怎么认出这是原生调用」：
+
+```rust
+#![feature(register_tool)]
+#![register_tool(rust2genshin)]
+```
+
 宏还会加上 `#[inline(never)]` 和 `#[rustc_no_mir_inline]`，避免这个声明被内联掉、调用点消失。
 
 = 三个宏的区别
@@ -67,9 +74,58 @@ pub struct List<T> { /* 字段在节点图里不存在 */ }
 
 = 编译器怎么认出这是原生调用
 
-属性宏把 token 的 span 设成 `Span::call_site()`，于是调用点的 span 上带着「它由哪个属性宏展开而来」的信息。编译器用 `get_expn_macro_attr`（`core/src/compile/mod.rs`）把宏属性的 token 从 span 的源码片段里读回来，据此决定生成哪个节点。
+属性宏除了把函数体换成 `unreachable!()`，还会**发一条 tool attribute**：
 
-因此 `lib-internal/src/lib.rs` 里 `native_calc` 和 `native_exec` 的宏体是*一模一样*的（都转调 `native`）—— 区分它们的是编译器，它看的是属性名。
+```rust
+#[rust2genshin::call("list_len")]
+#[allow(unused_variables)]
+#[inline(never)]
+#[rustc_no_mir_inline]
+pub fn len(&self) -> usize;
+```
+
+`register_tool` 注册的属性编译器**不会消耗**它 —— 它原样留在 HIR 里，
+后端用 `tcx.get_all_attrs()` 直接读那个定义上的属性，拿到名字/节点 ID。
+
+*用宏的 crate 要有这两行*：
+
+```rust
+#![feature(register_tool)]
+#![register_tool(rust2genshin)]
+```
+
+少了两行，编译器会报「cannot find crate `rust2genshin`」—— 那个提示看不出
+要干什么，看到它就来加这两行。
+
+= 为什么不从源码里抠
+
+早先的做法是：属性宏把 token 的 span 设成 `Span::call_site()`，编译器再用
+`span_to_snippet` 把宏属性的原文从**源码**里读回来、重新 parse。那套办法有三个问题：
+
+- 依赖源码文件可读（`span_to_snippet(...).unwrap()`）；
+- 每问一次属性就重新 parse 一遍源码；
+- 一次原生调用会走两条路（`native_call_id` 认名字、`compile_native_call` 再认一遍），
+  各 parse 一次。
+
+换成 tool attribute 之后，属性是**结构化**的，直接从 tcx 里读，不碰源码。
+`core` 也因此不再依赖 `syn`。
+
+宏仍然必须留着：tool attribute 不移除函数体，而 `impl` 块里不能写无体函数。
+
+= tool attribute 的五个档
+
+| 属性 | 参数 | 用途 |
+|---|---|---|
+| `rust2genshin::call("名字")` | 字符串 | 签名不足以描述节点，按名字查（要改 core） |
+| `rust2genshin::calc(N)` | 整数 | 无控制流的节点 |
+| `rust2genshin::exec(N)` | 整数 | 有控制流的节点 |
+| `rust2genshin::ty("名字")` | 字符串 | 标在类型上：原生类型 |
+| `rust2genshin::enumty(N)` | 整数 | 标在枚举上：`#[native_enum(N)]` |
+
+两个例外：`rust2genshin::event(N)` 标在事件结构体上，`rust2genshin::listener`
+标在 `#[event_listener]` 的函数上（无参数）。`enumty` 而不是 `enum`，因为
+`enum` 是关键字，不能当路径段。
+
 
 = 事件：`#[event(N)]` 标在 struct 上
 

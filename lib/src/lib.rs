@@ -13,6 +13,8 @@
 #![feature(core_intrinsics)]
 #![feature(freeze)]
 #![feature(freeze_impls)]
+#![feature(register_tool)]
+#![register_tool(rust2genshin)]
 #![allow(internal_features)]
 
 pub mod entity;
