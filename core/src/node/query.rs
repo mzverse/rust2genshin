@@ -4,7 +4,8 @@
 
 #![allow(unreachable_code)]
 
-use crate::node::NodeKind;
+use crate::node::{NodeGraph, NodeKind};
+use crate::structure::node_struct;
 use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;
 // ========================================================================
@@ -315,31 +316,97 @@ pub fn node_local(kind: &NativeKind) -> Option<NodeKind> {
 /// 选择器顺序(参考项目 `data.json` 的 `Variants`)是
 /// Ety→0、Gid→1、Int→2、Bol→3、Flt→4、Str→5、L<Gid>→6、L<Int>→7、
 /// L<Bol>→8、L<Flt>→9、L<Str>→10、Vec→11、L<Ety>→12、L<Vec>→13、
-/// Cfg→14、Pfb→15、L<Cfg>→16、L<Pfb>→17、Fct→18、L<Fct>→19,
-/// 字典从 20 起(本条只覆盖到列表)。
+/// Cfg→14、Pfb→15、L<Cfg>→16、L<Pfb>→17、Fct→18、L<Fct>→19。
 ///
 /// 写节点的变体顺序和它**不一样**(ID 323 从 Int 开始),所以两边各自查表。
-pub fn node_get_graph_variable(kind: &NativeKind) -> Option<NodeKind> {
+///
+/// # 字典与结构体
+///
+/// 133 个 `D<K,V>` 变体的 `TypeSelectorIndex` **全是 20**(档位不区分键值对,
+/// 真正的区分在 kernel);结构体不走变体表,接在字典后面用 21(单结构体)/
+/// 22(结构体列表),靠 `using_struct` 声明 —— 见 [`node_struct`] 与
+/// [`graph_variable_struct_type1`]。
+///
+/// 字典还没接:kernel 表是 133 条 `(键,值)` 组合,不是一维数组能查的。
+pub fn node_get_graph_variable<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, kind: &NativeKind) -> Option<NodeKind> {
     let mut result = NodeKind::expr(337, vec![String], kind.clone());
+    if let Some((st, list)) = graph_variable_struct(kind) {
+        // 结构体:kernel 由 `node_struct` 清零,选择器吃在出参 0 上。
+        return Some(node_struct(
+            graph,
+            result,
+            &st,
+            graph_variable_struct_type1(list),
+            graph_variable_struct_selector(list),
+            [],
+            [0],
+        ));
+    }
     let selector = graph_variable_selector_get(kind)?;
-    result.id.kernel = graph_variable_kernel(337, selector)?;
+    result.id.kernel = graph_variable_kernel_for(337, selector)?;
     result.id.selectors_out[0] = selector.into();
     result.into()
 }
 
 /// 写图变量(ID 323,泛型 Variant):变量名 + 值 + 是否触发事件。
-pub fn node_set_graph_variable(kind: &NativeKind) -> Option<NodeKind> {
+pub fn node_set_graph_variable<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, kind: &NativeKind) -> Option<NodeKind> {
     let mut result = NodeKind::procedure(323, vec![String, kind.clone(), Bool]);
+    if let Some((st, list)) = graph_variable_struct(kind) {
+        // 选择器吃在值的那个入参(下标 1)上。
+        return Some(node_struct(
+            graph,
+            result,
+            &st,
+            graph_variable_struct_type1(list),
+            graph_variable_struct_selector(list),
+            [1],
+            [],
+        ));
+    }
     let selector = graph_variable_selector_set(kind)?;
-    result.id.kernel = graph_variable_kernel(323, selector)?;
+    result.id.kernel = graph_variable_kernel_for(323, selector)?;
     result.id.selectors_in[1] = selector.into();
     result.into()
+}
+
+/// 图变量的类型是不是结构体;是的话返回结构体与「是不是列表」。
+///
+/// 两种都走 `using_struct`,只是引脚类型 / `type1` / 选择器不同。
+pub(crate) fn graph_variable_struct(kind: &NativeKind) -> Option<(crate::structure::StructRef, bool)> {
+    use NativeKind::*;
+    match kind {
+        Struct(st) => Some((st.clone(), false)),
+        List(ele) => match ele.as_ref() {
+            Struct(st) => Some((st.clone(), true)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 结构体 / 结构体列表的选择器档位。
+///
+/// 实测 `.gia`(`target/export.gia` 单结构体、`target/export1.gia` 结构体列表):
+/// 单结构体 **21**、结构体列表 **22** —— 也就是字典那一档(20)再往后排,
+/// 和 [`crate::node::list`] 的「结构体接在最后一档后面」是同一套算法。
+fn graph_variable_struct_selector(list: bool) -> i32 {
+    if list { 22 } else { 21 }
+}
+
+/// 结构体 / 结构体列表的 `using_struct.type1`。
+///
+/// 实测同样是 174 / 175。这个数**不是**选择器下标,也不跟 shell 走
+/// (列表节点上 `type1` 恒为 10,见 `node::list::STRUCT_TYPE1`)——
+/// 只能按壳 + 是否列表查表。
+fn graph_variable_struct_type1(list: bool) -> i32 {
+    if list { 175 } else { 174 }
 }
 
 /// 图变量的选择器档位(`T` → `TypeSelectorIndex`)。
 ///
 /// 取值节点(ID 337)和写节点(ID 323)共用同一套类型顺序，只是 kernel 表不同。
-fn graph_variable_selector_get(kind: &NativeKind) -> Option<i32> {
+/// 触发节点(351)用的也是这一套。
+pub(crate) fn graph_variable_selector(kind: &NativeKind) -> Option<i32> {
     use NativeKind::*;
     Some(match kind {
         Entity => 0,
@@ -367,6 +434,11 @@ fn graph_variable_selector_get(kind: &NativeKind) -> Option<i32> {
         },
         _ => return None,
     })
+}
+
+/// 取值节点的档位(与触发节点 351 顺序相同)。
+fn graph_variable_selector_get(kind: &NativeKind) -> Option<i32> {
+    graph_variable_selector(kind)
 }
 
 /// 写节点的档位。顺序与取值节点**不同**：Int→0、Flt→1、Bol→2、Str→3、
@@ -403,11 +475,14 @@ fn graph_variable_selector_set(kind: &NativeKind) -> Option<i32> {
 
 /// 图变量节点的 kernel：`shell` 是该节点 shell ID，`selector` 是档位。
 ///
-/// 两个节点的 kernel 表不同(337 系列 / 323 系列)，按 shell 分表。
-fn graph_variable_kernel(shell: i64, selector: i32) -> Option<i64> {
+/// 三个节点的 kernel 表各不相同(337 系列 / 323 系列 / 351 系列)，按 shell 分表。
+pub(crate) fn graph_variable_kernel_for(shell: i64, selector: i32) -> Option<i64> {
     let table: &[i64] = match shell {
         337 => &[337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 538, 539, 540, 541, 626, 2998],
         323 => &[323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 534, 535, 536, 537, 625, 2857],
+        // 触发节点的顺序与取值节点相同,但 kernel 是另一组(档位 18 是 627 不是 626,
+        // 档位 19 是 3139 不是 2998)。
+        351 => &[351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 542, 543, 544, 545, 627, 3139],
         _ => return None,
     };
     table.get(selector as usize).copied()
@@ -897,3 +972,78 @@ pub static NODE_DICT_GET_VALUES: LazyLock<NodeKind> = LazyLock::new(|| {
 pub static NODE_DICT_GET_LENGTH: LazyLock<NodeKind> = LazyLock::new(|| {
     NodeKind::expr(1648, vec![Dict { key: Int.into(), value: Int.into() }], Int)
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::NodeGraphKind;
+    use crate::structure::{id_struct, StructRef};
+
+    fn point() -> StructRef {
+        StructRef {
+            id: id_struct(7),
+            fields: vec![("x".into(), NativeKind::Int)],
+        }
+    }
+
+    fn graph() -> NodeGraph {
+        NodeGraph::new(NodeGraphKind::ServerEntity, "test")
+    }
+
+    /// 结构体不走变体表:kernel 清零、挂依赖声明、类型选择器是 21。
+    /// 实测 `target/export.gia`(单结构体)与 `target/export1.gia`(结构体列表)。
+    #[test]
+    fn 结构体图变量的选择器与_type1() {
+        let st = NativeKind::Struct(point());
+        let g = &mut graph();
+        let get = node_get_graph_variable(g, &st).expect("结构体应当有图变量节点");
+        assert_eq!(get.id.kernel, 0, "结构体变体没有 kernel");
+        assert_eq!(get.id.selectors_out[0], Some(21));
+        let decl = get.id.using_struct.as_ref().expect("结构体依赖声明");
+        assert_eq!(decl.type1, 174);
+
+        let g = &mut graph();
+        let set = node_set_graph_variable(g, &st).expect("结构体应当有图变量节点");
+        assert_eq!(set.id.selectors_in[1], Some(21));
+        assert_eq!(set.id.using_struct.as_ref().unwrap().type1, 174);
+    }
+
+    #[test]
+    fn 结构体列表图变量的选择器与_type1() {
+        let st = NativeKind::List(NativeKind::Struct(point()).into());
+        let g = &mut graph();
+        let get = node_get_graph_variable(g, &st).expect("结构体列表应当有图变量节点");
+        assert_eq!(get.id.selectors_out[0], Some(22));
+        assert_eq!(get.id.using_struct.as_ref().unwrap().type1, 175);
+
+        let g = &mut graph();
+        let set = node_set_graph_variable(g, &st).expect("结构体列表应当有图变量节点");
+        assert_eq!(set.id.selectors_in[1], Some(22));
+        assert_eq!(set.id.using_struct.as_ref().unwrap().type1, 175);
+    }
+
+    /// 原生类型照旧走 kernel 表。
+    #[test]
+    fn 原生类型图变量走_kernel_表() {
+        let g = &mut graph();
+        let get = node_get_graph_variable(g, &NativeKind::Int).unwrap();
+        assert_eq!(get.id.kernel, 339);
+        assert_eq!(get.id.selectors_out[0], Some(2));
+        assert!(get.id.using_struct.is_none());
+
+        let g = &mut graph();
+        let set = node_set_graph_variable(g, &NativeKind::Int).unwrap();
+        assert_eq!(set.id.kernel, 323);
+        assert_eq!(set.id.selectors_in[1], Some(0));
+    }
+
+    /// 触发节点(351)的 kernel 表与取值节点**不同**:档位 18 是 627 不是 626。
+    #[test]
+    fn 图变量变化节点的_kernel_表与取值节点不同() {
+        let g = &mut graph();
+        let trig = crate::node::trigger::node_on_graph_variable_change(g, &NativeKind::Faction).unwrap();
+        assert_eq!(trig.id.kernel, 627);
+        assert_eq!(trig.id.selectors_out[3], Some(18));
+        assert_eq!(trig.id.selectors_out[4], Some(18));
+    }
+}

@@ -69,13 +69,30 @@ impl Display for IrKind {
 }
 
 impl IrKind {
+    /// 一个类型含有内部状态
+    pub fn is_adt(&self) -> bool {
+        match self {
+            IrKind::Native(native) => matches!(native,
+                | NativeKind::List(_)
+                | NativeKind::Dict { .. }
+                | NativeKind::Struct(_)),
+            IrKind::List(_) => true,
+            IrKind::Never => false,
+            IrKind::LocalRef(_) => false,
+            IrKind::Mut(_) => true,
+            IrKind::Adt(_) => true,
+            IrKind::PartialMut(k) => k.is_adt(),
+            IrKind::Unsupported(_) => false,
+        }
+    }
+
     pub fn is_storable(&self) -> bool {
         match self {
             IrKind::Native(native) => node_local(native).is_some(),
-            // 列表都能存进局部变量:元素类型没有局部变量变体时,`LocalRef::lower`
-            // 会把整张列表包成单字段结构体来存。
+            // adt已要求成员必须可储存，未来可能会改变
             IrKind::List(_) => true,
             IrKind::Adt(..) => true,
+            IrKind::PartialMut(k) => k.is_storable() && !k.is_adt(),
             // 视图(`PartialMut`)和其它中间形态都不能作为局部变量的存储类型:
             // 它们必须在优化期被消掉,活到降级就是 bug。
             _ => false,

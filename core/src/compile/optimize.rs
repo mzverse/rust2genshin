@@ -414,6 +414,16 @@ impl Optimizer {
                     let (elem, _) = elem.lower_list_elem(linker);
                     Some(node_list_remove(&mut self.graph, elem))
                 }
+                // 图变量:结构体 / 结构体列表要挂 `using_struct` 依赖声明,那要
+                // `&mut graph`,所以也在这一轮(先克隆节点、再改图)里做。
+                IrNodeId::GetGraphVariable(_) => {
+                    let k = kind.values_out_types[0].lower(linker);
+                    node_get_graph_variable(&mut self.graph, &k)
+                },
+                IrNodeId::SetGraphVariable(_) => {
+                    let k = kind.values_in_types[1].as_ref().unwrap().lower(linker);
+                    node_set_graph_variable(&mut self.graph, &k)
+                },
                 _ => None,
             };
             if let Some(node) = lowered {
@@ -549,18 +559,10 @@ impl Optimizer {
                     let k = kind.values_in_types[0].as_ref().unwrap().lower(linker);
                     node_modify_struct(&linker.assets, unwrap!(&k, NativeKind::Struct))
                 }
-                // 图变量:按值的类型挑变体。变量名的登记放在这一轮循环
-                // **外面** —— 这里持有 `self.graph` 的可变借用,
-                // `record_variable` 要改 `self.decl`。
-                IrNodeId::GetGraphVariable(name) => {
-                    let k = kind.values_out_types[0].lower(linker);
-                    node_get_graph_variable(&k)
-                        .unwrap_or_else(|| panic!("图变量 {name} 的类型 {k} 没有对应的节点变体"))
-                }
-                IrNodeId::SetGraphVariable(name) => {
-                    let k = kind.values_in_types[1].as_ref().unwrap().lower(linker);
-                    node_set_graph_variable(&k)
-                        .unwrap_or_else(|| panic!("图变量 {name} 的类型 {k} 没有对应的节点变体"))
+                // 图变量在上一轮(结构体那一轮)已经换成 native 节点了:
+                // 结构体变体要改图(挂依赖声明),不能在持有可变借用时做。
+                IrNodeId::GetGraphVariable(name) | IrNodeId::SetGraphVariable(name) => {
+                    panic!("图变量 {name} 没被展开成 native 节点")
                 }
                 IrNodeId::Unsupported => panic!("Unsupported 节点不该走到降级"),
                 IrNodeId::FieldSetter { idx, .. } => panic!("{idx}"),

@@ -28,6 +28,7 @@ pub mod asynchronous;
 pub mod task;
 pub mod sc;
 
+use core::marker::Reborrow;
 use core::num::NonZero;
 use core::ops::{Deref, DerefMut};
 use core::ptr::drop_in_place;
@@ -52,6 +53,8 @@ impl<T> Deref for PartialMut<'_, T> {
 impl<T> DerefMut for PartialMut<'_, T> {
     #[native("partial_mut_deref_mut")]
     fn deref_mut(&mut self) -> &mut Self::Target;
+}
+impl<T> Reborrow for PartialMut<'_, T> {
 }
 /// 从 `&mut T` 造视图、以及把视图换回引用。
 ///

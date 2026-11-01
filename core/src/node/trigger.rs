@@ -5,8 +5,9 @@
 
 #![allow(unreachable_code)]
 
-use crate::node::NodeKind;
-use crate::value::NativeKind::*;
+use crate::node::{NodeGraph, NodeKind};
+use crate::structure::node_struct;
+use crate::value::NativeKind::{self, *};
 use std::sync::LazyLock;
 
 /// 变量变化(ID 36)
@@ -130,9 +131,32 @@ pub static NODE_ON_GROUP_TRIGGER: LazyLock<NodeKind> = LazyLock::new(|| {
 });
 
 /// 图变量变化(ID 351)
-pub static NODE_ON_GRAPH_VARIABLE_CHANGE: LazyLock<NodeKind> = LazyLock::new(|| {
-    NodeKind::trigger(351, vec![Entity, Guid, String, Int, Int])
-});
+///
+/// 泛型 Variant:两个出参(变化前值 / 变化后值)是 `R<T>`,选择器随变量类型变。
+/// 档位顺序与取值节点(337)一致:Ety→0 … L<Fct>→19,字典 20,结构体 21、
+/// 结构体列表 22(见 [`crate::node::query::node_get_graph_variable`])。
+///
+/// 结构体走 `using_struct`,kernel 清零 —— 实测 `target/export1.gia` 里
+/// `type1: 175`、选择器 22、无 `kernel_ref`。
+pub fn node_on_graph_variable_change<NodeId, Kind>(graph: &mut NodeGraph<NodeId, Kind>, kind: &NativeKind) -> Option<NodeKind> {
+    let mut result = NodeKind::trigger(351, vec![Entity, Guid, String, kind.clone(), kind.clone()]);
+    if let Some((st, list)) = crate::node::query::graph_variable_struct(kind) {
+        return Some(node_struct(
+            graph,
+            result,
+            &st,
+            if list { 175 } else { 174 },
+            if list { 22 } else { 21 },
+            [],
+            [3, 4],
+        ));
+    }
+    let selector = crate::node::query::graph_variable_selector(kind)?;
+    result.id.kernel = crate::node::query::graph_variable_kernel_for(351, selector)?;
+    result.id.selectors_out[3] = selector.into();
+    result.id.selectors_out[4] = selector.into();
+    result.into()
+}
 
 /// 销毁(ID 373)
 pub static NODE_ON_DESTROYED: LazyLock<NodeKind> = LazyLock::new(|| {

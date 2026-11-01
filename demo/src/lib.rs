@@ -33,6 +33,7 @@
 
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
+use rust2genshin_lib::boxed::Box;
 #[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 
@@ -56,6 +57,9 @@ pub fn on_entity_created(event: EntityCreatedEvent) {
     sorting::sorting_demo();
     containers::container_demo();
     ownership::ownership_demo();
+    ownership::ownership_struct_demo();
+    ownership::ownership_drop_element_demo();
+    ownership::ownership_drop_then_reuse_demo();
     values::value_demo();
     mutability::mutability_demo();
     flow::flow_demo();

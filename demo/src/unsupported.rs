@@ -16,22 +16,12 @@ use rust2genshin_lib::*;
 
 use crate::Point;
 
-/// `Box<Point>` —— 堆变量类型是 `List<Struct>`。
+/// `Box<Point>` 的**字段写**。
 ///
-/// 图变量节点(`Get_Graph_Variable` ID 337 / `Set_Graph_Variable` ID 323)
-/// 各有 153 个变体,里面**没有结构体档** —— 最靠后的是
-/// `C<T:D<Pfb,L<Cfg>>>`。所以 `List<Struct>` 类型的黑板变量在游戏里
-/// 没有对应的节点。
-///
-/// (列表节点是有结构体变体的,见 `core/src/node/list.rs`;但图变量节点没有。)
-#[unsafe(no_mangle)]
-pub fn box_of_struct_demo() {
-    let b = Box::new(Point { x: 1, y: 2 });
-    let p = &*b;
-    log(p.x);
-}
-
-/// `Box<Point>` 的字段写 —— 同样卡在上面的堆变量类型上。
+/// 堆变量类型 `List<Point>` 本身是支持的(读路径见
+/// [`crate::ownership::ownership_struct_demo`],图变量节点走 `using_struct`,
+/// 选择器 22、`type1` 175)。卡住的是**写**:`m.x = 114` 要 `BoxRefMut` 的
+/// `DerefMut`,那条路要真写句柄 —— 见下面 `box_whole_assign_demo` 的说明。
 #[unsafe(no_mangle)]
 pub fn box_field_write_demo(m: &mut Box<Point>) {
     m.x = 114;
