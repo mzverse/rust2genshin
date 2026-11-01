@@ -1,5 +1,10 @@
 #![no_std]
 
+// `#[event_listener]` 这类宏会发一条 `register_tool` 注册的属性,后端从
+// 那里读它 —— 所以用到这些宏的 crate 要先注册这个 tool。
+#![feature(register_tool)]
+#![register_tool(rust2genshin)]
+
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
 

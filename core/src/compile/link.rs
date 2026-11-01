@@ -78,14 +78,20 @@ impl Linker {
                 panic!("节点图变量合并失败: {e}");
             }
         }
-        for x in self.target.functions.keys().cloned().collect::<Vec<_>>() {
-            if self.functions.contains_key(&x) {
-                continue;
-            }
-            if self.target.functions.get(&x).expect(&x).exported {
-                let id = self.touch_fn(&x).id;
-                self.assets.set_primary(id);
-            }
+        // 哪些函数是**导出的**(`#[unsafe(no_mangle)]` 之类),要单独记下来。
+        //
+        // 不能在这一轮里现查:`touch_fn` 会把函数从 `target.functions` 里**取走**
+        // (`remove`),而一个导出函数很可能先作为别的函数的依赖被 touch 到 ——
+        // 那时它就已经不在表里了,`exported` 字段也一起没了。于是它永远不会被
+        // 标成 primary,产物里就少一条 primary 资产。
+        //
+        // 记下 key 而不是记 `exported` 本身:key 在 `self.functions` 里,
+        // 那个 map 直到最后都在。
+        for x in exported_functions(&self.target) {
+            // `touch_fn` 对已经 touch 过的会直接返回缓存 —— 所以先被当成依赖
+            // touch 到的导出函数,这里照样能拿到它的 id 并标成 primary。
+            let id = self.touch_fn(&x).id;
+            self.assets.set_primary(id);
         }
         if let Some(main) = self.target.main.take() {
             let statics: Vec<NodeGraphStatic> = variables.into_iter().map(|(name, kind)| {
@@ -161,6 +167,24 @@ impl Linker {
     }
 }
 
+/// 导出函数(要单独成 primary 资产)的那批 key。
+///
+/// 必须在**任何 `touch_fn` 之前**取好 —— `touch_fn` 会把函数从
+/// `target.functions` 里 `remove` 掉,一个导出函数如果先作为别的函数的
+/// 依赖被 touch 到,它的 `exported` 字段就跟着函数一起没了。事后查表会
+/// 漏掉它,产物里就少一条 primary 资产。
+fn exported_functions(target: &Target) -> Vec<String> {
+    let mut out: Vec<String> = target
+        .functions
+        .iter()
+        .filter(|(_, f)| f.exported)
+        .map(|(k, _)| k.clone())
+        .collect();
+    // `HashMap` 迭代顺序不稳 —— 排一下,让产物可复现。
+    out.sort();
+    out
+}
+
 /// 把一个节点图变量并进变量表。
 ///
 /// 同名变量指的是同一个变量,类型必须一致 —— 不一致说明两个函数对同名
@@ -216,5 +240,36 @@ mod tests {
         merge_variable(&mut out, "x", &IrKind::Native(NativeKind::Int)).unwrap();
         let e = merge_variable(&mut out, "x", &IrKind::Native(NativeKind::Float)).unwrap_err();
         assert!(e.contains("x"), "{e}");
+    }
+
+    /// 导出函数的清单要在**任何 touch 之前**取好。
+    ///
+    /// `touch_fn` 会把函数从 `target.functions` 里 `remove` 掉 —— 一个导出
+    /// 函数如果先作为别的函数的依赖被 touch 到,事后再查表就找不到它了,
+    /// 它永远不会被标成 primary。
+    #[test]
+    fn 导出函数的清单与函数是否已被取走无关() {
+        let fn_info = |exported: bool| FnInfo {
+            description: String::new(),
+            graph: crate::node::NodeGraph::new(
+                crate::node::NodeGraphKind::ServerEntity,
+                "test",
+            ),
+            decl: Default::default(),
+            exported,
+        };
+        let mut target = Target::default();
+        target.functions.insert("exported".into(), fn_info(true));
+        target.functions.insert("plain".into(), fn_info(false));
+
+        // 清单在**任何 touch 之前**取好。
+        let before = exported_functions(&target);
+        assert_eq!(before, vec!["exported".to_string()]);
+
+        // `touch_fn` 把导出函数取走了 —— 表里没有了,事后再查就查不到。
+        target.functions.remove("exported");
+        assert!(exported_functions(&target).is_empty());
+        // 但清单已经拿到了 —— `link` 拿它去标 primary,不受影响。
+        assert_eq!(before, vec!["exported".to_string()]);
     }
 }
