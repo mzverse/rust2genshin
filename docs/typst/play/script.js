@@ -118,8 +118,8 @@ function tryConnect(url, timeoutMs = 4000) {
     });
 }
 
-/* 把 ws:// 的地址换成同一个服务的 http:// 地址。`/artifact/<id>` 和
- * `/sample` 都挂在同一个 origin 上。 */
+/* 把 ws:// 的地址换成同一个服务的 http:// 地址。`/artifact/<id>` 挂在
+ * 同一个 origin 上。 */
 function httpOrigin(wsUrl) {
     return wsUrl.replace(/^ws/, "http").replace(/\/ws\/?$/, "");
 }

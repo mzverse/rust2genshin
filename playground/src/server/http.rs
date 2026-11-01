@@ -12,7 +12,7 @@ use std::{
 use axum::{
     Json, Router,
     extract::State,
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -68,24 +68,11 @@ pub struct StatusBody {
     pub pull_failure: Option<String>,
 }
 
-/// 用户源码在仓库里的路径。样例和任务用的是同一个文件 —— 用户点
-/// "载入样例"拿到的就是仓库当前那份 `demo/src/lib.rs`。
-pub fn sample_path(cfg: &Config) -> PathBuf {
-    cfg.repo_dir.join(crate::protocol::SOURCE_FILE)
-}
-
 /// 浏览器解析 `.gia` 用的 schema。跟着仓库工作区走，不 embed ——
-/// 与 `/sample` 同一个理由：部署的就是当前仓库，进程启动时冻结反而会漂。
+/// 部署的就是当前仓库，进程启动时冻结反而会漂。
 pub fn proto_path(cfg: &Config) -> PathBuf {
     cfg.repo_dir.join("core/proto/asset.proto")
 }
-
-/// `/sample` 上用两个响应头捎回「样例出自哪个 commit / 镜像出自哪个
-/// commit」。不用 JSON 包一层是因为正文要原样进编辑器 —— 包了的话前端
-/// 每次都得剥一层。名字定成常量,`router` 里的 expose 列表和这里必须
-/// 是同一份,写死字符串迟早对不上。
-pub const HEADER_HEAD: &str = "x-playground-head";
-pub const HEADER_BAKED: &str = "x-playground-baked";
 
 pub fn router(state: Arc<AppState>) -> Router {
     let origins: Vec<HeaderValue> = state
@@ -104,27 +91,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any)
-            .expose_headers([
-                HeaderName::from_static(HEADER_HEAD),
-                HeaderName::from_static(HEADER_BAKED),
-            ])
     } else {
         CorsLayer::new()
             .allow_origin(origins)
             .allow_methods(Any)
             .allow_headers(Any)
-            // 跨域下自定义响应头默认**读不到**,/sample 的 head / baked
-            // 必须在这里列出来,否则前端那句"样例比镜像新"的提示是死的。
-            .expose_headers([
-                HeaderName::from_static(HEADER_HEAD),
-                HeaderName::from_static(HEADER_BAKED),
-            ])
     };
 
     Router::new()
         .route("/healthz", get(healthz))
         .route("/status", get(status))
-        .route("/sample", get(sample))
         .route("/proto/asset.proto", get(asset_proto))
         .route("/admin/rebuild", post(admin_rebuild))
         .route("/ws", get(crate::server::ws::ws_upgrade))
@@ -166,27 +142,6 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<StatusBody> {
         uptime_secs: st.started.elapsed().as_secs(),
         pull_failure: bake.pull_failure,
     })
-}
-
-async fn sample(State(st): State<Arc<AppState>>) -> Response {
-    let Ok(bytes) = tokio::fs::read(sample_path(&st.cfg)).await else {
-        return (StatusCode::NOT_FOUND, "样例源码不在仓库里").into_response();
-    };
-    let mut res = ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response();
-    let h = res.headers_mut();
-    // 两个头都是**有才发**。工作区不是 git 仓库时 head 探测会失败,那时
-    // 发一个空串只会让前端以为"HEAD 是空的",不如不发。
-    if let Ok(head) = st.repo.head().await {
-        if let Ok(v) = HeaderValue::from_str(&head) {
-            h.insert(HeaderName::from_static(HEADER_HEAD), v);
-        }
-    }
-    if let Some(sha) = st.baker.status().serving {
-        if let Ok(v) = HeaderValue::from_str(&sha) {
-            h.insert(HeaderName::from_static(HEADER_BAKED), v);
-        }
-    }
-    res
 }
 
 async fn asset_proto(State(st): State<Arc<AppState>>) -> Response {
@@ -435,25 +390,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sample_returns_the_repo_file() {
-        let d = tempfile::tempdir().unwrap();
-        let lib = d.path().join(crate::protocol::SOURCE_FILE);
-        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
-        std::fs::write(&lib, "fn main() {}").unwrap();
-        let res = get(ready_state(d.path()).await, "/sample").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&bytes[..], b"fn main() {}");
-    }
-
-    #[tokio::test]
-    async fn sample_is_404_when_the_file_is_gone() {
-        let d = tempfile::tempdir().unwrap();
-        let res = get(ready_state(d.path()).await, "/sample").await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn proto_is_served_from_the_repo() {
         let d = tempfile::tempdir().unwrap();
         let proto = d.path().join("core/proto/asset.proto");
@@ -475,34 +411,6 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let res = get(ready_state(d.path()).await, "/proto/asset.proto").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn sample_carries_the_baked_sha_and_exposes_it_to_the_browser() {
-        // 样例来自工作区、镜像来自某个 sha,两者可能不是同一个 commit
-        // (典型:给 lib/ 加了 API 还没重烘焙)。前端要能看出这一点并提示,
-        // 所以 `baked` 得随 /sample 回去 —— 光靠 /status 不够,那是两次
-        // 请求,中间会变。
-        let d = tempfile::tempdir().unwrap();
-        let lib = d.path().join(crate::protocol::SOURCE_FILE);
-        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
-        std::fs::write(&lib, "fn main() {}").unwrap();
-        let st = ready_state(d.path()).await;
-        let res = get_with_origin(st, "/sample", "https://mzverse.github.io").await;
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(
-            res.headers().get("x-playground-baked").unwrap(),
-            "aaa1111",
-            "serving 的 sha 要跟着样例一起回去"
-        );
-        // 跨域下浏览器默认读不到自定义响应头,除非服务端显式 expose。
-        // 忘了这一条,前端那句"样例比镜像新"的提示永远不会触发。
-        let expose = res.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS]
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(expose.contains("x-playground-baked"), "expose 里有:{expose}");
-        assert!(expose.contains("x-playground-head"), "expose 里有:{expose}");
     }
 
     #[tokio::test]

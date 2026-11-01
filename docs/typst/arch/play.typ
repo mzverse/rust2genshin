@@ -12,7 +12,7 @@
 
 ```text
 浏览器（静态页）
-   │  HTTP: /sample /status
+   │  HTTP: /status
    │  WebSocket: submit / cancel / lsp_* / 二进制产物帧
    ▼
 playground 服务（axum 进程，不含 rustc）
@@ -39,7 +39,7 @@ docker
     [*模块*], [*职责*],
 
     [`config`], [全部环境变量与默认值；空串等价于未设置。],
-    [`server::http`], [路由、CORS、`/healthz` `/status` `/sample` `/admin/rebuild`；`AppState` 在这里定义。],
+    [`server::http`], [路由、CORS、`/healthz` `/status` `/admin/rebuild`；`AppState` 在这里定义。],
     [`server::ws`], [WebSocket 连接的生命周期：握手校验、消息分发、把任务输出转成 `ServerMsg`。],
     [`server::session_gate`], [会话级占用表：同一个 IP 同时只允许一条活连接；占用随连接的 `Drop` 归还。],
     [`protocol`], [线协议的全部枚举与常量；`TARGETS` 是目标的唯一真源。],
@@ -117,7 +117,6 @@ docker
 
     [`/healthz`], [烘焙就绪返回 200，否则 503 并带日志尾巴。],
     [`/status`], [serving 镜像、烘焙状态、队列、git HEAD、pull 失败原因。],
-    [`/sample`], [仓库里的 `demo/src/lib.rs`；响应头带 HEAD 与烘焙 commit。],
     [`/admin/rebuild`], [触发烘焙：GitHub webhook（HMAC）或 Bearer token；都没配就 403。],
     [`/ws`], [升级为 WebSocket；Origin 白名单在这里查。],
 )
