@@ -14,7 +14,7 @@
 |---|---|---|
 | `sorting` | `sorting_demo` / `times99` | 嵌套循环、分支、数组按下标读写 |
 | `containers` | `container_demo` | `List` 全套操作、数组、嵌套列表、结构体列表、析构 |
-| `ownership` | `ownership_demo` / `ownership_drop_demo` / `ownership_struct_demo` / `ownership_drop_element_demo` / `ownership_drop_then_reuse_demo` | `Box` 的分配 / 读 / 借用 / 析构;元素是结构体的堆;`Box<T>` 自动析构 `T`;析构后槽位复用 |
+| `ownership` | `ownership_demo` / `ownership_drop_demo` / `ownership_struct_demo` / `ownership_borrow_demo` / `ownership_borrow_param_demo` / `ownership_drop_element_demo` / `ownership_drop_then_reuse_demo` | `Box` 的分配 / 读 / 借用 / 析构;借用就是 `&Box<T>` / `PartialMut<Box<T>>`,没有专门的句柄类型;元素是结构体的堆;`Box<T>` 自动析构 `T`;析构后槽位复用 |
 | `values` | `value_demo` | 数组、元组、`&str`、`Option`、枚举、结构体、ZST、`usize` |
 | `mutability` | `mutability_demo` | `&mut` 字段写、借用、`PartialMut`、`IndexMut` |
 | `flow` | `flow_demo` / `coroutine_demo` | 循环与 `continue`、协程 |
@@ -44,8 +44,8 @@ cargo build --release -p rust2genshin-demo \
 见 `src/unsupported.rs`。目前两条:
 
 1. **`Box<结构体>` 的字段写** —— 堆变量本身(`List<结构体>`)是支持的,读路径
-   见 `ownership_struct_demo`。卡住的是写:`m.x = 114` 要 `BoxRefMut` 的
-   `DerefMut`,那条路要真写句柄 —— 和下面第 2 条是同一个原因。
+   见 `ownership_struct_demo`。卡住的是写:`m.x = 114` 要 `DerefMut` 交出的
+   真写句柄 —— 和下面第 2 条是同一个原因。
 
 2. **`*b = v` 整体赋值** —— 节点图里没有写句柄,写元素走「写视图」
    (`list_set` / `Modify`)。由视图造出来的 `&mut` 是**假的**:读得了、借得了字段、

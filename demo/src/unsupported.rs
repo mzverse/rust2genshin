@@ -20,8 +20,8 @@ use crate::Point;
 ///
 /// 堆变量类型 `List<Point>` 本身是支持的(读路径见
 /// [`crate::ownership::ownership_struct_demo`],图变量节点走 `using_struct`,
-/// 选择器 22、`type1` 175)。卡住的是**写**:`m.x = 114` 要 `BoxRefMut` 的
-/// `DerefMut`,那条路要真写句柄 —— 见下面 `box_whole_assign_demo` 的说明。
+/// 选择器 22、`type1` 175)。卡住的是**写**:`m.x = 114` 要 `DerefMut`
+/// 交出的真写句柄 —— 见下面 `box_whole_assign_demo` 的说明。
 #[unsafe(no_mangle)]
 pub fn box_field_write_demo(m: &mut Box<Point>) {
     m.x = 114;

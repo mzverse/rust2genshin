@@ -25,12 +25,18 @@
 //! - **不能整体赋值**:`*b = v` 要真写句柄,降级时会报 `Unsupported`
 //!
 //! [`List`] 的 `IndexMut` 同理。
+//!
+//! # 借用
+//!
+//! 借用就是普通引用:`&Box<T>` 拿只读,`&mut Box<T>` 拿可写(后者在 IR 里
+//! 编成 `PartialMut<Box<T>>`)。**没有**专门的句柄类型 —— `Box<T>` 在 IR 里
+//! 落成槽位号(`Int`),借用它就是借用一个标量,`&Int` 与 `PartialMut<Int>`
+//! 都可储存(见 `IrKind::is_storable`)。
 
 use crate::PartialMut;
 use crate::list::List;
 use core::marker::PhantomData;
 use core::mem;
-use core::marker::Reborrow;
 use core::ops::{Deref, DerefMut, LegacyReceiver};
 use rust2genshin_lib_internal::native;
 
@@ -207,106 +213,6 @@ impl<T: 'static> AsRef<T> for Box<T> {
     }
 }
 impl<T: 'static> AsMut<T> for Box<T> {
-    #[inline(always)]
-    fn as_mut(&mut self) -> &mut T {
-        self.deref_mut()
-    }
-}
-
-impl<T: 'static> Box<T> {
-    /// 借出只读句柄。
-    #[rustc_force_inline]
-    pub fn borrow(&self) -> BoxRef<'_, T> {
-        BoxRef { slot: self.0.slot, _marker: PhantomData }
-    }
-
-    /// 借出可写句柄。
-    #[rustc_force_inline]
-    pub fn borrow_mut(&mut self) -> BoxRefMut<'_, T> {
-        BoxRefMut { slot: self.0.slot, _marker: PhantomData }
-    }
-}
-
-/// `Box` 借出来的只读句柄。
-///
-/// 只持**槽位号**,不持 [`BoxRaw`] —— `BoxRaw` 是「还占着这个槽」的所有权凭据,
-/// 借来的句柄不该拿着它,否则语义上等于把所有权也借走了。句柄本来也不负责
-/// 释放:释放是 `Box` 的析构做的事。
-///
-/// 槽位号是个数字,所以它是 `Copy` 的;`Deref` 时现去 `HEAP[slot]` 取。
-#[repr(transparent)]
-pub struct BoxRef<'a, T: 'static> {
-    slot: usize,
-    _marker: PhantomData<&'a T>,
-}
-impl<T: 'static> LegacyReceiver for BoxRef<'_, T> {
-}
-impl<T: 'static> Copy for BoxRef<'_, T> {
-}
-impl<T: 'static> Clone for BoxRef<'_, T> {
-    #[inline(always)]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T: 'static> Deref for BoxRef<'_, T> {
-    type Target = T;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        unsafe {
-            let heap = PartialMut::into_mut(Box::get_heap_mut());
-            &heap[self.slot]
-        }
-    }
-}
-impl<T: 'static> AsRef<T> for BoxRef<'_, T> {
-    #[inline(always)]
-    fn as_ref(&self) -> &T {
-        self.deref()
-    }
-}
-
-/// `Box` 借出来的可写句柄。
-///
-/// 同样只持槽位号。写字段可以(走 `list_set`),**整体赋值不行** —— 见模块
-/// 文档的「假借用」。
-#[repr(transparent)]
-pub struct BoxRefMut<'a, T: 'static> {
-    slot: usize,
-    _marker: PhantomData<&'a mut T>,
-}
-impl<T: 'static> LegacyReceiver for BoxRefMut<'_, T> {
-}
-impl<T: 'static> Reborrow for BoxRefMut<'_, T> {
-}
-impl<T: 'static> Deref for BoxRefMut<'_, T> {
-    type Target = T;
-
-    #[inline(always)]
-    fn deref(&self) -> &Self::Target {
-        unsafe {
-            let heap = PartialMut::into_mut(Box::get_heap_mut());
-            &heap[self.slot]
-        }
-    }
-}
-impl<T: 'static> DerefMut for BoxRefMut<'_, T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            let heap = PartialMut::into_mut(Box::get_heap_mut());
-            &mut heap[self.slot]
-        }
-    }
-}
-impl<T: 'static> AsRef<T> for BoxRefMut<'_, T> {
-    #[inline(always)]
-    fn as_ref(&self) -> &T {
-        self.deref()
-    }
-}
-impl<T: 'static> AsMut<T> for BoxRefMut<'_, T> {
     #[inline(always)]
     fn as_mut(&mut self) -> &mut T {
         self.deref_mut()

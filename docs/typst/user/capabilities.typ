@@ -37,7 +37,7 @@
 
 - *`List<T>`*（`lib/src/list.rs`）—— 别名到 `Box<[T]>`。用 `list![a, b, c]` 宏构造，`push` / `insert` 追加
 - *`Dict<K, V>`*（`lib/src/dict.rs`）—— 键值表，`K` 要满足 `DictKey`
-- *`Box<T>`*（`lib/src/boxed.rs`）—— 对应节点图的对象引用；`Box::new` / `into_inner` / `unbox`，`borrow` / `borrow_mut` 取借用
+- *`Box<T>`*（`lib/src/boxed.rs`）—— 持一个槽位号，对应节点图的堆。`Box::new` / `into_inner` / `unbox`；借用就用普通引用 `&Box<T>` / `&mut Box<T>`
 - *`Sc<T>`*（`lib/src/sc.rs`）—— 带引用计数的共享单元
 
 = 句柄

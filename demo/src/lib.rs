@@ -58,6 +58,8 @@ pub fn on_entity_created(event: EntityCreatedEvent) {
     containers::container_demo();
     ownership::ownership_demo();
     ownership::ownership_struct_demo();
+    ownership::ownership_borrow_demo();
+    ownership::ownership_borrow_param_demo();
     ownership::ownership_drop_element_demo();
     ownership::ownership_drop_then_reuse_demo();
     values::value_demo();

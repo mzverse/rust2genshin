@@ -14,7 +14,7 @@ use rust2genshin_lib::*;
 
 /// 完整示例:`Box` 的生命周期走一遍。
 ///
-/// 分配 → 读 → 借出只读句柄 → 借出可写句柄 → 取回内容 → 析构。
+/// 分配 → 读 → 借用 → 取回内容 → 析构。
 #[unsafe(no_mangle)]
 pub fn ownership_demo() {
     // 分配:槽位号从空闲表里拿,没有就把堆尾部追加一格
@@ -24,9 +24,9 @@ pub fn ownership_demo() {
     let v = *b;
     log(v);
 
-    // 借出只读句柄:只持槽位号,不持所有权
-    let r = b.borrow();
-    log(*r);
+    // 借用就是普通引用 —— 没有专门的句柄类型
+    let r = &b;
+    log(**r);
 
     // 取回内容:槽位还给空闲表
     let y = Box::into_inner(b);
@@ -54,6 +54,49 @@ pub fn ownership_struct_demo() {
     let b = Box::new(crate::Point { x: 1, y: 2 });
     let p = &*b;
     log(p.x);
+}
+
+/// 借用 `Box<T>`:只读用 `&Box<T>`,可写用 `PartialMut<Box<T>>`(`&mut` 编成它)。
+///
+/// 两者**都可储存**(能进局部变量、能当函数参数),因为 `Box<T>` 在 IR 里
+/// 落成槽位号 `Int`,借用它就是借用一个标量 —— 不是借用一个「有内部状态的
+/// 类型」(`IrKind::is_adt` 为假)。
+///
+/// 对比:`&Point` 就不行 —— `Point` 是结构体,`PartialMut<Point>` 是 adt,
+/// 只能当视图用,存不进局部变量。
+#[unsafe(no_mangle)]
+pub fn ownership_borrow_demo() {
+    let mut b = Box::new(114);
+
+    // 只读借用:`&Box<T>` 在 IR 里就是槽位号这个值,可储存
+    let r = &b;
+    log(**r);
+
+    // 可写借用:走 `PartialMut<Box<T>>`
+    let mut m = PartialMut::from_mut(&mut b);
+    log(**m);
+
+    // 借完还能读回原值 —— 借用没把所有权拿走
+    log(*b);
+}
+
+/// 借用可以当函数参数传来传去。
+fn read_slot(b: &Box<i32>) -> i32 {
+    **b
+}
+
+fn bump_slot(b: PartialMut<'_, Box<i32>>) {
+    // `PartialMut` 解引用后仍是 `Box<i32>`,再解一次才到 `i32`
+    let v = **b;
+    log(v);
+}
+
+#[unsafe(no_mangle)]
+pub fn ownership_borrow_param_demo() {
+    let mut b = Box::new(7);
+    log(read_slot(&b));
+    bump_slot(PartialMut::from_mut(&mut b));
+    log(*b);
 }
 
 /// 带析构的元素类型:析构时打一条日志,好看出它到底跑没跑。
