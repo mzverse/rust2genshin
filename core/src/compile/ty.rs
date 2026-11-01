@@ -38,7 +38,11 @@ impl<'tcx> Compiler<'tcx> {
         Ok(None)
     }
 
-    fn mangle_ty(ty: Ty) -> String {
+    /// 一个类型的显示名。`Box<std::i32>` → `rust2genshin_lib::boxed::Box<i32>`。
+    ///
+    /// 黑板变量名直接用它(见 `CompilingFn::box_var_name`)—— 不再自造
+    /// `box_xxx_heap` 这类名字。
+    pub(crate) fn mangle_ty(ty: Ty) -> String {
         assert!(!ty.has_param());
         match ty.kind() {
             TyKind::Tuple(tys) => Self::mangle_tuple(tys),

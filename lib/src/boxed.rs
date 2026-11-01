@@ -1,15 +1,16 @@
 //! 节点图里的「堆」:`Box<T>`。
 //!
 //! 目标平台没有内存,所以 `Box` 不持指针 —— 它持一个**槽位号**(`usize`),
-//! 槽位号是该类型专属堆 `HEAP` 里的下标。每种 `T` 各有一组黑板变量:
+//! 槽位号是该类型专属堆 `HEAP` 里的下标。每个 `Box<T>` 各有一组黑板变量,
+//! 名字**就是类型自己的显示名**:
 //!
 //! ```text
-//! box_i32_heap : List<i32>    // 存活的槽
-//! box_i32_free : List<i32>    // 已释放的槽号,分配时优先复用
+//! rust2genshin_lib::boxed::Box<i32>::HEAP : List<i32>  // 存活的槽
+//! rust2genshin_lib::boxed::Box<i32>::FREE : List<i32>  // 已释放的槽号,优先复用
 //! ```
 //!
-//! 变量名由后端按 `T` 拼出来(见 `core/src/compile/native.rs` 的
-//! `box_heap_get` 分支),lib 侧不需要知道名字。
+//! 变量名由后端按 `impl` 的 self 类型拼出来(见
+//! `core/src/compile/func.rs` 的 `box_var_name`),lib 侧不需要知道名字。
 //!
 //! `#[repr(transparent)]` 让 `Box<T>` 在 IR 里直接落成 `Int`
 //! (`core/src/compile/ty.rs:243` 对 transparent ADT 取 field 0),不需要
@@ -84,8 +85,9 @@ impl<T: 'static> Box<T> {
 
     /// 这一类 `Box` 的共享堆,以**可写视图**交出。
     ///
-    /// 每种 `T` 一组黑板变量,所以它是泛型的:同一个 `Box<i32>` 的所有实例
-    /// 共用一张 `HEAP`。变量名由后端按 `T` 拼。
+    /// 每个 `Box<T>` 一组黑板变量,所以它是泛型的:同一个 `Box<i32>` 的所有
+    /// 实例共用一张 `HEAP`。变量名由后端按整个 `Box<T>` 类型拼
+    /// (`rust2genshin_lib::boxed::Box<i32>::HEAP`)。
     #[native("box_heap_get")]
     pub unsafe fn get_heap_mut() -> PartialMut<'static, List<T>>;
 

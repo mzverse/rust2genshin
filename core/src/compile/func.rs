@@ -65,15 +65,6 @@ pub enum RetSource {
     Unset,
 }
 
-/// 把类型串变成能当变量名的形式。
-///
-/// `List<i32>` → `List_i32_`。黑板变量的名字只留字母数字和下划线。
-fn mangle_variable(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
 impl FnDecl {
     /// 第 `i` 个返回值**当前的**来源。
     ///
@@ -649,12 +640,33 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
         }
     }
 
-    /// 黑板变量名:按 `Box` 的元素类型拼。
+    /// 黑板变量名:**就是那个类型自己的显示名**。
     ///
-    /// 同一种 `T` 的 `Box` 共用一组变量(`box_i32_heap` / `box_i32_free`),
-    /// 所以名字必须编码 `T`。
-    fn box_variable_name(elem: &IrKind, suffix: &str) -> String {
-        format!("box_{}_{suffix}", mangle_variable(&elem.to_string()))
+    /// `Box<i32>` 的两个堆变量直接叫 `rust2genshin_lib::boxed::Box<i32>::HEAP`
+    /// 与 `::FREE` —— 不再自造 `box_i32_heap` 这种名字,编辑器里看到的
+    /// 就是代码里写的那个类型。
+    ///
+    /// 名字由 `call_self_ty` 拿到的 `Box<T>` 拼(`mangle_ty`),所以不需要
+    /// 单独解析泛型实参。
+    fn box_var_name(&self, func: Instance<'tcx>, suffix: &str) -> String {
+        let self_ty = self
+            .call_self_ty(func)
+            .expect("Box 的堆访问应当在某个 impl 上");
+        format!("{}::{suffix}", Compiler::mangle_ty(self_ty))
+    }
+
+    /// 原生调用所在 `impl` 的 self 类型 —— `Box::<T>::get_heap_mut` 的
+    /// self 类型就是 `Box<T>`(已经按实例实参单态化过)。
+    ///
+    /// 不直接在 `TyKind::Adt` 上取,是因为调用点拿到的是 `Instance`
+    /// (函数),从它的 `associated_item` 反查 `impl` 的 self 类型更直接。
+    fn call_self_ty(&self, func: Instance<'tcx>) -> Option<Ty<'tcx>> {
+        let assoc = self.tcx.opt_associated_item(func.def_id())?;
+        let impl_def = assoc.impl_container(self.tcx)?;
+        Some(self.tcx.normalize_erasing_regions(
+            TypingEnv::fully_monomorphized(),
+            self.tcx.type_of(impl_def).instantiate(self.tcx, func.args),
+        ))
     }
 
     /// `Box<T>` 那个 `T` 的 IR 类型。
@@ -1035,14 +1047,13 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 // `List::from([T; N])` / `List::into_array`:数组在节点图里就是
                 // 列表,两边的类型完全相同,值直接过。
                 "identity" => Some(args[0].clone()),
-                // `Box<T>` 的堆:**黑板变量**按 `T` 分开命名。
+                // `Box<T>` 的堆:**黑板变量**按 `Box<T>` 整个类型分开命名。
                 //
-                // 变量名在编译期由 `T` 拼出来(`box_i32_heap`),后端按它生成
-                // 图变量读节点 —— 所以这里要拿到泛型实参,`compile_native_call`
-                // 那边只有类型形状,不够。
+                // 变量名就是类型自己的显示名 + `::HEAP` / `::FREE`
+                // (见 `box_var_name`),编辑器里看到的就是代码里写的那个类型。
                 "box_heap_get" => {
                     let elem = self.box_elem_kind(func, span)?;
-                    let name = CompilingFn::box_variable_name(&elem, "heap");
+                    let name = self.box_var_name(func, "HEAP");
                     let list = IrKind::list(elem);
                     let raw = self.graph_variable_load(&name, list.clone());
                     // 交出去的是可写视图:再标一层 `PartialMut`。
@@ -1051,8 +1062,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                     Some(ValueIn::link(Link::node(view, 0)))
                 }
                 "box_free_get" => {
-                    let elem = self.box_elem_kind(func, span)?;
-                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let name = self.box_var_name(func, "FREE");
                     let list = IrKind::list(IrKind::Native(NativeKind::Int));
                     let raw = self.graph_variable_load(&name, list.clone());
                     let view = self.graph.insert(ir::node_ir_to_partial_mut(list));
@@ -1061,15 +1071,14 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
                 "box_heap_set" => {
                     let elem = self.box_elem_kind(func, span)?;
-                    let name = CompilingFn::box_variable_name(&elem, "heap");
+                    let name = self.box_var_name(func, "HEAP");
                     let list = IrKind::list(elem);
                     let (node, block) = self.graph_variable_store(&name, list, args[0].clone());
                     let _ = node;
                     return Ok(block);
                 }
                 "box_free_set" => {
-                    let elem = self.box_elem_kind(func, span)?;
-                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let name = self.box_var_name(func, "FREE");
                     let list = IrKind::list(IrKind::Native(NativeKind::Int));
                     let (node, block) = self.graph_variable_store(&name, list, args[0].clone());
                     let _ = node;
@@ -1077,8 +1086,7 @@ impl<'tcx, 'a> CompilingFn<'tcx, 'a> {
                 }
                 "box_free" => {
                     // 把槽号追加到空闲表末尾 —— 读、插、写三步。
-                    let elem = self.box_elem_kind(func, span)?;
-                    let name = CompilingFn::box_variable_name(&elem, "free");
+                    let name = self.box_var_name(func, "FREE");
                     let list = IrKind::list(IrKind::Native(NativeKind::Int));
                     let raw = self.graph_variable_load(&name, list.clone());
                     let len = self.graph.insert(node_ir_list_get_length(IrKind::Native(NativeKind::Int)));
