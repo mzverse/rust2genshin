@@ -66,12 +66,8 @@ use rust2genshin_lib::event::player::{PlayerAllDownEvent, PlayerAbnormalReviveEv
 - `PlayerAbnormalReviveEvent` —— `player`
 - `PlayerRevivedEvent` —— `player`
 
-= 自己加一个
-
-往`lib/src/event/`里加：`#[event(N)]`的`N`是事件节点ID，struct的*字段顺序必须和游戏端出参顺序一致*，编译器按顺序把字段类型拼成节点的出参
-
-struct和字段都要`pub`，写法见#link("/dev/add-native.html")[加一个原生调用]
-
 = 还没做的
 
 自定义事件、事件参数传递规则都没实现，目前只能用上面这些
+
+要往库里加一个新事件，见#link("/dev/add-native.html")[加一个原生调用]的「事件」一节

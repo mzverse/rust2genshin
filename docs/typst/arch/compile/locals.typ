@@ -57,6 +57,22 @@ pub enum CompiledPlace {
 
 = 为什么不把整个元组存成一个局部变量
 
-节点图没有「结构体类型的局部变量」这种节点。`node_local` 的类型表是固定的（`query.rs:280-...`），加不进去。展平是唯一可行的做法 —— 代价是每个复合类型局部变量会变成 N 个子槽，函数引脚数随之翻倍。
+节点图没有「结构体类型的局部变量」这种节点。`node_local`（`core/src/node/query.rs:279`）
+的类型表是固定的：`Bool` / `Int` / `String` / `Entity` / `Guid` / `Float` / `Vec3` /
+`Config` / `Prefab` / `Faction`，外加它们的列表版本，共 20 档 —— 每一档对应一组
+selectors 和 kernel，没有「随便什么结构」的位置。
 
-元组 `==` 也因此用不了：rustc 把 `p == q` lower 成 `<(A, B) as PartialEq>::eq(...)` 的 trait 调用，而后端不建模 trait dispatch（`compile_call` → `touch_fn` 对 stdlib 函数无效）。见#link("/user/unsupported.html")[不被支持的特性]。
+而这张表是*游戏侧定的*：kernel 编号必须和引擎对齐，不是我们能扩的。所以展平不是
+权宜之计，是唯一可行的做法。代价是每个复合类型局部变量变成 N 个子槽，函数引脚数
+随之翻倍。
+
+结构体还有一个额外的代价：`&mut` 字段写必须经过 `Modify`（见#link("/arch/ir/index.html")[IR]），
+因为节点图里没有「字段句柄」。
+
+= 一个连带后果：元组 `==`
+
+元组 `==` 用不了：rustc 把 `p == q` lower 成 `<(A, B) as PartialEq>::eq(...)` 的 trait
+调用，而后端不建模 trait dispatch（`compile_call` → `touch_fn` 对 stdlib 函数无效）。
+见#link("/user/unsupported.html")[不被支持的特性]。
+
+这不是展平带来的限制 —— 就算整个元组能存成一个槽，trait 调用依然解析不了。
