@@ -14,7 +14,7 @@ protobuf 本身没有长度、没有版本、没有魔数。游戏加载器要�
 
 = 头部
 
-5 个 u32 大端（`asset.rs:111-126`）：
+5 个 u32 大端（`asset.rs:120-124`）：
 
 #table(columns: 2, align: center + horizon)[偏移][含义
 ][`0x00`][文件总大小 − 4（= proto 长度 + 20）
@@ -55,7 +55,7 @@ proto 字段是*从真实导出文件逆推*的。权威 schema 在参考项目�
 编译器侧对应的类型体系在 `core/src/value.rs`：
 
 - `NativeKind`（`value.rs:12`）—— 枚举：`Bool` / `Int` / `Float` / `String` / `Vec3` / `Guid` / `Faction` / `Config` / `Prefab` / `Entity` / `Enum(i32)` / `List` / `Dict` / `Struct(StructRef)` / `LocalVarRef` / `VarSnapshotRef`
-- `NativeValue`（`value.rs:54`）—— trait，每种类型各自实现，负责编解码
+- `NativeValue`（`value.rs:56`）—— trait，每种类型各自实现，负责编解码
 
 `NativeKind` 是枚举而 `NativeValue` 是 trait，这个分工不是随手分的：IR 层要能*比较和
 克隆类型*（`IrKind` 要求 `PartialEq` / `Hash`），所以类型必须是一个值；而真正编码值
@@ -63,7 +63,7 @@ proto 字段是*从真实导出文件逆推*的。权威 schema 在参考项目�
 
 = 节点的引用
 
-`NodeRef` 序列化成 `id + NODE_ID_BEGIN`，`NODE_ID_BEGIN = 1`（`node/mod.rs:45,58,61`）。所以线上的 node id 从 1 开始。
+`NodeRef` 序列化成 `id + NODE_ID_BEGIN`，`NODE_ID_BEGIN = 1`（`node/mod.rs:46,59,62`）。所以线上的 node id 从 1 开始。
 
 保留 0 是为了让「这个引脚没接」有一个可用的编码。
 
