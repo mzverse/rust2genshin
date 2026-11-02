@@ -20,7 +20,7 @@ cargo run -p rust2genshin-playground
 
 = 配置
 
-全部配置项都从环境变量读，默认值只写在 `playground/src/config.rs:148-175` 一处。空串与未设置等价（部署时 `VAR=` 和 `unset VAR` 结果一样）。
+全部配置项都从环境变量读，默认值只写在 `playground/src/config.rs:209-275`（`resolve`）一处。空串与未设置等价（部署时 `VAR=` 和 `unset VAR` 结果一样）。
 
 #table(
     columns: (auto, auto, 1fr),
@@ -101,7 +101,7 @@ cargo run -p rust2genshin-playground
 - *任务目录* —— `target/playground/` 下是每个任务的工作目录（只有 `src/lib.rs` 与 `meta.json`），按 `PLAYGROUND_ARTIFACT_TTL` 过期清掉。*.gia 不在里面*:它留在容器里，编译完用 `docker cp <容器>:<路径> -` 当 tar 流取回内存。因此任务容器*不带 `--rm`*（否则取不到），清理由 `ContainerGuard` 的 `docker rm -f` 负责。
 - *镜像和 builder cache* —— 走 docker 自己的 data root（不是项目里的 `target/`）。镜像按 label 清，只认本服务烘的那些，*绝不碰宿主上别人的镜像*。
 
-一条要紧的副作用：`docker builder prune` 是*全局*的 —— builder cache 没有 label、在这台机器上被所有项目共享，所以那一下清的是*所有* builder 的缓存，不只是我们的（`playground/src/docker.rs:166-169`）。还有 `PLAYGROUND_BUILD_CACHE_MAX` 传的是 `--keep-storage`，语义是*留到*多少，超预算的丢最旧的。
+一条要紧的副作用：`docker builder prune` 是*全局*的 —— builder cache 没有 label、在这台机器上被所有项目共享，所以那一下清的是*所有* builder 的缓存，不只是我们的（`playground/src/docker.rs:233` 的 `prune_args`）。还有 `PLAYGROUND_BUILD_CACHE_MAX` 传的是 `--keep-storage`，语义是*留到*多少，超预算的丢最旧的。
 
 = 编辑器与 rust-analyzer
 

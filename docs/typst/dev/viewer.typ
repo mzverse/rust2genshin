@@ -137,7 +137,7 @@ cargo run -p rust2genshin-viewer -- <路径>
 两个入口：
 
 - `Alt+←` / `Alt+→`
-- 鼠标的前进 / 后退消息。在 gpui 里它们是 `MouseButton::Navigate(Back|Forward)`，由 Windows 后端的 `WM_XBUTTONDOWN`（XBUTTON1/2）映射而来（`gpui/src/platform/windows/events.rs:513-514`）。这条链接在窗口根节点上，整个窗口范围内生效，不依赖焦点。
+- 鼠标的前进 / 后退消息。在 gpui 里它们是 `MouseButton::Navigate(Back|Forward)`，由 Windows 后端的 `WM_XBUTTONDOWN`（XBUTTON1/2）映射而来（`gpui/src/platform/windows/events.rs:513-514`，gpui crate 的外部源码，不在本仓库）。这条链接在窗口根节点上，整个窗口范围内生效，不依赖焦点。
 
 和浏览器的语义一致：做了新导航之后前进栈清空。
 
