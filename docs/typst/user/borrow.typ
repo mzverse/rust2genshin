@@ -7,11 +7,15 @@
 
 #import "/lib/card.typ": *;
 
-= 共享借用（可变借用）
+= 共享借用
 
-当`T: Freeze`，共享借用保证被借用的值不会被改变，因此`&T`编译为与`T`相同；
+当`T: Freeze`，共享借用保证被借用的值不会被改变，因此`&T`编译为与`T`相同
 
-当`T: !Freeze`，内部可变，因此`&T`编译为与`PartialMut<T>`相同。TODO：`Cell`相关的设计是待定的
+当`T: !Freeze`，内部可变，因此`&T`编译为与`PartialMut<T>`相同
+
+#card_info[
+    `Cell`这类内部可变性目前不支持，所以 `T: !Freeze` 的情况基本只出现在 `PartialMut` 自身
+]
 
 = 可变借用
 
@@ -33,18 +37,10 @@
 
 = Cell
 
-其设计是待定的，当`T: !Freeze`
+不支持。设计上还有两种走法没定：
 
-== 提案1
+- 让 `UnsafeCell` 不遵循透明布局，使其确实内部可变 —— 则 `&T` 同 `PartialMut<T>`
+- 完全遵循透明布局，`Cell` 本质上就是整体可变 —— 则 `&T` 同 `&mut T`（仅当 `T` 透明至
+  `UnsafeCell`），其它的 `&T` 仍同 `PartialMut<T>`
 
-让`UnsafeCell`不遵循透明布局，使其确实内部可变
-
-则`&T`同`PartialMut<T>`
-
-== 提案2
-
-完全遵循透明布局，`Cell`本质上是整体可变
-
-则`&T`同`&mut T`，仅当`T`透明至`UnsafeCell`；其它的`&T`仍同`PartialMut<T>`（或依赖于优化消除？）
-
-比较麻烦
+两者都不够干净，暂时没有结论

@@ -77,8 +77,6 @@ pub fn co2() -> f32 {
 }
 ```
 
-`Resume` trait（`lib/src/asynchronous.rs`）提供`.resume()`，签名是`fn resume(&mut self) -> CoroutineState<f32, Self::Return>`
-
 = 让它跑起来
 
 在非协程的入口里手动`resume`
@@ -92,7 +90,7 @@ pub fn test_co() {
 }
 ```
 
-或者交给任务系统（`lib/src/task.rs`），它对应`task_spawn`原生调用，后续推进由节点图自己负责
+或者交给任务系统，后续推进由节点图自己负责
 
 ```rust
 use rust2genshin_lib::task::Task;
@@ -101,12 +99,12 @@ let task: Task<f32> = Task::spawn(Box::new(co0()));
 
 = 现状
 
-这条链还有半成品的痕迹，别当稳定API用
+这条链还有半成品的痕迹，别当稳定API用。
 
-- `#[async_loop]`的宏体里写着`// TODO`（`lib-internal/src/lib.rs:91`）
-- `async_point` / `async_jump`（`lib/src/asynchronous.rs`）的`#[native(...)]`目前是*注释掉*的，函数体只是返回`0.`的占位 —— 还没挂到真正的节点上
-- `demo/src/lib.rs`里的`.await`示例也是注释状态
+`sleep!` / `async_continue!` 底下的 `async_point` / `async_jump`
+（`lib/src/asynchronous.rs:12`、`:19`）的 `#[native(...)]` 目前是*注释掉*的，
+函数体只是返回 `0.` 的占位 —— 还没有挂到真正的「挂起 / 恢复」节点上。
 
-后端侧是支持的：`CoroutineState`、resume参数、upvar都在`core/src/compile/helper.rs`和`compile/mod.rs`里建模了
-
-缺的是`async_point` / `async_jump`这一层
+后果是：`.await` 和 `#[async_loop]` 的代码写得出来、编得过，但把它真实推进的调度
+语义还没接上。后端侧是支持协程的（状态机、resume 参数、捕获变量都建模了），缺的
+就是这两个函数对应的节点。
