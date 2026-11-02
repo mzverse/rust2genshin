@@ -6,11 +6,7 @@
 
 本站（就是你现在看的这个）由 Typst 编译成 HTML。Rust 侧的驱动器在 `docs/` 下，负责拼出入口文件、调 Typst、处理路径。装工具链、跑编译、配编辑器这些*动手*的事见#link("/dev/docs/index.html")[文档（开发栏）]，这一栏只讲它*怎么搭起来的*。
 
-#list(
-    link("/arch/docs/custom-element.html", [自定义元素]) + [ —— 卡片、折叠面板、代码块、侧栏这一类东西的共同结构：`custom_element` 怎么把脚本收集进 `<head>`、`<template>` + shadow root 的三层分工、以及它付的几笔代价],
-    link("/arch/docs/graph.html", [节点图]) + [ —— 文档站里画节点图的自定义元素：一个 `<svg>` 层、`<foreignObject>` 节点、以及它踩过的坑],
-    link("/arch/docs/style.html", [样式]) + [ —— Typst 的段落和容器编成哪些 HTML 元素，以及为什么不是 `<p>`],
-)
+自定义元素那套（卡片、折叠面板、代码块、侧栏共用的 `<template>` + shadow root 结构）是本站唯一不显然的部分，值得单独读；节点图和样式两页是它的两个应用。
 
 = 两层：生成入口 + 编译
 

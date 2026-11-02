@@ -65,24 +65,11 @@ pub enum IrKind {
 
 = 节点
 
-IR 层的节点 id 是 `IrNodeId`（`core/src/compile/ir.rs:252`），它比
-`NativeNodeId` 多了几个只在优化期存在的名字：`Local` / `SetLocal` /
-`Assemble` / `Destructure` / `Modify` / `FieldSetter` / `Copy` /
-`ToPartialMut` / `ListAssemble`。
+IR 层的节点 id 是 `IrNodeId`（`core/src/compile/ir.rs:252`），它比 `NativeNodeId` 多了几个只在优化期存在的名字：`Local` / `SetLocal` / `Assemble` / `Destructure` / `Modify` / `FieldSetter` / `Copy` / `ToPartialMut` / `ListAssemble`。
 
-#list(
-    link("/arch/ir/node/local.html", [Local]) + [ —— 局部变量的两个出口],
-    link("/arch/ir/node/set_local.html", [SetLocal]) + [ —— 写局部变量，以及它的消除判据],
-    link("/arch/ir/node/switch.html", [switch]) + [ —— `if` / `match` 的分支源],
-    link("/arch/ir/node/nop.html", [nop]) + [ —— 只为接起控制流而存在的空节点],
-    link("/arch/ir/node/unreachable.html", [unreachable]) + [ —— 不可达分支],
-)
+其中只有 `Local` 和 `SetLocal` 值得单独讲（#link("/arch/ir/node/local.html")[Local] 的两个出口、#link("/arch/ir/node/set_local.html")[SetLocal] 的消除判据）；`switch` / `nop` / `unreachable` 的形状在图示里一眼能看完。
 
 = 类型
 
-#list(
-    link("/arch/ir/kind/index.html", [kind]) + [ —— 原生类型与列表],
-    link("/arch/ir/kind/mut.html", [Mut]) + [ —— `&mut T` 的两个槽],
-    link("/arch/ir/kind/partial_mut.html", [PartialMut]) + [ —— 可变视图],
-    link("/arch/ir/kind/never.html", [Never]) + [ —— `!`],
-)
+`IrKind` 的变体里，`Mut` 和 `PartialMut` 有专页（#link("/arch/ir/kind/index.html")[类型]目录下）；其余的 `Never` 只是 `!` 的占位。
+

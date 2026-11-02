@@ -6,11 +6,9 @@
 
 #set raw(lang: "rust");
 
-这一栏讲*怎么动手改*：从哪下手、改完怎么验。
+这一栏讲*怎么动手改*：从哪下手、改完怎么验。理由在#link("/arch/index.html")[架构]栏。
 
-「为什么这么设计」在#link("/arch/index.html")[架构]栏，「怎么用」在#link("/user/index.html")[使用]栏。
-
-= 动手
+= 想做什么
 
 #table(
     columns: (auto, 1fr),
@@ -31,25 +29,10 @@
     [#link("/dev/conventions.html")[约定] —— 命名规则、句柄类型的三层约束、踩过的坑],
 )
 
-= 构建与调试
+= 跑起来
 
-#list(
-    link("/dev/build.html", [构建]) + [ —— 工具链、后端怎么被 rustc 加载、端到端构建流程、CI],
-    link("/dev/debugging.html", [调试]) + [ —— 诊断输出、被忽略的断言、增量构建、Python 工具],
-)
+改完怎么验、出错怎么看，见#link("/dev/build.html")[构建]与#link("/dev/debugging.html")[调试]。
 
-= 工具
+两个调试工具：*viewer* 能拖入 `.ogia` / `.rlib` 看中间态 IR、逐条跑优化规则；*playground* 是文档站「摆弄」页的后端。
 
-#list(
-    link("/dev/viewer.html", [viewer]) + [ —— 拖入 `.ogia` / `.rlib` 浏览中间态 IR，跑优化规则看它改了什么],
-    link("/dev/playground.html", [playground]) + [ —— 文档站「摆弄」页的后端，一次性 docker 容器里跑 cargo build],
-)
-
-= 文档站
-
-#list(
-    link("/dev/docs/index.html", [文档]) + [ —— Typst 环境、编译与 watch、编辑器配置],
-    link("/dev/docs/layout.html", [排版]) + [ —— Typst 导出的 DOM 形状、全局行高、`.block` 宽度],
-    link("/dev/docs/card.html", [卡片]),
-    link("/dev/docs/typst.html", [Typst 的简单教程]),
-)
+改站点本身先看#link("/dev/docs/index.html")[文档]，改样式前看#link("/dev/docs/layout.html")[排版]（那三个坑不报错）。

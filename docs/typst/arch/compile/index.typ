@@ -97,13 +97,6 @@ MIR 内联器的职责，它跑在后端之前。后端再做一遍等于把「�
 存在主图的变量表里，按名字索引 —— 所以同名变量在各函数里指的是同一个，类型必须
 一致。停在第 1 步之后才 lower，是因为 lower 之后名字就丢了。
 
-= 这一组
-
-#list(
-    link("/arch/backend.html", [后端为何这样接]) + [ —— 为什么是 codegen 后端、为什么不产机器码],
-    link("/arch/compile/locals.html", [局部变量]) + [ —— 为什么复合类型必须打散成标量槽],
-    link("/arch/compile/loops.html", [循环改写]) + [ —— 环怎么变有限循环、计数循环怎么认],
-    link("/arch/compile/cast.html", [类型转换]) + [ —— `as` 的三条路与转换表],
-    link("/arch/ir/index.html", [IR]) + [ —— 中间形态为什么不能省],
-    link("/arch/calling-convention.html", [调用约定]) + [ —— 复合节点的对外形态],
-)
+这一目录下还有三页讲具体环节：#link("/arch/compile/locals.html")[局部变量]
+（复合类型为什么必须打散成标量槽）、#link("/arch/compile/loops.html")[循环改写]
+（环怎么变有限循环）、#link("/arch/compile/cast.html")[类型转换]（`as` 的三条路）。
