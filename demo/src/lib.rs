@@ -33,7 +33,6 @@
 
 #[allow(unused_imports)]
 use rust2genshin_lib::*;
-use rust2genshin_lib::boxed::Box;
 #[allow(unused_imports)]
 use rust2genshin_lib::math::*;
 

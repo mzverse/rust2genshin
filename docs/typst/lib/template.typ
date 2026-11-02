@@ -14,7 +14,7 @@
     with_title: true,
 ) = context {
     set text(lang: "zh", font: "Microsoft YaHei", size: 12pt);
-    show link: if target() == "html" {
+    show link: if this-doc() != none {
         it => {
             let dest = it.dest;
             if type(dest) == str and dest.starts-with("/") {
