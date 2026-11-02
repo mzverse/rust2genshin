@@ -101,6 +101,12 @@ macro_rules! guid {
 
 *不要给泛型引脚的节点编具体类型。* 引脚类型含 `<T>` 的（`R<T>`、`L<R<T>>`、`L<R<K>>` 等）*直接跳过*，不要 fallback 成 `i32` 之类的具体类型 —— 那会破坏类型契约。曾经把 ID 36 `VariableChangeEvent` 的 `old_value` / `new_value`（类型是 `R<T>`）当成 `i32` 写过，是错的。等泛型 API 支持了再做。
 
-*多输出节点*暂时不实现，等结构体 API。已知的几个：ID 580 `Get_Obj_Attr`（7 输出）、670 `Get_Adv_Attr`（8）、671 `Get_Elem_Attr`（16）、619 `Get_Patrol_Template`（3）、658 `Get_Rank_Info`（4）、753 `Timestamp_To_Time`（6）。两个以内的输出可以先用元组返回。
+*多输出节点先不接进 lib。* 节点本身已经构造好了：
+`NODE_GET_OBJ_ATTR`（580，7 输出）/ `NODE_GET_ADV_ATTR`（670，7）/ `NODE_GET_ELEM_ATTR`
+（671，10）/ `NODE_GET_PATROL_TEMPLATE`（619，3）/ `NODE_GET_RANK_INFO`（658，4），
+见 `core/src/node/query.rs:177` / `:186` / `:194` / `:636` / `:752`。
 
-*还没定的*：`is_active` / `is_in_combat` 这类 bool 方法该挂在 `Entity` / `Player` 上还是做自由函数（可能要看节点 ID 的 domain）；`is_hostile(a, b)` 现在在 `entity.rs` 当自由函数，语义上偏阵营，但项目里没有 `faction.rs`；`faction_rank(camp)` 和 `Player::rank(self)` 两个「rank」命名要不要消歧。遇到相关改动时一并想。
+Rust 侧还没有对应函数 —— `lib/` 的签名只能表达「一个返回值」或「一个元组」，而
+这些节点的出参要接进 `Entity` 的方法里才有意义。等结构体 API 成熟再统一接。
+
+*还没定的*：`is_active` / `is_in_combat` 这类 bool 方法该挂在 `Entity` / `Player` 上还是做自由函数（可能要看节点 ID 的 domain）。现状是挂在 `Entity` 上（`lib/src/entity.rs:103`、`:107`）；`is_hostile(a, b)` 是 `entity.rs:227` 的自由函数，语义上偏阵营，但项目里没有 `faction.rs`；`faction_rank`（`entity.rs:239`）和 `Player::rank`（`lib/src/player.rs`）两个「rank」命名要不要消歧。遇到相关改动时一并想。

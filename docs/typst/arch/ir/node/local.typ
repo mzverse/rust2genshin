@@ -17,7 +17,7 @@
 
 局部变量节点
 
-两个出口：setter（`LocalRef`）和值。值交出来的是#link("/dev/ir/kind/partial_mut.html")[可变视图]，读值要过`Copy`节点
+两个出口：setter（`LocalRef`）和值。值交出来的是#link("/arch/ir/kind/partial_mut.html")[可变视图]，读值要过`Copy`节点
 
 设置使用#link(<tag-set-local>)[SetLocal]
 

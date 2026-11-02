@@ -4,9 +4,24 @@
 
 #set raw(lang: "rust");
 
-这是让用户在 `lib/` 里调到一个函数、而编译出来是一个节点的做法。
+让用户在 `lib/` 里调到一个函数、编译出来是一个节点。
 
-`lib/` 里的原生函数*没有实现* —— 属性宏会把函数体换成 `unreachable!()`，只留下签名当声明：
+= 三种写法
+
+#table(
+    columns: (auto, auto, auto, 1fr),
+    inset: 6pt,
+    fill: (_, y) => if calc.odd(y) { luma(235) },
+    [*属性*], [*参数*], [*改 core?*], [*用在哪*],
+
+    [`#[native_calc(N)]`], [节点 ID], [不用], [无控制流的节点],
+    [`#[native_exec(N)]`], [节点 ID], [不用], [有控制流的节点],
+    [`#[native("名字")]`], [字符串], [*要*], [签名不足以描述节点时],
+)
+
+前两个只差一个布尔：编译器按 Rust 签名直接合成
+`NodeKind::simple(id, 控制流入, 控制流出, 入参类型, 出参类型)`。所以*不需要*
+先在 `core/src/node/` 里声明这个节点，把 ID 写对就行。
 
 ```rust
 impl Entity {
@@ -18,31 +33,29 @@ impl Entity {
 }
 ```
 
-用这些属性的 crate 需要两行 crate 属性，详见下面的「编译器怎么认出这是原生调用」：
+函数*没有实现* —— 属性宏会把函数体换成 `unreachable!()`，只留下签名当声明，
+并加上 `#[inline(never)]` 和 `#[rustc_no_mir_inline]` 防止调用点被内联掉。
+
+= 用这些属性的 crate 要两行
 
 ```rust
 #![feature(register_tool)]
 #![register_tool(rust2genshin)]
 ```
 
-宏还会加上 `#[inline(never)]` 和 `#[rustc_no_mir_inline]`，避免这个声明被内联掉、调用点消失。
+少了它们，编译器会报「cannot find crate `rust2genshin`」—— 那个提示看不出要干什么。
+proc macro 只能改自己展开的那段，没法把提示挪到 crate 属性上。
 
-= 三个宏的区别
+= `#[native("名字")]` 的情形
 
-- `#[native_calc(N)]` —— 参数是节点 ID（整数），*无*控制流，不用改 core
-- `#[native_exec(N)]` —— 参数是节点 ID（整数），*有*控制流，不用改 core
-- `#[native("名字")]` —— 参数是字符串名字，控制流视分支而定，*要*改 core
+字符串形式用于签名不足以描述节点的情况（类型相关、或参数/返回值不是直通）。
+它在 `core/src/compile/native.rs` 里加分支：
 
-前两个只差一个布尔：编译器直接按 Rust 签名合成节点 `NodeKind::simple(id, control, control, 入参类型, 出参类型)`。所以*不需要*先在 `core/src/node/` 里声明这个节点，把 ID 写对就行。
-
-= `#[native("名字")]` 为什么要改 core
-
-字符串形式用于签名不足以描述节点的情况（类型相关、或参数/返回值不是直通）。它需要在 `core/src/compile/native.rs` 里加分支：
-
-- *调用* —— `compile_native_call` 里的名字匹配，现有的有 `power` / `to_string` / `enum_eq` / `free` / `list_get` / `list_set` / `list_insert` / `list_len`
-
-例外是 `PartialMut` 的三个内建（`partial_mut_from` / `partial_mut_deref` / `partial_mut_deref_mut`）：它们在 `compile_call` 里特判，不走 `compile_native_call`。原因是 `&mut T` 在 IR 里是个元组 `(LocalSetter, PartialMut<T>)`，`partial_mut_from` 要把它*拆开*取读槽，而不是值直通。
-- *类型* —— `compile_native_ty` 里的名字匹配，现有的有 `Guid` / `Entity` / `Faction` / `Config` / `Prefab` / `Vec3` / `List` / `Dict`
+- *调用* —— `compile_native_call` 的名字匹配：`power` / `to_string` / `enum_eq` /
+  `free` / `list_get` / `list_set` / `list_insert` / `list_len` / `list_remove` /
+  `box_heap_get` / `box_free_get` 等
+- *类型* —— `compile_native_ty` 的名字匹配：`Guid` / `Entity` / `Faction` /
+  `Config` / `Prefab` / `Vec3` / `List` / `Dict` / `PartialMut`
 
 类型声明的写法是把一个不透明的外部类型挂上属性：
 
@@ -53,83 +66,33 @@ unsafe extern "Rust" {
 }
 ```
 
+`PartialMut` 的三个内建（`partial_mut_from` / `partial_mut_deref` /
+`partial_mut_deref_mut`）是例外：它们在 `compile_call` 里特判，不走
+`compile_native_call`。因为 `&mut T` 在 IR 里是元组 `(LocalSetter, PartialMut<T>)`，
+`partial_mut_from` 要把它*拆开*取读槽，而不是值直通。
+
 = 泛型原生类型
 
-`List` 是*泛型*原生类型：属性标在 `struct List<T>` 的定义上，元素类型 `T` 从调用点的泛型实参里取：
+`List` 是*泛型*原生类型：属性标在 `struct List<T>` 上，元素类型从调用点的泛型
+实参里取：
 
 ```rust
 #[native("List")]
 pub struct List<T> { /* 字段在节点图里不存在 */ }
 ```
 
-编译器把它编成 IR 层的 `IrKind::List(T)`（元素也是 IR 类型），降级时才落成 `NativeKind::List`。因此 `[i32; N]` 和 `List<i32>` 是*同一个*类型，两者之间的 `transmute` 是空转换 —— 数组字面量可以直接当列表用。
+编译器把它编成 `IrKind::List(T)`，降级时才落成 `NativeKind::List`。因此
+`[i32; N]` 和 `List<i32>` 是*同一个*类型，两者之间的 `transmute` 是空转换。
 
-元素类型必须是节点图里有列表变体的原生类型（整数、字符串、实体、GUID、浮点、三维向量、布尔、配置、预制件、阵营）；结构体、枚举、嵌套列表都不行，会报 `Unsupported list element type`。
+元素类型必须是节点图里有列表变体的原生类型 —— 整数、字符串、实体、GUID、
+浮点、三维向量、布尔、配置、预制件、阵营。结构体、枚举、嵌套列表会报
+`Unsupported list element type`（`core/src/node/execution.rs:46`）。
 
-原生类型（句柄）的*析构*是空操作：它的字段在节点图里并不存在，析构胶水去读字段只会读到不存在的东西。
+原生类型（句柄）的*析构*是空操作：它的字段在节点图里并不存在。
 
-= 限制
+= 事件
 
-入参和返回值的类型都必须能变成 `NativeKind` —— 编译器在这两处直接 `.unwrap()`，遇到转不了的类型会 panic。所以原生函数不能收任意类型。
-
-= 编译器怎么认出这是原生调用
-
-属性宏除了把函数体换成 `unreachable!()`，还会**发一条 tool attribute**：
-
-```rust
-#[rust2genshin::call("list_len")]
-#[allow(unused_variables)]
-#[inline(never)]
-#[rustc_no_mir_inline]
-pub fn len(&self) -> usize;
-```
-
-`register_tool` 注册的属性编译器**不会消耗**它 —— 它原样留在 HIR 里，
-后端用 `tcx.get_all_attrs()` 直接读那个定义上的属性，拿到名字/节点 ID。
-
-*用宏的 crate 要有这两行*：
-
-```rust
-#![feature(register_tool)]
-#![register_tool(rust2genshin)]
-```
-
-少了两行，编译器会报「cannot find crate `rust2genshin`」—— 那个提示看不出
-要干什么，看到它就来加这两行。
-
-= 为什么不从源码里抠
-
-早先的做法是：属性宏把 token 的 span 设成 `Span::call_site()`，编译器再用
-`span_to_snippet` 把宏属性的原文从**源码**里读回来、重新 parse。那套办法有三个问题：
-
-- 依赖源码文件可读（`span_to_snippet(...).unwrap()`）；
-- 每问一次属性就重新 parse 一遍源码；
-- 一次原生调用会走两条路（`native_call_id` 认名字、`compile_native_call` 再认一遍），
-  各 parse 一次。
-
-换成 tool attribute 之后，属性是**结构化**的，直接从 tcx 里读，不碰源码。
-`core` 也因此不再依赖 `syn`。
-
-宏仍然必须留着：tool attribute 不移除函数体，而 `impl` 块里不能写无体函数。
-
-= tool attribute 的五个档
-
-| 属性 | 参数 | 用途 |
-|---|---|---|
-| `rust2genshin::call("名字")` | 字符串 | 签名不足以描述节点，按名字查（要改 core） |
-| `rust2genshin::calc(N)` | 整数 | 无控制流的节点 |
-| `rust2genshin::exec(N)` | 整数 | 有控制流的节点 |
-| `rust2genshin::ty("名字")` | 字符串 | 标在类型上：原生类型 |
-| `rust2genshin::enumty(N)` | 整数 | 标在枚举上：`#[native_enum(N)]` |
-
-两个例外：`rust2genshin::event(N)` 标在事件结构体上，`rust2genshin::listener`
-标在 `#[event_listener]` 的函数上（无参数）。`enumty` 而不是 `enum`，因为
-`enum` 是关键字，不能当路径段。
-
-
-= 事件：`#[event(N)]` 标在 struct 上
-
-事件类型是同一个家族的另一支，但它标的是 *struct* 而不是函数：
+事件标的是 *struct* 而不是函数：
 
 ```rust
 #[event(307)]
@@ -143,11 +106,41 @@ pub struct TabSelectedEvent {
 
 - `N` 同样是节点 ID
 - 节点形态是 *trigger*：*没有入参*，一个出口
-- *字段顺序必须和游戏端事件节点的出参顺序一致* —— 编译器是按顺序把字段类型拼成 trigger 节点的出参的
-- struct 和它的字段都必须是 `pub`
+- *字段顺序必须和游戏端事件节点的出参顺序一致* —— 编译器按顺序把字段类型拼成 trigger 的出参
+- struct 和字段都必须是 `pub`
 
-编译器侧的落点在 `core/src/compile/mod.rs` 的 `run()`：遍历带 `#[event_listener]` 的入口时，取出第一个参数的类型的 `#[event(N)]`，把字段类型拼成出参，然后在主图里插入 trigger 节点和对应的复合节点调用块。
+落点在 `core/src/compile/mod.rs` 的 `run()`：遍历带 `#[event_listener]` 的入口时，
+取第一个参数类型的 `#[event(N)]`，拼出 trigger，然后在主图里插入 trigger 和
+对应的复合节点调用块。
+
+= 限制
+
+入参和返回值的类型都必须能变成 `NativeKind` —— 编译器在这两处直接 `.unwrap()`，
+遇到转不了的类型会 panic。
+
+= tool attribute 一览
+
+宏把信息写成 tool attribute，后端用 `tcx.get_all_attrs()` 直接读结构化属性，
+不回源码里抠（原因是#link("/arch/backend.html")[这里]）。
+
+#table(
+    columns: (auto, auto, 1fr),
+    inset: 6pt,
+    fill: (_, y) => if calc.odd(y) { luma(235) },
+    [*属性*], [*参数*], [*用途*],
+
+    [`rust2genshin::call("名字")`], [字符串], [签名不足以描述节点，按名字查（要改 core）],
+    [`rust2genshin::calc(N)`], [整数], [无控制流的节点],
+    [`rust2genshin::exec(N)`], [整数], [有控制流的节点],
+    [`rust2genshin::ty("名字")`], [字符串], [标在类型上：原生类型],
+    [`rust2genshin::enumty(N)`], [整数], [标在枚举上：`#[native_enum(N)]`],
+    [`rust2genshin::event(N)`], [整数], [标在事件 struct 上],
+    [`rust2genshin::listener`], [无], [标在 `#[event_listener]` 的函数上],
+)
+
+`enumty` 而不是 `enum`，因为 `enum` 是关键字，不能当路径段。
 
 = 相关
 
-`#[event_listener]` 也是同一套机制的特例：它除了改写 span，还会自动给函数加上 `#[unsafe(no_mangle)]`，把它变成导出的入口。详见#link("/user/events.html")[事件]。
+`#[event_listener]` 是同一套机制的特例：它自动给函数加上
+`#[unsafe(no_mangle)]`，把它变成导出入口。用法见#link("/user/events.html")[事件]。

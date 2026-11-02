@@ -6,21 +6,36 @@
 
 #set raw(lang: "rust");
 
-这里是开发者文档
+这一栏讲*怎么动手改*：从哪下手、改完怎么验。
 
-这一栏讲 *怎么继续开发 `rust2genshin`* —— 现在要动手改点东西，从哪下手。
+「为什么这么设计」在#link("/arch/index.html")[架构]栏，「怎么用」在#link("/user/index.html")[使用]栏。
 
-和#link("/arch/index.html")[架构]栏的区别：架构讲这个项目*是怎么搭起来的*（分层、管线、格式），读它是为了理解；这一栏讲*怎么改它*（构建、调试、加节点），读它是为了动手。
+= 动手
 
-= 后端
+#table(
+    columns: (auto, 1fr),
+    inset: 6pt,
+    fill: (_, y) => if calc.odd(y) { luma(235) },
+    [*想做的事*], [*去哪*],
+
+    [让用户在 `lib/` 里调到一个新节点],
+    [#link("/dev/add-native.html")[加一个原生调用] —— 带 `#[native_calc(N)]` / `#[native_exec(N)]` 就够，不用改 core],
+
+    [加一个编译器自己要用的节点],
+    [#link("/dev/add-node.html")[加一个节点] —— 构造 `NodeKind`，再在 MIR 翻译处用它],
+
+    [加一个事件],
+    [#link("/dev/add-native.html")[加一个原生调用] 的「事件」一节 —— `#[event(N)]` 标在 struct 上],
+
+    [加一个容器类型、改 API 命名],
+    [#link("/dev/conventions.html")[约定] —— 命名规则、句柄类型的三层约束、踩过的坑],
+)
+
+= 构建与调试
 
 #list(
     link("/dev/build.html", [构建]) + [ —— 工具链、后端怎么被 rustc 加载、端到端构建流程、CI],
     link("/dev/debugging.html", [调试]) + [ —— 诊断输出、被忽略的断言、增量构建、Python 工具],
-    link("/dev/add-node.html", [加一个节点]) + [ —— 构造 `NodeKind`，并在 MIR 翻译处用它],
-    link("/dev/add-native.html", [加一个原生调用]) + [ —— 让 `lib/` 里一个函数对应到一个节点],
-    link("/dev/conventions.html", [约定]) + [ —— 文档注释、命名、句柄类型的实现约束、已踩的坑],
-    link("/dev/ir/index.html", [IR]) + [ —— Rust 类型怎么编译成 `IrKind`，借用、读值、优化期的读写约定],
 )
 
 = 工具
@@ -31,8 +46,6 @@
 )
 
 = 文档站
-
-改这个文档站本身：
 
 #list(
     link("/dev/docs/index.html", [文档]) + [ —— Typst 环境、编译与 watch、编辑器配置],

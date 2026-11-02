@@ -33,6 +33,8 @@
 | **viewer**：怎么跑、怎么看中间态 IR、布局与优化的设计取舍 | <https://mzverse.github.io/rust2genshin/dev/viewer.html> |
 | **playground**：怎么跑、配置项、webhook、磁盘怎么算 | <https://mzverse.github.io/rust2genshin/dev/playground.html> |
 | 节点图本身的语义 | <https://mzverse.github.io/rust2genshin/arch/low/index.html> |
+| **IR**：`IrKind` / `IrNodeId` 的中间形态、读值与借用在图上怎么区分 | <https://mzverse.github.io/rust2genshin/arch/ir/index.html> |
+| 后端为什么挂成 codegen 后端、为什么不产生机器码 | <https://mzverse.github.io/rust2genshin/arch/backend.html> |
 | 怎么用（写节点图、句柄类型、可空性、Entity/Player） | <https://mzverse.github.io/rust2genshin/user/index.html> |
 | 文档站怎么改（含三个 CSS 坑） | <https://mzverse.github.io/rust2genshin/dev/docs/index.html> |
 
@@ -123,13 +125,13 @@ tools/               (被 .gitignore) Python 调试工具，需要 protobuf 运�
 2. `compile::compile`：先查 crate 属性 —— **不是 `#![no_std]` 只 warn**（只有 proc-macro / test crate 才真的跳过）。再 `Compiler::new`。
 3. `Compiler::new`：在依赖里找 `rust2genshin_lib`（`LIB_NAME` 常量），找不到直接报错。
 4. `Compiler::run`：
-   - 入口点来自 `tcx.exported_generic_symbols(LOCAL_CRATE)` + `exported_non_generic_symbols(LOCAL_CRATE)`（**不是**扫描 HIR 找 `contains_extern_indicator`）
-   - 每个入口先试 `compile_native_call`，是原生调用就跳过；否则 `touch_fn` 递归编译依赖
-   - 入口带 `#[event_listener]` 时，取第一个参数的类型的 `#[event(id)]`，在主图里插入 trigger 节点 + 复合节点调用块
+   - 该编哪些函数来自 `tcx.collect_and_partition_mono_items(())`（`compile/mod.rs:160`）——rustc 给每个后端的那份 mono item 清单。筛掉 `core`/`alloc`/`std` 的实现、`InstanceKind::Shim`、`Static`/`GlobalAsm`（`compile/mod.rs:168-173`）
+   - 每个函数先试 `compile_native_call`，是原生调用就跳过；否则 `touch_fn` 递归编译依赖
+   - 函数带 `#[rust2genshin::listener]` 时，取第一个参数的类型的 `#[event(N)]`，在主图里插入 trigger 节点 + 复合节点调用块（`compile/mod.rs:200-225`）
 5. `Compiler::save` 写的是**中间态** `.ogia`（bincode 序列化的 `Target`，viewer 读它）。
 6. 最终 `.gia` 由 `compile/link.rs` 写出：`layout` 布局 → 编码成 `AssetBundle` → `assets.save(output)`。`AssetBundle::save` 内容不变时跳过写盘以保留 mtime。
 
-`fn` → 复合节点：**每个**被编译到的函数都成为独立的复合节点资产（decl + 内部子图，靠 `graph_ref` 关联），调用点是 `link_node`（`compile/ir.rs:243`）里对 `touch_fn`（`compile/link.rs:95`）产物的引用。后端**不做内联**；`exported`（`compile/mod.rs:348`）只在 `compile/link.rs:72` 决定该图是否 `set_primary`（主资产 vs 依赖资产）。函数是否在调用点消失由 rustc 的 MIR 内联器决定（跑在后端之前）。
+`fn` → 复合节点：**每个**被编译到的函数都成为独立的复合节点资产（decl + 内部子图，靠 `graph_ref` 关联），调用点是 `link_node`（`compile/optimize.rs:225`）里对 `touch_fn`（`compile/mod.rs:234`）产物的引用。后端**不做内联**；`exported`（`compile/mod.rs:377`，来自 `codegen_fn_attrs(...).contains_extern_indicator()`）只在 `compile/link.rs:94` 决定该图是否 `set_primary`（主资产 vs 依赖资产）。函数是否在调用点消失由 rustc 的 MIR 内联器决定（跑在后端之前）。
 
 ## 关键概念
 
@@ -139,7 +141,7 @@ tools/               (被 .gitignore) Python 调试工具，需要 protobuf 运�
 - **`NodeRef`** 序列化为 `id + NODE_ID_BEGIN`，`NODE_ID_BEGIN = 1`。
 - **`CompiledLocal` / `CompilingLocals`**（`compile/place.rs`）：把 MIR 的 `Place` 投影（元组字段、struct 字段、引用解引）递归展平成节点图局部变量。闭包参数因此变成 `#closure + args` 的双层。
 - **`FnDecl`**（`compile/func.rs`）：函数对外签名 —— 入参、`params` / `ret` 扁平列表、`proxies_in` / `proxies_out`。
-- **`Optimizer`**（`compile/ir.rs`）：`compile_fn` 里只调 `verify`（`compile/mod.rs:343`）；`optimize()` 到不动点（`ir.rs:447`）是 `lower` 里跑的（`ir.rs:283`），`lower` 由 `link.rs` 调用。
+- **`Optimizer`**（`compile/optimize.rs`）：`compile_fn` 里只调 `verify`（`compile/mod.rs:372` → `optimize.rs:127`）；`optimize()` 到不动点（`optimize.rs:728`）是 `lower_ir`（`optimize.rs:306`）里跑的，`lower_ir` 由 `lower`（`optimize.rs:599`）调，`lower` 由 `link.rs` 调。
 - **`.gia` 容器**（`core/src/asset.rs`）：5 × u32 大端 **20 字节头**（总大小、schema 版本、0x0326、文件类型 3、proto 长度）+ proto 数据 + **4 字节尾** `0x0679`。总共 24 字节开销。
 - **proto 绑定**：改了 `core/proto/asset.proto` 后要 `cargo build` 让 `prost-build` 重新生成（`OUT_DIR/rust2genshin.rs`，在 `core/src/asset.rs` 里 `include!`）。Python 侧不用重生成，`tools/gia.py` 运行时读 proto。
 
