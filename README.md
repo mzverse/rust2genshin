@@ -48,7 +48,7 @@ cargo run -p build-demo --bin beyond-server
 
 产物是 `target/genshin-unknown-beyond-server/release/rust2genshin_demo.gia`。
 
-节点图写在 `demo/src/lib.rs`（`demo` 只是示例目标 crate）。改包名、换成自己的 crate 等步骤见[上手](https://mzverse.github.io/rust2genshin/user/getting-started.html)。
+节点图写在 `demo/src/lib.rs`（`demo` 只是示例目标 crate）。改包名、换成自己的 crate 等步骤见[入门](https://mzverse.github.io/rust2genshin/user/tutorial/index.html)。
 
 ## Code
 
@@ -60,7 +60,7 @@ cargo run -p build-demo --bin beyond-server
 # 兼容性与限制
 
 - [兼容性与限制](https://mzverse.github.io/rust2genshin/user/compatibility.html) —— 运算溢出、整数除法、扁平化局部变量、内部可变性、可变借用
-- [不被支持的特性](https://mzverse.github.io/rust2genshin/user/unsupported.html) —— `i8`/`i16`、`#[repr(u32)]`、递归调用、`dyn`
+- [不被支持的特性](https://mzverse.github.io/rust2genshin/user/unsupported.html) —— 整数/浮点宽度、`#[repr(u32)]`、递归调用、`dyn`、`Box` 的写
 - [待办](https://mzverse.github.io/rust2genshin/user/limitations.html) —— 还没做的语言特性、类型、节点、事件
 
 # 关于节点图
