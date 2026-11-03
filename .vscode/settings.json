@@ -1,5 +1,7 @@
 {
     "tinymist.rootPath": "${workspaceFolder}/docs/typst",
     "tinymist.projectResolution": "lockDatabase",
-    "tinymist.exportTarget": "html"
+    "tinymist.exportTarget": "bundle",
+    "tinymist.formatterIndentSize": 4,
+    "tinymist.preview.cursorIndicator": true,
 }

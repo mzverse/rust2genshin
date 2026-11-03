@@ -107,10 +107,20 @@
 /// node({ [入口] ctrl_out() })
 /// ```
 ///
+/// 可选 `comment`:节点上方的一个小注框,和 `.gia` 预览里那个
+/// `attached_comment` 长得一样。讲「这个变量叫什么」这类图上写不下的信息时用。
+///
+/// ```typ
+/// node("local", comment: "变量 phase", {
+///   [获取局部变量]
+///   data_out("LocalRef")[变量引用]
+/// })
+/// ```
+///
 /// 放进 `graph()` 里就是图中的一个节点;单独摆(不放进图)也能用 —— 注册
 /// 脚本的那份说明靠 `template.typ` 的 `dedup()` 合掉,重复写不花钱。导出 pdf
 /// 之类非 html 的目标下只留下内容文本。
-#let node(..args) = context {
+#let node(..args, comment: none) = context {
   let pos = args.pos()
   // 两个位置参数时头一个是 id,一个时是内容 —— 内容总是块,id 总是字符串。
   let (id, body) = if pos.len() >= 2 and type(pos.at(0)) == str {
@@ -119,12 +129,26 @@
     (none, pos.join())
   }
   if target() != "html" {
-    return contentToString(body)
+    let text = contentToString(body)
+    if comment != none {
+      text = contentToString(comment) + " / " + text
+    }
+    return text
   }
   let attrs = if id == none { (:) } else { (id: id) }
+  // 注释必须是节点的**直系子元素** —— graph.js 只在这一层找它
+  // (`[...this.children].find(...)`),挂在别处不会被认领。
+  //
+  // 顺序也有讲究:GraphNode.build 先扫注释、再 #readPins,而注释框的尺寸
+  // 由它自己的 shadow 决定,所以要排在正常内容之前建好。
+  let children = if comment == none {
+    body
+  } else {
+    html_elem("ui-graph-comment", comment) + body
+  }
   // body 必须用方括号包成 trailing block —— 光写个裸名字会被 Typst 当成
   // 具名参数 body: 吞进属性里,元素反而是空的。
-  graph_element(html_elem("ui-graph-node", attrs: attrs)[#body])
+  graph_element(html_elem("ui-graph-node", attrs: attrs)[#children])
 }
 
 /// 一条连接。位置参数:`kind`、起点 `(节点 id, 组内序号)`、终点同样。
@@ -166,6 +190,102 @@
 
 /// 一条数据流连接。位置参数:起点 `(节点 id, 组内序号)`、终点同样。
 #let data(from, to) = connection("data", from, to)
+
+/// 引脚旁的一小段附加信息。两种用处,各占一组函数:
+///
+/// - *默认值* —— 只有数据入脚有值可写:`data_default(at, text)`
+/// - *外部接线* —— 这根引脚连到图外面。四种引脚各一个:
+///   `data_in_extern` / `data_out_extern` /
+///   `ctrl_in_extern` / `ctrl_out_extern`
+///
+/// 全部只收 `at` = `(节点 id, 组内序号)`。序号在**那一组**里数:节点上
+/// `data-in` / `data-out` / `ctrl-in` / `ctrl-out` 四组各数各的。
+///
+/// ```typ
+/// node("log1", {
+///   [打印日志]
+///   ctrl_in()
+///   data_in("String")[内容]
+/// }),
+/// data_default(("log1", 0))[`"第一阶段"`]   // 内容引脚上写个常量
+/// ctrl_in_extern(("log1", 0))             // 控制流从图外来
+/// ```
+///
+/// 它们都只是数据载体:元素是 `<ui-graph>` 的直接子节点,位置由 `graph.js`
+/// 算出来摆在节点**外侧**(入口在左边界外、出口在右边界外),不和盒子里那侧
+/// 的引脚名抢地方。
+///
+/// *写字符串值时要注意智能引号。* Typst 会把内容里的 `"..."` 变成弯引号
+/// `“...”`,直接用 `["第一阶段"]` 出来的是弯的。节点图里的字符串常量是带
+/// 直引号的,所以套一层行内代码把引号原样留住:
+///
+/// ```typ
+/// data_default(("log1", 0))[`"第一阶段"`]
+/// ```
+///
+/// 数值不用这样 —— `[100]` 就是对的。
+///
+/// 底座:下面五个都是它的封装,平时不用直接调。
+#let pin_info(pin_kind, dir, at, text, kind: none) = {
+  assert(
+    pin_kind == "data" or pin_kind == "ctrl",
+    message: "graph: pin_info 的引脚种类只能是 data / ctrl,得到 " + repr(pin_kind),
+  )
+  assert(
+    dir == "in" or dir == "out",
+    message: "graph: pin_info 的 dir 只能是 in / out,得到 " + repr(dir),
+  )
+  assert(
+    kind == none or kind == "extern",
+    message: "graph: pin_info 的 kind 只能是 none / extern,得到 " + repr(kind),
+  )
+  assert(
+    type(at) == array and at.len() == 2,
+    message: "graph: pin_info 应当写成 (节点 id, 组内序号),得到 " + repr(at),
+  )
+  assert(
+    type(at.at(0)) == str,
+    message: "graph: pin_info 的节点 id 应当是字符串,得到 " + repr(at.at(0)),
+  )
+  assert(
+    type(at.at(1)) == int,
+    message: "graph: pin_info 的引脚应当写组内序号(整数),得到 " + repr(at.at(1)),
+  )
+  // kind 不写就整个属性都不发 —— 渲染层用 `|| 'default'` 兜底(和 node 的
+  // comment 一个路子:不写就什么都不加)。
+  let attrs = (
+    data-node: at.at(0),
+    data-dir: dir,
+    data-kind: pin_kind,
+    data-index: str(at.at(1)),
+  )
+  if kind != none {
+    attrs.insert("kind", kind)
+  }
+  html_elem("pin-info", attrs: attrs, text)
+}
+
+/// 数据入脚上的*默认值*。引脚上没有连线时生效的那个值。
+///
+/// ```typ
+/// data_default(("log1", 0))[100]
+/// ```
+#let data_default(at, text) = pin_info("data", "in", at, text)
+
+/// 以下四个表示这根引脚连到图外。命名按 `<种类>_<方向>` 拼:
+/// `data` / `ctrl` × `in` / `out`。
+
+/// 数据入脚连到图外 —— 参数从外面进来。
+#let data_in_extern(at) = pin_info("data", "in", at, "", kind: "extern")
+
+/// 数据出脚连到图外 —— 返回值交给外面。
+#let data_out_extern(at) = pin_info("data", "out", at, "", kind: "extern")
+
+/// 控制流入脚连到图外 —— 流程从图外开始。
+#let ctrl_in_extern(at) = pin_info("ctrl", "in", at, "", kind: "extern")
+
+/// 控制流出脚连到图外 —— 流程到这里结束。
+#let ctrl_out_extern(at) = pin_info("ctrl", "out", at, "", kind: "extern")
 
 /* ------------------------------------------------------------------ *
  * 图

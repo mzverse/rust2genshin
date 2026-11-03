@@ -96,9 +96,17 @@ const NODE_CSS = `
     :host { display: flex; flex-direction: column; justify-content: flex-end;
         position: relative; box-sizing: content-box; padding: 0 ${BLEED}px; }
     /* 注释框那层。尺寸由里面的 <slot> 决定,relayout 量完把宽度/高度
-     * 写回宿主元素 —— 布局是拿宿主的 w/h 排的,不量就排不出避让。 */
+     * 写回宿主元素 —— 布局是拿宿主的 w/h 排的,不量就排不出避让。
+     *
+     * 宽度必须是内容宽(max-content),不能跟着宿主走:relayout 里有
+     * w = Math.max(w, commentW) —— 节点宽度要容得下注释。注释宽度若反过来
+     * 由宿主决定,就成了「宿主 -> 注释 -> 宿主」的循环,每轮 relayout 都会
+     * 把节点撑大一点。
+     *
+     * 居中靠 align-self: center —— 注释通常比节点窄,让它贴着盒子左边沿会在
+     * 缩放后显得偏在一边(缩得越小越明显)。 */
     .g-comment { position: relative; width: max-content; max-width: 320px;
-        margin-bottom: ${COMMENT_GAP}px; }
+        align-self: center; margin-bottom: ${COMMENT_GAP}px; }
     .g-box { position: relative; width: max-content; min-width: ${NODE_MIN_W}px;
         box-sizing: border-box; background: var(--graph-box);
         border: 1.5px solid var(--graph-border); border-radius: 7px; overflow: hidden;
@@ -706,6 +714,11 @@ customElements.define('ui-graph', class extends HTMLElement {
         this.#layout();
         this.#placePinInfos();
 
+        // 布局比容器宽时按比例缩到放得下 —— 不缩的话右边的节点会被视口切掉
+        // (窄屏尤其明显,而读者第一眼看到的就是被切一半的节点)。
+        // 缩放口径在 #bindDrag 的 view.reset 里,这里只是让它重新算一次。
+        if (this.view) this.view.reset();
+
         for (const e of this.edges) {
             e.hit = el('path', { class: 'g-edge-hit' }, edgeLayer);
             // 类型只在悬停这条线时浮出来。
@@ -838,10 +851,10 @@ customElements.define('ui-graph', class extends HTMLElement {
                 continue;
             }
             const text = (pi.textContent || '').trim();
-            if (!text) continue;
-            // extern 的 data 里只写序号,前缀由这里补 —— 数据保持最小,
-            // 显示格式归渲染层管。
+            // extern 且没写文字也算数:控制流那条线上没有「名字」可写,只标
+            // 「外部」说明流程从图外来 / 往图外去。
             const infoKind = pi.getAttribute('kind') || 'default';
+            if (!text && infoKind !== 'extern') continue;
 
             const fo = el('foreignObject', {
                 class: 'g-pin-info-fo',
@@ -850,10 +863,15 @@ customElements.define('ui-graph', class extends HTMLElement {
             }, layer);
             const div = document.createElementNS(XHTML_NS, 'div');
             div.className = `g-pin-info ${infoKind}`;
-            div.textContent = infoKind === 'extern' ? `extern[${text}]` : text;
+            // 「外部[序号]」—— 方括号里是这根引脚在那一组里的序号(组内序号,
+            // 和 connection 两端用的是同一套号),和原来的 extern[…] 一个样子。
+            // 外部接线没有「名字」可写,`text` 这里用不上。
+            div.textContent = infoKind === 'extern'
+                ? `外部[${index}]`
+                : text;
             fo.appendChild(div);
 
-            const entry = { node, dir, pinId, fo, div, w: 0, h: 0 };
+            const entry = { node, dir, pinId, kind, fo, div, w: 0, h: 0 };
             this.#measurePinInfo(entry);
             const list = this.pinInfos.get(node);
             if (list) list.push(entry);
@@ -892,6 +910,28 @@ customElements.define('ui-graph', class extends HTMLElement {
     }
 
     // ---- 拖动 / 缩放 ----
+    /** 布局占的整块范围 `(宽, 高)`,单位是世界坐标。
+     *
+     * 取所有节点 `<foreignObject>` 的右下角 —— 引脚形状和信息标都在节点矩形
+     * 外那一圈 BLEED 里,已经算进去了。 */
+    #contentSize() {
+        let maxR = 0;
+        let maxB = 0;
+        for (const n of this.nodes) {
+            if (!n.fo) continue;
+            maxR = Math.max(maxR, n.x + Number(n.fo.getAttribute('width') || 0));
+            maxB = Math.max(maxB, n.y + Number(n.fo.getAttribute('height') || 0));
+        }
+        return { w: maxR, h: maxB };
+    }
+
+    /** 把整张图装进 `w × h` 需要的缩放,**只缩不放**。 */
+    #fitScale(w, h) {
+        const c = this.#contentSize();
+        if (!c.w || !c.h || !w || !h) return 1;
+        return Math.min(1, w / c.w, h / c.h);
+    }
+
     #bindDrag(root) {
         // 视图状态挂在实例上,重置按钮够得着;监听器只在 #build 里挂一次,
         // 重算时复用同一个 .graph-root。
@@ -902,12 +942,29 @@ customElements.define('ui-graph', class extends HTMLElement {
             this.style.setProperty('--g-tf', `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`);
         };
         view.reset = () => {
-            view.scale = 1;
+            // 初始视图:布局比容器宽就等比缩到放得下,否则 1:1。
+            // 不缩的话右边的节点会被视口切掉 —— 读者第一眼看到的会是半截节点。
+            // 只缩不放:小图放大反而糊,而且和「1:1 就是原尺寸」的直觉不符。
+            const box = root.getBoundingClientRect();
+            const c = this.#contentSize();
+            const scale = this.#fitScale(box.width, box.height);
+            view.scale = scale;
             view.tx = 0;
             view.ty = 0;
             applyPan();
+
+            // 容器高度跟着内容走。`height` 参数是上限,不是承诺:布局比它矮时
+            // 下面会空出大半屏。内容比上限矮就收到刚好的高度 —— 空着的地方
+            // 拖也拖不出东西来,只会把下一页推远。
+            const cap = box.height;
+            if (c.h && cap) {
+                const needed = Math.ceil((c.h + PAD) * scale);
+                if (needed < cap) this.style.height = `${needed}px`;
+            }
         };
-        applyPan();
+        // 首次进入就按容器缩一次。注意 #render 在 #bindDrag 之前跑,那时
+        // 这个 view 还不存在 —— 所以「初始自适应」只能由这里触发。
+        view.reset();
 
         // 屏幕坐标 → 世界坐标。节点只经过上面这一个变换,减掉平移再除缩放
         // 就完了。

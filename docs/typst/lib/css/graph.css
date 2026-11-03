@@ -15,18 +15,28 @@ ui-graph {
     margin: 1rem 0;
     /* 高度由 graph.typ 的 height 参数写进 data-height,JS 读它填到 style */
     overflow: hidden;
+    /* 最小高度:图太矮(两三个节点的一行图)时框会塌成一条,读者看不出
+     * 这是一张可以拖动的图。JS 会把高度收到「内容刚够」,这里给个地板。
+     * 内联 style.height 压不住它 —— min-height 是布局地板,永远赢。 */
+    min-height: 200px;
     border-radius: 8px;
     /* 图是可以拖、可以缩放的交互区域,得让人看得出边界 */
     border: 1px solid var(--border-soft);
     background-color: var(--graph-canvas);
 
-    /* <connection> 只是数据载体,要藏。引脚挂在节点底下,所以是后代选择器
-     * 而不是子代。
+    /* <connection> 和 <pin-info> 只是数据载体,要藏。
+     * 元素定义之后它们本来也渲染不出来 —— 宿主有 shadow root,没被 slot
+     * 分走的子节点不画。这条针对的是**定义之前**那一小段:那时 <ui-graph>
+     * 还是个未知元素,子节点按普通 DOM 照排,不藏就会闪一下生文字。
+     * 引脚挂在节点底下,所以是后代选择器而不是子代。
      * `<pin>` 不在这儿藏 —— 引脚标签就是把它投影到 shadow 里那块 div 上
      * 显示的(graph.js 里按 slot 名认领),display:none 会连标签一起藏掉。
      * 没被认领的引脚(没有标签的那些)本来也不渲染:带 slot 名却找不到对应
-     * <slot> 的元素不会被画出来。 */
-    & connection {
+     * <slot> 的元素不会被画出来。
+     * `<ui-graph-comment>` 更不能藏 —— 它跟 `<pin>` 一样是要被 slot 投影出来
+     * 显示的那个,藏了整个注框就没了。 */
+    & connection,
+    & pin-info {
         display: none;
     }
 
